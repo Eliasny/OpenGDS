@@ -20,6 +20,7 @@
 #include "ca.h"
 #include "check.h"
 #include "common/buf.h"
+#include "common/ids.h"
 #include "gds_internal.h"
 #include "gds_server.h"
 #include "store.h"
@@ -251,6 +252,44 @@ static void test_rebuilt(gds_server *s, const UA_NodeId *appId, const UA_NodeId 
     CHECK_EQ_INT(finish_wait(s, appId, pending), UA_STATUSCODE_GOOD);
 }
 
+static void iterate(gds_server *s) {
+    for(int i = 0; i < 20; i++)
+        (void)UA_Server_run_iterate(gds_server_ua(s), false);
+}
+
+/* Failover: a STANDBY shows no dialogs; on promotion the dialogs follow
+ * the store, where another node decided one request and received another. */
+static void test_failover(gds_server *s, gds_store *st, const UA_NodeId *appId) {
+    UA_NodeId a = UA_NODEID_NULL, b = UA_NODEID_NULL;
+    if(!CHECK_EQ_INT(start(s, appId, &a), UA_STATUSCODE_GOOD) ||
+       !CHECK_EQ_INT(UA_Server_run_startup(gds_server_ua(s)), UA_STATUSCODE_GOOD))
+        return;
+    CHECK(gds_server_set_role(s, GDS_NODE_STANDBY, 100, 0) == GDS_OK);
+    iterate(s);
+    CHECK(!dialog_exists(s, &a));
+    CHECK_EQ_INT(respond2(s, &approver, &a, 0, NULL), UA_STATUSCODE_BADNODEIDUNKNOWN);
+    /* meanwhile on the primary: a decided, b received */
+    CHECK(gds_store_req_set_state(st, &a.identifier.guid, GDS_REQ_RECEIVED, NULL, 0) == GDS_OK);
+    gds_request q;
+    memset(&q, 0, sizeof(q));
+    CHECK(gds_guid_random(&q.id) == GDS_OK);
+    q.appId = appId->identifier.guid;
+    q.groupId = UA_GDSID_DIRECTORY_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP;
+    q.certType = UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE;
+    q.state = GDS_REQ_PENDING;
+    CHECK(gds_store_req_insert(st, &q) == GDS_OK);
+    b = UA_NODEID_GUID(s->ns, q.id);
+    CHECK(gds_server_set_role(s, GDS_NODE_PRIMARY, 255, 0) == GDS_OK);
+    iterate(s);
+    bool retain = false;
+    CHECK(!dialog_exists(s, &a));
+    CHECK(dialog_active(s, &b, &retain) && retain);
+    CHECK_EQ_INT(respond2(s, &approver, &b, 1, "duplicate"), UA_STATUSCODE_GOOD);
+    CHECK_EQ_INT(finish(s, appId, &b), UA_STATUSCODE_BADREQUESTNOTALLOWED);
+    CHECK_EQ_INT(UA_Server_run_shutdown(gds_server_ua(s)), UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&a);
+}
+
 /* Renewals: the app with a certificate is approved on arrival; a new one waits. */
 static void test_renewals(gds_server *s, const UA_NodeId *appId) {
     UA_NodeId r1 = UA_NODEID_NULL, r2 = UA_NODEID_NULL, other = UA_NODEID_NULL;
@@ -336,6 +375,7 @@ int main(int argc, char **argv) {
     if(CHECK(gds_server_new(&cfg, &s) == GDS_OK) && s) {
         UA_Server_setAdminSessionContext(gds_server_ua(s), &admin);
         test_rebuilt(s, &appId, &pending);
+        test_failover(s, st, &appId);
         UA_Server_setAdminSessionContext(gds_server_ua(s), NULL);
     }
     gds_server_delete(s);
