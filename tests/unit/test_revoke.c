@@ -1,0 +1,308 @@
+/* OpenGDS unit test: RevokeCertificate (OPC 10000-12 §7.9.6) and the
+ * revocation done by UnregisterApplication (§6.5.8).
+ *
+ * Only a CertificateAuthorityAdmin revokes; an unknown application is
+ * Bad_NotFound; a certificate this GDS did not issue to that application is
+ * Bad_InvalidArgument. A revoked certificate is on the CA's CRL (which every
+ * trust list carries) and GetCertificateStatus then asks for an update.
+ * Revoking again succeeds and adds nothing. Unregistering an application
+ * puts all of its certificates on the CRL. A STANDBY refuses.
+ * SPDX-License-Identifier: MPL-2.0 */
+#include <open62541/plugin/create_certificate.h>
+#include <open62541/plugin/log_stdout.h>
+#include <openssl/evp.h>
+#include <openssl/x509.h>
+
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include "ca.h"
+#include "check.h"
+#include "common/buf.h"
+#include "common/ids.h"
+#include "gds_internal.h"
+#include "gds_server.h"
+#include "store.h"
+#include "common/banned.h"
+
+#define TEST_URI "urn:opengds:test:revoke"
+
+/* Entries on a CRL (an empty CRL has no list at all). */
+static int crl_count(X509_CRL *crl) {
+    STACK_OF(X509_REVOKED) *l = X509_CRL_get_REVOKED(crl);
+    return l ? sk_X509_REVOKED_num(l) : 0;
+}
+
+static gds_session admin, registrar;
+
+/* ---- helpers ---- */
+
+static UA_CallMethodResult call_as(gds_server *s, gds_session *as, UA_UInt32 method,
+                                   UA_Variant *in, size_t n) {
+    UA_Server_setAdminSessionContext(gds_server_ua(s), as);
+    UA_CallMethodRequest req;
+    UA_CallMethodRequest_init(&req);
+    req.objectId = UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY);
+    req.methodId = UA_NODEID_NUMERIC(s->ns, method);
+    req.inputArguments = in;
+    req.inputArgumentsSize = n;
+    UA_CallMethodResult res = UA_Server_call(gds_server_ua(s), &req);
+    UA_Server_setAdminSessionContext(gds_server_ua(s), &admin);
+    return res;
+}
+
+static UA_StatusCode call_status(gds_server *s, gds_session *as, UA_UInt32 method, UA_Variant *in,
+                                 size_t n) {
+    UA_CallMethodResult res = call_as(s, as, method, in, n);
+    UA_StatusCode r = res.statusCode;
+    UA_CallMethodResult_clear(&res);
+    return r;
+}
+
+static gds_status make_csr(gds_buf *out) {
+    EVP_PKEY *key = EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)2048);
+    X509_REQ *req = X509_REQ_new();
+    gds_status r = GDS_ECRYPTO;
+    if(key && req && X509_REQ_set_pubkey(req, key) == 1 &&
+       X509_REQ_sign(req, key, EVP_sha256()) > 0) {
+        int len = i2d_X509_REQ(req, NULL);
+        out->data = len > 0 ? malloc((size_t)len) : NULL;
+        unsigned char *p = out->data;
+        out->len = len > 0 ? (size_t)len : 0;
+        r = (out->data && i2d_X509_REQ(req, &p) == len) ? GDS_OK : GDS_ECRYPTO;
+    }
+    X509_REQ_free(req);
+    EVP_PKEY_free(key);
+    return r;
+}
+
+static bool register_app(gds_server *s, const char *uri, UA_NodeId *appId) {
+    UA_LocalizedText name = UA_LOCALIZEDTEXT("en", "Revoke app");
+    UA_String disc = UA_STRING("opc.tcp://localhost:4840");
+    UA_ApplicationRecordDataType rec;
+    UA_ApplicationRecordDataType_init(&rec);
+    rec.applicationUri = UA_STRING((char *)(uintptr_t)uri);
+    rec.applicationType = UA_APPLICATIONTYPE_SERVER;
+    rec.productUri = UA_STRING("urn:opengds:test:product");
+    rec.applicationNames = &name;
+    rec.applicationNamesSize = 1;
+    rec.discoveryUrls = &disc;
+    rec.discoveryUrlsSize = 1;
+    UA_Variant in;
+    UA_Variant_setScalar(&in, &rec, &UA_TYPES_GDS[UA_TYPES_GDS_APPLICATIONRECORDDATATYPE]);
+    UA_CallMethodResult res = call_as(s, &admin, UA_GDSID_DIRECTORY_REGISTERAPPLICATION, &in, 1);
+    bool ok = CHECK(res.statusCode == UA_STATUSCODE_GOOD) && res.outputArgumentsSize == 1 &&
+              UA_Variant_hasScalarType(&res.outputArguments[0], &UA_TYPES[UA_TYPES_NODEID]) &&
+              UA_NodeId_copy(res.outputArguments[0].data, appId) == UA_STATUSCODE_GOOD;
+    UA_CallMethodResult_clear(&res);
+    return ok;
+}
+
+/* StartSigningRequest, then FinishRequest until the worker has signed:
+ * the issued certificate in *cert. */
+static bool issue(gds_server *s, const UA_NodeId *appId, UA_ByteString *cert) {
+    gds_buf csr = {0};
+    if(!CHECK(make_csr(&csr) == GDS_OK))
+        return false;
+    UA_NodeId group = UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
+    UA_NodeId type = UA_NS0ID(RSASHA256APPLICATIONCERTIFICATETYPE);
+    UA_ByteString csrBs = {csr.len, csr.data};
+    UA_Variant in[4];
+    UA_Variant_setScalar(&in[0], (void *)(uintptr_t)appId, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[1], &group, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[2], &type, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[3], &csrBs, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    UA_CallMethodResult res = call_as(s, &admin, UA_GDSID_DIRECTORY_STARTSIGNINGREQUEST, in, 4);
+    gds_buf_free(&csr);
+    UA_NodeId reqId = UA_NODEID_NULL;
+    bool ok = CHECK(res.statusCode == UA_STATUSCODE_GOOD) && res.outputArgumentsSize == 1 &&
+              UA_Variant_hasScalarType(&res.outputArguments[0], &UA_TYPES[UA_TYPES_NODEID]) &&
+              UA_NodeId_copy(res.outputArguments[0].data, &reqId) == UA_STATUSCODE_GOOD;
+    UA_CallMethodResult_clear(&res);
+    UA_StatusCode r = UA_STATUSCODE_BADNOTHINGTODO;
+    for(int i = 0; ok && i < 500 && r == UA_STATUSCODE_BADNOTHINGTODO; i++) {
+        UA_Variant fin[2];
+        UA_Variant_setScalar(&fin[0], (void *)(uintptr_t)appId, &UA_TYPES[UA_TYPES_NODEID]);
+        UA_Variant_setScalar(&fin[1], &reqId, &UA_TYPES[UA_TYPES_NODEID]);
+        res = call_as(s, &admin, UA_GDSID_DIRECTORY_FINISHREQUEST, fin, 2);
+        r = res.statusCode;
+        if(r == UA_STATUSCODE_GOOD && res.outputArgumentsSize >= 1 &&
+           UA_Variant_hasScalarType(&res.outputArguments[0], &UA_TYPES[UA_TYPES_BYTESTRING]))
+            r = UA_ByteString_copy(res.outputArguments[0].data, cert);
+        UA_CallMethodResult_clear(&res);
+        if(r == UA_STATUSCODE_BADNOTHINGTODO)
+            usleep(20000);
+    }
+    UA_NodeId_clear(&reqId);
+    return ok && CHECK_EQ_INT(r, UA_STATUSCODE_GOOD) && cert->length > 0;
+}
+
+static UA_StatusCode revoke_cert(gds_server *s, gds_session *as, const UA_NodeId *appId,
+                                 const UA_ByteString *cert) {
+    UA_Variant in[2];
+    UA_Variant_setScalar(&in[0], (void *)(uintptr_t)appId, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[1], (void *)(uintptr_t)cert, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    return call_status(s, as, UA_GDSID_DIRECTORY_REVOKECERTIFICATE, in, 2);
+}
+
+/* Is cert on the CA's current CRL? *entries: the CRL's entry count. */
+static bool on_crl(gds_ca *ca, const UA_ByteString *cert, int *entries) {
+    gds_buf der = {0};
+    CHECK(gds_ca_get_crl(ca, &der) == GDS_OK);
+    const unsigned char *p = der.data;
+    X509_CRL *crl = der.data ? d2i_X509_CRL(NULL, &p, (long)der.len) : NULL;
+    p = cert->data;
+    X509 *x = cert->length ? d2i_X509(NULL, &p, (long)cert->length) : NULL;
+    X509_REVOKED *e = NULL;
+    bool found = crl && x && X509_CRL_get0_by_cert(crl, &e, x) == 1;
+    if(entries)
+        *entries = crl ? crl_count(crl) : -1;
+    X509_free(x);
+    X509_CRL_free(crl);
+    gds_buf_free(&der);
+    return found;
+}
+
+static bool update_required(gds_server *s, const UA_NodeId *appId) {
+    UA_Variant in[3];
+    UA_NodeId none = UA_NODEID_NULL;
+    UA_Variant_setScalar(&in[0], (void *)(uintptr_t)appId, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[1], &none, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[2], &none, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_CallMethodResult res = call_as(s, &admin, UA_GDSID_DIRECTORY_GETCERTIFICATESTATUS, in, 3);
+    bool req = CHECK(res.statusCode == UA_STATUSCODE_GOOD) && res.outputArgumentsSize == 1 &&
+               UA_Variant_hasScalarType(&res.outputArguments[0], &UA_TYPES[UA_TYPES_BOOLEAN]) &&
+               *(UA_Boolean *)res.outputArguments[0].data;
+    UA_CallMethodResult_clear(&res);
+    return req;
+}
+
+/* ---- tests ---- */
+
+static void test_revoke(gds_server *s, gds_ca *ca, const UA_NodeId *a, const UA_NodeId *b) {
+    UA_ByteString certA = UA_BYTESTRING_NULL;
+    if(!issue(s, a, &certA))
+        return;
+    int before = 0, after = 0;
+    CHECK(!on_crl(ca, &certA, &before));
+    CHECK(!update_required(s, a));
+    /* only a CertificateAuthorityAdmin */
+    CHECK_EQ_INT(revoke_cert(s, &registrar, a, &certA), UA_STATUSCODE_BADUSERACCESSDENIED);
+    /* an application that is not registered */
+    UA_Guid g;
+    CHECK(gds_guid_random(&g) == GDS_OK);
+    UA_NodeId unknown = UA_NODEID_GUID(s->ns, g);
+    CHECK_EQ_INT(revoke_cert(s, &admin, &unknown, &certA), UA_STATUSCODE_BADNOTFOUND);
+    /* a certificate not issued to that application, or not by this GDS */
+    CHECK_EQ_INT(revoke_cert(s, &admin, b, &certA), UA_STATUSCODE_BADINVALIDARGUMENT);
+    UA_ByteString junk = UA_BYTESTRING("not a certificate");
+    CHECK_EQ_INT(revoke_cert(s, &admin, a, &junk), UA_STATUSCODE_BADINVALIDARGUMENT);
+    UA_ByteString empty = UA_BYTESTRING_NULL;
+    CHECK_EQ_INT(revoke_cert(s, &admin, a, &empty), UA_STATUSCODE_BADINVALIDARGUMENT);
+    UA_Variant one;
+    UA_Variant_setScalar(&one, (void *)(uintptr_t)a, &UA_TYPES[UA_TYPES_NODEID]);
+    CHECK_EQ_INT(call_status(s, &admin, UA_GDSID_DIRECTORY_REVOKECERTIFICATE, &one, 1),
+                 UA_STATUSCODE_BADARGUMENTSMISSING);
+    CHECK(!on_crl(ca, &certA, &after) && after == before);
+
+    CHECK_EQ_INT(revoke_cert(s, &admin, a, &certA), UA_STATUSCODE_GOOD);
+    CHECK(on_crl(ca, &certA, &after) && after == before + 1);
+    CHECK(update_required(s, a)); /* its only certificate is revoked */
+    CHECK_EQ_INT(revoke_cert(s, &admin, a, &certA), UA_STATUSCODE_GOOD); /* again: no change */
+    CHECK(on_crl(ca, &certA, &after) && after == before + 1);
+
+    /* a STANDBY changes nothing */
+    CHECK(gds_server_set_role(s, GDS_NODE_STANDBY, 100, 0) == GDS_OK);
+    CHECK_EQ_INT(revoke_cert(s, &admin, a, &certA), UA_STATUSCODE_BADINVALIDSTATE);
+    CHECK(gds_server_set_role(s, GDS_NODE_STANDALONE, 255, 0) == GDS_OK);
+    UA_ByteString_clear(&certA);
+}
+
+static void test_unregister(gds_server *s, gds_ca *ca, const UA_NodeId *b) {
+    UA_ByteString c1 = UA_BYTESTRING_NULL, c2 = UA_BYTESTRING_NULL;
+    if(!issue(s, b, &c1) || !issue(s, b, &c2)) {
+        UA_ByteString_clear(&c1);
+        return;
+    }
+    int before = 0, after = 0;
+    CHECK(!on_crl(ca, &c1, &before) && !on_crl(ca, &c2, NULL));
+    UA_Variant in;
+    UA_Variant_setScalar(&in, (void *)(uintptr_t)b, &UA_TYPES[UA_TYPES_NODEID]);
+    CHECK_EQ_INT(call_status(s, &admin, UA_GDSID_DIRECTORY_UNREGISTERAPPLICATION, &in, 1),
+                 UA_STATUSCODE_GOOD);
+    CHECK(on_crl(ca, &c1, &after) && on_crl(ca, &c2, NULL) && after == before + 2);
+    CHECK_EQ_INT(call_status(s, &admin, UA_GDSID_DIRECTORY_UNREGISTERAPPLICATION, &in, 1),
+                 UA_STATUSCODE_BADNOTFOUND);
+    CHECK_EQ_INT(revoke_cert(s, &admin, b, &c1), UA_STATUSCODE_BADNOTFOUND);
+    UA_ByteString_clear(&c1);
+    UA_ByteString_clear(&c2);
+}
+
+int main(int argc, char **argv) {
+    if(argc != 2) {
+        fprintf(stderr, "usage: %s <dir>\n", argv[0]);
+        return 2;
+    }
+    char db[1024], caDir[1024];
+    CHECK(gds_mkdirs(argv[1], 0700) == GDS_OK);
+    CHECK(gds_path(db, sizeof(db), "%s/store.db", argv[1]) == GDS_OK);
+    CHECK(gds_path(caDir, sizeof(caDir), "%s/ca", argv[1]) == GDS_OK);
+    (void)unlink(db);
+
+    static uint8_t pw[] = "revoke-test-passphrase";
+    static gds_buf pass = {pw, sizeof(pw) - 1};
+    gds_ca_config cc;
+    gds_ca_config_init(&cc);
+    cc.dir = caDir;
+    cc.caKeyBits = 2048;
+    cc.keyPassphrase = &pass;
+    gds_ca *ca = NULL;
+    gds_store *st = NULL;
+    UA_ByteString cert = UA_BYTESTRING_NULL, key = UA_BYTESTRING_NULL;
+    UA_String subject[] = {UA_STRING_STATIC("CN=OpenGDS test")};
+    UA_String san[] = {UA_STRING_STATIC("URI:" TEST_URI), UA_STRING_STATIC("DNS:localhost")};
+    if(!CHECK(gds_ca_openssl_open(&cc, &ca) == GDS_OK) || !CHECK(gds_store_open(db, &st) == GDS_OK) ||
+       !CHECK(UA_CreateCertificate(UA_Log_Stdout, subject, 1, san, 2, UA_CERTIFICATEFORMAT_DER,
+                                   NULL, &key, &cert) == UA_STATUSCODE_GOOD))
+        return CHECK_DONE();
+
+    admin.roles = GDS_ROLE_DISCOVERY_ADMIN | GDS_ROLE_CERTIFICATE_AUTHORITY_ADMIN;
+    admin.securityMode = UA_MESSAGESECURITYMODE_SIGNANDENCRYPT;
+    memcpy(admin.user, "caadmin", sizeof("caadmin"));
+    registrar.roles = GDS_ROLE_DISCOVERY_ADMIN | GDS_ROLE_REGISTRATION_AUTHORITY_ADMIN;
+    registrar.securityMode = UA_MESSAGESECURITYMODE_SIGNANDENCRYPT;
+    memcpy(registrar.user, "registrar", sizeof("registrar"));
+
+    static gds_users users;
+    gds_server_config cfg = {0};
+    cfg.loopbackOnly = true;
+    cfg.applicationUri = TEST_URI;
+    cfg.productUri = "urn:opengds:test";
+    cfg.applicationName = "OpenGDS revoke test";
+    cfg.ownCert = (gds_buf){cert.data, cert.length};
+    cfg.ownKey = (gds_buf){key.data, key.length};
+    cfg.store = st;
+    cfg.ca = ca;
+    cfg.users = &users;
+    cfg.approval = GDS_APPROVE_ALL;
+
+    gds_server *s = NULL;
+    if(CHECK(gds_server_new(&cfg, &s) == GDS_OK) && s) {
+        UA_Server_setAdminSessionContext(gds_server_ua(s), &admin);
+        UA_NodeId a = UA_NODEID_NULL, b = UA_NODEID_NULL;
+        if(register_app(s, TEST_URI ":a", &a) && register_app(s, TEST_URI ":b", &b)) {
+            test_revoke(s, ca, &a, &b);
+            test_unregister(s, ca, &b);
+        }
+        UA_NodeId_clear(&a);
+        UA_NodeId_clear(&b);
+        UA_Server_setAdminSessionContext(gds_server_ua(s), NULL);
+    }
+    gds_server_delete(s);
+    gds_store_close(st);
+    UA_ByteString_clear(&cert);
+    UA_ByteString_clear(&key);
+    gds_ca_close(ca);
+    return CHECK_DONE();
+}

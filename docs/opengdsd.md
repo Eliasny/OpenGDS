@@ -76,6 +76,12 @@ gdsadm approvals reject ...same options... REQUEST_ID
 
 `list` reads the store; `approve` and `reject` call Respond2 over SignAndEncrypt as the named user, who needs the RegistrationAuthorityAdmin role in the users file. The password comes from a file, never the command line, and the GDS certificate is checked against the CA given with `--trust`.
 
+## Revoking certificates
+
+A session with the CertificateAuthorityAdmin role calls RevokeCertificate (OPC 10000-12 §7.9.6) on the Directory object with the ApplicationId and the certificate. Bad_NotFound means the application is not registered; Bad_InvalidArgument means this GDS did not issue that certificate to that application. UnregisterApplication revokes every certificate of the application before it deletes the record (§6.5.8).
+
+The store marks the certificate revoked first. Then `opengds-signer` puts its serial on a new CRL (CRL number + 1), and only if the store marks that serial revoked, so `opengdsd` cannot revoke a certificate on its own. Every trust list of the group carries the CA's CRL, so applications see the revocation at their next trust list update. Revoking again succeeds and changes nothing, so a call that failed at the signer can simply be repeated. A revoked certificate stays on the CRL; GetCertificateStatus then answers that an update is required.
+
 ## Inspecting a running GDS
 
 ```sh

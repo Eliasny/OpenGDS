@@ -63,3 +63,8 @@ set_tests_properties(unit_audit PROPERTIES TIMEOUT 120)
 add_executable(test_runtime_nodes test_runtime_nodes.c)
 target_link_libraries(test_runtime_nodes PRIVATE gds_server)
 add_test(NAME unit_runtime_nodes COMMAND test_runtime_nodes "${CMAKE_CURRENT_BINARY_DIR}/runtime-run")
+
+add_executable(test_revoke test_revoke.c)
+target_link_libraries(test_revoke PRIVATE gds_server)
+add_test(NAME unit_revoke COMMAND test_revoke "${CMAKE_CURRENT_BINARY_DIR}/revoke-run")
+set_tests_properties(unit_revoke PROPERTIES TIMEOUT 120)

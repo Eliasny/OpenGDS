@@ -1,0 +1,5 @@
+# Verdicts against push_test_server --accept-keys (SupportedPrivateKeyFormats
+# ["PEM"]), each test run on its own with --only (run_vs_push.sh). SRV-UPD-09
+# replaces the target's key and runs only when selected by name.
+SRV-UPD-09,pass
+SRV-UPD-10,pass

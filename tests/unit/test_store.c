@@ -143,6 +143,53 @@ static void test_certs(gds_store *s, const UA_Guid *id, const UA_Guid *id2) {
     CHECK(gds_store_cert_latest(s, id2, 615, 12557, &der, &notAfter) == GDS_ENOTFOUND);
 }
 
+static bool count_serial_cb(void *ctx, const gds_buf *serial) {
+    int *n = ctx;
+    CHECK(serial->len > 0);
+    (*n)++;
+    return true;
+}
+
+static void test_revoke(gds_store *s, const UA_Guid *id, const UA_Guid *id2) {
+    uint8_t serial2[] = {4, 5, 6};
+    uint8_t body2[] = {0x30, 0x03, 0x02, 0x01, 0x01};
+    gds_buf ser2 = {serial2, sizeof(serial2)}, cert2 = {body2, sizeof(body2)};
+    CHECK(gds_store_cert_add(s, id, 615, 12557, &ser2, &cert2, 150, 300) == GDS_OK);
+    bool revoked = true;
+    CHECK(gds_store_cert_is_revoked(s, &ser2, &revoked) == GDS_OK && !revoked);
+    /* another application's certificate, or one never issued */
+    gds_buf serial = {0};
+    CHECK(gds_store_cert_revoke(s, id2, &cert2, &serial) == GDS_ENOTFOUND && !serial.data);
+    uint8_t other[] = {0x30, 0x00};
+    gds_buf none = {other, sizeof(other)};
+    CHECK(gds_store_cert_revoke(s, id, &none, &serial) == GDS_ENOTFOUND);
+    /* the newest is revoked: cert_latest falls back to the older one */
+    CHECK(gds_store_cert_revoke(s, id, &cert2, &serial) == GDS_OK);
+    CHECK(serial.len == sizeof(serial2) && memcmp(serial.data, serial2, sizeof(serial2)) == 0);
+    gds_buf_free(&serial);
+    CHECK(gds_store_cert_is_revoked(s, &ser2, &revoked) == GDS_OK && revoked);
+    CHECK(gds_store_cert_revoke(s, id, &cert2, &serial) == GDS_OK); /* idempotent */
+    gds_buf_free(&serial);
+    gds_buf der = {0};
+    int64_t notAfter = 0;
+    CHECK(gds_store_cert_latest(s, id, 615, 12557, &der, &notAfter) == GDS_OK && notAfter == 200);
+    gds_buf_free(&der);
+    /* every certificate of the application, listed again on a second call */
+    int n = 0;
+    CHECK(gds_store_cert_revoke_app(s, id, count_serial_cb, &n) == GDS_OK);
+    CHECK_EQ_INT(n, 2);
+    n = 0;
+    CHECK(gds_store_cert_revoke_app(s, id, count_serial_cb, &n) == GDS_OK);
+    CHECK_EQ_INT(n, 2);
+    CHECK(gds_store_cert_latest(s, id, 615, 12557, &der, &notAfter) == GDS_ENOTFOUND);
+    n = 0;
+    CHECK(gds_store_cert_revoke_app(s, id2, count_serial_cb, &n) == GDS_OK && n == 0);
+    uint8_t unknown[] = {9};
+    gds_buf unk = {unknown, 1};
+    CHECK(gds_store_cert_is_revoked(s, &unk, &revoked) == GDS_OK && !revoked);
+    CHECK(gds_store_cert_is_revoked(s, &(gds_buf){0}, &revoked) == GDS_EINVAL);
+}
+
 typedef struct {
     int n;
     int64_t last;
@@ -261,6 +308,7 @@ int main(int argc, char **argv) {
     test_requests(s, &id);
     test_pending(s, &id);
     test_certs(s, &id, &id2);
+    test_revoke(s, &id, &id2);
     test_update_delete(s);
     test_audit(s, path);
     {

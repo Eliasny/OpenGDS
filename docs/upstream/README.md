@@ -1,7 +1,8 @@
 # Upstream fixes for open62541
 
 The three open62541 v1.5.10 gaps listed in `00-project-context.md`, plus a
-fourth found by the week 1 approvals spike, each with a minimal patch, tests, and draft issue and pull request text. **Elias posts them
+fourth found by the week 1 approvals spike and a fifth (already fixed on
+master, missing on 1.5) found by the Auditor client profile, each with a minimal patch, tests, and draft issue and pull request text. **Elias posts them
 to open62541 himself** (decided 2026-11-06); nothing has been posted by Claude.
 The first PR needs him to sign the open62541 Contributor License Agreement (the
 CLA bot links it on the PR).
@@ -15,6 +16,7 @@ CLA bot links it on the PR).
 | O3 | Carry the patches on our pinned v1.5.10 now | Yes, in a separate OpenGDS PR that also removes our workarounds |
 | O4 | Upstream commit authorship | Elias only, no co-author line (the patches are already authored that way) |
 | O5 | Who posts upstream | Elias, from his own account |
+| gap 5 | Carry the client ApplicationUri check (#8478 backport) on v1.5.10 | No: OpenGDS's push engine and the Auditor's client check it themselves |
 | G12 / refresh | Gap 4 (ConditionRefresh EventId): carry it, and when to offer it | Carry it on v1.5.10 now; offer it upstream later, together with the A&C improvements from the approvals spike |
 
 Checked against open62541 master `24fc6b296` (2026-11-06) and our pinned
@@ -26,6 +28,7 @@ v1.5.10 (`93c3bdfc9`), on Ubuntu 24.04, GCC 13, OpenSSL 3.0.13.
 | [2. Secure-only config blocks discovery](02-secure-policies-none-discovery.md) | Open issue [#6771](https://github.com/open62541/open62541/issues/6771) since 2024-10-15, no fix. | [master](patches/master/0002-secure-policies-none-discovery.patch), [v1.5.10](patches/v1.5.10/0002-secure-policies-none-discovery.patch) | Changes default behaviour (chosen, O1). The PR text still offers an opt-in if maintainers object. |
 | [3. GDS headers not installed with AUTOLOAD=GDS](03-install-autoload-headers.md) | Not reported. | [master](patches/master/0003-install-autoload-headers.patch), [v1.5.10](patches/v1.5.10/0003-install-autoload-headers.patch) | Six CMake lines plus a CI job. Works for every AUTOLOAD model. |
 | [4. ConditionRefresh gives a new EventId](04-condition-refresh-eventid.md) | Not yet searched upstream (do before posting). Violates OPC 10000-9 §5.5.7. | [master 0005](patches/master/0005-condition-refresh-keep-eventid.patch), [v1.5.10 0004](patches/v1.5.10/0004-condition-refresh-keep-eventid.patch) | Ten lines in `refreshLogic`, no API change. Offer later (G12). |
+| [5. Client accepts a server certificate that names another ApplicationUri](05-client-server-applicationuri.md) | Fixed on master by [#8478](https://github.com/open62541/open62541/pull/8478) (2026-09-22); not on the `1.5` branch or in any release. Violates OPC 10000-4 §6.1.3 (Table 100, "URI") and §5.7.2.1. | [1.5 backport](patches/1.5/0001-client-validate-server-applicationuri.patch) (cherry-pick of `980fe5866`) | Not carried (Elias): OpenGDS's client sessions check it themselves. Ask is a backport to `1.5`. |
 
 ## Results
 
@@ -39,6 +42,7 @@ Each new test was run without the library change (it must fail) and with it
 | 2 | discovery test 0/3, config test 2 failures | discovery 3/3, config 16/16 | discovery 3/3 |
 | 3 | no `*gds*` header installed | three headers installed; CI job builds, installs, compiles and runs a consumer | three headers installed |
 | 4 | new test fails | `check_server_alarmsconditions` 74/74, events suites pass | approvals spike: refreshed EventId equals the original |
+| 5 | (fixed on master) | (fixed on master) | on `1.5`: mismatch test connects without the fix; with it `check_cert_validation_client_response` 3/3 and 13 more client/encryption suites pass |
 
 ## What is in `patches/`
 
@@ -49,6 +53,9 @@ Each new test was run without the library change (it must fail) and with it
   noreply address so they can be pushed from his fork as they are. The
   commit messages follow open62541's `CONTRIBUTING.md` (Conventional Commits,
   100-column lines).
+- `patches/1.5/` holds a backport for open62541's `1.5` branch (gap 5): a
+  cherry-pick from master that keeps its upstream author. It is not applied
+  to our build.
 - `patches/v1.5.10/` holds only the library part of each patch (the
   `plugins/` and `CMakeLists.txt` changes). `scripts/build_open62541.sh`
   applies them to our pinned v1.5.10 (O3), so `push_test_server` pairs its
@@ -83,5 +90,8 @@ the API change.
    it; the drafts and test results then need a refresh too.
 7. Gap 4 waits for the later A&C offer (G12): open the drafted issue, then the
    PR from the 0005 branch.
-8. Put the issue and PR links into the table above, or tell a thread and it
+8. Gap 5: post the drafted backport request, then branch from `origin/1.5`,
+   `git am docs/upstream/patches/1.5/0001-client-validate-server-applicationuri.patch`,
+   and open the PR against `1.5` (not master) with the drafted text.
+9. Put the issue and PR links into the table above, or tell a thread and it
    will.

@@ -434,36 +434,6 @@ static void t_cap_key_formats(ga_ctx *ctx, void *p) {
 
 /* ---------------- SRV-CAP-06 ---------------- */
 
-/* t-withkey: a certificate for the target from the test CA, with a key the
- * Auditor generated, as PEM. */
-static gds_status withkey(const srv_target *t, gds_buf *cert, gds_buf *pem) {
-    gds_buf der = {NULL, 0};
-    pem->data = NULL;
-    pem->len = 0;
-    gds_status s = testca_issue(&t->ca, "OpenGDS Auditor TEST t-withkey", t->targetUri, NULL,
-                                TESTCA_MAX_DAYS, cert, &der);
-    if(s != GDS_OK)
-        return s;
-    const unsigned char *q = der.data;
-    EVP_PKEY *k = d2i_AutoPrivateKey(NULL, &q, (long)der.len);
-    gds_buf_free_secret(&der);
-    BIO *bio = BIO_new(BIO_s_mem());
-    char *data = NULL;
-    long len = 0;
-    s = GDS_ECRYPTO;
-    if(k && bio && PEM_write_bio_PrivateKey(bio, k, NULL, NULL, 0, NULL, NULL) == 1 &&
-       (len = BIO_get_mem_data(bio, &data)) > 0)
-        s = gds_buf_dup(data, (size_t)len, pem);
-    if(data && len > 0)
-        OPENSSL_cleanse(data, (size_t)len);
-    BIO_free(bio);
-    EVP_PKEY_free(k);
-    ERR_clear_error();
-    if(s != GDS_OK)
-        gds_buf_free(cert);
-    return s;
-}
-
 static void t_cap_key_unadvertised(ga_ctx *ctx, void *p) {
     srv_target *t = p;
     if(!admin_or_not_tested(ctx, t))
@@ -489,7 +459,7 @@ static void t_cap_key_unadvertised(ga_ctx *ctx, void *p) {
         return;
     }
     gds_buf cert, pem;
-    gds_status gs = withkey(t, &cert, &pem);
+    gds_status gs = st_withkey(t, &cert, &pem);
     if(gs != GDS_OK) {
         ga_not_tested(ctx, "setup: t-withkey -> %s", gds_status_name(gs));
         return;

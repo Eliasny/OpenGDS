@@ -54,5 +54,10 @@ update-no-sig-check,SRV-UPD-05,fail
 update-any-type,SRV-UPD-06,fail
 update-type-mismatch,SRV-UPD-07,fail
 update-accept-expired,SRV-UPD-08,fail
+update-ignore-key,SRV-UPD-09,fail
+update-accept-bad-key,SRV-UPD-10,fail
+getcerts-mismatched,SRV-UPD-11,fail
+selfsigned-overwrite,SRV-UPD-12,fail
+delete-in-use,SRV-UPD-13,fail
 apply-ignored,SRV-TXN-03,fail
 wire-old-cert,SRV-WIRE-01,fail
