@@ -137,6 +137,12 @@ gds_status gds_store_audit_append(gds_store *s, int64_t time, const gds_buf *bod
     return s->be.audit_append(s->ctx, time, body, seq);
 }
 
+gds_status gds_store_cert_scan(gds_store *s, gds_cert_scan_cb cb, void *ctx) {
+    if(!s->be.cert_scan)
+        return GDS_EUNSUPPORTED;
+    return s->be.cert_scan(s->ctx, cb, ctx);
+}
+
 gds_status gds_store_audit_scan(gds_store *s, int64_t fromSeq, gds_audit_scan_cb cb, void *ctx) {
     if(!s->be.audit_scan)
         return GDS_EUNSUPPORTED;

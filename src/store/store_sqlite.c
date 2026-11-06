@@ -547,6 +547,42 @@ static gds_status sq_cert_latest(void *ctx_, const UA_Guid *appId, uint32_t grou
     return r;
 }
 
+static gds_status sq_cert_scan(void *ctx_, gds_cert_scan_cb cb, void *cbCtx) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "SELECT serial, app_id, group_id, cert_type, der, not_before, "
+                                "not_after, revoked FROM certificates ORDER BY serial",
+                                -1, &st, NULL);
+    gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "scan certificates", rc);
+    while(r == GDS_OK && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+        gds_cert_row row;
+        memset(&row, 0, sizeof(row));
+        int ns = sqlite3_column_bytes(st, 0), nd = sqlite3_column_bytes(st, 4);
+        row.serial.data = (uint8_t *)(uintptr_t)sqlite3_column_blob(st, 0);
+        row.serial.len = ns > 0 ? (size_t)ns : 0;
+        row.der.data = (uint8_t *)(uintptr_t)sqlite3_column_blob(st, 4);
+        row.der.len = nd > 0 ? (size_t)nd : 0;
+        if(!column_guid(st, 1, &row.appId)) {
+            r = GDS_ESTATE;
+            break;
+        }
+        row.groupId = (uint32_t)sqlite3_column_int64(st, 2);
+        row.certType = (uint32_t)sqlite3_column_int64(st, 3);
+        row.notBefore = sqlite3_column_int64(st, 5);
+        row.notAfter = sqlite3_column_int64(st, 6);
+        row.revoked = sqlite3_column_int64(st, 7) != 0;
+        if(!cb(cbCtx, &row)) {
+            rc = SQLITE_DONE;
+            break;
+        }
+    }
+    if(r == GDS_OK && rc != SQLITE_DONE)
+        r = db_err(s, "scan certificates", rc);
+    sqlite3_finalize(st);
+    return r;
+}
+
 static gds_status sq_app_update(void *ctx_, const UA_Guid *id,
                                 const UA_ApplicationRecordDataType *rec) {
     sq_store *s = ctx_;
@@ -769,6 +805,7 @@ const gds_store_backend gds_store_sqlite_backend = {
     .cert_latest = sq_cert_latest,
     .audit_append = sq_audit_append,
     .audit_scan = sq_audit_scan,
+    .cert_scan = sq_cert_scan,
 };
 
 gds_status gds_store_sqlite_open(const char *path, bool readonly, void **ctx) {
