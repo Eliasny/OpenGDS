@@ -64,6 +64,14 @@ static UA_ByteString *borrow_list(const gds_buf *items, size_t n) {
 UA_Client *uac_new_secure(const gds_buf *cert, const gds_buf *key, const gds_buf *trust,
                           size_t trustN, const gds_buf *crls, size_t crlN,
                           const char *applicationUri) {
+    return uac_new_secure_mode(cert, key, trust, trustN, crls, crlN, applicationUri,
+                               POLICY_RSAPSS, UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
+}
+
+UA_Client *uac_new_secure_mode(const gds_buf *cert, const gds_buf *key, const gds_buf *trust,
+                               size_t trustN, const gds_buf *crls, size_t crlN,
+                               const char *applicationUri, const char *policyUri,
+                               UA_MessageSecurityMode mode) {
     UA_ClientConfig cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.logging = UA_Log_Stdout_new(uac_log_level());
@@ -81,9 +89,9 @@ UA_Client *uac_new_secure(const gds_buf *cert, const gds_buf *key, const gds_buf
     free(tl);
     free(rl);
     if(r == UA_STATUSCODE_GOOD) {
-        cfg.securityMode = UA_MESSAGESECURITYMODE_SIGNANDENCRYPT;
+        cfg.securityMode = mode;
         UA_String_clear(&cfg.securityPolicyUri);
-        cfg.securityPolicyUri = UA_STRING_ALLOC(POLICY_RSAPSS);
+        cfg.securityPolicyUri = UA_STRING_ALLOC(policyUri);
         UA_String_clear(&cfg.clientDescription.applicationUri);
         cfg.clientDescription.applicationUri = UA_STRING_ALLOC(applicationUri);
         if(!cfg.securityPolicyUri.data || !cfg.clientDescription.applicationUri.data)
