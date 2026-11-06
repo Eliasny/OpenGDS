@@ -1,0 +1,36 @@
+# Expected verdicts of gdsaudit gds against the OPC Foundation .NET reference GDS
+# (UA-.NETStandard-Samples 2941c8d1, Samples/GDS/ConsoleServer), recorded in CI by
+# .github/workflows/reference-gds.yml. CI fails when any verdict changes.
+# The reference is a sample, not a conformance oracle: each deviation below is
+# kept and explained, never "fixed" by loosening a test.
+#
+# Reference deviations
+#   R1 gds.cm.status_new: the reference answers updateRequired=false for a newly
+#      registered application that has no certificate yet; the test expects true
+#      (GetCertificateStatus, OPC 10000-12 §7.9.10). Recorded, not resolved: to be
+#      settled against the clause text before OpenGDS implements the method.
+gds.sec.endpoints,pass
+gds.sec.none_session,pass
+gds.sec.anonymous_register,pass
+gds.dir.find_unknown,pass
+gds.dir.register_valid,pass
+gds.dir.register_no_uri,pass
+gds.dir.register_bad_type,pass
+gds.dir.register_server_no_urls,pass
+gds.dir.register_no_names,pass
+gds.dir.get_application,pass
+gds.dir.get_unknown,pass
+gds.dir.update_application,pass
+gds.dir.unregister,pass
+gds.dir.query_by_uri,pass
+gds.cm.groups,pass
+gds.cm.groups_unknown,pass
+gds.cm.status_new,fail
+gds.cm.bad_csr,pass
+gds.cm.signing_flow,pass
+gds.cm.csr_wrong_uri,pass
+gds.cm.finish_unknown,pass
+gds.cm.status_after_issue,pass
+gds.tl.get_trustlist,pass
+gds.tl.read_bad_handle,pass
+gds.tl.write_anonymous,pass

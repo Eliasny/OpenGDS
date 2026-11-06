@@ -5,20 +5,26 @@
  * Part 12 PushManagement (OPC 10000-12 §7.7, §7.10). TEST TARGET, NOT A
  * PRODUCT: it exists so the Auditor's server profile has a reference to
  * pass against (and, from AT1, --break mutants to fail against).
- *   - ServerConfiguration: CreateSigningRequest, UpdateCertificate,
- *     ApplyChanges, GetRejectedList (from open62541's push support)
- *   - DefaultApplicationGroup TrustList: Open/Read/Write/CloseAndUpdate,
- *     AddCertificate/RemoveCertificate
+ *   - ServerConfiguration: CreateSigningRequest and GetRejectedList from
+ *     open62541's push support; UpdateCertificate, ApplyChanges and
+ *     CancelChanges from push_mgmt.c (spec transaction rules)
+ *   - DefaultApplicationGroup TrustList: the FileType methods and
+ *     OpenWithMasks/CloseAndUpdate from push_mgmt.c; AddCertificate and
+ *     RemoveCertificate from open62541
  * Added around the library:
  *   - SignAndEncrypt sessions only; None for GetEndpoints only
  *   - only SecurityAdmin may call ServerConfiguration/TrustList methods
  *     (an admin user, or the GDS's application certificate per Annex G.3)
  *   - an Annex F.1 directory PKI, so pushed state survives a restart
+ *   - --break <mutant>: one deliberate fault, named in the Auditor's server
+ *     catalogue (docs/auditor/server-profile.md, Mutant column). With a
+ *     mutant active the server listens on 127.0.0.1 only.
  *
  * Usage:
  *   push_test_server --port 4841 --pki ./pki-push \
  *       [--trust ca.der]... [--crl ca.crl]... \
- *       [--admin user:password]... [--admin-cert gds.der]... [--no-anonymous]
+ *       [--admin user:password]... [--user user:password]...
+ *       [--admin-cert gds.der]... [--no-anonymous] [--break <mutant>] [--list-mutants]
  */
 #include <open62541/plugin/accesscontrol_default.h>
 #include <open62541/plugin/create_certificate.h>
@@ -37,6 +43,7 @@
 
 #include "common/limits.h"
 #include "common/safeint.h"
+#include "push_mgmt.h"
 #include "x509util.h"
 #include "common/banned.h"
 
@@ -45,11 +52,14 @@
 #define MAX_CRED 64
 #define MAX_SEED 16
 
+static const char *brk = NULL; /* active --break mutant (push_mgmt.c), set while parsing */
+
 /* ---------------- Admin policy (SecurityAdmin) ---------------- */
 
 typedef struct {
     char user[MAX_CRED];
     char pass[MAX_CRED];
+    bool admin; /* --admin: SecurityAdmin; --user: authenticated, no SecurityAdmin */
 } AdminUser;
 
 /* Process-wide configuration, written only while parsing arguments, before
@@ -64,6 +74,7 @@ static size_t adminThumbsSize = 0;
 typedef struct SessionFlag {
     UA_NodeId sessionId;
     UA_Boolean admin;
+    UA_MessageSecurityMode mode;
     struct SessionFlag *next;
 } SessionFlag;
 static SessionFlag *sessionFlags = NULL;
@@ -73,6 +84,13 @@ static UA_Boolean isAdminSession(const UA_NodeId *sessionId) {
         if(UA_NodeId_equal(&s->sessionId, sessionId))
             return s->admin;
     return false;
+}
+
+static UA_MessageSecurityMode sessionMode(const UA_NodeId *sessionId) {
+    for(SessionFlag *s = sessionFlags; s; s = s->next)
+        if(UA_NodeId_equal(&s->sessionId, sessionId))
+            return s->mode;
+    return UA_MESSAGESECURITYMODE_INVALID;
 }
 
 /* The original callbacks of the default plugin, wrapped below */
@@ -86,8 +104,14 @@ activateSession( // NOLINT(readability-function-cognitive-complexity)
                 UA_Server *server, UA_AccessControl *ac, const UA_EndpointDescription *ed,
                 const UA_ByteString *remoteCert, const UA_NodeId *sessionId,
                 const UA_ExtensionObject *token, void **sessionContext) {
-    /* Only SignAndEncrypt sessions (OPC 10000-12 §7.4) */
-    if(ed->securityMode != UA_MESSAGESECURITYMODE_SIGNANDENCRYPT)
+    /* Only SignAndEncrypt sessions (OPC 10000-12 §7.4). Mutants open Sign
+     * (sign-is-enough, sign-for-apply) or every mode (allow-none). */
+    UA_MessageSecurityMode least = UA_MESSAGESECURITYMODE_SIGNANDENCRYPT;
+    if(pm_breaking("sign-is-enough") || pm_breaking("sign-for-apply"))
+        least = UA_MESSAGESECURITYMODE_SIGN;
+    if(pm_breaking("allow-none"))
+        least = UA_MESSAGESECURITYMODE_NONE;
+    if(ed->securityMode < least)
         return UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT;
 
     UA_StatusCode res =
@@ -101,8 +125,12 @@ activateSession( // NOLINT(readability-function-cognitive-complexity)
     if(token->encoding == UA_EXTENSIONOBJECT_DECODED &&
        token->content.decoded.type == &UA_TYPES[UA_TYPES_USERNAMEIDENTITYTOKEN]) {
         const UA_UserNameIdentityToken *t = token->content.decoded.data;
+        if(pm_breaking("no-secadmin")) { /* any authenticated user */
+            admin = true;
+            why = "mutant no-secadmin";
+        }
         for(size_t i = 0; i < adminUsersSize && !admin; i++) {
-            if(strlen(adminUsers[i].user) == t->userName.length &&
+            if(adminUsers[i].admin && strlen(adminUsers[i].user) == t->userName.length &&
                memcmp(adminUsers[i].user, t->userName.data, t->userName.length) == 0) {
                 admin = true;
                 why = "admin user";
@@ -123,6 +151,17 @@ activateSession( // NOLINT(readability-function-cognitive-complexity)
         }
     }
 
+    if(!admin && pm_breaking("anon-admin") &&
+       (token->encoding != UA_EXTENSIONOBJECT_DECODED ||
+        token->content.decoded.type == &UA_TYPES[UA_TYPES_ANONYMOUSIDENTITYTOKEN])) {
+        admin = true;
+        why = "mutant anon-admin";
+    }
+    if(!admin && pm_breaking("allow-none") && ed->securityMode == UA_MESSAGESECURITYMODE_NONE) {
+        admin = true;
+        why = "mutant allow-none";
+    }
+
     SessionFlag *f = calloc(1, sizeof(SessionFlag));
     if(!f)
         return UA_STATUSCODE_BADOUTOFMEMORY; /* fail closed */
@@ -131,6 +170,7 @@ activateSession( // NOLINT(readability-function-cognitive-complexity)
         return UA_STATUSCODE_BADOUTOFMEMORY;
     }
     f->admin = admin;
+    f->mode = ed->securityMode;
     f->next = sessionFlags;
     sessionFlags = f;
     UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "Session activated, SecurityAdmin=%s (%s)",
@@ -140,6 +180,7 @@ activateSession( // NOLINT(readability-function-cognitive-complexity)
 
 static void closeSession(UA_Server *server, UA_AccessControl *ac, const UA_NodeId *sessionId,
                          void *sessionContext) {
+    pm_session_closed(sessionId); /* its transaction ends with it (12 §7.10.2) */
     SessionFlag **pp = &sessionFlags;
     while(*pp) {
         if(UA_NodeId_equal(&(*pp)->sessionId, sessionId)) {
@@ -169,12 +210,50 @@ static UA_Boolean isProtectedObject(const UA_NodeId *objectId) {
     return false;
 }
 
+/* trustlist-read-any: reading the trust list needs no SecurityAdmin */
+static UA_Boolean isReadMethod(const UA_NodeId *methodId) {
+    static const UA_UInt32 ids[] = {
+        UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_OPENWITHMASKS,
+        UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_READ,
+        UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_CLOSE,
+    };
+    if(methodId->namespaceIndex != 0 || methodId->identifierType != UA_NODEIDTYPE_NUMERIC)
+        return false;
+    for(size_t i = 0; i < GDS_ARRAY_SIZE(ids); i++)
+        if(methodId->identifier.numeric == ids[i])
+            return true;
+    return false;
+}
+
+/* TransactionDiagnostics (12 §7.10.3) is for SecurityAdmin only */
+static UA_Boolean isDiagnosticsNode(const UA_NodeId *n) {
+    if(n->namespaceIndex != 0 || n->identifierType != UA_NODEIDTYPE_NUMERIC)
+        return false;
+    UA_UInt32 id = n->identifier.numeric;
+    return id == UA_NS0ID_SERVERCONFIGURATION_TRANSACTIONDIAGNOSTICS ||
+           (id >= UA_NS0ID_SERVERCONFIGURATION_TRANSACTIONDIAGNOSTICS_STARTTIME &&
+            id <= UA_NS0ID_SERVERCONFIGURATION_TRANSACTIONDIAGNOSTICS_ERRORS);
+}
+
+static UA_Byte (*origAccessLevel)(UA_Server *, UA_AccessControl *, const UA_NodeId *, void *,
+                                  const UA_NodeId *, void *);
+
+static UA_Byte getUserAccessLevel(UA_Server *server, UA_AccessControl *ac,
+                                  const UA_NodeId *sessionId, void *sessionContext,
+                                  const UA_NodeId *nodeId, void *nodeContext) {
+    if(isDiagnosticsNode(nodeId) && !isAdminSession(sessionId) && !pm_breaking("diag-public"))
+        return 0;
+    return origAccessLevel(server, ac, sessionId, sessionContext, nodeId, nodeContext);
+}
+
 static UA_Boolean
 getUserExecutableOnObject(UA_Server *server, UA_AccessControl *ac, const UA_NodeId *sessionId,
                           void *sessionContext, const UA_NodeId *methodId, void *methodContext,
                           const UA_NodeId *objectId, void *objectContext) {
-    (void)server; (void)ac; (void)sessionContext; (void)methodId; (void)methodContext;
+    (void)server; (void)ac; (void)sessionContext; (void)methodContext;
     (void)objectContext;
+    if(pm_breaking("trustlist-read-any") && isReadMethod(methodId))
+        return true;
     if(isProtectedObject(objectId) && !isAdminSession(sessionId)) {
         UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND,
                        "Rejected push method call from a non-admin session");
@@ -185,77 +264,76 @@ getUserExecutableOnObject(UA_Server *server, UA_AccessControl *ac, const UA_Node
 
 /* ---------------- Own certificate (Annex F.1 store) ---------------- */
 
-/* open62541's filestore writes "<CN>[<thumbprint>].der" to own/certs on
- * UpdateCertificate, but a key file only when a NEW key arrives (upstream gap
- * 1). In the CSR flow the key stays the same, so the tool keeps its key in
- * own/private/app.key and pairs it with the newest certificate it matches,
- * preferring CA-issued over self-signed. */
-#define OWN_KEY_FILE "ApplCerts/own/private/app.key"
-
+/* Each own certificate in own/certs/<name>.der has its key in
+ * own/private/<name>.key. open62541's filestore writes the pair on
+ * UpdateCertificate, also when the CSR kept the key (carried patch, see
+ * docs/upstream/01-filestore-key-kept-csr.md). Load the newest pair, preferring
+ * a CA-issued certificate over the initial self-signed one. */
 static gds_status loadOwnFromStore(const char *pki, gds_buf *certOut, gds_buf *keyOut) {
-    char dir[GDS_MAX_PATH], kp[GDS_MAX_PATH];
+    char dir[GDS_MAX_PATH];
     gds_status r;
-    if((r = gds_path(dir, sizeof(dir), "%s/ApplCerts/own/certs", pki)) != GDS_OK ||
-       (r = gds_path(kp, sizeof(kp), "%s/" OWN_KEY_FILE, pki)) != GDS_OK)
-        return r;
-    gds_buf k = {0};
-    if((r = gds_file_read(kp, GDS_MAX_KEY_SIZE, &k)) != GDS_OK)
+    if((r = gds_path(dir, sizeof(dir), "%s/ApplCerts/own/certs", pki)) != GDS_OK)
         return r;
     DIR *d = opendir(dir);
-    if(!d) {
-        gds_buf_free_secret(&k);
+    if(!d)
         return GDS_ENOTFOUND;
-    }
     struct dirent *e;
-    gds_buf best = {0};
+    gds_buf best = {0}, bestKey = {0};
     time_t bestTime = 0;
     bool bestIssued = false;
     while((e = readdir(d))) {
         size_t n = strlen(e->d_name);
         if(n < 5 || strcmp(e->d_name + n - 4, ".der") != 0)
             continue;
-        char p[GDS_MAX_PATH];
+        char p[GDS_MAX_PATH], kp[GDS_MAX_PATH];
         struct stat st;
-        gds_buf c = {0};
-        if(gds_path(p, sizeof(p), "%s/%s", dir, e->d_name) != GDS_OK || stat(p, &st) != 0 ||
-           gds_file_read(p, GDS_MAX_CERT_SIZE, &c) != GDS_OK)
+        gds_buf c = {0}, k = {0};
+        if(gds_path(p, sizeof(p), "%s/%s", dir, e->d_name) != GDS_OK ||
+           gds_path(kp, sizeof(kp), "%s/ApplCerts/own/private/%.*s.key", pki,
+                    (int)(n - 4), e->d_name) != GDS_OK ||
+           stat(p, &st) != 0 || gds_file_read(p, GDS_MAX_CERT_SIZE, &c) != GDS_OK)
             continue;
-        if(!x509_key_matches(&c, &k)) { /* stale or foreign */
-            gds_buf_free(&c);
+        if(gds_file_read(kp, GDS_MAX_KEY_SIZE, &k) != GDS_OK || !x509_key_matches(&c, &k)) {
+            gds_buf_free(&c); /* no key with this name, or not its pair */
+            gds_buf_free_secret(&k);
             continue;
         }
         bool issued = !x509_is_self_signed(&c);
         if((!issued && bestIssued) || (issued == bestIssued && best.data && st.st_mtime < bestTime)) {
             gds_buf_free(&c);
+            gds_buf_free_secret(&k);
             continue;
         }
         gds_buf_free(&best);
+        gds_buf_free_secret(&bestKey);
         best = c;
+        bestKey = k;
         bestTime = st.st_mtime;
         bestIssued = issued;
     }
     closedir(d);
-    if(!best.data) {
-        gds_buf_free_secret(&k);
+    if(!best.data)
         return GDS_ENOTFOUND;
-    }
     *certOut = best;
-    *keyOut = k;
+    *keyOut = bestKey;
     return GDS_OK;
 }
 
+/* Store the initial self-signed pair under one name in own/certs and
+ * own/private, the layout the filestore uses */
 static gds_status saveOwnToStore(const char *pki, const UA_ByteString *cert,
                                  const UA_ByteString *key) {
     char dir[GDS_MAX_PATH], path[GDS_MAX_PATH], tp[X509_THUMBPRINT_LEN];
     gds_buf c = {cert->data, cert->length};
     gds_status r;
-    if((r = gds_path(dir, sizeof(dir), "%s/ApplCerts/own/private", pki)) != GDS_OK ||
+    if((r = x509_thumbprint(&c, tp)) != GDS_OK ||
+       (r = gds_path(dir, sizeof(dir), "%s/ApplCerts/own/private", pki)) != GDS_OK ||
        (r = gds_mkdirs(dir, 0700)) != GDS_OK ||
-       (r = gds_path(path, sizeof(path), "%s/" OWN_KEY_FILE, pki)) != GDS_OK ||
+       (r = gds_path(path, sizeof(path), "%s/selfsigned[%s].key", dir, tp)) != GDS_OK ||
        (r = gds_file_write_atomic(path, key->data, key->length, 0600)) != GDS_OK)
         return r;
     if((r = gds_path(dir, sizeof(dir), "%s/ApplCerts/own/certs", pki)) != GDS_OK ||
-       (r = gds_mkdirs(dir, 0700)) != GDS_OK || (r = x509_thumbprint(&c, tp)) != GDS_OK ||
+       (r = gds_mkdirs(dir, 0700)) != GDS_OK ||
        (r = gds_path(path, sizeof(path), "%s/selfsigned[%s].der", dir, tp)) != GDS_OK)
         return r;
     return gds_file_write_atomic(path, c.data, c.len, 0644);
@@ -278,10 +356,39 @@ static gds_status addFileToStore(const char *pki, const char *sub, const char *s
     return r;
 }
 
+/* Remove Basic128Rsa15 and Basic256 (deprecated) policies and endpoints. */
+static UA_StatusCode dropDeprecatedPolicies(UA_ServerConfig *c) {
+    const UA_String dep[2] = {UA_STRING_STATIC("http://opcfoundation.org/UA/SecurityPolicy#Basic128Rsa15"),
+                              UA_STRING_STATIC("http://opcfoundation.org/UA/SecurityPolicy#Basic256")};
+    size_t k = 0;
+    for(size_t i = 0; i < c->endpointsSize; i++) {
+        bool drop = UA_String_equal(&c->endpoints[i].securityPolicyUri, &dep[0]) ||
+                    UA_String_equal(&c->endpoints[i].securityPolicyUri, &dep[1]);
+        if(drop)
+            UA_EndpointDescription_clear(&c->endpoints[i]);
+        else
+            c->endpoints[k++] = c->endpoints[i];
+    }
+    c->endpointsSize = k;
+    k = 0;
+    for(size_t i = 0; i < c->securityPoliciesSize; i++) {
+        UA_SecurityPolicy *sp = &c->securityPolicies[i];
+        bool drop = UA_String_equal(&sp->policyUri, &dep[0]) || UA_String_equal(&sp->policyUri, &dep[1]);
+        if(drop)
+            sp->clear(sp);
+        else
+            c->securityPolicies[k++] = *sp;
+    }
+    c->securityPoliciesSize = k;
+    return UA_STATUSCODE_GOOD;
+}
+
 static int usage(const char *argv0) {
     fprintf(stderr,
             "usage: %s [--port N] [--pki DIR] [--trust cert.der]... [--crl x.crl]...\n"
-            "          [--admin user:password]... [--admin-cert gds.der]... [--no-anonymous]\n",
+            "          [--admin user:password]... [--user user:password]...\n"
+            "          [--admin-cert gds.der]... [--no-anonymous]\n"
+            "          [--break MUTANT] [--list-mutants]\n",
             argv0);
     return 2;
 }
@@ -302,25 +409,36 @@ int main(int argc, char **argv) {
             allowAnonymous = false;
             continue;
         }
+        if(!strcmp(a, "--list-mutants")) {
+            pm_mutant_list();
+            return 0;
+        }
         if(!v)
             return usage(argv[0]);
         i++;
         if(!strcmp(a, "--port")) {
             if(!gds_parse_long(v, 1, 65535, &port))
                 return usage(argv[0]);
+        } else if(!strcmp(a, "--break")) {
+            if(!pm_mutant_known(v)) {
+                fprintf(stderr, "unknown mutant '%s' (see --list-mutants)\n", v);
+                return 2;
+            }
+            brk = v;
         } else if(!strcmp(a, "--pki")) {
             pki = v;
         } else if(!strcmp(a, "--trust") && trustN < MAX_SEED) {
             trust[trustN++] = v;
         } else if(!strcmp(a, "--crl") && crlN < MAX_SEED) {
             crls[crlN++] = v;
-        } else if(!strcmp(a, "--admin") && adminUsersSize < MAX_ADMINS) {
+        } else if((!strcmp(a, "--admin") || !strcmp(a, "--user")) && adminUsersSize < MAX_ADMINS) {
             const char *c = strchr(v, ':');
             AdminUser *u = &adminUsers[adminUsersSize];
             if(!c || (size_t)(c - v) >= MAX_CRED || strlen(c + 1) >= MAX_CRED || c == v) {
-                fprintf(stderr, "--admin expects user:password (each under %d bytes)\n", MAX_CRED);
+                fprintf(stderr, "%s expects user:password (each under %d bytes)\n", a, MAX_CRED);
                 return 2;
             }
+            u->admin = !strcmp(a, "--admin");
             memcpy(u->user, v, (size_t)(c - v));
             u->user[c - v] = '\0';
             memcpy(u->pass, c + 1, strlen(c + 1) + 1);
@@ -340,6 +458,8 @@ int main(int argc, char **argv) {
         }
     }
     printf("push_test_server: OpenGDS Auditor self-test target, not a product\n");
+    if(brk)
+        printf("push_test_server: MUTANT '%s' active, listening on 127.0.0.1 only\n", brk);
 
     /* Seed the trust store from the command line (initial out-of-band trust) */
     for(size_t i = 0; i < trustN; i++)
@@ -385,7 +505,16 @@ int main(int argc, char **argv) {
     UA_ServerConfig *config = UA_Server_getConfig(server);
     UA_StatusCode res = UA_ServerConfig_setDefaultWithFilestore(
         config, (UA_UInt16)port, &cert, &key, UA_STRING((char *)(uintptr_t)pki));
-    /* the config holds its own copies now; wipe ours */
+    /* the config holds its own copies now; wipe ours (the wire-old-cert
+     * mutant keeps one in push_mgmt.c) */
+    res |= pm_install(server, brk, &key, sessionMode);
+    if(res == UA_STATUSCODE_GOOD && pm_breaking("deprecated-policy")) {
+        res = UA_ServerConfig_addSecurityPolicyBasic256(config, &cert, &key);
+        if(res == UA_STATUSCODE_GOOD)
+            res = UA_ServerConfig_addEndpoint(
+                config, UA_STRING("http://opcfoundation.org/UA/SecurityPolicy#Basic256"),
+                UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
+    }
     gds_buf kb = {key.data, key.length}, cb = {cert.data, cert.length};
     gds_buf_free_secret(&kb);
     gds_buf_free(&cb);
@@ -393,6 +522,25 @@ int main(int argc, char **argv) {
         fprintf(stderr, "server config failed: %s\n", UA_StatusCode_name(res));
         UA_Server_delete(server);
         return 1;
+    }
+
+    /* A mutant never listens beyond loopback (docs/architecture.md, "The
+     * Auditor under these rules") */
+    if(brk) {
+        char u[64];
+        if(gds_path(u, sizeof(u), "opc.tcp://127.0.0.1:%ld", port) != GDS_OK) {
+            UA_Server_delete(server);
+            return 1;
+        }
+        UA_Array_delete(config->serverUrls, config->serverUrlsSize, &UA_TYPES[UA_TYPES_STRING]);
+        config->serverUrls = UA_String_new();
+        config->serverUrlsSize = 0;
+        if(!config->serverUrls) {
+            UA_Server_delete(server);
+            return 1;
+        }
+        *config->serverUrls = UA_STRING_ALLOC(u);
+        config->serverUrlsSize = 1;
     }
 
     /* Identity */
@@ -403,7 +551,12 @@ int main(int argc, char **argv) {
         UA_LOCALIZEDTEXT_ALLOC("en", "OpenGDS Push Test Server");
 
     /* Policy None only for discovery (GetEndpoints), never for sessions */
-    config->securityPolicyNoneDiscoveryOnly = true;
+    config->securityPolicyNoneDiscoveryOnly = !pm_breaking("allow-none");
+    /* No deprecated SecurityPolicy (OPC 10000-7; SRV-SEC-08) */
+    if(!pm_breaking("deprecated-policy") && dropDeprecatedPolicies(config) != UA_STATUSCODE_GOOD) {
+        UA_Server_delete(server);
+        return 1;
+    }
     config->allowNonePolicyPassword = false;
 
     /* Access control: default plugin (user/password check) + admin wrapper */
@@ -424,12 +577,15 @@ int main(int argc, char **argv) {
     config->accessControl.activateSession = activateSession;
     config->accessControl.closeSession = closeSession;
     config->accessControl.getUserExecutableOnObject = getUserExecutableOnObject;
+    origAccessLevel = config->accessControl.getUserAccessLevel;
+    config->accessControl.getUserAccessLevel = getUserAccessLevel;
 
     UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND,
                 "Push test server on opc.tcp://localhost:%ld  (pki=%s, %zu admin users, %zu admin certs)",
                 port, pki, adminUsersSize, adminThumbsSize);
     res = UA_Server_runUntilInterrupt(server);
     UA_Server_delete(server);
+    pm_clear();
     while(sessionFlags) {
         SessionFlag *n = sessionFlags->next;
         UA_NodeId_clear(&sessionFlags->sessionId);
