@@ -314,7 +314,60 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
     return GDS_OK;
 }
 
+/* ---- embedder Roles (A10, issue #63) ---- */
+
+/* OPC 10000-18 §4.2: the Server's Roles are the components of
+ * ServerCapabilities/RoleSet. A Role node the embedder already loaded (a
+ * NodeSet such as Opc.Ua.Onboarding) is linked there; otherwise a RoleType
+ * object is created under it. */
+static UA_StatusCode role_node(gds_server *s, const char *name, const UA_NodeId *id) {
+    const UA_NodeId roleSet = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
+    const UA_NodeId hasComponent = UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT);
+    UA_NodeClass nc = UA_NODECLASS_UNSPECIFIED;
+    UA_StatusCode r = UA_Server_readNodeClass(s->ua, *id, &nc);
+    if(r == UA_STATUSCODE_GOOD) {
+        if(nc != UA_NODECLASS_OBJECT)
+            return UA_STATUSCODE_BADNODECLASSINVALID;
+        UA_ExpandedNodeId target = UA_EXPANDEDNODEID_NULL;
+        target.nodeId = *id;
+        r = UA_Server_addReference(s->ua, roleSet, hasComponent, target, true);
+        return r == UA_STATUSCODE_BADDUPLICATEREFERENCENOTALLOWED ? UA_STATUSCODE_GOOD : r;
+    }
+    if(r != UA_STATUSCODE_BADNODEIDUNKNOWN)
+        return r;
+    UA_ObjectAttributes oa = UA_ObjectAttributes_default;
+    oa.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)name);
+    return UA_Server_addObjectNode(s->ua, *id, roleSet, hasComponent,
+                                   UA_QUALIFIEDNAME(id->namespaceIndex, (char *)(uintptr_t)name),
+                                   UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE), oa, NULL, NULL);
+}
+
+gds_status gds_server_add_role(gds_server *s, const char *name, const UA_NodeId *roleId) {
+    if(!s || !name || !roleId)
+        return GDS_EINVAL;
+    if(__atomic_load_n(&s->started, __ATOMIC_ACQUIRE))
+        return GDS_ESTATE;
+    if(roleId->namespaceIndex == s->ns)
+        return GDS_EDENIED; /* the GDS namespace has its own Roles */
+    gds_status st = gds_access_add_role(name, roleId, s->ns);
+    if(st != GDS_OK)
+        return st;
+    UA_StatusCode r = role_node(s, name, roleId);
+    if(r != UA_STATUSCODE_GOOD) {
+        fprintf(stderr, "opengds: Role %s: %s\n", name, UA_StatusCode_name(r));
+        gds_access_drop_last_role();
+        return r == UA_STATUSCODE_BADNODECLASSINVALID || r == UA_STATUSCODE_BADNODEIDINVALID
+                   ? GDS_EINVAL
+                   : GDS_EIO;
+    }
+    return GDS_OK;
+}
+
 gds_status gds_server_run(gds_server *s, volatile UA_Boolean *running) {
+    __atomic_store_n(&s->started, true, __ATOMIC_RELEASE);
+    gds_status st = gds_access_check_users();
+    if(st != GDS_OK)
+        return st;
     UA_StatusCode r = UA_Server_run(s->ua, running);
     if(r != UA_STATUSCODE_GOOD) {
         fprintf(stderr, "opengds: server stopped: %s\n", UA_StatusCode_name(r));
