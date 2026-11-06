@@ -772,16 +772,16 @@ static gds_status sq_app_delete(void *ctx_, const UA_Guid *id) {
     return r;
 }
 
-static gds_status sq_app_scan(void *ctx_, int64_t fromRecordId, gds_store_scan_cb cb,
+static gds_status sq_app_scan(void *ctx_, int64_t afterRecordId, gds_store_scan_cb cb,
                               void *ctx) {
     sq_store *s = ctx_;
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(s->db,
-                                "SELECT rowid, id, record FROM applications WHERE rowid >= ?1 "
-                                "ORDER BY rowid",
+                                "SELECT record_id, id, record FROM applications "
+                                "WHERE record_id > ?1 ORDER BY record_id",
                                 -1, &st, NULL);
     if(rc == SQLITE_OK)
-        rc = sqlite3_bind_int64(st, 1, fromRecordId);
+        rc = sqlite3_bind_int64(st, 1, afterRecordId);
     gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "scan applications", rc);
     while(r == GDS_OK && (rc = sqlite3_step(st)) == SQLITE_ROW) {
         if(sqlite3_column_bytes(st, 1) != (int)sizeof(UA_Guid)) {

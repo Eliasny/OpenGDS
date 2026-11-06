@@ -31,6 +31,7 @@
 #define OPENGDS_GDS_PLUGIN_H
 
 #include <open62541/server.h>
+#include <open62541/types_gds_generated.h>
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -313,6 +314,74 @@ typedef struct {
 GDS_MUST_CHECK gds_status gds_server_raise_audit_event(struct gds_server *s,
                                                        const gds_caller *caller,
                                                        const gds_audit_event *ev, int64_t *seq);
+
+
+/* ---- Directory and CertificateManager for embedders (UASM ask A13,
+ * issue #81) ----
+ *
+ * What a Part 21 Registrar (OPC 10000-21 §7.2, §7.3, §9.2.8) does inside
+ * the GDS without going through the Part 12 methods. Every call:
+ *   - refuses with GDS_ENOTLEADER on a STANDBY node, as the store does
+ *     (A4), so the embedder answers Bad_InvalidState;
+ *   - names actor (NUL-terminated, non-empty, e.g. "uasm-registrar" or
+ *     the user of the session it acts for) as the ClientUserId of the
+ *     audit events it writes; they go through the hash-chained audit log
+ *     first, as gds_server_raise_audit_event does (A7), and are visible to
+ *     SecurityAdmin and the GDS Role of the matching Part 12 method;
+ *   - is safe from any thread except the server thread; the plugin worker
+ *     that runs a method callback may call it. */
+
+/* Registers rec (its applicationId is ignored) after the checks of
+ * RegisterApplication (OPC 10000-12 §6.5.6). Idempotent per
+ * ApplicationUri: when a record with rec's ApplicationUri exists, *appId
+ * is that record's and *created false, and nothing is changed; otherwise
+ * the record is added, *created is true and an
+ * ApplicationRegistrationChangedAuditEventType event (§6.5.12) is written.
+ * *appId: a GUID NodeId in the GDS namespace. GDS_EINVAL: the record
+ * fails the checks. */
+GDS_MUST_CHECK gds_status gds_server_register_application(struct gds_server *s, const char *actor,
+                                                          const UA_ApplicationRecordDataType *rec,
+                                                          UA_NodeId *appId, bool *created);
+
+/* Holds back (allowed false) or releases the issuance of certificates to
+ * one application, e.g. until its software is updated (OPC 10000-21 §7.2).
+ * While held, StartSigningRequest for it answers Bad_RequestNotAllowed,
+ * a request of it already waiting for the signer fails with that code,
+ * and gds_server_sign_request refuses with GDS_EDENIED. Holds live in
+ * memory only: after a failover the embedder sets them again on the new
+ * primary before it leaves STANDBY (gds_server_set_role). GDS_ENOTFOUND:
+ * no such application (releasing one is always GDS_OK). */
+GDS_MUST_CHECK gds_status gds_server_set_issuance_allowed(struct gds_server *s,
+                                                          const UA_NodeId *appId, bool allowed);
+
+/* Signs a CSR for an application, as StartSigningRequest followed by
+ * FinishRequest would (OPC 10000-12 §7.9.3, §7.9.5; the push model of
+ * §7.10, OPC 10000-21 §7.3), and waits for the result. The request is
+ * stored already approved (the embedder is the approver, so the approval
+ * policy is not asked), signed by the signing worker through the signer
+ * with its checks and issuance journal, and delivered. groupId and typeId
+ * may be NULL or null NodeIds: the DefaultApplicationGroup and its
+ * RsaSha256ApplicationCertificateType. It writes
+ * CertificateRequestedAuditEventType and CertificateDeliveredAuditEventType
+ * events (§7.9.12, §7.9.13). Returns the certificate and the issuer chain
+ * (*issuers: an array of *nIssuers, free with UA_Array_delete).
+ * GDS_EINVAL: a malformed CSR or an unknown group or type; GDS_ENOTFOUND:
+ * no such application; GDS_EDENIED: issuance is held, or the signer
+ * refused (the request is then Failed); GDS_EREMOTE: no answer within
+ * timeoutMs (the request stays
+ * queued and may still be signed; its certificate then appears in the
+ * directory as usual). */
+GDS_MUST_CHECK gds_status gds_server_sign_request(struct gds_server *s, const char *actor,
+                                                  const UA_NodeId *appId, const UA_NodeId *groupId,
+                                                  const UA_NodeId *typeId, const UA_ByteString *csr,
+                                                  uint32_t timeoutMs, UA_ByteString *cert,
+                                                  UA_ByteString **issuers, size_t *nIssuers);
+
+/* The trust list of a CertificateGroup (NULL or a null NodeId: the
+ * DefaultApplicationGroup), as GetTrustList and the TrustList file give it
+ * (OPC 10000-12 §7.9.9, §7.8.2.1): every list, a deep copy. */
+GDS_MUST_CHECK gds_status gds_server_get_trust_list(struct gds_server *s, const UA_NodeId *groupId,
+                                                    UA_TrustListDataType *out);
 
 #ifdef __cplusplus
 }

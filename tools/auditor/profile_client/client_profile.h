@@ -33,6 +33,11 @@ typedef struct {
     gds_status sharedStatus[CLI_SHARED_COUNT];
     unsigned cycles;
     long probePort;
+    bool slow;        /* --slow: run the slow tests (own schedule of the client) */
+    long period;      /* --cycle-period S: the client's configured cycle period */
+    long runSeconds;  /* not 0: the next cycle is a run of the client's own schedule */
+    double ufMs;      /* FAULT_UPDATE_FREQUENCY: the UpdateFrequency to serve */
+    long lifetimeS;   /* FAULT_ISSUE_SHORT: seconds until the certificate expires */
 } cli_profile;
 
 /* One connection of the client to the probe server */
@@ -61,6 +66,14 @@ GDS_MUST_CHECK bool cli_probe_identity(cli_profile *p, const gds_buf *cert, cons
 void cli_probe_clear(cli_probe_result *r);
 /* The trigger ended by itself and did not crash */
 bool cli_survived(const trig_result *r);
+/* Let the client run its own schedule for `seconds` (GDSAUDIT_ACTION=run)
+ * with the fake GDS answering per `fault`; false (Not tested decided) on failure */
+GDS_MUST_CHECK bool cli_run_for(cli_profile *p, fault_id fault, long seconds, ga_ctx *ctx,
+                                cli_cycle *out);
+/* A slow test may run: --slow and --cycle-period given; else Not tested */
+GDS_MUST_CHECK bool cli_slow_ready(const cli_profile *p, ga_ctx *ctx);
+/* Restart the client through the trigger hook; Not tested when it cannot */
+GDS_MUST_CHECK bool cli_restart(cli_profile *p, ga_ctx *ctx);
 /* true if `presented` (a chain as sent) begins with exactly `cert` */
 bool cli_cert_is(const gds_buf *presented, const gds_buf *cert);
 /* The last valid certificate the fake GDS issued (FinishRequest Good), or NULL */

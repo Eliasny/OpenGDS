@@ -28,15 +28,15 @@ if(TARGET opengdsd)
             DESTINATION "${OPENGDS_UNITDIR}" COMPONENT opengds)
     install(FILES sysusers/opengds.conf DESTINATION "${OPENGDS_SYSUSERSDIR}" COMPONENT opengds)
     install(FILES opengds.conf.example
-                  "${CMAKE_SOURCE_DIR}/docs/opengdsd.md"
-                  "${CMAKE_SOURCE_DIR}/docs/packaging.md"
+                  "${PROJECT_SOURCE_DIR}/docs/opengdsd.md"
+                  "${PROJECT_SOURCE_DIR}/docs/packaging.md"
             DESTINATION "${OPENGDS_DOCDIR}" COMPONENT opengds)
-    install(FILES "${CMAKE_SOURCE_DIR}/LICENSE" DESTINATION "${OPENGDS_DOCDIR}" COMPONENT opengds)
+    install(FILES "${PROJECT_SOURCE_DIR}/LICENSE" DESTINATION "${OPENGDS_DOCDIR}" COMPONENT opengds)
 endif()
 
 if(TARGET gdsaudit)
     install(TARGETS gdsaudit RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT gdsaudit)
-    install(FILES "${CMAKE_SOURCE_DIR}/LICENSE"
+    install(FILES "${PROJECT_SOURCE_DIR}/LICENSE"
             DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/gdsaudit" COMPONENT gdsaudit)
 endif()
 
@@ -54,6 +54,6 @@ if(SYSTEMD_ANALYZE AND TARGET opengdsd)
 endif()
 add_test(NAME packaging_install_layout
          COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_install_layout.sh"
-                 "${CMAKE_BINARY_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/layout-run")
+                 "${PROJECT_BINARY_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/layout-run")
 
 include(cpack.cmake)

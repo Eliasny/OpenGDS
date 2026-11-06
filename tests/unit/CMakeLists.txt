@@ -21,6 +21,10 @@ set_tests_properties(signer_refuses_fd_and_listen signer_refuses_relative_listen
 add_executable(test_server test_server.c)
 target_link_libraries(test_server PRIVATE gds_server)
 add_test(NAME unit_server COMMAND test_server "${CMAKE_CURRENT_BINARY_DIR}/server-run")
+add_executable(test_directory_query test_directory_query.c)
+target_link_libraries(test_directory_query PRIVATE gds_server)
+add_test(NAME unit_directory_query COMMAND test_directory_query
+         "${CMAKE_CURRENT_BINARY_DIR}/directory-query-run")
 add_executable(test_daemon_config test_daemon_config.c)
 target_link_libraries(test_daemon_config PRIVATE gds_daemon)
 add_test(NAME unit_daemon_config COMMAND test_daemon_config)
@@ -74,9 +78,23 @@ target_link_libraries(test_revoke PRIVATE gds_server)
 add_test(NAME unit_revoke COMMAND test_revoke "${CMAKE_CURRENT_BINARY_DIR}/revoke-run")
 set_tests_properties(unit_revoke PROPERTIES TIMEOUT 120)
 add_executable(test_sandbox test_sandbox.c)
-target_link_libraries(test_sandbox PRIVATE gds_common)
+target_link_libraries(test_sandbox PRIVATE gds_common Threads::Threads)
 add_test(NAME unit_sandbox COMMAND test_sandbox "${CMAKE_CURRENT_BINARY_DIR}/sandbox-run")
 
 add_executable(test_embed_roles test_embed_roles.c)
 target_link_libraries(test_embed_roles PRIVATE gds_server)
 add_test(NAME unit_embed_roles COMMAND test_embed_roles "${CMAKE_CURRENT_BINARY_DIR}/roles-run")
+
+add_executable(test_x509_users test_x509_users.c)
+target_link_libraries(test_x509_users PRIVATE gds_server)
+add_test(NAME unit_x509_users COMMAND test_x509_users "${CMAKE_CURRENT_BINARY_DIR}/x509-users-run")
+
+add_executable(test_backup test_backup.c)
+target_link_libraries(test_backup PRIVATE gds_backup)
+add_test(NAME unit_backup
+         COMMAND test_backup "${CMAKE_CURRENT_BINARY_DIR}/backup-run" "$<TARGET_FILE:gdsctl>")
+
+add_executable(test_registrar test_registrar.c)
+target_link_libraries(test_registrar PRIVATE gds_server)
+add_test(NAME unit_registrar COMMAND test_registrar "${CMAKE_CURRENT_BINARY_DIR}/registrar-run")
+set_tests_properties(unit_registrar PROPERTIES TIMEOUT 120)

@@ -45,3 +45,14 @@ CLI-TL-04,pass
 CLI-FLT-02,pass
 CLI-FLT-08,pass
 CLI-FLT-09,pass
+CLI-FLT-01,pass
+CLI-PEN-06,pass
+CLI-FLT-07,pass
+CLI-INS-02,pass
+CLI-INS-03,pass
+CLI-PEN-04,pass
+CLI-REG-03,not_supported
+CLI-PEN-08,not_tested
+CLI-TL-08,not_tested
+CLI-REN-03,not_tested
+CLI-REG-05,pass

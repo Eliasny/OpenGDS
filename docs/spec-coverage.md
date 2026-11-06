@@ -23,28 +23,28 @@ the service Object, which is itself Optional.
 | UpdateApplication | Method | M | §6.5.7 | `gds.acc.update_other` (pass), `gds.dir.update_application` (pass) |
 | UnregisterApplication | Method | M | §6.5.8 | `gds.acc.unregister_other` (pass), `gds.dir.unregister` (pass), `gds.dir.unregister_revokes` (pass) |
 | GetApplication | Method | M | §6.5.9 | `gds.dir.get_application` (pass), `gds.dir.get_unknown` (pass) |
-| QueryApplications | Method | M | §6.5.10 | `gds.dir.query_by_uri` (pass), `gds.qry.capabilities` (pass), `gds.qry.na_excluded` (fail), `gds.qry.name` (pass), `gds.qry.paging` (pass), `gds.qry.product_uri` (pass), `gds.qry.type_mask` (pass), `gds.qry.uri_pattern` (pass) |
-| QueryServers | Method (deprecated) | M | §6.5.11 | `gds.qry.servers` (fail) |
+| QueryApplications | Method | M | §6.5.10 | `gds.dir.query_by_uri` (pass), `gds.qry.capabilities` (pass), `gds.qry.na_excluded` (pass), `gds.qry.name` (pass), `gds.qry.paging` (pass), `gds.qry.product_uri` (pass), `gds.qry.type_mask` (pass), `gds.qry.uri_pattern` (pass) |
+| QueryServers | Method (deprecated) | M | §6.5.11 | `gds.qry.servers` (pass) |
 | ApplicationRegistrationChangedAuditEventType | Event | M | §6.5.12 | `gds.ev.auditing_flag` (not_supported), `gds.ev.registration_changed` (not_supported) |
 | Directory roles | DiscoveryAdmin, self-admin | M | §6.2 | `gds.acc.unregister_other` (pass), `gds.acc.update_other` (pass), `gds.sec.anonymous_register` (pass) |
 | CertificateDirectoryType | member list | M | §7.9.2 | `gds.model.directory` (pass) |
 | StartSigningRequest | Method | M | §7.9.3 | `gds.acc.sign_other` (pass), `gds.acc.sign_sign_only` (pass), `gds.cm.bad_csr` (pass), `gds.cm.csr_wrong_uri` (pass), `gds.cm.sign_bad_group` (pass), `gds.cm.sign_bad_type` (fail), `gds.cm.sign_null_group` (pass), `gds.cm.sign_unknown_app` (pass), `gds.cm.signing_flow` (pass) |
 | StartNewKeyPairRequest | Method | M | §7.9.4 | `gds.acc.keypair_sign_only` (pass), `gds.cm.keypair_bad_format` (warn), `gds.cm.keypair_pem` (fail), `gds.cm.keypair_pfx` (fail), `gds.cm.keypair_unknown_app` (warn) |
 | FinishRequest | Method | M | §7.9.5 | `gds.cm.finish_unknown` (pass), `gds.cm.keypair_pem` (fail), `gds.cm.keypair_pfx` (fail), `gds.cm.signing_flow` (pass) |
-| RevokeCertificate | Method | O | §7.9.6 | `gds.acc.revoke_needs_ca_admin` (not_supported), `gds.cm.revoke` (not_supported), `gds.cm.revoke_foreign` (not_supported), `gds.cm.revoke_unknown_app` (not_supported), `gds.ev.certificate_revoked` (not_supported) |
+| RevokeCertificate | Method | O | §7.9.6 | `gds.acc.revoke_needs_ca_admin` (pass), `gds.cm.revoke` (pass), `gds.cm.revoke_foreign` (pass), `gds.cm.revoke_unknown_app` (pass), `gds.ev.certificate_revoked` (not_supported) |
 | GetCertificateGroups | Method | M | §7.9.7 | `gds.cm.groups` (pass), `gds.cm.groups_unknown` (pass) |
-| GetCertificates | Method | O | §7.9.8 | `gds.acc.get_certificates_other` (not_supported), `gds.cm.get_certificates` (not_supported), `gds.cm.get_certificates_bad_group` (not_supported), `gds.cm.get_certificates_unknown` (not_supported), `gds.cm.revoke` (not_supported) |
+| GetCertificates | Method | O | §7.9.8 | `gds.acc.get_certificates_other` (not_supported), `gds.cm.get_certificates` (not_supported), `gds.cm.get_certificates_bad_group` (not_supported), `gds.cm.get_certificates_unknown` (not_supported), `gds.cm.revoke` (pass) |
 | GetTrustList | Method | M | §7.9.9 | `gds.tl.get_trustlist` (pass) |
 | GetCertificateStatus | Method | M | §7.9.10 | `gds.cm.status_after_issue` (pass), `gds.cm.status_new` (pass) |
 | CheckRevocationStatus | Method | O | §7.9.11 | `gds.cm.check_bad_signature` (not_supported), `gds.cm.check_good` (not_supported), `gds.cm.check_revoked` (not_supported) |
 | CertificateRequestedAuditEventType | Event | M | §7.9.12 | `gds.ev.certificate_requested_delivered` (not_supported) |
 | CertificateDeliveredAuditEventType | Event | M | §7.9.13 | `gds.ev.certificate_requested_delivered` (not_supported) |
 | CertificateRevokedAuditEventType | Event | O | §7.9.14 | `gds.ev.certificate_revoked` (not_supported) |
-| CertificateManager roles | CertificateAuthorityAdmin, self-admin | M | §7.2 | `gds.acc.get_certificates_other` (not_supported), `gds.acc.revoke_needs_ca_admin` (not_supported), `gds.acc.sign_other` (pass), `gds.acc.tl_add_needs_ca_admin` (warn), `gds.sec.none_session` (pass) |
+| CertificateManager roles | CertificateAuthorityAdmin, self-admin | M | §7.2 | `gds.acc.get_certificates_other` (not_supported), `gds.acc.revoke_needs_ca_admin` (pass), `gds.acc.sign_other` (pass), `gds.acc.tl_add_needs_ca_admin` (warn), `gds.sec.none_session` (pass) |
 | TrustListType | Object, LastUpdateTime, FileType | M | §7.8.2.1 | `gds.ev.trustlist_updated` (not_tested), `gds.model.certificate_group` (warn), `gds.tl.add_remove` (fail), `gds.tl.close_discards` (fail), `gds.tl.write_update` (fail) |
-| Open | Method (FileType) | M | §7.8.2.2 | `gds.tl.open_bad_mode` (warn) |
+| Open | Method (FileType) | M | §7.8.2.2 | `gds.tl.open_bad_mode` (warn), `gds.tl.write_anonymous` (pass) |
 | OpenWithMasks | Method | M | §7.8.2.3 | `gds.tl.open_with_masks` (pass) |
-| Read / file position | FileType | M | §7.8.2.4 | `gds.tl.read_chunked` (pass) |
+| Read / file position | FileType | M | §7.8.2.4 | `gds.tl.read_bad_handle` (pass), `gds.tl.read_chunked` (pass) |
 | CloseAndUpdate | Method | M | §7.8.2.5 | `gds.tl.write_update` (fail) |
 | AddCertificate | Method | M | §7.8.2.6 | `gds.acc.tl_add_needs_ca_admin` (warn), `gds.tl.add_no_issuer` (warn), `gds.tl.add_remove` (fail), `gds.tl.add_untrusted_flag` (warn), `gds.tl.add_while_open` (not_tested) |
 | RemoveCertificate | Method | M | §7.8.2.7 | `gds.tl.add_remove` (fail), `gds.tl.remove_unknown` (warn) |
@@ -63,11 +63,12 @@ the service Object, which is itself Optional.
 | GetServiceDescription | Method | M if service | §9.6.9 | `gds.az.description` (not_supported) |
 | AccessToken audit events | Events | M if service | §9.6.10 | **none** |
 
-Security of the channel and sessions: `gds.sec.endpoints` (Part 4 §5.4.4,
-Part 7), `gds.sec.none_session`, `gds.sec.anonymous_register`, and the
-sign-only tests `gds.acc.sign_sign_only`, `gds.acc.keypair_sign_only`,
-`gds.kc.sign_only` and `gds.az.sign_only`. FileType handles are per
-Session (Part 20 §4.2.2): `gds.tl.handle_other_session`.
+Security of the channel and sessions: `gds.sec.endpoints` (pass; Part 4
+§5.4.4, Part 7), `gds.sec.none_session` (pass), `gds.sec.anonymous_register`
+(pass), and the sign-only tests `gds.acc.sign_sign_only` (pass),
+`gds.acc.keypair_sign_only` (pass), `gds.kc.sign_only` (not_supported) and
+`gds.az.sign_only` (not_supported). FileType handles are per Session
+(Part 20 §4.2.2): `gds.tl.handle_other_session` (pass).
 
 ## Push side (Auditor server profile, `docs/auditor/server-profile.md`)
 

@@ -96,9 +96,9 @@ gds_status gds_store_app_delete(gds_store *s, const UA_Guid *id) {
     return s->be.app_delete(s->ctx, id);
 }
 
-gds_status gds_store_app_scan(gds_store *s, int64_t fromRecordId, gds_store_scan_cb cb,
+gds_status gds_store_app_scan(gds_store *s, int64_t afterRecordId, gds_store_scan_cb cb,
                               void *ctx) {
-    return s->be.app_scan(s->ctx, fromRecordId, cb, ctx);
+    return s->be.app_scan(s->ctx, afterRecordId, cb, ctx);
 }
 
 gds_status gds_store_req_insert(gds_store *s, const gds_request *r) {

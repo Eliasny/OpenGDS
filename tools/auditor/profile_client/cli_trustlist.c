@@ -1,7 +1,6 @@
 /* OpenGDS Auditor client profile - Trust list download (CLI-TL-*).
  * Rows of docs/auditor/client-profile.md, "Trust list (cli_trustlist.c)".
- * CLI-TL-03, -05 and -06 use the probe server. CLI-TL-04 (a CRL that revokes)
- * and CLI-TL-08 (slow) follow.
+ * CLI-TL-03, -04, -05 and -06 use the probe server. CLI-TL-08 is slow.
  * SPDX-License-Identifier: MPL-2.0 */
 #include "client_profile.h"
 #include "test_ca.h"
@@ -195,6 +194,40 @@ static void t_tl_crl(ga_ctx *ctx, void *profile) {
     gds_buf_free_secret(&key);
 }
 
+/* CLI-TL-08 (slow): UpdateFrequency a quarter of the cycle period; the
+ * client's own schedule must check the list again within 2 x UpdateFrequency
+ * (12 §7.6, §7.8.2.1) */
+static void t_tl_frequency(ga_ctx *ctx, void *profile) {
+    cli_profile *p = profile;
+    if(!cli_slow_ready(p, ctx) || !cli_base_cycle(p, ctx))
+        return;
+    p->ufMs = 250.0 * (double)p->period;
+    double limit = 2.0 * p->ufMs;
+    cli_cycle c;
+    if(!cli_run_for(p, FAULT_UPDATE_FREQUENCY, (long)(limit / 1000.0) + 15, ctx, &c))
+        return;
+    double first = -1, gap = -1;
+    for(size_t i = c.first; i < c.end && gap < 0; i++) {
+        const fg_event *ev = fg_event_at(i);
+        if(ev->method != FG_M_TRUSTLIST)
+            continue;
+        if(first < 0)
+            first = ev->tMs;
+        else if(ev->tMs - first > 1000.0) /* another cycle, not a repeat in the same one */
+            gap = ev->tMs - first;
+    }
+    if(first < 0)
+        ga_not_tested(ctx, "the client did not check the trust list in its own schedule");
+    else if(gap >= 0 && gap <= limit)
+        ga_pass(ctx, "checked again after %.1f s (UpdateFrequency %.0f s)", gap / 1000.0,
+                p->ufMs / 1000.0);
+    else if(gap >= 0)
+        ga_warn(ctx, "checked again only after %.1f s, more than 2 x UpdateFrequency (%.0f s)",
+                gap / 1000.0, p->ufMs / 1000.0);
+    else
+        ga_warn(ctx, "no second check within 2 x UpdateFrequency (%.0f s)", p->ufMs / 1000.0);
+}
+
 const ga_test cli_trustlist_tests[] = {
     {"CLI-TL-01", "12 §7.9.9, §7.8.2.4", "Reads the trust list to the end of the file", false, true, t_tl_read_all},
     {"CLI-TL-02", "12 §7.8.2.4", "Closes the file after reading", false, true, t_tl_close},
@@ -203,5 +236,6 @@ const ga_test cli_trustlist_tests[] = {
     {"CLI-TL-05", "12 §7.8.2.8; 4 §6.1.3", "A new trust list replaces the old one", false, true, t_tl_replace},
     {"CLI-TL-06", "12 §7.8.2.8; 4 §6.1.3", "Issuer-only CAs are not trusted", false, true, t_tl_issuers},
     {"CLI-TL-07", "12 §7.6", "Skips the download when the list is unchanged", false, true, t_tl_skip_unchanged},
+    {"CLI-TL-08", "12 §7.6, §7.8.2.1", "Checks the trust list as often as UpdateFrequency asks (slow)", false, true, t_tl_frequency},
 };
 const size_t cli_trustlist_count = GDS_ARRAY_SIZE(cli_trustlist_tests);

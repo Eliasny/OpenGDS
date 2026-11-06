@@ -31,15 +31,21 @@ typedef struct {
 
 /* The system calls a profile allows. Anything else fails with EPERM;
  * execve, ptrace, mount, bpf, keyctl, module loading and (for the signer)
- * socket, connect, bind and listen kill the process. */
+ * socket, connect, bind and listen kill the process. The daemon may create
+ * threads but no processes: clone without CLONE_THREAD fails, and clone3
+ * (whose flags a filter cannot read) answers ENOSYS so libc uses clone. */
 typedef enum {
     GDS_SB_SIGNER, /* files, its inherited sockets (recvmsg/sendmsg/accept) */
+    GDS_SB_DAEMON, /* also threads, TCP servers (socket/bind/listen) and epoll */
 } gds_sb_profile;
 
 typedef struct {
     gds_sb_profile profile;
     const gds_sb_path *paths; /* the only file system access left */
     size_t nPaths;
+    /* Landlock ABI 4+: the one TCP port the process may bind (0: none).
+     * TCP connect is never allowed. */
+    unsigned short tcpBindPort;
 } gds_sandbox;
 
 /* What gds_sandbox_apply() put in place, for the log and the tests. */

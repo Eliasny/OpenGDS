@@ -187,13 +187,25 @@ static UA_StatusCode configure(UA_ServerConfig *c, const gds_server_config *cfg,
     if(r != UA_STATUSCODE_GOOD)
         return r;
     gds_embed_configure(c, s);
-    /* Accept-all at channel and session level; see the file comment. */
+    /* Accept-all at channel level (see the file comment); user
+     * certificates only with a DefaultUserTokenGroup trust list. */
     if(c->secureChannelPKI.clear)
         c->secureChannelPKI.clear(&c->secureChannelPKI);
     UA_CertificateGroup_AcceptAll(&c->secureChannelPKI);
     if(c->sessionPKI.clear)
         c->sessionPKI.clear(&c->sessionPKI);
-    UA_CertificateGroup_AcceptAll(&c->sessionPKI);
+    if(cfg->userPkiDir) {
+        /* user certificates: the DefaultUserTokenGroup trust list */
+        UA_NodeId group =
+            UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP);
+        r = UA_CertificateGroup_Filestore(&c->sessionPKI, &group,
+                                          UA_STRING((char *)(uintptr_t)cfg->userPkiDir),
+                                          c->logging, NULL);
+        if(r != UA_STATUSCODE_GOOD)
+            return r;
+    } else {
+        UA_CertificateGroup_AcceptAll(&c->sessionPKI);
+    }
 
     UA_ByteString cert = {cfg->ownCert.len, cfg->ownCert.data};
     UA_ByteString key = {cfg->ownKey.len, cfg->ownKey.data};
@@ -208,7 +220,7 @@ static UA_StatusCode configure(UA_ServerConfig *c, const gds_server_config *cfg,
         return r;
     /* Before None is added: the user token policies are made for the
      * secure policies only, so no password ever travels over None. */
-    if(gds_access_install(c, cfg->users, caCert) != GDS_OK)
+    if(gds_access_install(c, cfg->users, caCert, cfg->userPkiDir != NULL) != GDS_OK)
         return UA_STATUSCODE_BADINTERNALERROR;
     r = UA_ServerConfig_addSecurityPolicyNone(c, &cert);
     if(r != UA_STATUSCODE_GOOD)
@@ -276,6 +288,7 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
     pthread_cond_init(&s->workCond, NULL);
     pthread_mutex_init(&s->plugLock, NULL);
     pthread_mutex_init(&s->bindLock, NULL);
+    pthread_mutex_init(&s->holdLock, NULL);
     pthread_cond_init(&s->plugCond, NULL);
     s->store = cfg->store;
     s->ca = cfg->ca;
@@ -389,6 +402,8 @@ void gds_server_delete(gds_server *s) {
     pthread_cond_destroy(&s->plugCond);
     pthread_mutex_destroy(&s->plugLock);
     pthread_mutex_destroy(&s->bindLock);
+    gds_holds_free(s);
+    pthread_mutex_destroy(&s->holdLock);
     pthread_cond_destroy(&s->workCond);
     pthread_mutex_destroy(&s->roleLock);
     pthread_mutex_destroy(&s->workLock);

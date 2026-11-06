@@ -398,7 +398,7 @@ static int push_to_device(const adm_args *a, adm_files *f, sign_ctx *sc, const c
     print_report(&rep, url);
     int rc = s == GDS_OK ? 0 : 1;
     if(rc == 0 && rep.certificateUpdated) {
-        r = gdsc_wait_presents(url, &rep.issued, PRESENT_TIMEOUT_MS);
+        r = gdsc_wait_presents(url, &job.certificateType, &rep.issued, PRESENT_TIMEOUT_MS);
         if(r == UA_STATUSCODE_GOOD)
             printf("the device presents the issued certificate\n");
         else

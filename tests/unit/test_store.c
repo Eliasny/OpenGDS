@@ -278,12 +278,76 @@ static void test_update_delete(gds_store *s) {
     scan_ctx c = {0, 0};
     CHECK(gds_store_app_scan(s, 0, count_cb, &c) == GDS_OK);
     CHECK_EQ_INT(c.n, 2);
+    /* records after the given identifier only (12 §6.5.10) */
     scan_ctx tail = {0, c.last - 1};
-    CHECK(gds_store_app_scan(s, c.last, count_cb, &tail) == GDS_OK);
+    CHECK(gds_store_app_scan(s, c.last - 1, count_cb, &tail) == GDS_OK);
     CHECK_EQ_INT(tail.n, 1);
+    scan_ctx none = {0, c.last};
+    CHECK(gds_store_app_scan(s, c.last, count_cb, &none) == GDS_OK);
+    CHECK_EQ_INT(none.n, 0);
+    /* an update gives the record a new, higher identifier; b was updated
+     * last, so it is last in the scan */
+    int64_t before = c.last;
+    rec.applicationUri = UA_STRING("urn:opengds:test:b3");
+    CHECK(gds_store_app_update(s, &b, &rec) == GDS_OK);
+    scan_ctx after = {0, before};
+    CHECK(gds_store_app_scan(s, before, count_cb, &after) == GDS_OK);
+    CHECK_EQ_INT(after.n, 1);
+    CHECK(after.last > before);
     CHECK(gds_store_app_delete(s, &b) == GDS_OK);
+    /* and identifiers are not reused after a delete */
+    UA_Guid c2 = rnd_guid();
+    rec.applicationUri = UA_STRING("urn:opengds:test:c");
+    CHECK(gds_store_app_insert(s, &c2, &rec) == GDS_OK);
+    scan_ctx newer = {0, after.last};
+    CHECK(gds_store_app_scan(s, after.last, count_cb, &newer) == GDS_OK);
+    CHECK_EQ_INT(newer.n, 1);
+    CHECK(gds_store_app_delete(s, &c2) == GDS_OK);
     CHECK(gds_store_app_delete(s, &b) == GDS_ENOTFOUND);
     CHECK(gds_store_app_get(s, &b, &got) == GDS_ENOTFOUND);
+}
+
+/* A schema 2 store (before record_id) keeps its records, in their old
+ * order, and gets the counter on top of them. */
+static void test_migrate_from_2(const char *dir) {
+    char path[1024];
+    if(!CHECK(gds_path(path, sizeof(path), "%s/v2.db", dir) == GDS_OK))
+        return;
+    (void)unlink(path);
+    gds_store *s = NULL;
+    UA_ApplicationRecordDataType rec;
+    UA_LocalizedText name;
+    UA_Guid a = rnd_guid(), b = rnd_guid(), c = rnd_guid();
+    if(!CHECK(gds_store_open(path, &s) == GDS_OK) || !s)
+        return;
+    make_record(&rec, "urn:opengds:test:m1", &name);
+    CHECK(gds_store_app_insert(s, &a, &rec) == GDS_OK);
+    rec.applicationUri = UA_STRING("urn:opengds:test:m2");
+    CHECK(gds_store_app_insert(s, &b, &rec) == GDS_OK);
+    gds_store_close(s);
+    /* back to schema 2 by hand */
+    sqlite3 *db = NULL;
+    if(!CHECK(sqlite3_open(path, &db) == SQLITE_OK))
+        return;
+    CHECK(sqlite3_exec(db,
+                       "DROP TRIGGER applications_record_id_insert; "
+                       "DROP TRIGGER applications_record_id_update; DROP TABLE record_counter; "
+                       "DROP INDEX applications_record_id; "
+                       "ALTER TABLE applications DROP COLUMN record_id; PRAGMA user_version = 2",
+                       NULL, NULL, NULL) == SQLITE_OK);
+    sqlite3_close(db);
+    if(!CHECK(gds_store_open(path, &s) == GDS_OK) || !s)
+        return;
+    CHECK_EQ_INT(gds_store_schema_version(s), 3);
+    scan_ctx all = {0, 0};
+    CHECK(gds_store_app_scan(s, 0, count_cb, &all) == GDS_OK);
+    CHECK_EQ_INT(all.n, 2);
+    rec.applicationUri = UA_STRING("urn:opengds:test:m3");
+    CHECK(gds_store_app_insert(s, &c, &rec) == GDS_OK);
+    scan_ctx newer = {0, all.last};
+    CHECK(gds_store_app_scan(s, all.last, count_cb, &newer) == GDS_OK);
+    CHECK_EQ_INT(newer.n, 1);
+    gds_store_close(s);
 }
 
 int main(int argc, char **argv) {
@@ -299,7 +363,7 @@ int main(int argc, char **argv) {
     gds_store *s = NULL;
     if(!CHECK(gds_store_open(path, &s) == GDS_OK) || !s)
         return CHECK_DONE();
-    CHECK_EQ_INT(gds_store_schema_version(s), 2);
+    CHECK_EQ_INT(gds_store_schema_version(s), 3);
     struct stat sb;
     CHECK(stat(path, &sb) == 0 && (sb.st_mode & 0777) == 0640); /* group read: the signer */
 
@@ -330,5 +394,6 @@ int main(int argc, char **argv) {
         UA_ApplicationRecordDataType_clear(&got);
         gds_store_close(s);
     }
+    test_migrate_from_2(argv[1]);
     return CHECK_DONE();
 }

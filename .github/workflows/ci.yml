@@ -78,7 +78,8 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
           TSAN_OPTIONS: halt_on_error=1:suppressions=${{ github.workspace }}/tsan.supp
-        run: ctest --test-dir build --output-on-failure
+        # the slow client tests (ctest -L slow, about 6 minutes) run locally
+        run: ctest --test-dir build --output-on-failure -LE slow
       - name: Check binary hardening
         if: matrix.variant == 'release'
         run: |
