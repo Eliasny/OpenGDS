@@ -87,17 +87,31 @@ static void on_open(GtkButton *b, gpointer data) {
     g_clear_error(&err);
 }
 
+/* The changes in their own scrollable window: a firmware diff can name
+ * every test. */
 static void show_diff(History *h, const AvmHistoryEntry *e, GPtrArray *d) {
     GString *s = g_string_new(NULL);
+    if(d->len == 0)
+        g_string_append(s, "Every test gave the same verdict.\n");
     for(guint i = 0; i < d->len; i++)
         g_string_append_printf(s, "%s\n", (const char *)g_ptr_array_index(d, i));
-    char *msg = g_strdup_printf("From the run of %s to the run in the main window", e->started);
-    GtkAlertDialog *dlg = gtk_alert_dialog_new("%s", msg);
-    gtk_alert_dialog_set_detail(dlg, d->len ? s->str : "Every test gave the same verdict.");
-    gtk_alert_dialog_set_modal(dlg, TRUE);
-    gtk_alert_dialog_show(dlg, h->win);
-    g_object_unref(dlg);
-    g_free(msg);
+    GtkWindow *win = GTK_WINDOW(gtk_window_new());
+    char *title = g_strdup_printf("Changes from the run of %s (%u)", e->started, d->len);
+    gtk_window_set_title(win, title);
+    gtk_window_set_transient_for(win, h->win);
+    gtk_window_set_modal(win, TRUE);
+    gtk_window_set_default_size(win, 640, 420);
+    GtkWidget *view = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(view), FALSE);
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(view), TRUE);
+    gtk_text_view_set_left_margin(GTK_TEXT_VIEW(view), 8);
+    gtk_text_view_set_top_margin(GTK_TEXT_VIEW(view), 8);
+    gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(view)), s->str, -1);
+    GtkWidget *sc = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sc), view);
+    gtk_window_set_child(win, sc);
+    gtk_window_present(win);
+    g_free(title);
     g_string_free(s, TRUE);
 }
 
