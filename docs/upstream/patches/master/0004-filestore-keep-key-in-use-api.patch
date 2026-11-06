@@ -1,0 +1,333 @@
+From 617921229190bb1aa16e35806608cf563b24cb8b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Elias=20Nyk=C3=A4nen?=
+ <61413159+Eliasny@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 04:59:48 +0000
+Subject: [PATCH] feat(plugin): let the filestore SecurityPolicy keep the key
+ in use
+
+The filestore wrapper does not know the private key of the inner
+SecurityPolicy. When UpdateCertificate installs a certificate without a
+new key, it can only store a key that is already in own/private. An
+application that keeps its key elsewhere ends up with a certificate in
+the store and no key for it after a restart.
+
+Add UA_SecurityPolicy_FilestoreWithKey, which keeps a copy of the key in
+use (zeroed on clear) and stores it with a certificate pushed without a
+key. A new key installed by UpdateCertificate replaces the copy.
+UA_ServerConfig_addSecurityPolicies_Filestore passes the key it already
+has. UA_SecurityPolicy_Filestore keeps its signature and behavior.
+---
+ CHANGES.md                                    | 11 +++++
+ plugins/crypto/ua_securitypolicy_filestore.c  | 43 ++++++++++++++++++-
+ .../open62541/plugin/securitypolicy_default.h | 14 ++++++
+ plugins/ua_config_default.c                   | 39 +++++++++++------
+ tests/encryption/check_update_certificate.c   | 35 +++++++++++++++
+ 5 files changed, 128 insertions(+), 14 deletions(-)
+
+diff --git a/CHANGES.md b/CHANGES.md
+index 516234e58..9b1e10172 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -3,6 +3,17 @@ refactorings and bug fixes are not reported here.
+ 
+ # Development
+ 
++### Filestore SecurityPolicy keeps the key in use
++
++New `UA_SecurityPolicy_FilestoreWithKey` creates the filestore wrapper with a
++copy of the private key in use. When UpdateCertificate installs a certificate
++without a new private key (CreateSigningRequest without
++`regeneratePrivateKey`), the wrapper stores that key in
++`ApplCerts/own/private` under the name of the new certificate, so the pair can
++be loaded after a restart. `UA_ServerConfig_addSecurityPolicies_Filestore`
++(and so `UA_ServerConfig_setDefaultWithFilestore`) uses it.
++`UA_SecurityPolicy_Filestore` is unchanged.
++
+ ### Configure the advertised server profiles explicitly
+ 
+ `UA_ServerConfig.serverProfileArray` and `serverProfileArraySize` now determine
+diff --git a/plugins/crypto/ua_securitypolicy_filestore.c b/plugins/crypto/ua_securitypolicy_filestore.c
+index 24d2d2cf7..778cb77a2 100644
+--- a/plugins/crypto/ua_securitypolicy_filestore.c
++++ b/plugins/crypto/ua_securitypolicy_filestore.c
+@@ -22,6 +22,7 @@
+ typedef struct {
+     UA_SecurityPolicy *innerPolicy;
+     UA_String storePath;
++    UA_ByteString privateKey; /* Key in use, if known. Zeroed on clear. */
+ } Filestore_Context;
+ 
+ static bool
+@@ -165,7 +166,8 @@ static UA_StatusCode
+ writeCertificateAndPrivateKeyToFilestore(const UA_Logger *logger,
+                                          const UA_String storePath,
+                                          const UA_ByteString newCertificate,
+-                                         const UA_ByteString newPrivateKey) {
++                                         const UA_ByteString newPrivateKey,
++                                         const UA_ByteString keyInUse) {
+     UA_StatusCode retval = UA_STATUSCODE_GOOD;
+ 
+     /* Create the paths to the certificates and private key folders */
+@@ -218,6 +220,12 @@ writeCertificateAndPrivateKeyToFilestore(const UA_Logger *logger,
+         UA_ByteString_clear(&existingKey);
+         return UA_STATUSCODE_GOOD; /* Already stored */
+     }
++
++    /* Prefer the key in use that the SecurityPolicy was created with */
++    if(keyInUse.length > 0 &&
++       UA_CertificateUtils_checkKeyPair(&newCertificate, &keyInUse) == UA_STATUSCODE_GOOD)
++        return writeByteStringToFile(newKeyFilename, &keyInUse);
++
+     retval = findPrivateKeyInFilestore(ownKeyPathDir, &newCertificate, &existingKey);
+     if(retval != UA_STATUSCODE_GOOD) {
+         UA_LOG_WARNING(logger, UA_LOGCATEGORY_SECURITYPOLICY,
+@@ -608,9 +616,17 @@ updateCertificate_filestore(UA_SecurityPolicy *sp,
+     sp->localCertificate = isp->localCertificate;
+ 
+     retval = writeCertificateAndPrivateKeyToFilestore(sp->logger, pc->storePath,
+-                                                      newCertificate, newPrivateKey);
++                                                      newCertificate, newPrivateKey,
++                                                      pc->privateKey);
+     UA_ByteString_clear(&localCertificateTmp);
+ 
++    /* A new key is the key in use from now on */
++    if(retval == UA_STATUSCODE_GOOD && newPrivateKey.length > 0) {
++        UA_ByteString_memZero(&pc->privateKey);
++        UA_ByteString_clear(&pc->privateKey);
++        retval = UA_ByteString_copy(&newPrivateKey, &pc->privateKey);
++    }
++
+     return retval;
+ }
+ 
+@@ -654,6 +670,8 @@ clear_filestore(UA_SecurityPolicy *sp) {
+ 
+     pc->innerPolicy->clear(pc->innerPolicy);
+     UA_String_clear(&pc->storePath);
++    UA_ByteString_memZero(&pc->privateKey);
++    UA_ByteString_clear(&pc->privateKey);
+     UA_free(pc->innerPolicy);
+     UA_free(pc);
+     sp->policyContext = NULL;
+@@ -678,6 +696,15 @@ UA_StatusCode
+ UA_SecurityPolicy_Filestore(UA_SecurityPolicy *sp,
+                             UA_SecurityPolicy *innerPolicy,
+                             const UA_String storePath) {
++    return UA_SecurityPolicy_FilestoreWithKey(sp, innerPolicy, storePath,
++                                              UA_BYTESTRING_NULL);
++}
++
++UA_StatusCode
++UA_SecurityPolicy_FilestoreWithKey(UA_SecurityPolicy *sp,
++                                   UA_SecurityPolicy *innerPolicy,
++                                   const UA_String storePath,
++                                   const UA_ByteString privateKey) {
+     if(!sp || !innerPolicy)
+         return UA_STATUSCODE_BADINTERNALERROR;
+ 
+@@ -770,6 +797,18 @@ UA_SecurityPolicy_Filestore(UA_SecurityPolicy *sp,
+     Filestore_Context *pc = (Filestore_Context *) sp->policyContext;
+     pc->innerPolicy = innerPolicy;
+ 
++    /* Keep a copy of the key in use. It is stored with a certificate that
++     * UpdateCertificate installs without a new key. */
++    if(privateKey.length > 0) {
++        retval = UA_ByteString_copy(&privateKey, &pc->privateKey);
++        if(retval != UA_STATUSCODE_GOOD) {
++            sp->policyContext = NULL;
++            UA_String_clear(&pc->storePath);
++            UA_free(pc);
++            return retval;
++        }
++    }
++
+     return UA_STATUSCODE_GOOD;
+ }
+ 
+diff --git a/plugins/include/open62541/plugin/securitypolicy_default.h b/plugins/include/open62541/plugin/securitypolicy_default.h
+index 107317782..2f3d4a956 100644
+--- a/plugins/include/open62541/plugin/securitypolicy_default.h
++++ b/plugins/include/open62541/plugin/securitypolicy_default.h
+@@ -122,6 +122,20 @@ UA_EXPORT UA_StatusCode
+ UA_SecurityPolicy_Filestore(UA_SecurityPolicy *policy,
+                             UA_SecurityPolicy *innerPolicy,
+                             const UA_String storePath);
++
++/* Like UA_SecurityPolicy_Filestore, but the wrapper also keeps a copy of the
++ * private key in use (DER, unencrypted). When UpdateCertificate installs a
++ * certificate without a new private key (CreateSigningRequest without
++ * regeneratePrivateKey), this key is stored in own/private under the name of
++ * the new certificate, so the pair can be loaded after a restart. A new key
++ * installed by UpdateCertificate replaces the copy. The copy is zeroed when the
++ * SecurityPolicy is cleared. The privateKey argument is copied; an empty key
++ * gives the behavior of UA_SecurityPolicy_Filestore. */
++UA_EXPORT UA_StatusCode
++UA_SecurityPolicy_FilestoreWithKey(UA_SecurityPolicy *policy,
++                                   UA_SecurityPolicy *innerPolicy,
++                                   const UA_String storePath,
++                                   const UA_ByteString privateKey);
+ #endif /* defined(__linux__) || defined(UA_ARCHITECTURE_WIN32) */
+ 
+ #endif /* UA_ENABLE_ENCRYPTION */
+diff --git a/plugins/ua_config_default.c b/plugins/ua_config_default.c
+index 4caaed8d9..c2fa6e66f 100644
+--- a/plugins/ua_config_default.c
++++ b/plugins/ua_config_default.c
+@@ -1621,10 +1621,11 @@ UA_ServerConfig_setDefaultWithSecureSecurityPolicies(UA_ServerConfig *conf,
+ 
+ #if defined(__linux__) || defined(UA_ARCHITECTURE_WIN32)
+ 
+-UA_StatusCode
+-UA_ServerConfig_addSecurityPolicy_Filestore(UA_ServerConfig *config,
+-                                            UA_SecurityPolicy *innerPolicy,
+-                                            const UA_String storePath) {
++static UA_StatusCode
++addSecurityPolicyFilestoreWithKey(UA_ServerConfig *config,
++                                  UA_SecurityPolicy *innerPolicy,
++                                  const UA_String storePath,
++                                  const UA_ByteString privateKey) {
+     /* Allocate the SecurityPolicies */
+     UA_SecurityPolicy *tmp = (UA_SecurityPolicy *)
+         UA_realloc(config->securityPolicies,
+@@ -1634,8 +1635,8 @@ UA_ServerConfig_addSecurityPolicy_Filestore(UA_ServerConfig *config,
+     config->securityPolicies = tmp;
+ 
+     UA_StatusCode retval =
+-        UA_SecurityPolicy_Filestore(&config->securityPolicies[config->securityPoliciesSize],
+-                                    innerPolicy, storePath);
++        UA_SecurityPolicy_FilestoreWithKey(&config->securityPolicies[config->securityPoliciesSize],
++                                           innerPolicy, storePath, privateKey);
+     if(retval != UA_STATUSCODE_GOOD) {
+         if(config->securityPoliciesSize == 0) {
+             UA_free(config->securityPolicies);
+@@ -1648,6 +1649,14 @@ UA_ServerConfig_addSecurityPolicy_Filestore(UA_ServerConfig *config,
+     return UA_STATUSCODE_GOOD;
+ }
+ 
++UA_StatusCode
++UA_ServerConfig_addSecurityPolicy_Filestore(UA_ServerConfig *config,
++                                            UA_SecurityPolicy *innerPolicy,
++                                            const UA_String storePath) {
++    return addSecurityPolicyFilestoreWithKey(config, innerPolicy, storePath,
++                                             UA_BYTESTRING_NULL);
++}
++
+ UA_StatusCode
+ UA_ServerConfig_addSecurityPolicies_Filestore(UA_ServerConfig *config,
+                                               const UA_ByteString *certificate,
+@@ -1751,7 +1760,8 @@ UA_ServerConfig_addSecurityPolicies_Filestore(UA_ServerConfig *config,
+         UA_free(basic256Sha256Policy);
+         basic256Sha256Policy = NULL;
+     } else {
+-        retval = UA_ServerConfig_addSecurityPolicy_Filestore(config, basic256Sha256Policy, storePath);
++        retval = addSecurityPolicyFilestoreWithKey(config, basic256Sha256Policy, storePath,
++                                                   decryptedPrivateKey);
+         if(retval != UA_STATUSCODE_GOOD) {
+             UA_LOG_WARNING(config->logging, UA_LOGCATEGORY_APPLICATION,
+                            "Could not add SecurityPolicy#Basic256Sha256 with error code %s",
+@@ -1777,7 +1787,8 @@ UA_ServerConfig_addSecurityPolicies_Filestore(UA_ServerConfig *config,
+         UA_free(aes256Sha256RsaPssPolicy);
+         aes256Sha256RsaPssPolicy = NULL;
+     } else {
+-        retval = UA_ServerConfig_addSecurityPolicy_Filestore(config, aes256Sha256RsaPssPolicy, storePath);
++        retval = addSecurityPolicyFilestoreWithKey(config, aes256Sha256RsaPssPolicy, storePath,
++                                                   decryptedPrivateKey);
+         if(retval != UA_STATUSCODE_GOOD) {
+             UA_LOG_WARNING(config->logging, UA_LOGCATEGORY_APPLICATION,
+                            "Could not add SecurityPolicy#Aes256Sha256RsaPss with error code %s",
+@@ -1803,7 +1814,8 @@ UA_ServerConfig_addSecurityPolicies_Filestore(UA_ServerConfig *config,
+         UA_free(aes128Sha256RsaOaepPolicy);
+         aes128Sha256RsaOaepPolicy = NULL;
+     } else {
+-        retval = UA_ServerConfig_addSecurityPolicy_Filestore(config, aes128Sha256RsaOaepPolicy, storePath);
++        retval = addSecurityPolicyFilestoreWithKey(config, aes128Sha256RsaOaepPolicy, storePath,
++                                                   decryptedPrivateKey);
+         if(retval != UA_STATUSCODE_GOOD) {
+             UA_LOG_WARNING(config->logging, UA_LOGCATEGORY_APPLICATION,
+                            "Could not add SecurityPolicy#Aes128Sha256RsaOaep with error code %s",
+@@ -1860,7 +1872,8 @@ UA_ServerConfig_addSecurityPolicies_Filestore(UA_ServerConfig *config,
+         UA_free(basic128Rsa15Policy);
+         basic128Rsa15Policy = NULL;
+     } else {
+-        retval = UA_ServerConfig_addSecurityPolicy_Filestore(config, basic128Rsa15Policy, storePath);
++        retval = addSecurityPolicyFilestoreWithKey(config, basic128Rsa15Policy, storePath,
++                                                   decryptedPrivateKey);
+         if(retval != UA_STATUSCODE_GOOD) {
+             UA_LOG_WARNING(config->logging, UA_LOGCATEGORY_APPLICATION,
+                            "Could not add SecurityPolicy#Basic128Rsa15 with error code %s",
+@@ -1886,7 +1899,8 @@ UA_ServerConfig_addSecurityPolicies_Filestore(UA_ServerConfig *config,
+         UA_free(basic256Policy);
+         basic256Policy = NULL;
+     } else {
+-        retval = UA_ServerConfig_addSecurityPolicy_Filestore(config, basic256Policy, storePath);
++        retval = addSecurityPolicyFilestoreWithKey(config, basic256Policy, storePath,
++                                                   decryptedPrivateKey);
+         if(retval != UA_STATUSCODE_GOOD) {
+             UA_LOG_WARNING(config->logging, UA_LOGCATEGORY_APPLICATION,
+                            "Could not add SecurityPolicy#Basic256 with error code %s",
+@@ -1915,7 +1929,8 @@ UA_ServerConfig_addSecurityPolicies_Filestore(UA_ServerConfig *config,
+         UA_free(eccnistp256AesGcmPolicy);
+         eccnistp256AesGcmPolicy = NULL;
+     } else {
+-        retval = UA_ServerConfig_addSecurityPolicy_Filestore(config, eccnistp256AesGcmPolicy, storePath);
++        retval = addSecurityPolicyFilestoreWithKey(config, eccnistp256AesGcmPolicy, storePath,
++                                                   decryptedPrivateKey);
+         if(retval != UA_STATUSCODE_GOOD) {
+             UA_LOG_WARNING(config->logging, UA_LOGCATEGORY_APPLICATION,
+                            "Could not add SecurityPolicy#ECC_nistP256_AesGcm with error code %s",
+diff --git a/tests/encryption/check_update_certificate.c b/tests/encryption/check_update_certificate.c
+index fc7005736..93f890d4f 100644
+--- a/tests/encryption/check_update_certificate.c
++++ b/tests/encryption/check_update_certificate.c
+@@ -291,6 +291,40 @@ START_TEST(update_certificate_noKey_storesKeyInUse) {
+     UA_remove(appKey);
+ }
+ END_TEST
++
++/* The key in use is not in own/private. The filestore SecurityPolicies of
++ * UA_ServerConfig_setDefaultWithFilestore keep a copy of the key they were
++ * created with and store it with a certificate pushed without a key. */
++START_TEST(update_certificate_noKey_storesConfiguredKey) {
++    char cwd[TEST_PATH_MAX];
++    ck_assert_ptr_nonnull(getcwd(cwd, TEST_PATH_MAX - 32));
++    char certDir[TEST_PATH_MAX * 2], keyDir[TEST_PATH_MAX * 2];
++    mp_snprintf(certDir, sizeof(certDir), "%s/pki/ApplCerts/own/certs", cwd);
++    mp_snprintf(keyDir, sizeof(keyDir), "%s/pki/ApplCerts/own/private", cwd);
++
++    /* Remove every copy of the key that earlier tests left in the store */
++    UA_ByteString key = {KEY_DER_LENGTH, KEY_DER_DATA};
++    char keyName[TEST_PATH_MAX];
++    while(findFileWithContent(keyDir, "", &key, keyName, sizeof(keyName))) {
++        char path[TEST_PATH_MAX * 3];
++        mp_snprintf(path, sizeof(path), "%s/%s.key", keyDir, keyName);
++        ck_assert_int_eq(UA_remove(path), 0);
++    }
++
++    UA_ByteString cert = {CERT_DER_LENGTH, CERT_DER_DATA};
++    UA_NodeId defaultApplicationGroup = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
++    UA_NodeId certTypRsaSha256 = UA_NODEID_NUMERIC(0, UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
++    UA_StatusCode retval =
++        UA_GDSReceiver_updateCertificate(receiver, defaultApplicationGroup,
++                                         certTypRsaSha256, cert, NULL);
++    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
++
++    char certName[TEST_PATH_MAX];
++    ck_assert(findFileWithContent(certDir, "", &cert, certName, sizeof(certName)));
++    ck_assert(findFileWithContent(keyDir, "", &key, keyName, sizeof(keyName)));
++    ck_assert_str_eq(certName, keyName);
++}
++END_TEST
+ #endif /* defined(__linux__) || defined(UA_ARCHITECTURE_WIN32) */
+ 
+ START_TEST(addDriver_rejectsDuplicateGDSReceiver) {
+@@ -466,6 +500,7 @@ static Suite* testSuite_create_certificate(void) {
+     tcase_add_test(tc_cert_filestore, update_certificate_wrongKey);
+     tcase_add_test(tc_cert_filestore, update_certificate_noKey);
+     tcase_add_test(tc_cert_filestore, update_certificate_noKey_storesKeyInUse);
++    tcase_add_test(tc_cert_filestore, update_certificate_noKey_storesConfiguredKey);
+     tcase_add_test(tc_cert_filestore, certificate_types_configured_filestore);
+     tcase_add_test(tc_cert_filestore, addDriver_rejectsDuplicateGDSReceiver);
+     tcase_add_test(tc_cert_filestore, update_certificate_preflightsAllEndpoints);
+-- 
+2.43.0
+

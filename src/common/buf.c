@@ -31,6 +31,8 @@ const char *gds_status_name(gds_status s) {
     case GDS_EDENIED: return "access denied";
     case GDS_ESTATE: return "invalid state";
     case GDS_EREMOTE: return "remote error";
+    case GDS_EEXISTS: return "already exists";
+    case GDS_ENOTLEADER: return "not the primary";
     }
     return "unknown";
 }

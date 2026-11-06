@@ -26,11 +26,15 @@ enable_testing()
 # src/common/ in T1.
 add_library(gds_common STATIC
     src/common/buf.c
+    src/common/ids.c
     src/common/safeint.c
     src/common/ua_args.c)
 target_include_directories(gds_common PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_compile_definitions(gds_common PUBLIC _DEFAULT_SOURCE)
 target_link_libraries(gds_common PUBLIC gds_hardening open62541::open62541)
+
+add_subdirectory(src/store)
+add_subdirectory(tests/unit)
 
 if(OPENGDS_BUILD_AUDITOR)
     add_subdirectory(tools/auditor)
