@@ -107,6 +107,21 @@ GDS_MUST_CHECK gds_status gds_store_cert_add(gds_store *s, const UA_Guid *appId,
                                              uint32_t certType, const gds_buf *serial,
                                              const gds_buf *der, int64_t notBefore,
                                              int64_t notAfter);
+/* Every issued certificate, in serial order (gdsctl verify-audit, issue
+ * #19). The row's buffers are valid during the callback only; returning
+ * false stops the scan. GDS_EUNSUPPORTED on a backend below minor 4. */
+typedef struct {
+    UA_Guid appId;
+    uint32_t groupId;
+    uint32_t certType;
+    gds_buf serial;
+    gds_buf der;
+    int64_t notBefore;
+    int64_t notAfter;
+    bool revoked;
+} gds_cert_row;
+typedef bool (*gds_cert_scan_cb)(void *ctx, const gds_cert_row *row);
+GDS_MUST_CHECK gds_status gds_store_cert_scan(gds_store *s, gds_cert_scan_cb cb, void *ctx);
 /* Newest unrevoked certificate; GDS_ENOTFOUND if none. */
 GDS_MUST_CHECK gds_status gds_store_cert_latest(gds_store *s, const UA_Guid *appId,
                                                 uint32_t groupId, uint32_t certType, gds_buf *der,
@@ -170,7 +185,8 @@ GDS_MUST_CHECK gds_status gds_store_audit_verify(gds_store *s, int64_t *rows, in
  * transaction: it commits fully or changes nothing. The core calls a
  * backend from one thread at a time (see "Single-writer" above). */
 #define GDS_STORE_ABI_MAJOR 1u
-#define GDS_STORE_ABI_MINOR 3u /* 1: the audit log; 2: req_scan; 3: cert_revoke, cert_revoke_app, cert_is_revoked */
+#define GDS_STORE_ABI_MINOR 4u /* 1: the audit log; 2: req_scan; 3: cert_revoke, cert_revoke_app,
+                                  cert_is_revoked; 4: cert_scan */
 
 typedef struct {
     uint32_t abi_major;
@@ -206,6 +222,8 @@ typedef struct {
     gds_status (*cert_revoke_app)(void *ctx, const UA_Guid *appId, gds_store_serial_cb cb,
                                   void *cbCtx);
     gds_status (*cert_is_revoked)(void *ctx, const gds_buf *serial, bool *revoked);
+    /* minor 4 */
+    gds_status (*cert_scan)(void *ctx, gds_cert_scan_cb cb, void *cbCtx);
 } gds_store_backend;
 
 /* A store on a plugin backend. The vtable is copied; ctx is taken, and
@@ -216,7 +234,8 @@ typedef struct {
  * NULL) gds_store_req_scan returns GDS_EUNSUPPORTED, and the server then
  * starts only with approval policy GDS_APPROVE_ALL. Before minor 3 the
  * cert_revoke calls return GDS_EUNSUPPORTED, so RevokeCertificate and
- * UnregisterApplication answer Bad_NotSupported. */
+ * UnregisterApplication answer Bad_NotSupported. Before minor 4 (or with
+ * cert_scan NULL) gds_store_cert_scan returns GDS_EUNSUPPORTED. */
 GDS_MUST_CHECK gds_status gds_store_open_backend(const gds_store_backend *be, void *ctx,
                                                  gds_store **out);
 

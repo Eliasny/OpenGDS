@@ -11,13 +11,18 @@
 
 #include "ca.h"
 #include "common/buf.h"
+#include "journal.h"
 #include "store.h"
 
 typedef struct {
     gds_store *store; /* read-only */
     gds_ca *ca;
+    gds_journal *journal; /* NULL: no journal (tests); opengds-signer always has one */
 } gds_signer;
 
+/* Every SIGN_CSR answer is journalled before it is returned. When the
+ * journal cannot be written, the certificate is dropped and the request is
+ * refused with GDS_EIO: nothing leaves the signer unrecorded. */
 /* Handle one request datagram and build the reply datagram. Always produces
  * a reply when it returns GDS_OK, even when the request was refused (the
  * refusal is the reply's status). */
