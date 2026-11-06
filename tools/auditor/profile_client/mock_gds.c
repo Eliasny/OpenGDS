@@ -38,7 +38,7 @@
 
 #define GDS_NS_URI "http://opcfoundation.org/UA/GDS/"
 #define GDS_APP_URI "urn:opengds:test:mockgds"
-#define MAX_APPS 32
+#define MAX_APPS 512 /* the GDS spec tests register a few hundred records per run */
 #define MAX_REQS 32
 
 /* Single-threaded server: the state below is touched only from method
