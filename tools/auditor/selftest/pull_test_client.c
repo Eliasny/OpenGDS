@@ -70,7 +70,8 @@ static const char *const mutants[] = {
     "trustlist-merge",    "issuers-trusted",     "install-ignored",    "renew-keep-old",
     "install-unverified", "install-wrong-key",   "install-wrong-uri",  "install-expired",
     "send-password-untrusted", "trust-any-gds",  "ignore-gds-crl",     "accept-expired-gds",
-    "no-gds-uri-check",   "use-sign-only",       "prefer-deprecated"};
+    "no-gds-uri-check",   "use-sign-only",       "prefer-deprecated",  "ignore-crls",
+    "parse-garbage",      "no-length-check",     "reconnect-storm"};
 
 static bool is_mutant(const char *name) {
     return mutant && strcmp(mutant, name) == 0;
@@ -297,7 +298,7 @@ static int probe_connect(const char *pki, const char *url, const gds_buf *cert, 
     } else {
         tn = load_dir(pki, "trusted/certs", trust, MAX_DIR_FILES, GDS_MAX_CERT_SIZE);
     }
-    cn = load_dir(pki, "trusted/crl", crls, MAX_DIR_FILES, GDS_MAX_CRL_SIZE);
+    cn = is_mutant("ignore-crls") ? 0 : load_dir(pki, "trusted/crl", crls, MAX_DIR_FILES, GDS_MAX_CRL_SIZE);
     if(is_mutant("issuers-trusted")) {
         tn += load_dir(pki, "issuer/certs", trust + tn, MAX_DIR_FILES, GDS_MAX_CERT_SIZE);
         cn += load_dir(pki, "issuer/crl", crls + cn, MAX_DIR_FILES, GDS_MAX_CRL_SIZE);
@@ -413,7 +414,8 @@ static fin_outcome install(const ptc *x, const UA_Variant *out, size_t outN, con
     const void *issuers = NULL;
     size_t nIssuers = 0;
     if(!newCert || newCert->length == 0 || newCert->length > GDS_MAX_CERT_SIZE || outN < 3 ||
-       gds_arg_array(&out[2], &UA_TYPES[UA_TYPES_BYTESTRING], GDS_MAX_CHAIN_LEN, &issuers,
+       gds_arg_array(&out[2], &UA_TYPES[UA_TYPES_BYTESTRING],
+                     is_mutant("no-length-check") ? 100000 : GDS_MAX_CHAIN_LEN, &issuers,
                      &nIssuers) != UA_STATUSCODE_GOOD) {
         fail("FinishRequest result", UA_STATUSCODE_BADUNEXPECTEDERROR);
         return FIN_ERROR;
@@ -779,6 +781,27 @@ int main(int argc, char **argv) {
         return 1;
     }
     uac_info("connected");
+    if(is_mutant("reconnect-storm")) {
+        /* MUTANT: when the GDS closes the session, reconnect at once, again and again */
+        for(int i = 0; i < 6; i++) {
+            UA_Variant fa;
+            UA_String u = UA_STRING((char *)(uintptr_t)appUri);
+            size_t fN = 0;
+            UA_Variant *fo = NULL;
+            UA_Variant_setScalar(&fa, &u, &UA_TYPES[UA_TYPES_STRING]);
+            UA_UInt16 nsi = 0;
+            if(UA_Client_getNamespaceIndex(client, UA_STRING(GDS_NS_URI), &nsi) == UA_STATUSCODE_GOOD)
+                r = uac_call(client, "FindApplications", UA_NODEID_NUMERIC(nsi, UA_GDSID_DIRECTORY),
+                               UA_NODEID_NUMERIC(nsi, UA_GDSID_DIRECTORY_FINDAPPLICATIONS), 1, &fa, 1,
+                               &fN, &fo);
+            freeOut(&fo, &fN);
+            uac_info("MUTANT: reconnect at once (%s)", UA_StatusCode_name(r));
+            UA_Client_disconnect(client);
+            r = UA_Client_connect(client, gds); /* as ApplicationSelfAdmin */
+            if(r != UA_STATUSCODE_GOOD)
+                return fail("reconnect", r);
+        }
+    }
 
     /* Bind the GDS namespace index at runtime */
     UA_UInt16 ns = 0;
@@ -992,9 +1015,14 @@ int main(int argc, char **argv) {
         uac_info("trust list unchanged since the last download: skipped");
     } else {
         UA_TrustListDataType tl;
-        r = (is_mutant("read-one-chunk") || is_mutant("no-close"))
+        r = (is_mutant("read-one-chunk") || is_mutant("no-close") || is_mutant("no-length-check"))
                 ? mutant_read_trustlist(client, tlId, &tl)
                 : uac_read_trustlist(client, tlId, &tl);
+        if(r != UA_STATUSCODE_GOOD && is_mutant("parse-garbage")) {
+            uac_info("MUTANT: the old trust list is dropped before the new one parsed");
+            wipe_dir(pki, "trusted/certs");
+            wipe_dir(pki, "trusted/crl");
+        }
         if(r != UA_STATUSCODE_GOOD)
             return fail("TrustList read", r);
         uac_info("trusted certs=%zu trusted CRLs=%zu issuer certs=%zu issuer CRLs=%zu",

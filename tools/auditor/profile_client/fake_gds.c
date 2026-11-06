@@ -69,6 +69,10 @@ static struct {
     UA_UInt32 tlHandle;
     size_t tlSession; /* the session that holds tlHandle */
     UA_DateTime tlTime; /* TrustList.LastUpdateTime */
+    UA_ByteString tlRogue; /* served by an over-long Read (b.tlOverRead) */
+    gds_buf revokeCert; /* revoked by the CRL in the list when b.tlRevokes */
+    UA_NodeId toClose;  /* a session to close at the next iteration */
+    bool closePending;
     gds_buf cert, key;          /* FG_ID_MAIN */
     gds_buf idCert[FG_ID_COUNT], idKey[FG_ID_COUNT]; /* the others, made on first use */
     fg_identity identity;       /* the one the running server presents */
@@ -218,6 +222,11 @@ static UA_StatusCode dispatch(fg_method m, fg_handler h, const UA_NodeId *sessio
     ev->session = find_session(sessionId);
     capture_args(ev, inN, in);
     ev->result = h(ev, inN, in, out);
+    if(G.b.closeSessions && ev->session != FG_NO_SESSION && !G.sess[ev->session].killed &&
+       !G.closePending && UA_NodeId_copy(sessionId, &G.toClose) == UA_STATUSCODE_GOOD) {
+        G.sess[ev->session].killed = true; /* closed after this call returns */
+        G.closePending = true;
+    }
     return ev->result;
 }
 
@@ -417,6 +426,7 @@ static gds_status make_cert(const char *uri, const fg_req *q, gds_buf *cert, con
         *by = &G.cas[FG_CA_ROGUE];
         return testca_sign_csr(*by, &q->csr, uri, TESTCA_MAX_DAYS, cert);
     case FG_ISSUE_GOOD:
+    case FG_ISSUE_BAD_CHAIN:
     default:
         return testca_sign_csr(&G.ca, &q->csr, uri, TESTCA_MAX_DAYS, cert);
     }
@@ -440,14 +450,28 @@ static UA_StatusCode issue(fg_event *ev, fg_app *a, fg_req *q, UA_Variant *out) 
     UA_StatusCode r = UA_Variant_setScalarCopy(&out[0], &c, &UA_TYPES[UA_TYPES_BYTESTRING]);
     if(r == UA_STATUSCODE_GOOD)
         r = UA_Variant_setScalarCopy(&out[1], &empty, &UA_TYPES[UA_TYPES_BYTESTRING]);
-    if(r == UA_STATUSCODE_GOOD)
+    if(r == UA_STATUSCODE_GOOD && G.b.hugeIssuers > 1) {
+        /* the CA, then 1-byte entries: a long array, a small message */
+        UA_ByteString *arr = (UA_ByteString *)UA_Array_new(G.b.hugeIssuers, &UA_TYPES[UA_TYPES_BYTESTRING]);
+        static UA_Byte junk = 0x30;
+        r = arr ? UA_ByteString_copy(&issuer, &arr[0]) : UA_STATUSCODE_BADOUTOFMEMORY;
+        for(size_t i = 1; arr && r == UA_STATUSCODE_GOOD && i < G.b.hugeIssuers; i++) {
+            UA_ByteString one = {1, &junk};
+            r = UA_ByteString_copy(&one, &arr[i]);
+        }
+        if(r == UA_STATUSCODE_GOOD)
+            UA_Variant_setArray(&out[2], arr, G.b.hugeIssuers, &UA_TYPES[UA_TYPES_BYTESTRING]);
+        else if(arr)
+            UA_Array_delete(arr, G.b.hugeIssuers, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    } else if(r == UA_STATUSCODE_GOOD) {
         r = UA_Variant_setArrayCopy(&out[2], &issuer, 1, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    }
     gds_buf_free(&caDer);
     if(r == UA_STATUSCODE_GOOD) {
         q->done = true;
         a->hasCert = true;
         ev->issued = cert; /* kept for CLI-INS-01 and CLI-REN-04 */
-        ev->issueMode = G.b.issue;
+        ev->issueMode = G.b.hugeIssuers > 1 ? FG_ISSUE_BAD_CHAIN : G.b.issue;
         cert.data = NULL;
     }
     gds_buf_free(&cert);
@@ -522,15 +546,25 @@ static gds_status add_ca(const testca_t *ca, UA_ByteString *certs, size_t *certN
     return GDS_OK;
 }
 
-static UA_StatusCode encode_trustlist(void) {
+static gds_status revoking_crl_der(const gds_buf *cert, gds_buf *out);
+
+static UA_StatusCode encode_list(fg_tl which, UA_ByteString *file) {
     UA_ByteString tc[2], tl[2], ic[1], il[1];
     size_t tcN = 0, tlN = 0, icN = 0, ilN = 0;
     gds_status s = add_ca(&G.ca, tc, &tcN, tl, &tlN);
-    if(s == GDS_OK && G.b.tl == FG_TL_WITH_X)
+    if(s == GDS_OK && which == FG_TL_MAIN && G.b.tlRevokes && G.revokeCert.len) {
+        gds_buf crl = {0};
+        if((s = revoking_crl_der(&G.revokeCert, &crl)) == GDS_OK) {
+            free_bs(&tl[0]);
+            tl[0].data = crl.data;
+            tl[0].length = crl.len;
+        }
+    }
+    if(s == GDS_OK && which == FG_TL_WITH_X)
         s = add_ca(&G.cas[FG_CA_X], tc, &tcN, tl, &tlN);
-    if(s == GDS_OK && G.b.tl == FG_TL_ISSUER_Y)
+    if(s == GDS_OK && which == FG_TL_ISSUER_Y)
         s = add_ca(&G.cas[FG_CA_Y], ic, &icN, il, &ilN);
-    if(s == GDS_OK && G.b.tl == FG_TL_ROGUE) { /* the rogue CA instead of the GDS CA */
+    if(s == GDS_OK && which == FG_TL_ROGUE) { /* the rogue CA instead of the GDS CA */
         free_bs(&tc[0]);
         free_bs(&tl[0]);
         tcN = tlN = 0;
@@ -549,8 +583,8 @@ static UA_StatusCode encode_trustlist(void) {
         t.issuerCertificatesSize = icN;
         t.issuerCrls = ilN ? il : NULL;
         t.issuerCrlsSize = ilN;
-        UA_ByteString_clear(&G.tlFile);
-        r = UA_encodeBinary(&t, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], &G.tlFile, NULL);
+        UA_ByteString_clear(file);
+        r = UA_encodeBinary(&t, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], file, NULL);
     }
     for(size_t i = 0; i < tcN; i++)
         free_bs(&tc[i]);
@@ -561,6 +595,24 @@ static UA_StatusCode encode_trustlist(void) {
     for(size_t i = 0; i < ilN; i++)
         free_bs(&il[i]);
     return r;
+}
+
+static UA_StatusCode encode_trustlist(void) {
+    UA_StatusCode r = encode_list(G.b.tl, &G.tlFile);
+    if(r == UA_STATUSCODE_GOOD && G.b.tlGarbage && G.tlFile.length > 16) {
+        /* TrustedCertificates claims 2^31-1 entries, and the file ends halfway */
+        static const UA_Byte big[4] = {0xff, 0xff, 0xff, 0x7f};
+        memcpy(G.tlFile.data + 4, big, sizeof(big));
+        G.tlFile.length /= 2;
+    }
+    if(r == UA_STATUSCODE_GOOD && G.b.tlOverRead)
+        r = encode_list(FG_TL_ROGUE, &G.tlRogue);
+    return r;
+}
+
+gds_status fg_set_revoked_cert(const gds_buf *cert) {
+    gds_buf_free(&G.revokeCert);
+    return gds_buf_dup(cert->data, cert->len, &G.revokeCert);
 }
 
 size_t fg_trustlist_size(void) {
@@ -606,6 +658,25 @@ static UA_StatusCode h_tl_read(fg_event *ev, size_t inN, const UA_Variant *in, U
     UA_Int32 len = *(const UA_Int32 *)lp;
     if(!G.tlHandle || *(const UA_UInt32 *)hp != G.tlHandle || len < 0)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(G.b.tlOverRead && G.tlPos == 0 && G.tlRogue.length) {
+        /* More than Length (OPC 10000-20 §4.2.4 forbids it): a whole other
+         * list, padded past Length; the next Read is the end of file. */
+        size_t m = G.tlRogue.length > (size_t)len ? G.tlRogue.length : (size_t)len + 1;
+        UA_ByteString big;
+        if(UA_ByteString_allocBuffer(&big, m) != UA_STATUSCODE_GOOD)
+            return UA_STATUSCODE_BADOUTOFMEMORY;
+        memset(big.data, 0, m);
+        memcpy(big.data, G.tlRogue.data, G.tlRogue.length);
+        ev->bytes = m;
+        UA_Variant_setScalar(&out[0], UA_ByteString_new(), &UA_TYPES[UA_TYPES_BYTESTRING]);
+        if(!out[0].data) {
+            UA_ByteString_clear(&big);
+            return UA_STATUSCODE_BADOUTOFMEMORY;
+        }
+        *(UA_ByteString *)out[0].data = big;
+        G.tlPos = G.tlFile.length;
+        return UA_STATUSCODE_GOOD;
+    }
     size_t n = G.tlFile.length - G.tlPos;
     if((size_t)len < n)
         n = (size_t)len;
@@ -887,8 +958,8 @@ static void server_down(void) {
     G.tlHandle = 0;
 }
 
-/* A CRL of the GDS CA that revokes `cert` */
-static gds_status write_revoking_crl(const gds_buf *cert) {
+/* A CRL of the GDS CA that revokes `cert` (DER) */
+static gds_status revoking_crl_der(const gds_buf *cert, gds_buf *out) {
     X509 *x = x509_parse_cert(cert);
     X509_CRL *crl = X509_CRL_new();
     X509_REVOKED *rv = X509_REVOKED_new();
@@ -911,7 +982,7 @@ static gds_status write_revoking_crl(const gds_buf *cert) {
         X509_EXTENSION_free(aki);
         if(akiOk && X509_CRL_sort(crl) && X509_CRL_sign(crl, G.ca.key, EVP_sha256()) > 0 &&
            (n = i2d_X509_CRL(crl, &der)) > 0)
-            r = gds_file_write_atomic(G.crlPath, der, (size_t)n, 0644);
+            r = gds_buf_dup(der, (size_t)n, out);
     }
     OPENSSL_free(der);
     X509_REVOKED_free(rv);
@@ -919,6 +990,15 @@ static gds_status write_revoking_crl(const gds_buf *cert) {
     X509_free(x);
     ASN1_TIME_free(now);
     ASN1_TIME_free(next);
+    return r;
+}
+
+static gds_status write_revoking_crl(const gds_buf *cert) {
+    gds_buf crl = {0};
+    gds_status r = revoking_crl_der(cert, &crl);
+    if(r == GDS_OK)
+        r = gds_file_write_atomic(G.crlPath, crl.data, crl.len, 0644);
+    gds_buf_free(&crl);
     return r;
 }
 
@@ -972,12 +1052,20 @@ gds_status fg_start(const fg_config *cfg) {
 }
 
 void fg_iterate(void) {
+    if(G.server && G.closePending) {
+        G.closePending = false;
+        (void)UA_Server_closeSession(G.server, &G.toClose);
+        UA_NodeId_clear(&G.toClose);
+    }
     if(G.server)
         (void)UA_Server_run_iterate(G.server, true);
 }
 
 void fg_stop(void) {
     server_down();
+    gds_buf_free(&G.revokeCert);
+    UA_ByteString_clear(&G.tlRogue);
+    UA_NodeId_clear(&G.toClose);
     for(size_t i = 0; i < FG_ID_COUNT; i++) {
         gds_buf_free(&G.idCert[i]);
         gds_buf_free_secret(&G.idKey[i]);
