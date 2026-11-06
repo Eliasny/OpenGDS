@@ -45,8 +45,36 @@ typedef struct {
     bool gdsNamespace;
     UA_UInt32 id;
 } gds_role_info;
-/* The table of grantable Roles, in bit order. */
+/* The table of built-in grantable Roles, in bit order. */
 const gds_role_info *gds_role_table(size_t *n);
+
+/* Embedder Roles (UASM ask A10, issue #63): Roles an embedder defines with
+ * gds_server_add_role before the server runs, such as the OPC 10000-21
+ * RegistrarAdmin. They take the bits from GDS_ROLE_EMBED_FIRST_BIT up, in
+ * the order they were added. */
+#define GDS_ROLE_BUILTIN_COUNT 14u
+#define GDS_ROLE_EMBED_FIRST_BIT GDS_ROLE_BUILTIN_COUNT
+#define GDS_MAX_EMBED_ROLES 16u
+#define GDS_MAX_ROLE_NAME 64
+/* Every grantable Role, built-in first: there are gds_role_count() of
+ * them. gds_role_at gives the i-th one's NodeId (gdsNs is the GDS
+ * namespace index; the NodeId is shallow and valid until the server is
+ * deleted), bit and users-file name. */
+size_t gds_role_count(void);
+void gds_role_at(size_t i, UA_UInt16 gdsNs, UA_NodeId *id, unsigned *bit, const char **name);
+/* The bit of a grantable Role NodeId, 0 if it is none. */
+unsigned gds_role_bit(UA_UInt16 gdsNs, const UA_NodeId *id);
+/* Add an embedder Role (gds_server_add_role does the server part).
+ * GDS_EEXISTS for a name or NodeId that is taken (built-in, embedder, or
+ * Anonymous/AuthenticatedUser), GDS_EINVAL for a bad name or a null
+ * NodeId, GDS_ETOOBIG past GDS_MAX_EMBED_ROLES. */
+GDS_MUST_CHECK gds_status gds_access_add_role(const char *name, const UA_NodeId *id,
+                                              UA_UInt16 gdsNs);
+/* Undo the last gds_access_add_role. */
+void gds_access_drop_last_role(void);
+/* Every Role name in the installed users file is a Role by now:
+ * GDS_EINVAL (and a line on stderr) for the first that is not. */
+GDS_MUST_CHECK gds_status gds_access_check_users(void);
 
 #define GDS_PBKDF2_SALT 16
 #define GDS_PBKDF2_HASH 32
@@ -56,7 +84,12 @@ const gds_role_info *gds_role_table(size_t *n);
 
 typedef struct {
     char name[GDS_MAX_USER_NAME + 1];
-    unsigned roles;
+    unsigned roles; /* the built-in Roles */
+    /* Names that are not built-in Roles: embedder Roles (A10), which are
+     * resolved when the user logs in. gds_server_run refuses to start if
+     * one names no Role. */
+    char embedRoles[GDS_MAX_EMBED_ROLES][GDS_MAX_ROLE_NAME + 1];
+    size_t nEmbedRoles;
     uint32_t iterations;
     uint8_t salt[GDS_PBKDF2_SALT];
     uint8_t hash[GDS_PBKDF2_HASH];
@@ -70,8 +103,10 @@ typedef struct {
 /* Users file: one user per line, '#' comments:
  *   <name> <Role[,Role...]|-> pbkdf2-sha256:<iterations>:<salt hex>:<hash hex>
  * Roles: the names in gds_role_table (DiscoveryAdmin, SecurityAdmin,
- * SecurityKeyServerAdmin, ...). The file
- * must not be readable by others (mode 0600 or 0640). */
+ * SecurityKeyServerAdmin, ...) and embedder Role names, which are checked
+ * when the server starts (gds_server_add_role may come after this load).
+ * Anonymous and AuthenticatedUser are refused. The file must not be
+ * readable by others (mode 0600 or 0640). */
 GDS_MUST_CHECK gds_status gds_users_load(const char *path, gds_users *out);
 /* The users-file credential for a password (gdsadm hash-password). */
 GDS_MUST_CHECK gds_status gds_password_hash(const uint8_t *pw, size_t len, uint32_t iterations,

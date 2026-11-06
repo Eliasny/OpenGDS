@@ -99,13 +99,12 @@ static bool caller_allowed(const gds_binding *b, const gds_caller *c) {
         return true;
     if(b->authenticated && c->userName)
         return true;
-    size_t n = 0;
-    const gds_role_info *t = gds_role_table(&n);
-    for(size_t i = 0; i < n; i++) {
-        if(!(b->roleBits & t[i].bit))
-            continue;
-        UA_NodeId r = UA_NODEID_NUMERIC(t[i].gdsNamespace ? b->s->ns : 0, t[i].id);
-        if(gds_caller_has_role(c, &r))
+    for(size_t i = 0; i < gds_role_count(); i++) {
+        UA_NodeId r;
+        unsigned bit = 0;
+        const char *name = NULL;
+        gds_role_at(i, b->s->ns, &r, &bit, &name);
+        if((b->roleBits & bit) && gds_caller_has_role(c, &r))
             return true;
     }
     for(size_t i = 0; i < b->nPrivileges; i++)
@@ -433,26 +432,19 @@ gds_status gds_role_bits(const gds_server *s, const UA_NodeId *roles, size_t n, 
                          bool *anonymous, bool *authenticated) {
     if(n > GDS_MAX_METHOD_ROLES || (n && !roles))
         return GDS_EINVAL;
-    size_t nt = 0;
-    const gds_role_info *t = gds_role_table(&nt);
+    const UA_NodeId anon = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+    const UA_NodeId auth = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_AUTHENTICATEDUSER);
     for(size_t i = 0; i < n; i++) {
         const UA_NodeId *r = &roles[i];
-        if(r->identifierType != UA_NODEIDTYPE_NUMERIC)
-            return GDS_EINVAL;
-        if(r->namespaceIndex == 0 && r->identifier.numeric == UA_NS0ID_WELLKNOWNROLE_ANONYMOUS) {
+        if(UA_NodeId_equal(r, &anon)) {
             *anonymous = true;
             continue;
         }
-        if(r->namespaceIndex == 0 &&
-           r->identifier.numeric == UA_NS0ID_WELLKNOWNROLE_AUTHENTICATEDUSER) {
+        if(UA_NodeId_equal(r, &auth)) {
             *authenticated = true;
             continue;
         }
-        unsigned bit = 0;
-        for(size_t k = 0; k < nt && !bit; k++)
-            if(r->namespaceIndex == (t[k].gdsNamespace ? s->ns : 0) &&
-               r->identifier.numeric == t[k].id)
-                bit = t[k].bit;
+        unsigned bit = gds_role_bit(s->ns, r);
         if(!bit)
             return GDS_EINVAL; /* no session can hold it */
         *bits |= bit;
