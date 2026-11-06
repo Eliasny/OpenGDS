@@ -8,6 +8,9 @@
 #include <openssl/evp.h>
 #include <openssl/x509.h>
 
+#include <stdio.h>
+#include <string.h>
+
 #include "srv_target.h"
 #include "srv_tests.h"
 #include "x509util.h"
@@ -292,6 +295,269 @@ static void t_update_expired(ga_ctx *ctx, void *p) {
     expect_refused(ctx, t, r, "t-expired (valid until yesterday)", NULL, 0);
 }
 
+/* ---------------- SRV-UPD-09, -10: a pushed private key ---------------- */
+
+/* The first SupportedPrivateKeyFormats entry; false (and Not supported) if
+ * the array is empty. */
+static bool first_key_format(ga_ctx *ctx, srv_target *t, char *fmt, size_t len) {
+    UA_StatusCode r = st_learn(t, ctx);
+    if(r == UA_STATUSCODE_GOOD)
+        r = st_admin(t);
+    if(r != UA_STATUSCODE_GOOD) {
+        ga_not_tested(ctx, "setup: ApplicationUri and admin session -> %s", UA_StatusCode_name(r));
+        return false;
+    }
+    UA_Variant v;
+    UA_Variant_init(&v);
+    r = UA_Client_readValueAttribute(
+        t->client, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_SUPPORTEDPRIVATEKEYFORMATS), &v);
+    bool any = r == UA_STATUSCODE_GOOD && UA_Variant_hasArrayType(&v, &UA_TYPES[UA_TYPES_STRING]) &&
+               v.arrayLength > 0;
+    if(any) {
+        const UA_String *f = v.data;
+        (void)snprintf(fmt, len, "%.*s", (int)(f->length < 32 ? f->length : 32), (const char *)f->data);
+    } else
+        ga_not_supported(ctx, "SupportedPrivateKeyFormats is empty (%s): no private key is pushed",
+                         UA_StatusCode_name(r));
+    UA_Variant_clear(&v);
+    if(any && strcmp(fmt, "PEM") != 0) {
+        ga_not_tested(ctx, "the first advertised format is %s; the Auditor sends PEM only", fmt);
+        any = false;
+    }
+    return any;
+}
+
+/* The test CA in the applied trust list (as SRV-TL-02 leaves it), for the
+ * tests that also run on their own with --only. */
+static bool ca_trusted(ga_ctx *ctx, srv_target *t) {
+    if(t->tlPushed)
+        return true;
+    UA_TrustListDataType l;
+    UA_TrustListDataType_init(&l);
+    bool acr = false;
+    UA_StatusCode r = st_snapshot(t, ctx);
+    if(r == UA_STATUSCODE_GOOD)
+        r = st_list_copy_add(&t->snap, &t->caDer, &t->caCrl, &l);
+    if(r == UA_STATUSCODE_GOOD) {
+        l.specifiedLists = ST_MASK_ALL;
+        r = st_write_trustlist(t->client, &l, 16384, &acr, ctx);
+    }
+    if(r == UA_STATUSCODE_GOOD && acr)
+        r = st_apply(t->client);
+    UA_TrustListDataType_clear(&l);
+    if(r != UA_STATUSCODE_GOOD)
+        ga_not_tested(ctx, "setup: trust list with the test CA -> %s", UA_StatusCode_name(r));
+    t->tlPushed = r == UA_STATUSCODE_GOOD;
+    return t->tlPushed;
+}
+
+/* SRV-UPD-09 puts a key the Auditor made in use: the snapshot cannot bring
+ * the target's own key back, so it runs only when selected by name
+ * (README, "Safety, snapshot and restore"). */
+static void t_update_with_key(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    char fmt[40];
+    if(!first_key_format(ctx, t, fmt, sizeof(fmt)))
+        return;
+    if(!t->only || strcmp(t->only, "SRV-UPD-09") != 0) {
+        ga_not_tested(ctx, "replaces the target's private key, which the restore step cannot put "
+                           "back: runs only with --only SRV-UPD-09");
+        return;
+    }
+    if(!ca_trusted(ctx, t))
+        return;
+    gds_buf cert = {0}, pem = {0}, seen = {0};
+    gds_status gs = st_withkey(t, &cert, &pem);
+    if(gs != GDS_OK) {
+        ga_not_tested(ctx, "setup: t-withkey: %s", gds_status_name(gs));
+        return;
+    }
+    bool acr = false;
+    UA_StatusCode r = st_update_cert_key(t, t->client, &cert, &t->caDer, 1, fmt, &pem, &acr);
+    gds_buf_free_secret(&pem);
+    if(r != UA_STATUSCODE_GOOD) {
+        gds_buf_free(&cert);
+        ga_fail(ctx, "UpdateCertificate(t-withkey, %s key) -> %s", fmt, UA_StatusCode_name(r));
+        return;
+    }
+    t->keyReplaced = true; /* from here the restore cannot bring the old key back */
+    if(acr && (r = st_apply(t->client)) != UA_STATUSCODE_GOOD) {
+        gds_buf_free(&cert);
+        ga_fail(ctx, "ApplyChanges -> %s", UA_StatusCode_name(r));
+        return;
+    }
+    st_close(t);
+    UA_Client *c = NULL;
+    r = st_presented(t, &seen);
+    bool presents = r == UA_STATUSCODE_GOOD && seen.len == cert.len &&
+                    memcmp(seen.data, cert.data, cert.len) == 0;
+    UA_StatusCode h = presents ? st_admin_fresh(t, false, &c) : UA_STATUSCODE_BADINVALIDSTATE;
+    st_client_free(c);
+    gds_buf_free(&seen);
+    gds_buf_free(&cert);
+    if(!presents)
+        ga_fail(ctx, "after ApplyChanges the endpoint does not present t-withkey (%s)",
+                UA_StatusCode_name(r));
+    else if(h != UA_STATUSCODE_GOOD)
+        ga_fail(ctx, "the endpoint presents t-withkey but the handshake fails: %s",
+                UA_StatusCode_name(h));
+    else
+        ga_pass(ctx, "t-withkey with its %s key in use; a session that trusts only the test CA "
+                     "connects",
+                fmt);
+}
+
+static void t_update_bad_key(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    char fmt[40];
+    if(!first_key_format(ctx, t, fmt, sizeof(fmt)) || !ca_trusted(ctx, t))
+        return;
+    gds_buf cert = {0}, pem = {0}, other = {0}, otherPem = {0};
+    gds_status gs = st_withkey(t, &cert, &pem);
+    if(gs == GDS_OK)
+        gs = st_withkey(t, &other, &otherPem);
+    gds_buf_free_secret(&pem);
+    gds_buf_free(&other);
+    if(gs != GDS_OK) {
+        gds_buf_free(&cert);
+        gds_buf_free_secret(&otherPem);
+        ga_not_tested(ctx, "setup: two t-withkey certificates: %s", gds_status_name(gs));
+        return;
+    }
+    bool acr = false;
+    UA_StatusCode r = st_update_cert_key(t, t->client, &cert, &t->caDer, 1, fmt, &otherPem, &acr);
+    gds_buf_free_secret(&otherPem);
+    gds_buf_free(&cert);
+    if(r == UA_STATUSCODE_GOOD) {
+        if(t->certQueued)
+            requeue(ctx, t);
+        else
+            st_close(t); /* discards what was queued (12 §7.10.2) */
+        ga_fail(ctx, "UpdateCertificate accepted a %s private key of another certificate", fmt);
+    } else if(r == UA_STATUSCODE_BADNOTSUPPORTED)
+        ga_pass(ctx, "a private key that does not match -> Bad_NotSupported");
+    else
+        ga_warn(ctx, "a private key that does not match refused with %s (Bad_NotSupported "
+                     "expected)",
+                UA_StatusCode_name(r));
+}
+
+/* ---------------- SRV-UPD-11 to -13: optional ServerConfiguration Methods ---------------- */
+
+/* The Method `name` of ServerConfiguration; Not supported if absent. */
+static bool optional_method(ga_ctx *ctx, srv_target *t, const char *name, UA_NodeId *m) {
+    UA_StatusCode r = st_admin(t);
+    if(r != UA_STATUSCODE_GOOD) {
+        ga_not_tested(ctx, "setup: admin session -> %s", UA_StatusCode_name(r));
+        return false;
+    }
+    r = uac_find_child(t->client, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION), name, m);
+    if(r != UA_STATUSCODE_GOOD) {
+        UA_NodeId_clear(m);
+        ga_not_supported(ctx, "ServerConfiguration has no %s (Optional, 12 §7.10.3)", name);
+        return false;
+    }
+    return true;
+}
+
+static UA_NodeId dag(void) {
+    return UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
+}
+
+static bool same_cert(const UA_ByteString *a, const gds_buf *b) {
+    return a->length == b->len && b->len > 0 && memcmp(a->data, b->data, b->len) == 0;
+}
+
+static void t_update_get_certs(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    UA_NodeId m;
+    if(!optional_method(ctx, t, "GetCertificates", &m))
+        return;
+    gds_buf cur = {0};
+    UA_StatusCode r = st_presented(t, &cur);
+    UA_NodeId g = dag();
+    UA_Variant in;
+    UA_Variant_setScalar(&in, &g, &UA_TYPES[UA_TYPES_NODEID]);
+    size_t outN = 0;
+    UA_Variant *out = NULL;
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Client_call(t->client, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION), m, 1, &in,
+                           &outN, &out);
+    UA_NodeId_clear(&m);
+    bool shape = r == UA_STATUSCODE_GOOD && outN == 2 &&
+                 UA_Variant_hasArrayType(&out[0], &UA_TYPES[UA_TYPES_NODEID]) &&
+                 UA_Variant_hasArrayType(&out[1], &UA_TYPES[UA_TYPES_BYTESTRING]);
+    bool found = false;
+    for(size_t i = 0; shape && i < out[1].arrayLength && !found; i++)
+        found = same_cert(&((const UA_ByteString *)out[1].data)[i], &cur);
+    if(r != UA_STATUSCODE_GOOD)
+        ga_fail(ctx, "GetCertificates(DefaultApplicationGroup) -> %s", UA_StatusCode_name(r));
+    else if(!shape)
+        ga_fail(ctx, "GetCertificates returned %zu outputs, not NodeId[] and ByteString[]", outN);
+    else if(out[0].arrayLength != out[1].arrayLength)
+        ga_fail(ctx, "%zu CertificateTypeIds but %zu Certificates", out[0].arrayLength,
+                out[1].arrayLength);
+    else if(!found)
+        ga_fail(ctx, "the certificate the endpoint presents is not among the %zu returned",
+                out[1].arrayLength);
+    else
+        ga_pass(ctx, "%zu type(s) and certificate(s), the presented certificate included",
+                out[1].arrayLength);
+    UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
+    gds_buf_free(&cur);
+}
+
+/* A call that must be refused with Bad_InvalidState on the admin session;
+ * a Good on a queued transaction gets t-good queued again. */
+static void expect_invalid_state(ga_ctx *ctx, srv_target *t, const char *name, size_t inN,
+                                 const UA_Variant *in) {
+    UA_NodeId m;
+    if(!optional_method(ctx, t, name, &m))
+        return;
+    size_t outN = 0;
+    UA_Variant *out = NULL;
+    UA_StatusCode r = UA_Client_call(t->client, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION),
+                                     m, inN, in, &outN, &out);
+    UA_NodeId_clear(&m);
+    UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
+    if(r == UA_STATUSCODE_GOOD) {
+        if(t->certQueued)
+            requeue(ctx, t);
+        ga_fail(ctx, "%s on the occupied DefaultApplicationGroup slot in use -> Good", name);
+    } else if(r == UA_STATUSCODE_BADINVALIDSTATE)
+        ga_pass(ctx, "%s -> Bad_InvalidState", name);
+    else
+        ga_warn(ctx, "%s refused with %s (Bad_InvalidState expected)", name, UA_StatusCode_name(r));
+}
+
+static void t_update_self_signed(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    UA_NodeId g = dag(), type = t->certType;
+    if(UA_NodeId_isNull(&type) && st_learn(t, ctx) == UA_STATUSCODE_GOOD)
+        type = t->certType;
+    UA_String subject = UA_STRING_NULL;
+    UA_UInt16 days = TESTCA_MAX_DAYS, bits = 2048;
+    UA_Variant in[6];
+    UA_Variant_setScalar(&in[0], &g, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[1], &type, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[2], &subject, &UA_TYPES[UA_TYPES_STRING]);
+    UA_Variant_setArray(&in[3], UA_EMPTY_ARRAY_SENTINEL, 0, &UA_TYPES[UA_TYPES_STRING]);
+    UA_Variant_setScalar(&in[4], &days, &UA_TYPES[UA_TYPES_UINT16]);
+    UA_Variant_setScalar(&in[5], &bits, &UA_TYPES[UA_TYPES_UINT16]);
+    expect_invalid_state(ctx, t, "CreateSelfSignedCertificate", 6, in);
+}
+
+static void t_update_delete_in_use(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    UA_NodeId g = dag(), type = t->certType;
+    if(UA_NodeId_isNull(&type) && st_learn(t, ctx) == UA_STATUSCODE_GOOD)
+        type = t->certType;
+    UA_Variant in[2];
+    UA_Variant_setScalar(&in[0], &g, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[1], &type, &UA_TYPES[UA_TYPES_NODEID]);
+    expect_invalid_state(ctx, t, "DeleteCertificate", 2, in);
+}
+
 const ga_test srv_update_tests[] = {
     {"SRV-UPD-01", "12 §7.10.5", "UpdateCertificate accepts a valid CA-issued certificate", true,
      false, t_update_valid},
@@ -309,5 +575,15 @@ const ga_test srv_update_tests[] = {
      t_update_ecc},
     {"SRV-UPD-08", "12 §7.10.5; 4 §6.1.3", "An expired certificate is refused", true, false,
      t_update_expired},
+    {"SRV-UPD-09", "12 §7.10.5", "A pushed private key is put in use with its certificate", true,
+     false, t_update_with_key},
+    {"SRV-UPD-10", "12 §7.10.5", "A private key of another certificate is refused", true, false,
+     t_update_bad_key},
+    {"SRV-UPD-11", "12 §7.10.8", "GetCertificates matches the presented certificate", false,
+     false, t_update_get_certs},
+    {"SRV-UPD-12", "12 §7.10.6", "CreateSelfSignedCertificate refuses an occupied slot", true,
+     false, t_update_self_signed},
+    {"SRV-UPD-13", "12 §7.10.7", "DeleteCertificate refuses the certificate in use", true, false,
+     t_update_delete_in_use},
 };
 const size_t srv_update_count = GDS_ARRAY_SIZE(srv_update_tests);

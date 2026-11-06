@@ -147,6 +147,7 @@ int main(int argc, char **argv) {
     cfg.store = st;
     cfg.ca = ca;
     cfg.users = &users;
+    cfg.approval = GDS_APPROVE_RENEWALS; /* the opengds.conf default */
     if(gds_server_new(&cfg, &s) != GDS_OK || add_greet(s) != GDS_OK)
         goto out;
     if(check) {

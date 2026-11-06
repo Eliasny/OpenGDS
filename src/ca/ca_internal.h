@@ -24,5 +24,7 @@ typedef struct {
 GDS_MUST_CHECK gds_status ca_ossl_load_or_issue_crl(ossl_ca *c);
 /* The current CRL; reissued (number + 1) when within a day of nextUpdate. */
 gds_status ca_ossl_get_crl(void *ctx, gds_buf *out);
+/* Add serial to the CRL (idempotent) and reissue it (number + 1). */
+gds_status ca_ossl_revoke(void *ctx, const gds_buf *serial);
 
 #endif

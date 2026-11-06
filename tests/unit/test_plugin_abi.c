@@ -329,7 +329,7 @@ int main(int argc, char **argv) {
     cfg.store = st;
     cfg.ca = ca;
     cfg.users = &users;
-    cfg.autoApprove = true;
+    cfg.approval = GDS_APPROVE_ALL;
     gds_server *s = NULL;
     if(CHECK(gds_server_new(&cfg, &s) == GDS_OK) && s) {
         test_anonymous(s);

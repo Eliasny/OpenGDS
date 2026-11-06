@@ -24,7 +24,8 @@
  *   push_test_server --port 4841 --pki ./pki-push \
  *       [--trust ca.der]... [--crl ca.crl]... \
  *       [--admin user:password]... [--user user:password]...
- *       [--admin-cert gds.der]... [--no-anonymous] [--break <mutant>] [--list-mutants]
+ *       [--admin-cert gds.der]... [--no-anonymous] [--accept-keys] [--break <mutant>]
+ *       [--list-mutants]
  */
 #include <open62541/plugin/accesscontrol_default.h>
 #include <open62541/plugin/create_certificate.h>
@@ -387,7 +388,7 @@ static int usage(const char *argv0) {
     fprintf(stderr,
             "usage: %s [--port N] [--pki DIR] [--trust cert.der]... [--crl x.crl]...\n"
             "          [--admin user:password]... [--user user:password]...\n"
-            "          [--admin-cert gds.der]... [--no-anonymous]\n"
+            "          [--admin-cert gds.der]... [--no-anonymous] [--accept-keys]\n"
             "          [--break MUTANT] [--list-mutants]\n",
             argv0);
     return 2;
@@ -407,6 +408,10 @@ int main(int argc, char **argv) {
         const char *v = i + 1 < argc ? argv[i + 1] : NULL;
         if(!strcmp(a, "--no-anonymous")) {
             allowAnonymous = false;
+            continue;
+        }
+        if(!strcmp(a, "--accept-keys")) { /* SupportedPrivateKeyFormats ["PEM"] */
+            pm_accept_keys(true);
             continue;
         }
         if(!strcmp(a, "--list-mutants")) {

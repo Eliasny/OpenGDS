@@ -15,6 +15,8 @@ static void t_restore(ga_ctx *ctx, void *p) {
     UA_StatusCode r = st_restore(t, why, sizeof(why));
     if(r != UA_STATUSCODE_GOOD)
         ga_fail(ctx, "restore incomplete: %s", why);
+    else if(why[0])
+        ga_warn(ctx, "%s", why); /* SRV-UPD-09, selected by name */
     else
         ga_pass(ctx, "trust list and certificate of the snapshot pushed back and applied");
 }

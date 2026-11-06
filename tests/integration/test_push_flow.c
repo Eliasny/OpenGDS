@@ -4,10 +4,14 @@
  * SPDX-License-Identifier: MPL-2.0
  *
  * Usage: test_push_flow <push_test_server> <work-dir> <port>
+ * (port + 1 runs a second push_test_server for cert-uri-mismatch)
  *
  * Cases (OPC 10000-12 v1.05.07):
  *   untrusted-server  a Server whose certificate is not trusted is refused (no TOFU)
  *   wrong-server-uri  a Server with another ApplicationUri is refused
+ *   cert-uri-mismatch a Server whose certificate (from the trusted CA) names
+ *                     another ApplicationUri than the one it describes itself
+ *                     with is refused (OPC 10000-4 §6.1.3 Table 100 "URI")
  *   not-admin         a CertificateManager without SecurityAdmin is refused (§7.4)
  *   cancel            signing fails after the TrustList was accepted: CancelChanges
  *                     discards it and the TrustList is unchanged (§7.10.2)
@@ -46,6 +50,7 @@ extern char **environ;
 
 #define GDS_URI "urn:opengds:test:gds"
 #define SERVER_URI "urn:opengds:test:pushserver"
+#define OTHER_URI "urn:opengds:test:someone-else"
 
 static int failures = 0;
 
@@ -58,17 +63,25 @@ static void result(const char *name, bool ok, const char *detail) {
 /* Everything the cases share; freed once at exit */
 static struct {
     const char *work;
-    char url[64];
-    pid_t server;
+    char url[64], url2[64];
+    pid_t server, server2;
     testca_t ca, ca2;
-    gds_buf caDer, crlDer, ca2Der, gdsCert, gdsKey, badCert, badKey, serverCert;
+    gds_buf caDer, crlDer, ca2Der, gdsCert, gdsKey, badCert, badKey, serverCert, wrongCert,
+        wrongKey;
 } F;
 
-static void release(void) {
-    if(F.server > 0) {
-        kill(F.server, SIGTERM);
-        waitpid(F.server, NULL, 0);
+static void stop(pid_t pid) {
+    if(pid > 0) {
+        kill(pid, SIGTERM);
+        waitpid(pid, NULL, 0);
     }
+}
+
+static void release(void) {
+    stop(F.server);
+    stop(F.server2);
+    gds_buf_free(&F.wrongCert);
+    gds_buf_free_secret(&F.wrongKey);
     gds_buf_free(&F.caDer);
     gds_buf_free(&F.crlDer);
     gds_buf_free(&F.ca2Der);
@@ -101,15 +114,16 @@ static gds_status make_pki(void) {
                            "urn:opengds:test:intruder", &F.badCert, &F.badKey);
 }
 
-static gds_status start_server(const char *bin, const char *port) {
+static gds_status start_server(const char *bin, const char *port, const char *name,
+                               pid_t *pid) {
     char pki[GDS_MAX_PATH], caf[GDS_MAX_PATH], crlf[GDS_MAX_PATH], gdsf[GDS_MAX_PATH],
         log[GDS_MAX_PATH];
     gds_status s;
-    if((s = gds_path(pki, sizeof(pki), "%s/pki-push", F.work)) != GDS_OK ||
+    if((s = gds_path(pki, sizeof(pki), "%s/pki-%s", F.work, name)) != GDS_OK ||
        (s = gds_path(caf, sizeof(caf), "%s/ca.der", F.work)) != GDS_OK ||
        (s = gds_path(crlf, sizeof(crlf), "%s/ca.crl", F.work)) != GDS_OK ||
        (s = gds_path(gdsf, sizeof(gdsf), "%s/ca/gds.der", F.work)) != GDS_OK ||
-       (s = gds_path(log, sizeof(log), "%s/push_server.log", F.work)) != GDS_OK ||
+       (s = gds_path(log, sizeof(log), "%s/%s_server.log", F.work, name)) != GDS_OK ||
        (s = gds_file_write_atomic(caf, F.caDer.data, F.caDer.len, 0644)) != GDS_OK ||
        (s = gds_file_write_atomic(crlf, F.crlDer.data, F.crlDer.len, 0644)) != GDS_OK)
         return s;
@@ -122,7 +136,7 @@ static gds_status start_server(const char *bin, const char *port) {
     char *argv[] = {(char *)(uintptr_t)bin, "--port", (char *)(uintptr_t)port, "--pki", pki,
                     "--trust", caf, "--crl", crlf, "--admin-cert", gdsf, NULL};
     if(rc == 0)
-        rc = posix_spawn(&F.server, bin, &fa, NULL, argv, environ);
+        rc = posix_spawn(pid, bin, &fa, NULL, argv, environ);
     posix_spawn_file_actions_destroy(&fa);
     return rc == 0 ? GDS_OK : GDS_EIO;
 }
@@ -147,6 +161,36 @@ static gds_status read_server_cert(void) {
     }
     closedir(d);
     return s;
+}
+
+/* pki-wronguri: the Server's own pair is issued by the trusted CA but names
+ * OTHER_URI, while push_test_server describes itself as SERVER_URI */
+static gds_status seed_wrong_uri_store(void) {
+    char d[GDS_MAX_PATH], certs[GDS_MAX_PATH], priv[GDS_MAX_PATH], p[GDS_MAX_PATH];
+    gds_status s;
+    if((s = gds_path(d, sizeof(d), "%s/ca", F.work)) != GDS_OK ||
+       (s = testca_identity(&F.ca, d, "wronguri", "OpenGDS TEST wrong URI", OTHER_URI,
+                            &F.wrongCert, &F.wrongKey)) != GDS_OK ||
+       (s = gds_path(certs, sizeof(certs), "%s/pki-wronguri/ApplCerts/own/certs", F.work)) !=
+           GDS_OK ||
+       (s = gds_path(priv, sizeof(priv), "%s/pki-wronguri/ApplCerts/own/private", F.work)) !=
+           GDS_OK ||
+       (s = gds_mkdirs(certs, 0700)) != GDS_OK || (s = gds_mkdirs(priv, 0700)) != GDS_OK ||
+       (s = gds_path(p, sizeof(p), "%s/wronguri.der", certs)) != GDS_OK ||
+       (s = gds_file_write_atomic(p, F.wrongCert.data, F.wrongCert.len, 0644)) != GDS_OK ||
+       (s = gds_path(p, sizeof(p), "%s/wronguri.key", priv)) != GDS_OK)
+        return s;
+    return gds_file_write_atomic(p, F.wrongKey.data, F.wrongKey.len, 0600);
+}
+
+static gds_status wait_presents(const char *url, const gds_buf *cert) {
+    const struct timespec step = {0, 100L * 1000L * 1000L};
+    for(int i = 0; i < 100; i++) {
+        if(gdsc_wait_presents(url, cert, 0) == UA_STATUSCODE_GOOD)
+            return GDS_OK;
+        nanosleep(&step, NULL);
+    }
+    return GDS_ENOTFOUND;
 }
 
 static gds_status wait_server(void) {
@@ -222,6 +266,16 @@ static void case_wrong_uri(void) {
     gdsc_session *s = NULL;
     UA_StatusCode r = gdsc_session_open(&c, &s);
     result("wrong-server-uri", r == UA_STATUSCODE_BADSERVERURIINVALID, UA_StatusCode_name(r));
+    gdsc_session_close(s);
+}
+
+static void case_cert_uri_mismatch(void) {
+    gdsc_session_cfg c = session_cfg(&F.caDer, 1); /* the chain is fine */
+    c.endpointUrl = F.url2;
+    gdsc_session *s = NULL;
+    UA_StatusCode r = gdsc_session_open(&c, &s);
+    result("cert-uri-mismatch", r == UA_STATUSCODE_BADCERTIFICATEURIINVALID,
+           UA_StatusCode_name(r));
     gdsc_session_close(s);
 }
 
@@ -347,34 +401,45 @@ static void run_cases(void) {
     tl.trustedCrlsSize = 1;
     case_untrusted_server();
     case_wrong_uri();
+    case_cert_uri_mismatch();
     case_not_admin(&tl);
     case_cancel();
     case_push(&tl);
 }
 
 int main(int argc, char **argv) {
-    if(argc != 4 || strlen(argv[3]) > 5) {
+    long port = argc == 4 ? strtol(argv[3], NULL, 10) : 0;
+    if(argc != 4 || port <= 0 || port >= 65535) {
         fprintf(stderr, "usage: %s <push_test_server> <work-dir> <port>\n", argv[0]);
         return 2;
     }
     F.work = argv[2];
     atexit(release);
-    if(gds_path(F.url, sizeof(F.url), "opc.tcp://127.0.0.1:%s", argv[3]) != GDS_OK ||
+    char port2[8];
+    if(gds_path(F.url, sizeof(F.url), "opc.tcp://127.0.0.1:%ld", port) != GDS_OK ||
+       gds_path(F.url2, sizeof(F.url2), "opc.tcp://127.0.0.1:%ld", port + 1) != GDS_OK ||
+       gds_path(port2, sizeof(port2), "%ld", port + 1) != GDS_OK ||
        gds_mkdirs(F.work, 0700) != GDS_OK)
         return 2;
     gds_status s = make_pki();
     if(s == GDS_OK)
-        s = start_server(argv[1], argv[3]);
+        s = seed_wrong_uri_store();
+    if(s == GDS_OK)
+        s = start_server(argv[1], argv[3], "push", &F.server);
+    if(s == GDS_OK)
+        s = start_server(argv[1], port2, "wronguri", &F.server2);
     if(s == GDS_OK)
         s = wait_server();
+    if(s == GDS_OK)
+        s = wait_presents(F.url2, &F.wrongCert);
     if(s != GDS_OK) {
-        fprintf(stderr, "setup failed: %s (see %s/push_server.log)\n", gds_status_name(s),
+        fprintf(stderr, "setup failed: %s (see %s/*_server.log)\n", gds_status_name(s),
                 F.work);
         return 1;
     }
     run_cases();
     if(failures)
-        fprintf(stderr, "%d case(s) failed; server log in %s/push_server.log\n", failures,
+        fprintf(stderr, "%d case(s) failed; server logs in %s/*_server.log\n", failures,
                 F.work);
     return failures ? 1 : 0;
 }

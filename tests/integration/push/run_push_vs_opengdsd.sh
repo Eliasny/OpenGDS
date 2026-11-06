@@ -73,6 +73,7 @@ ca_dir = $W/ca
 signer = $SIGNER
 ca_passphrase_file = $W/ca.pw
 organization = OpenGDS push tracer
+approval = auto
 CONF
 
 echo "=============== 1. opengdsd, and gdsadm's own certificate ==============="

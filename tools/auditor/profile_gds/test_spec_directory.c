@@ -339,7 +339,7 @@ static void t_query_by_uri(ga_ctx *ctx, void *p) {
 }
 
 const ga_test spec_directory_tests[] = {
-    {"gds.dir.find_unknown", "12 §6.5.4", "FindApplications for an unknown URI returns no records",
+    {"gds.dir.find_unknown", "12 §6.5.5", "FindApplications for an unknown URI returns no records",
      false, false, t_find_unknown},
     {"gds.dir.register_valid", "12 §6.5.6", "RegisterApplication stores a valid record",
      true, false, t_register_valid},
