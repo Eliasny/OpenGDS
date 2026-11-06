@@ -148,6 +148,10 @@ gds_status gds_caller_build(gds_server *s, const UA_NodeId *sessionId, const voi
                           ? (gds_security_mode)ss->securityMode
                           : GDS_SECURITY_MODE_INVALID;
     c->securityPolicyUri = b->policyUri ? b->policyUri : "";
+    if(ss->securityMode >= UA_MESSAGESECURITYMODE_SIGN && ss->clientCert.length > 0) {
+        c->clientCertificate = ss->clientCert.data; /* borrowed from the session */
+        c->clientCertificateSize = ss->clientCert.length;
+    }
 
     /* Plugin privileges: providers see the view built so far. */
     for(size_t i = 0; i < s->nPrivProviders && st == GDS_OK; i++) {

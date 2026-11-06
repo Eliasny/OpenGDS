@@ -127,7 +127,11 @@ typedef struct {
     char user[GDS_MAX_USER_NAME + 1];
     unsigned roles;
     UA_String clientAppUri; /* SAN URI of the channel's client certificate */
-    UA_ByteString clientCert; /* that certificate (DER), set with clientAppUri */
+    UA_ByteString clientCert; /* the channel's client certificate (DER), any issuer */
+    /* Set only on a job's copy (gds_embed.c): the embedder's may_manage
+     * hook (A14) allowed this ApplicationId. */
+    bool managedGranted;
+    UA_Guid managedApp;
     UA_MessageSecurityMode securityMode; /* of the session's endpoint */
     UA_String securityPolicyUri;
     gds_tl_handle tl[GDS_SESSION_TL_HANDLES];

@@ -74,6 +74,9 @@ struct gds_server {
     pthread_mutex_t holdLock;
     UA_Guid *holds;
     size_t nHolds, capHolds;
+    /* CertificateManager rights hook (UASM ask A14); fixed before run */
+    gds_may_manage_fn mayManage;
+    void *mayManageCtx;
 };
 
 /* ---- caller views (gds_caller.c, issue #17) ---- */
@@ -110,6 +113,16 @@ void gds_embed_configure(UA_ServerConfig *c, gds_server *s);
 void gds_embed_stop(gds_server *s);
 /* Frees jobs and bindings; after UA_Server_delete. */
 void gds_embed_free(gds_server *s);
+/* A14: the CertificateManager method fn refused the caller for app; ask
+ * the embedder's may_manage hook on a worker and, if it allows, run fn
+ * again on the server thread. Good_CompletesAsynchronously, or
+ * Bad_UserAccessDenied when there is no hook (or it was asked already). */
+GDS_MUST_CHECK UA_StatusCode gds_embed_defer_rights(gds_server *s, UA_MethodCallback fn,
+                                                    const UA_NodeId *sessionId, void *sessionContext,
+                                                    const UA_NodeId *methodId,
+                                                    const UA_NodeId *objectId, const UA_Guid *app,
+                                                    size_t inputSize, const UA_Variant *input,
+                                                    size_t outputSize, UA_Variant *output);
 /* Is a plugin callback bound to this method node? */
 bool gds_embed_bound(gds_server *s, const UA_NodeId *methodId);
 /* Drop the bindings whose method node no longer exists. */

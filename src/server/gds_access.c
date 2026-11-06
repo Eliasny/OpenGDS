@@ -578,11 +578,10 @@ static UA_StatusCode activate(UA_Server *server, UA_AccessControl *ac,
     gds_session *s = *sessionContext;
     if(s != old)
         session_free(old); /* re-activation with a new identity */
-    if(s && s->clientAppUri.length == 0) {
-        s->clientAppUri = cert_app_uri(cert);
-        if(s->clientAppUri.length > 0 &&
-           UA_ByteString_copy(cert, &s->clientCert) != UA_STATUSCODE_GOOD)
-            UA_String_clear(&s->clientAppUri); /* no rights rather than half of them */
+    if(s && s->clientCert.length == 0 && cert && cert->length > 0) {
+        /* any issuer (A14); only a GDS-CA certificate names an application */
+        if(UA_ByteString_copy(cert, &s->clientCert) == UA_STATUSCODE_GOOD)
+            s->clientAppUri = cert_app_uri(cert);
     }
     if(s && ep) {
         s->securityMode = ep->securityMode;
