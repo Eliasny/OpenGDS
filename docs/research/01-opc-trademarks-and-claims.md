@@ -2,7 +2,7 @@
 
 **Question:** can the project use the names "OpenGDS", "OpenGDS Auditor" and "UASM", and the report wording "self-test, not OPC Foundation certification"? What must it avoid?
 
-**Answer:** yes to all four, with the rules below. Not legal advice. Elias decided on 2026-11-06 that trademark use is not a concern, so this note is for reference only, with no lawyer review planned.
+**Answer:** yes to all four, with the rules below.
 
 ## What the Foundation owns
 
