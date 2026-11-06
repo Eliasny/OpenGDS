@@ -5,9 +5,15 @@
  * Ownership: inputs are borrowed. Outputs (records, requests, buffers) are
  * owned by the caller and released with the matching _clear / free.
  *
+ * Backends (UASM ask A4, issue #15): every call dispatches through a
+ * gds_store_backend. SQLite is built in (gds_store_open); a plugin, such as
+ * a replicated store, brings its own with gds_store_open_backend.
+ *
  * Errors: every write may return GDS_ENOTLEADER when a replicated backend
- * (the UASM cluster plugin, issue #15) is not the primary; the server maps it
- * to Bad_InvalidState. The SQLite backend never returns it.
+ * loses or lacks leadership before its commit. The write then changed
+ * nothing. The core maps it to Bad_InvalidState, never retries it locally,
+ * and returns nothing from the refused write to the client ("commit before
+ * return"). The SQLite backend never returns it.
  * SPDX-License-Identifier: MPL-2.0 */
 #ifndef OPENGDS_STORE_H
 #define OPENGDS_STORE_H
@@ -23,7 +29,8 @@
 
 typedef struct gds_store gds_store;
 
-/* Open (and create or migrate) the database at path, mode 0600. */
+/* Open (and create or migrate) the database at path, mode 0640 (group
+ * read for opengds-signer; -wal and -shm follow the same mode). */
 GDS_MUST_CHECK gds_status gds_store_open(const char *path, gds_store **out);
 /* Read-only connection for opengds-signer, which re-reads requests and
  * records instead of trusting opengdsd. Never creates or migrates; refuses
@@ -95,5 +102,45 @@ GDS_MUST_CHECK gds_status gds_store_cert_add(gds_store *s, const UA_Guid *appId,
 GDS_MUST_CHECK gds_status gds_store_cert_latest(gds_store *s, const UA_Guid *appId,
                                                 uint32_t groupId, uint32_t certType, gds_buf *der,
                                                 int64_t *notAfter);
+
+/* ---- backends (issue #15) ----
+ * A backend implements every operation above with the same contract, on
+ * its own context. Every function pointer is required. Each write is one
+ * transaction: it commits fully or changes nothing. The core calls a
+ * backend from one thread at a time (see "Single-writer" above). */
+#define GDS_STORE_ABI_MAJOR 1u
+#define GDS_STORE_ABI_MINOR 0u
+
+typedef struct {
+    uint32_t abi_major;
+    uint32_t abi_minor;
+    size_t struct_size;
+    void (*close)(void *ctx); /* takes ctx */
+    int (*schema_version)(void *ctx);
+    gds_status (*app_insert)(void *ctx, const UA_Guid *id, const UA_ApplicationRecordDataType *rec);
+    gds_status (*app_get)(void *ctx, const UA_Guid *id, UA_ApplicationRecordDataType *out);
+    gds_status (*app_find_uri)(void *ctx, const UA_String *uri, size_t max,
+                               UA_ApplicationRecordDataType **out, size_t *n);
+    gds_status (*app_update)(void *ctx, const UA_Guid *id, const UA_ApplicationRecordDataType *rec);
+    gds_status (*app_delete)(void *ctx, const UA_Guid *id);
+    gds_status (*app_scan)(void *ctx, int64_t fromRecordId, gds_store_scan_cb cb, void *cbCtx);
+    gds_status (*req_insert)(void *ctx, const gds_request *r);
+    gds_status (*req_get)(void *ctx, const UA_Guid *id, gds_request *out);
+    gds_status (*req_next_received)(void *ctx, gds_request *out);
+    gds_status (*req_set_state)(void *ctx, const UA_Guid *id, gds_req_state state,
+                                const gds_buf *cert, UA_StatusCode error);
+    gds_status (*cert_add)(void *ctx, const UA_Guid *appId, uint32_t groupId, uint32_t certType,
+                           const gds_buf *serial, const gds_buf *der, int64_t notBefore,
+                           int64_t notAfter);
+    gds_status (*cert_latest)(void *ctx, const UA_Guid *appId, uint32_t groupId,
+                              uint32_t certType, gds_buf *der, int64_t *notAfter);
+} gds_store_backend;
+
+/* A store on a plugin backend. The vtable is copied; ctx is taken, and
+ * gds_store_close passes it to be->close (also when this call fails).
+ * GDS_EINVAL for another ABI major, a struct_size too small for this
+ * version, or a missing function. */
+GDS_MUST_CHECK gds_status gds_store_open_backend(const gds_store_backend *be, void *ctx,
+                                                 gds_store **out);
 
 #endif

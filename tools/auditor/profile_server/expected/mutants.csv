@@ -37,6 +37,14 @@ lastupdate-frozen,SRV-TL-17,fail
 no-activity-timeout,SRV-TL-18,fail
 size-readable,SRV-TL-19,warn
 updatefreq-readonly,SRV-TL-20,fail
+csr-new-key-always,SRV-CSR-01,fail
+csr-empty-subject,SRV-CSR-02,fail
+csr-no-san,SRV-CSR-03,fail
+csr-regen-ignored,SRV-CSR-04,fail
+csr-short-nonce,SRV-CSR-05,fail
+csr-key-per-session,SRV-CSR-06,fail
+csr-keep-old-new-key,SRV-CSR-07,fail
+csr-any-type,SRV-CSR-08,fail
 update-refuse-valid,SRV-UPD-01,fail
 apply-ignored,SRV-TXN-03,fail
 wire-old-cert,SRV-WIRE-01,fail
