@@ -83,3 +83,7 @@ rejected-not-recorded,SRV-REJ-01,warn
 rejected-records-invalid,SRV-REJ-02,fail
 rejected-garbage,SRV-REJ-03,fail
 group-rejected-broken,SRV-REJ-04,fail
+forget-on-restart,SRV-PER-01,warn
+lastupdate-reset-now,SRV-PER-02,fail
+csr-key-in-ram,SRV-PER-03,fail
+txn-persist-uncommitted,SRV-PER-04,fail

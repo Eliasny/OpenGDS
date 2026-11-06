@@ -311,7 +311,8 @@ getUserExecutableOnObject(UA_Server *server, UA_AccessControl *ac, const UA_Node
  * UpdateCertificate, also when the CSR kept the key (carried patch, see
  * docs/upstream/01-filestore-key-kept-csr.md). Load the newest pair, preferring
  * a CA-issued certificate over the initial self-signed one. */
-static gds_status loadOwnFromStore(const char *pki, gds_buf *certOut, gds_buf *keyOut) {
+static gds_status loadOwnFromStore(const char *pki, bool selfSignedFirst, gds_buf *certOut,
+                                   gds_buf *keyOut) {
     char dir[GDS_MAX_PATH];
     gds_status r;
     if((r = gds_path(dir, sizeof(dir), "%s/ApplCerts/own/certs", pki)) != GDS_OK)
@@ -340,7 +341,7 @@ static gds_status loadOwnFromStore(const char *pki, gds_buf *certOut, gds_buf *k
             gds_buf_free_secret(&k);
             continue;
         }
-        bool issued = !x509_is_self_signed(&c);
+        bool issued = !x509_is_self_signed(&c) != selfSignedFirst; /* forget-on-restart */
         if((!issued && bestIssued) || (issued == bestIssued && best.data && st.st_mtime < bestTime)) {
             gds_buf_free(&c);
             gds_buf_free_secret(&k);
@@ -518,7 +519,8 @@ int main(int argc, char **argv) {
     /* Own certificate: from the store, or a fresh self-signed one */
     gds_buf ownCert = {0}, ownKey = {0};
     UA_ByteString cert = UA_BYTESTRING_NULL, key = UA_BYTESTRING_NULL;
-    if(loadOwnFromStore(pki, &ownCert, &ownKey) == GDS_OK) {
+    bool forget = brk && !strcmp(brk, "forget-on-restart");
+    if(loadOwnFromStore(pki, forget, &ownCert, &ownKey) == GDS_OK) {
         cert.data = ownCert.data;
         cert.length = ownCert.len;
         key.data = ownKey.data;
@@ -555,6 +557,7 @@ int main(int argc, char **argv) {
      * mutant keeps one in push_mgmt.c) */
     theServer = server;
     pm_on_list_installed(reevaluateSessions);
+    pm_store(pki);
     res |= pm_install(server, brk, &key, sessionMode);
     if(res == UA_STATUSCODE_GOOD && pm_breaking("deprecated-policy")) {
         res = UA_ServerConfig_addSecurityPolicyBasic256(config, &cert, &key);

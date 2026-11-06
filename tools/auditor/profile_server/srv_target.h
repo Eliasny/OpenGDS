@@ -55,6 +55,10 @@ typedef struct {
     bool keyReplaced;          /* SRV-UPD-09 put a key of the Auditor's in use */
     bool slow;                 /* --slow: run the tests flagged slow */
     long settleSec;            /* --settle-timeout (catalogue Fixtures), default 300 */
+    const char *restartCmd;    /* --restart-cmd: restarts the target (SRV-PER-*) */
+    bool restarted;            /* SRV-PER-01 restarted the target */
+    bool lutKnown;             /* lutBefore/lutAfter read around that restart */
+    UA_DateTime lutBefore, lutAfter; /* TrustList LastUpdateTime */
     const char *only;          /* --only: tests that run only when selected by name check it */
     char adminPassword[256];
     char userPassword[256];
@@ -196,6 +200,11 @@ GDS_MUST_CHECK UA_StatusCode st_peer_connect(const srv_target *t, const gds_buf 
 /* A refusal that names the certificate or hides it (Part 4 §6.1.3, Part 6
  * §6.7.5), or a closed connection. */
 bool st_cert_refusal(UA_StatusCode r);
+/* Restart the target: run --restart-cmd (sh -c), or ask the operator when
+ * stdin is a terminal; then wait for GetEndpoints within the settle
+ * timeout. The admin session is closed first. Bad_NotSupported: no way to
+ * restart. */
+GDS_MUST_CHECK UA_StatusCode st_restart(srv_target *t, ga_ctx *ctx);
 /* The public key of t->tGood (the key the target uses), or NULL. */
 EVP_PKEY *st_tgood_key(const srv_target *t);
 /* t-withkey: a certificate for the target from the test CA, with a key the
