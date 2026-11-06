@@ -4,7 +4,9 @@
 # src/store/CMakeLists.txt): EL 9 ships 3.34. scripts/release/build-release.sh
 # uses it only there; everywhere else the packages link the system SQLite.
 # Usage: scripts/build_sqlite.sh <prefix> [<workdir>]
-# The tarball is checked against the pinned SHA-256. Built from the
+# The tarball is checked against the pinned SHA-256 (taken from the
+# sqlite.org download over HTTPS on a GitHub runner, 2026-11-06; sqlite.org
+# itself publishes SHA3-256). Built from the
 # amalgamation with the OpenGDS hardening flags and without extension
 # loading (opengdsd never loads SQLite extensions).
 # SPDX-License-Identifier: MPL-2.0
@@ -12,7 +14,7 @@ set -eu
 VERSION=3.50.4
 NUM=3500400
 YEAR=2025
-SHA256=0000000000000000000000000000000000000000000000000000000000000000
+SHA256=a3db587a1b92ee5ddac2f66b3edb41b26f9c867275782d46c3a088977d6a5b18
 PREFIX=${1:?usage: build_sqlite.sh <prefix> [<workdir>]}
 WORK=${2:-$(mktemp -d)}
 mkdir -p "$WORK"
