@@ -21,3 +21,7 @@ add_test(NAME gdsadm_refuses_bad_args COMMAND gdsadm apps list)
 set_tests_properties(gdsadm_refuses_bad_args PROPERTIES WILL_FAIL TRUE)
 add_test(NAME opengdsd_refuses_bad_args COMMAND opengdsd)
 set_tests_properties(opengdsd_refuses_bad_args PROPERTIES WILL_FAIL TRUE)
+
+add_executable(test_push_select test_push_select.c)
+target_link_libraries(test_push_select PRIVATE gds_push)
+add_test(NAME unit_push_select COMMAND test_push_select)

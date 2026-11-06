@@ -10,10 +10,12 @@
  * The trigger makes the client under test do one pull cycle against that
  * GDS and then returns. Without a trigger every test is Not tested.
  * SPDX-License-Identifier: MPL-2.0 */
+#define _POSIX_C_SOURCE 200809L
 #include <openssl/rand.h>
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "client_profile.h"
 #include "common/buf.h"
@@ -21,8 +23,14 @@
 #include "common/safeint.h"
 #include "common/banned.h"
 
-#define CLI_MAX_TESTS 64
+#define CLI_MAX_TESTS 128
 #define CLI_DEFAULT_PORT 4850
+
+static double cli_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
 
 gds_status cli_run_cycle(cli_profile *p, fault_id fault, cli_cycle *out) {
     memset(out, 0, sizeof(*out));
@@ -30,10 +38,14 @@ gds_status cli_run_cycle(cli_profile *p, fault_id fault, cli_cycle *out) {
     fg_behaviour b = fault_behaviour(fault);
     fg_set_behaviour(&b);
     out->first = fg_event_count();
+    out->sessFirst = fg_session_count();
+    out->tStart = cli_now_ms();
     printf("#   cycle %u: fault %s\n", ++p->cycles, fault_name(fault));
     fflush(stdout);
     gds_status r = trig_run(&p->trig, p->user, &out->run);
     out->end = fg_event_count();
+    out->sessEnd = fg_session_count();
+    out->tEnd = cli_now_ms();
     fg_behaviour good = fault_behaviour(FAULT_NONE);
     fg_set_behaviour(&good);
     out->ran = r == GDS_OK;
@@ -54,13 +66,25 @@ static bool cycle_usable(const cli_cycle *c, gds_status r, ga_ctx *ctx) {
     return true;
 }
 
-const cli_cycle *cli_base_cycle(cli_profile *p, ga_ctx *ctx) {
-    static gds_status baseStatus = GDS_OK;
-    if(!p->base.ran && baseStatus == GDS_OK)
-        baseStatus = cli_run_cycle(p, FAULT_NONE, &p->base);
-    if(!cycle_usable(&p->base, baseStatus, ctx))
+static const cli_cycle *shared_once(cli_profile *p, cli_shared which, ga_ctx *ctx) {
+    static const fault_id faults[CLI_SHARED_COUNT] = {FAULT_NONE, FAULT_NONE, FAULT_RENEW};
+    cli_cycle *c = &p->shared[which];
+    if(!c->ran && p->sharedStatus[which] == GDS_OK)
+        p->sharedStatus[which] = cli_run_cycle(p, faults[which], c);
+    if(!cycle_usable(c, p->sharedStatus[which], ctx))
         return NULL;
-    return &p->base;
+    return c;
+}
+
+const cli_cycle *cli_shared_cycle(cli_profile *p, cli_shared which, ga_ctx *ctx) {
+    if(which != CLI_SHARED_BASE && !shared_once(p, CLI_SHARED_BASE, ctx))
+        return NULL;
+    return shared_once(p, which, ctx);
+}
+
+void cli_sessions(const cli_cycle *c, size_t *first, size_t *end) {
+    *first = c->sessFirst;
+    *end = c->sessEnd;
 }
 
 bool cli_cycle_for(cli_profile *p, fault_id fault, ga_ctx *ctx, cli_cycle *out) {
@@ -90,7 +114,11 @@ static size_t collect(ga_test *all) {
     const struct {
         const ga_test *t;
         size_t n;
-    } sets[] = {{cli_csr_tests, cli_csr_count}};
+    } sets[] = {{cli_csr_tests, cli_csr_count},
+                {cli_register_tests, cli_register_count},
+                {cli_pending_tests, cli_pending_count},
+                {cli_renew_tests, cli_renew_count},
+                {cli_trustlist_tests, cli_trustlist_count}};
     size_t n = 0;
     for(size_t s = 0; s < GDS_ARRAY_SIZE(sets); s++)
         for(size_t i = 0; i < sets[s].n && n < CLI_MAX_TESTS; i++)

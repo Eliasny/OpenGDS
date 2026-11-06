@@ -202,6 +202,9 @@ const void *uac_out_scalar(const UA_Variant *out, size_t outSize, size_t i,
     return p;
 }
 
+/* 4 MiB in chunks of at least 1 KiB */
+#define UAC_MAX_TL_READS ((size_t)4096)
+
 UA_StatusCode uac_read_trustlist(UA_Client *c, const UA_NodeId tl, UA_TrustListDataType *out) {
     UA_TrustListDataType_init(out);
     UA_NodeId mOpen, mRead, mClose;
@@ -235,7 +238,13 @@ UA_StatusCode uac_read_trustlist(UA_Client *c, const UA_NodeId tl, UA_TrustListD
     UA_Array_delete(outV, outN, &UA_TYPES[UA_TYPES_VARIANT]);
     outV = NULL;
 
-    for(;;) {
+    /* OPC 10000-20 §4.2.4: a Server may return less than Length; only an
+     * empty ByteString means end of file. Bounded by size and Read count. */
+    for(size_t reads = 0;; reads++) {
+        if(reads == UAC_MAX_TL_READS) {
+            r = UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
+            break;
+        }
         UA_Int32 len = 16384;
         UA_Variant rin[2];
         UA_Variant_setScalar(&rin[0], &handle, &UA_TYPES[UA_TYPES_UINT32]);
@@ -257,7 +266,7 @@ UA_StatusCode uac_read_trustlist(UA_Client *c, const UA_NodeId tl, UA_TrustListD
             r = gds_status_to_ua(s);
             break;
         }
-        if(got < (size_t)len)
+        if(got == 0)
             break;
     }
     uac_info("TrustList.Read             -> %zu bytes", acc.len);

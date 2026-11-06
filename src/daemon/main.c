@@ -25,7 +25,6 @@
 #include "store.h"
 #include "common/banned.h"
 
-#define SIGNER_FD 3
 #define SIGNER_TIMEOUT_MS 30000
 #define MAX_PASSPHRASE 1024
 #define HOST_MAX 256
@@ -42,21 +41,22 @@ static int usage(void) {
     return 2;
 }
 
-/* Child: the socket on fd 3, nothing else inherited, then exec. */
+/* Child: the socket is the only descriptor that survives exec (everything
+ * else is O_CLOEXEC or closed here); its number goes to --fd. */
 static void exec_signer(const gdsd_config *c, int fd, const char *storePath) {
-    if(fd == SIGNER_FD) {
-        if(fcntl(fd, F_SETFD, 0) != 0)
-            _exit(127);
-    } else if(dup2(fd, SIGNER_FD) != SIGNER_FD) {
+    if(fcntl(fd, F_SETFD, 0) != 0)
         _exit(127);
-    }
-    for(int i = SIGNER_FD + 1; i < 1024; i++)
-        (void)close(i);
+    for(int i = 3; i < 1024; i++)
+        if(i != fd)
+            (void)close(i);
+    char fdArg[16];
+    if(gds_path(fdArg, sizeof(fdArg), "%d", fd) != GDS_OK)
+        _exit(127);
     const char *argv[16];
     int n = 0;
     argv[n++] = c->signer;
     argv[n++] = "--fd";
-    argv[n++] = "3";
+    argv[n++] = fdArg;
     argv[n++] = "--store";
     argv[n++] = storePath;
     argv[n++] = "--ca-dir";
