@@ -84,7 +84,12 @@ static gboolean set(const char *s) {
     return s && *s;
 }
 
-static char *check_admin(const AvmPlan *p) {
+static char *check_server(const AvmPlan *p) {
+    if(!set(p->serverCert) && !p->tofu)
+        return g_strdup("Choose the target's certificate, or allow trust on first use "
+                        "(test setups only).");
+    if(set(p->serverCert) && p->tofu)
+        return g_strdup("Choose either a pinned certificate or trust on first use, not both.");
     if(set(p->adminCert) != set(p->adminKey))
         return g_strdup("An admin certificate needs its key, and a key its certificate.");
     if(set(p->adminUser) && !set(p->adminPasswordFile))
@@ -99,13 +104,8 @@ static char *check_target(const AvmPlan *p) {
         return g_strdup("Enter the target's endpoint URL (opc.tcp://host:port).");
     if(set(p->user) && !set(p->passwordFile))
         return g_strdup("A user name needs a password file.");
-    if(p->profile == AVM_PROFILE_SERVER && !set(p->serverCert) && !p->tofu)
-        return g_strdup("Choose the target's certificate, or allow trust on first use "
-                        "(test setups only).");
-    if(p->profile == AVM_PROFILE_SERVER && set(p->serverCert) && p->tofu)
-        return g_strdup("Choose either a pinned certificate or trust on first use, not both.");
     if(p->profile == AVM_PROFILE_SERVER)
-        return check_admin(p);
+        return check_server(p);
     if(p->profile == AVM_PROFILE_GDS && !set(p->trustFiles))
         return g_strdup("Choose at least one CA certificate the GDS is trusted through.");
     return NULL;
