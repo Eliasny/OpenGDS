@@ -12,6 +12,7 @@
 #include "ca.h"
 #include "common/buf.h"
 #include "gds_access.h"
+#include "gds_plugin.h"
 #include "store.h"
 
 typedef struct {
@@ -69,6 +70,13 @@ GDS_MUST_CHECK gds_status gds_server_set_role(gds_server *s, gds_node_role role,
 GDS_MUST_CHECK gds_status gds_server_set_service_level(gds_server *s, UA_Byte level,
                                                        UA_DateTime estimatedReturnTime);
 gds_node_role gds_server_role(gds_server *s);
+
+/* ---- plugin privileges (UASM ask A6, issue #17) ----
+ * Adds a privilege provider (gds_plugin.h); the struct is copied, ctx is
+ * borrowed. Call before gds_server_run. GDS_EINVAL for another ABI major
+ * or a missing grant; GDS_ETOOBIG above 8 providers. */
+GDS_MUST_CHECK gds_status gds_server_add_privilege_provider(gds_server *s,
+                                                            const gds_privilege_provider *p);
 
 /* The underlying open62541 server (tests). */
 UA_Server *gds_server_ua(gds_server *s);
