@@ -53,6 +53,7 @@ typedef struct {
     double tOpen, tClose;         /* monotonic ms */
     bool closed;                  /* CloseSession or timeout */
     bool killed;                  /* closed by the fake GDS (CLI-FLT-09) */
+    char user[64];                /* UserName token: the user name */
 } fg_session;
 
 /* What FinishRequest issues (CLI-FLT-03..06) */
@@ -132,6 +133,7 @@ typedef struct {
     unsigned hangFinishMs;      /* FinishRequest does not answer for this long (or until the client is gone) */
     double updateFrequencyMs;   /* TrustList UpdateFrequency (12 §7.8.2.1); 0: none */
     long issueLifetimeS;        /* FG_ISSUE_SHORT: the certificate expires this long after issue */
+    bool refuseAnonymous;       /* ActivateSession refuses Anonymous (credentials needed) */
 } fg_behaviour;
 
 typedef struct {
@@ -171,6 +173,11 @@ const char *fg_url(void);
 const char *fg_ca_path(void);
 const char *fg_crl_path(void);
 const char *fg_password_path(void);
+/* A second user, "operator", whose password the trigger hook types at the
+ * client's prompt (CLI-REG-05); the password itself for the file scan */
+#define FG_OPERATOR_USER "operator"
+const char *fg_operator_password_path(void);
+const char *fg_operator_password(void);
 
 /* The NodeIds the fake GDS offers (GDS namespace bound at start) */
 UA_NodeId fg_default_group(void);

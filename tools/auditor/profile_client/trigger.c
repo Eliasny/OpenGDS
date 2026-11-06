@@ -71,6 +71,8 @@ static gds_status build_env(trig_env *e, const trig_cfg *cfg, const char *user) 
     if(r == GDS_OK) r = env_add(e, "GDSAUDIT_CLIENT_DIR", cfg->clientDir);
     if(r == GDS_OK) r = env_add(e, "GDSAUDIT_ACTION", cfg->action);
     if(r == GDS_OK && cfg->probeUrl) r = env_add(e, "GDSAUDIT_PROBE_URL", cfg->probeUrl);
+    if(r == GDS_OK) r = env_add(e, "GDSAUDIT_PROMPT_USER", cfg->promptUser);
+    if(r == GDS_OK) r = env_add(e, "GDSAUDIT_PROMPT_PASSWORD_FILE", cfg->promptPasswordFile);
     char rs[24];
     if(r == GDS_OK && cfg->runSeconds > 0 &&
        (r = gds_path(rs, sizeof(rs), "%ld", cfg->runSeconds)) == GDS_OK)

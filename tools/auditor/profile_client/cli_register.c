@@ -1,13 +1,17 @@
 /* OpenGDS Auditor client profile - Registration (CLI-REG-*).
  * Rows of docs/auditor/client-profile.md, "Registration (cli_register.c)".
- * CLI-REG-05 (prompted credentials) comes with the operator hook.
  * SPDX-License-Identifier: MPL-2.0 */
+#define _GNU_SOURCE /* memmem */
 #include <open62541/client.h>
 #include <open62541/client_config_default.h>
 
+#include <ftw.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "client_profile.h"
+#include "common/buf.h"
+#include "common/limits.h"
 #include "common/banned.h"
 
 /* The RegisterApplication call of the first cycle that created the record */
@@ -154,10 +158,80 @@ static void t_reg_urls(ga_ctx *ctx, void *profile) {
         ga_pass(ctx, "%zu DiscoveryUrl(s) answer GetEndpoints as %s", n, ev->appUri);
 }
 
+/* Does any file below `dir` contain `needle`? (nftw walk, no links) */
+static struct {
+    const char *needle;
+    char hit[GDS_MAX_PATH];
+} scan;
+
+static int scan_file(const char *path, const struct stat *st, int type, struct FTW *ftw) {
+    (void)ftw;
+    if(type != FTW_F || !S_ISREG(st->st_mode))
+        return 0;
+    gds_buf b = {0};
+    size_t n = strlen(scan.needle);
+    bool found = gds_file_read(path, (size_t)4 * 1024 * 1024, &b) == GDS_OK && b.len >= n &&
+                 memmem(b.data, b.len, scan.needle, n) != NULL;
+    gds_buf_free_secret(&b);
+    if(found && gds_path(scan.hit, sizeof(scan.hit), "%s", path) != GDS_OK)
+        scan.hit[0] = '\0';
+    return found ? 1 : 0;
+}
+
+static bool dir_contains(const char *dir, const char *needle, char *hit, size_t hitLen) {
+    scan.needle = needle;
+    scan.hit[0] = '\0';
+    bool found = nftw(dir, scan_file, 16, FTW_PHYS) == 1;
+    if(found && gds_path(hit, hitLen, "%s", scan.hit) != GDS_OK)
+        hit[0] = '\0';
+    return found;
+}
+
+/* CLI-REG-05: credentials an operator typed at the client's prompt in one
+ * cycle are not used again in the next (Annex G.1). Anonymous is refused in
+ * both cycles so that the client has to authenticate. */
+static void t_reg_prompt(ga_ctx *ctx, void *profile) {
+    cli_profile *p = profile;
+    if(!cli_base_cycle(p, ctx))
+        return;
+    p->trig.promptUser = FG_OPERATOR_USER;
+    p->trig.promptPasswordFile = fg_operator_password_path();
+    cli_cycle a, b;
+    bool ran = cli_cycle_for(p, FAULT_REFUSE_ANONYMOUS, ctx, &a);
+    p->trig.promptUser = NULL;
+    p->trig.promptPasswordFile = NULL;
+    if(!ran)
+        return;
+    size_t first, end, used = 0;
+    cli_sessions(&a, &first, &end);
+    for(size_t i = first; i < end; i++)
+        used += strcmp(fg_session_at(i)->user, FG_OPERATOR_USER) == 0;
+    if(!used) {
+        ga_not_tested(ctx, "the client did not use the credentials typed at its prompt");
+        return;
+    }
+    if(!cli_cycle_for(p, FAULT_REFUSE_ANONYMOUS, ctx, &b))
+        return;
+    char hit[GDS_MAX_PATH] = "";
+    cli_sessions(&b, &first, &end);
+    for(size_t i = first; i < end; i++)
+        if(strcmp(fg_session_at(i)->user, FG_OPERATOR_USER) == 0) {
+            ga_fail(ctx, "the next cycle, without an operator, logged in as %s again: the "
+                         "prompted credentials were kept", FG_OPERATOR_USER);
+            return;
+        }
+    if(dir_contains(p->trig.clientDir, fg_operator_password(), hit, sizeof(hit)))
+        ga_fail(ctx, "the prompted password is stored in %s", hit);
+    else
+        ga_pass(ctx, "the prompted credentials were used once, not again and not stored in the "
+                     "client directory");
+}
+
 const ga_test cli_register_tests[] = {
     {"CLI-REG-01", "12 §6.5.5, §6.5.6; 6 §6.2.2", "ApplicationUri of the record matches the certificate", false, true, t_reg_uri},
     {"CLI-REG-02", "12 §6.5.5", "ApplicationType matches what the application is", false, true, t_reg_type},
     {"CLI-REG-03", "12 §6.5.5", "Every DiscoveryUrl answers with the record's ApplicationUri", false, true, t_reg_urls},
     {"CLI-REG-04", "12 §6.5.4, §6.5.6", "A second cycle copes with the existing record", false, true, t_reg_again},
+    {"CLI-REG-05", "12 Annex G.1", "Credentials typed at the prompt are not kept", false, true, t_reg_prompt},
 };
 const size_t cli_register_count = GDS_ARRAY_SIZE(cli_register_tests);

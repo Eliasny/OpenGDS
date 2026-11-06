@@ -37,6 +37,7 @@ typedef enum {
     FAULT_PENDING_HOLD,   /* a new request; FinishRequest says Bad_NothingToDo all cycle */
     FAULT_UPDATE_FREQUENCY, /* TrustList UpdateFrequency set (the run sets the value) */
     FAULT_ISSUE_SHORT,    /* a new request; a certificate that expires soon (the run sets when) */
+    FAULT_REFUSE_ANONYMOUS, /* ActivateSession refuses Anonymous: the client needs credentials */
     FAULT_COUNT
 } fault_id;
 

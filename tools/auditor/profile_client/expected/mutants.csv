@@ -54,3 +54,4 @@ install-in-ram,CLI-INS-03,fail
 pending-forget,CLI-PEN-04,warn
 -,CLI-REG-03,pass,--discovery-url opc.tcp://localhost:4857
 register-bad-url,CLI-REG-03,fail,--discovery-url opc.tcp://localhost:4857
+persist-prompted-creds,CLI-REG-05,fail,

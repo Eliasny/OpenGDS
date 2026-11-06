@@ -86,6 +86,7 @@ static struct {
                                   const UA_ExtensionObject *, void **);
     void (*origClose)(UA_Server *, UA_AccessControl *, const UA_NodeId *, void *);
     char url[64], caPath[GDS_MAX_PATH], crlPath[GDS_MAX_PATH], pwPath[GDS_MAX_PATH];
+    char opPath[GDS_MAX_PATH], opPassword[33];
 } G;
 
 static const char *const methodNames[FG_M_COUNT] = {
@@ -129,6 +130,8 @@ const char *fg_url(void) { return G.url; }
 const char *fg_ca_path(void) { return G.caPath; }
 const char *fg_crl_path(void) { return G.crlPath; }
 const char *fg_password_path(void) { return G.pwPath; }
+const char *fg_operator_password_path(void) { return G.opPath; }
+const char *fg_operator_password(void) { return G.opPassword; }
 
 static UA_StatusCode touch_trustlist(bool newTime) {
     if(newTime || !G.tlTime)
@@ -818,8 +821,14 @@ static gds_status write_files(const fg_config *cfg) {
     if((r = gds_path(caDir, sizeof(caDir), "%s/ca", cfg->workDir)) != GDS_OK ||
        (r = gds_path(G.caPath, sizeof(G.caPath), "%s/ca.der", caDir)) != GDS_OK ||
        (r = gds_path(G.crlPath, sizeof(G.crlPath), "%s/ca.crl", caDir)) != GDS_OK ||
-       (r = gds_path(G.pwPath, sizeof(G.pwPath), "%s/registrar.pw", cfg->workDir)) != GDS_OK)
+       (r = gds_path(G.pwPath, sizeof(G.pwPath), "%s/registrar.pw", cfg->workDir)) != GDS_OK ||
+       (r = gds_path(G.opPath, sizeof(G.opPath), "%s/operator.pw", cfg->workDir)) != GDS_OK)
         return r;
+    unsigned char rnd[16];
+    if(RAND_bytes(rnd, sizeof(rnd)) != 1 ||
+       (r = gds_hex(rnd, sizeof(rnd), G.opPassword, sizeof(G.opPassword))) != GDS_OK ||
+       (r = gds_file_write_atomic(G.opPath, G.opPassword, strlen(G.opPassword), 0600)) != GDS_OK)
+        return r != GDS_OK ? r : GDS_ECRYPTO;
     if((r = testca_load_or_create(&G.ca, caDir, "OpenGDS Auditor TEST fake GDS CA")) != GDS_OK)
         return r;
     if((r = testca_crl_der(&G.ca, &crl)) == GDS_OK)
@@ -863,6 +872,8 @@ static UA_StatusCode fg_activate(UA_Server *server, UA_AccessControl *ac,
                                  const UA_EndpointDescription *ep, const UA_ByteString *cert,
                                  const UA_NodeId *sessionId, const UA_ExtensionObject *token,
                                  void **sessionContext) {
+    if(G.b.refuseAnonymous && token_type(token) == FG_TOKEN_ANONYMOUS)
+        return UA_STATUSCODE_BADIDENTITYTOKENREJECTED;
     UA_StatusCode r = G.origActivate(server, ac, ep, cert, sessionId, token, sessionContext);
     if(r != UA_STATUSCODE_GOOD || find_session(sessionId) != FG_NO_SESSION ||
        G.sessN == FG_MAX_SESSIONS)
@@ -877,6 +888,13 @@ static UA_StatusCode fg_activate(UA_Server *server, UA_AccessControl *ac,
         s->policy[ep->securityPolicyUri.length] = '\0';
     }
     s->token = token_type(token);
+    if(s->token == FG_TOKEN_USERNAME) {
+        const UA_UserNameIdentityToken *u = token->content.decoded.data;
+        size_t n = u->userName.length < sizeof(s->user) - 1 ? u->userName.length : sizeof(s->user) - 1;
+        if(n)
+            memcpy(s->user, u->userName.data, n);
+        s->user[n] = '\0';
+    }
     s->tOpen = now_ms();
     if(cert && cert->length && cert->length <= GDS_MAX_CERT_SIZE) {
         gds_buf c = {cert->data, cert->length};
@@ -934,13 +952,14 @@ static UA_StatusCode configure(UA_ServerConfig *config, const fg_config *cfg, co
     UA_CertificateGroup_AcceptAll(&config->secureChannelPKI);
     config->sessionPKI.clear(&config->sessionPKI);
     UA_CertificateGroup_AcceptAll(&config->sessionPKI);
-    UA_UsernamePasswordLogin login = {UA_STRING((char *)(uintptr_t)cfg->user),
-                                      UA_STRING((char *)(uintptr_t)cfg->password)};
+    UA_UsernamePasswordLogin login[2] = {
+        {UA_STRING((char *)(uintptr_t)cfg->user), UA_STRING((char *)(uintptr_t)cfg->password)},
+        {UA_STRING(FG_OPERATOR_USER), UA_STRING(G.opPassword)}};
     config->accessControl.clear(&config->accessControl);
     UA_String policy = UA_STRING_STATIC("http://opcfoundation.org/UA/SecurityPolicy#Aes256_Sha256_RsaPss");
     /* Anonymous too: a client that holds its certificate renews as
      * ApplicationSelfAdmin (Annex G.1) */
-    UA_StatusCode r2 = UA_AccessControl_default(config, true, &policy, 1, &login);
+    UA_StatusCode r2 = UA_AccessControl_default(config, true, &policy, 2, login);
     if(r2 != UA_STATUSCODE_GOOD)
         return r2;
     G.origActivate = config->accessControl.activateSession;

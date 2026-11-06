@@ -90,7 +90,7 @@ static const char *const mutants[] = {
     "parse-garbage",      "no-length-check",     "reconnect-storm",    "install-partial-trustlist",
     "pending-stuck-invalid", "no-call-timeout", "install-no-chain", "install-in-ram",
     "pending-forget",     "register-bad-url",    "no-cycle-jitter",    "ignore-update-frequency",
-    "no-expiry-renewal"};
+    "no-expiry-renewal",  "persist-prompted-creds"};
 
 static bool is_mutant(const char *name) {
     return mutant && strcmp(mutant, name) == 0;
@@ -1016,7 +1016,7 @@ int main(int argc, char **argv) {
     long pollSeconds = 60;
     char password[MAX_PASSWORD] = "";
     const char *discoveryUrl = NULL;
-    bool fromEnv = false;
+    bool fromEnv = false, prompted = false;
 
     for(int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -1029,6 +1029,12 @@ int main(int argc, char **argv) {
             if((e = getenv("GDSAUDIT_GDS_PASSWORD_FILE"))) passwordFile = e;
             if((e = getenv("GDSAUDIT_GDS_CA")) && trustN < MAX_TRUST) trustFiles[trustN++] = e;
             if((e = getenv("GDSAUDIT_GDS_CRL")) && crlN < MAX_TRUST) crlFiles[crlN++] = e;
+            /* what an operator typed at our prompt: this cycle only (Annex G.1) */
+            if(getenv("GDSAUDIT_PROMPT_USER") && getenv("GDSAUDIT_PROMPT_PASSWORD_FILE")) {
+                user = getenv("GDSAUDIT_PROMPT_USER");
+                passwordFile = getenv("GDSAUDIT_PROMPT_PASSWORD_FILE");
+                prompted = true;
+            }
             continue;
         }
         const char *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -1071,6 +1077,34 @@ int main(int argc, char **argv) {
     if(user && !password[0]) {
         fprintf(stderr, "--user needs --password-file or --password\n");
         return 2;
+    }
+    if(prompted)
+        uac_info("using the credentials typed at the prompt (user %s), for this cycle only", user);
+    if(is_mutant("persist-prompted-creds")) {
+        static char savedUser[64];
+        char sp[GDS_MAX_PATH];
+        gds_buf b = {0};
+        if(pki_file(pki, "saved-login", sp, sizeof(sp)) != GDS_OK)
+            return 2;
+        if(prompted) {
+            char line[64 + MAX_PASSWORD + 2];
+            if(gds_path(line, sizeof(line), "%s\n%s", user, password) != GDS_OK ||
+               gds_file_write_atomic(sp, line, strlen(line), 0600) != GDS_OK)
+                return 2;
+            uac_info("MUTANT: the prompted credentials are kept");
+        } else if(gds_file_read(sp, sizeof(savedUser) + MAX_PASSWORD, &b) == GDS_OK) {
+            const uint8_t *nl = memchr(b.data, '\n', b.len);
+            size_t un = nl ? (size_t)(nl - b.data) : 0, pn = nl ? b.len - un - 1 : 0;
+            if(nl && un < sizeof(savedUser) && pn < sizeof(password)) {
+                memcpy(savedUser, b.data, un);
+                savedUser[un] = '\0';
+                memcpy(password, nl + 1, pn);
+                password[pn] = '\0';
+                user = savedUser;
+                uac_info("MUTANT: logging in with the kept credentials of %s", user);
+            }
+        }
+        gds_buf_free_secret(&b);
     }
 
     {

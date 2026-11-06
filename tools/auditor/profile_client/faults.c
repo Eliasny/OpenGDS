@@ -10,7 +10,7 @@ static const char *const names[FAULT_COUNT] = {"none", "renew", "sign-uri-invali
     "tl-with-x", "tl-main", "tl-issuer-y", "issue-untrusted", "issue-wrong-key", "issue-wrong-uri",
     "issue-expired", "gds-rogue", "gds-revoked", "gds-expired", "gds-wronguri",
     "tl-revoking", "tl-garbage", "huge-issuers", "tl-over-read", "close-sessions",
-    "drop-after-sign", "tl-drop", "finish-hang", "issue-intermediate", "pending-hold", "update-frequency", "issue-short"};
+    "drop-after-sign", "tl-drop", "finish-hang", "issue-intermediate", "pending-hold", "update-frequency", "issue-short", "refuse-anonymous"};
 
 const char *fault_name(fault_id f) {
     return (unsigned)f < FAULT_COUNT ? names[f] : "?";
@@ -117,6 +117,9 @@ fg_behaviour fault_behaviour(fault_id f) {
     case FAULT_ISSUE_INTERMEDIATE:
         b.forceUpdateRequired = true;
         b.issue = FG_ISSUE_INTERMEDIATE;
+        break;
+    case FAULT_REFUSE_ANONYMOUS:
+        b.refuseAnonymous = true;
         break;
     case FAULT_UPDATE_FREQUENCY:
         break; /* cli_run_cycle sets updateFrequencyMs */

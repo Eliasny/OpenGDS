@@ -22,6 +22,8 @@ typedef struct {
     const char *action;   /* GDSAUDIT_ACTION: NULL (a pull cycle), "probe" or "restart" */
     const char *probeUrl; /* GDSAUDIT_PROBE_URL with action "probe" */
     long runSeconds;      /* GDSAUDIT_RUN_SECONDS with action "run" (own schedule) */
+    const char *promptUser;         /* GDSAUDIT_PROMPT_USER: what an operator types this cycle */
+    const char *promptPasswordFile; /* GDSAUDIT_PROMPT_PASSWORD_FILE: its password */
 } trig_cfg;
 
 typedef struct {
@@ -37,7 +39,10 @@ typedef struct {
  * GDSAUDIT_ACTION=restart asks for a restart of the client (12 §7.6: what
  * it persisted must survive); exit 0 when done, nonzero when unsupported.
  * GDSAUDIT_ACTION=run with GDSAUDIT_RUN_SECONDS lets the client run its
- * cycles on its own schedule for that long, then end. */
+ * cycles on its own schedule for that long, then end.
+ * GDSAUDIT_PROMPT_USER and GDSAUDIT_PROMPT_PASSWORD_FILE, given for one
+ * cycle only, are what an operator types at the client's credential prompt
+ * (Annex G.1); the hook hands them to the client's prompt. */
 GDS_MUST_CHECK gds_status trig_run(const trig_cfg *cfg, const char *user, trig_result *res);
 /* Is the hook of the running trig_run still alive? (does not reap it) */
 bool trig_child_running(void);
