@@ -36,7 +36,7 @@ Checked on `origin/1.5` `9a3f02a6d`, Ubuntu 24.04, GCC 13, OpenSSL 3.0.13, Debug
 - **Push engine (`src/push/push_session.c`): exposed, fixed.** It compared the ApplicationUri from GetEndpoints with the expected one, but never looked at the certificate. `push_session_open` now records the certificate the client verifies on the SecureChannel (a thin wrapper around the client's CertificateGroup), and after connecting it checks that the Server describes itself with the expected ApplicationUri and that the certificate names it. Otherwise it closes with `Bad_ServerUriInvalid` or `Bad_CertificateUriInvalid`. This does not depend on the library fix. New integration case `cert-uri-mismatch` in `tests/integration/test_push_flow.c`: a second `push_test_server` whose certificate comes from the trusted CA but names `urn:opengds:test:someone-else`.
 - **`gdsadm`: not exposed.** It works on the local store and opens no OPC UA connection.
 - **Auditor `pull_test_client`:** PR #54 adds the same check there.
-- **Carrying the library fix:** not done, because it would also make PR #54's `no-gds-uri-check` mutant stop tripping (the library would refuse the GDS before the client code runs). That choice is open for Elias.
+- **Carrying the library fix:** not carried. Elias decided (2026-11-06) because the push engine and the Auditor's client check the URI themselves. Carrying it would also stop PR #54's `no-gds-uri-check` mutant from tripping, since the library would refuse the GDS before the client code runs.
 
 ## Draft comment or issue
 

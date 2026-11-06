@@ -16,6 +16,7 @@ CLA bot links it on the PR).
 | O3 | Carry the patches on our pinned v1.5.10 now | Yes, in a separate OpenGDS PR that also removes our workarounds |
 | O4 | Upstream commit authorship | Elias only, no co-author line (the patches are already authored that way) |
 | O5 | Who posts upstream | Elias, from his own account |
+| gap 5 | Carry the client ApplicationUri check (#8478 backport) on v1.5.10 | No: OpenGDS's push engine and the Auditor's client check it themselves |
 | G12 / refresh | Gap 4 (ConditionRefresh EventId): carry it, and when to offer it | Carry it on v1.5.10 now; offer it upstream later, together with the A&C improvements from the approvals spike |
 
 Checked against open62541 master `24fc6b296` (2026-11-06) and our pinned
