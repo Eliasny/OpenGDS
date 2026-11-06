@@ -167,14 +167,11 @@ static void t_update_wrong_uri(ga_ctx *ctx, void *p) {
     bool acr = false;
     r = st_update_cert(t, t->client, &cert, &t->caDer, 1, &acr);
     gds_buf_free(&cert);
-    if(r == UA_STATUSCODE_GOOD) {
-        /* Decision D3: Fail only after a UA-.NETStandard reference run confirms
-         * the reading (§7.10.5 does not ask for the check, Part 6 §6.2.2 does);
-         * until then an accepted certificate is a Warn. */
+    if(r == UA_STATUSCODE_GOOD) { /* decision D3 */
         requeue(ctx, t);
-        ga_warn(ctx, "UpdateCertificate accepted t-wronguri (SAN URI " WRONG_URI "): the target "
-                     "would present a certificate that breaks Part 6 §6.2.2 (Fail once the "
-                     "reference run of decision D3 confirms)");
+        ga_fail(ctx, "UpdateCertificate accepted t-wronguri (SAN URI " WRONG_URI "): the target "
+                     "would present a certificate that breaks Part 6 §6.2.2, and a URI mismatch "
+                     "may not be suppressed (4 §6.1.3 Table 100)");
         return;
     }
     static const UA_StatusCode ok[] = {UA_STATUSCODE_BADCERTIFICATEURIINVALID,
@@ -309,6 +306,12 @@ static void t_update_expired(ga_ctx *ctx, void *p) {
     bool acr = false;
     UA_StatusCode r = st_update_cert(t, t->client, &cert, &t->caDer, 1, &acr);
     gds_buf_free(&cert);
+    if(r == UA_STATUSCODE_GOOD) { /* decision D2 */
+        requeue(ctx, t);
+        ga_warn(ctx, "UpdateCertificate accepted t-expired: Validity Period is a suppressible "
+                     "error (4 §6.1.3 Table 100), which §7.10.5 lets a server ignore");
+        return;
+    }
     expect_refused(ctx, t, r, "t-expired (valid until yesterday)", NULL, 0);
 }
 

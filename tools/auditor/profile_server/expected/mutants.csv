@@ -24,7 +24,7 @@ mask-ignored,SRV-TL-04,fail
 openwithmasks-ignores,SRV-TL-05,warn
 close-applies,SRV-TL-06,fail
 accept-invalid-cert,SRV-TL-07,fail
-accept-expired-ca,SRV-TL-08,fail
+accept-expired-ca,SRV-TL-08,warn
 addcert-noop,SRV-TL-09,fail
 addcert-issuer-allowed,SRV-TL-10,fail
 addcert-no-chain-check,SRV-TL-11,fail
@@ -47,13 +47,12 @@ csr-keep-old-new-key,SRV-CSR-07,fail
 csr-any-type,SRV-CSR-08,fail
 update-refuse-valid,SRV-UPD-01,fail
 update-no-key-check,SRV-UPD-02,fail
-# update-no-uri-check: warn until the reference run of decision D3 confirms the Fail
-update-no-uri-check,SRV-UPD-03,warn
+update-no-uri-check,SRV-UPD-03,fail
 update-trust-issuer-arg,SRV-UPD-04,fail
 update-no-sig-check,SRV-UPD-05,fail
 update-any-type,SRV-UPD-06,fail
 update-type-mismatch,SRV-UPD-07,fail
-update-accept-expired,SRV-UPD-08,fail
+update-accept-expired,SRV-UPD-08,warn
 update-ignore-key,SRV-UPD-09,fail
 update-accept-bad-key,SRV-UPD-10,fail
 getcerts-mismatched,SRV-UPD-11,fail
