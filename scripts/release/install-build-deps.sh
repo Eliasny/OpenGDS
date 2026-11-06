@@ -21,7 +21,7 @@ case "$ID:$ID_LIKE" in
         apt-get update
         apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build git curl ca-certificates perl python3 \
-            libsqlite3-dev libseccomp-dev pkgconf dpkg-dev file
+            libsqlite3-dev libseccomp-dev pkgconf dpkg-dev file openssl
         ;;
     *:*rhel*|*:*fedora*|fedora:*|rhel:*)
         # EL 9's GCC 11 lacks part of the hardening set (docs/architecture.md,
@@ -51,7 +51,8 @@ case "$ID:$ID_LIKE" in
             gcc make cmake ninja-build git curl ca-certificates python3 \
             perl-interpreter perl-FindBin perl-IPC-Cmd perl-File-Compare perl-File-Copy \
             perl-Time-Piece perl-lib \
-            sqlite-devel libseccomp-devel pkgconf-pkg-config rpm-build file findutils diffutils
+            sqlite-devel libseccomp-devel pkgconf-pkg-config rpm-build file findutils diffutils \
+            openssl
         dnf clean all
         ;;
     *)
