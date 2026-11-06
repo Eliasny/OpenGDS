@@ -1,0 +1,45 @@
+From 21c7556a8704712b69e27366a9ac287fa6b2a013 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Elias=20Nyk=C3=A4nen?=
+ <61413159+Eliasny@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 05:29:32 +0000
+Subject: [PATCH] fix(server): keep the EventId of conditions in
+ ConditionRefresh
+
+Backport of the master fix to v1.5.10, library part only. Part 9, 5.5.7
+requires that a refreshed Notification carries the EventId of the original
+Notification; refreshLogic created a new one.
+---
+ src/server/ua_subscription_alarms_conditions.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/src/server/ua_subscription_alarms_conditions.c b/src/server/ua_subscription_alarms_conditions.c
+index 31c444e..56034e9 100644
+--- a/src/server/ua_subscription_alarms_conditions.c
++++ b/src/server/ua_subscription_alarms_conditions.c
+@@ -1764,13 +1764,21 @@ refreshLogic(UA_Server *server, UA_Session *session,
+                 if(!isRetained(server, &triggeredNode))
+                     continue;
+ 
+-                UA_ByteString_clear(&branch->lastEventId);
++                /* Part 9, 5.5.7: the refreshed Notification carries the
++                 * EventId of the original Notification */
++                UA_KeyValuePair eventIdField;
++                eventIdField.key = UA_QUALIFIEDNAME(0, "/EventId");
++                UA_Variant_setScalar(&eventIdField.value, &branch->lastEventId,
++                                     &UA_TYPES[UA_TYPES_BYTESTRING]);
++                UA_KeyValueMap eventIdMap = {1, &eventIdField};
+ 
+                 /* Add the event */
+                 ed.eventInstance = &triggeredNode;
++                ed.eventFields = &eventIdMap;
+                 ed.sourceNode = conditionSource;
+                 ed.eventType = UA_NODEID_NULL; /* overwritten by the EventInstance */
+-                retval = createEvent(server, &ed, &branch->lastEventId);
++                retval = createEvent(server, &ed, NULL);
++                ed.eventFields = NULL;
+                 CONDITION_ASSERT_RETURN_RETVAL(retval, "Events: Could not add the event to a listening node",);
+             }
+         }
+-- 
+2.43.0
+

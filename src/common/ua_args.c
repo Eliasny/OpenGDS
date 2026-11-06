@@ -83,6 +83,7 @@ UA_StatusCode gds_status_to_ua(gds_status s) {
     case GDS_EREMOTE: return UA_STATUSCODE_BADUNEXPECTEDERROR;
     case GDS_EEXISTS: return UA_STATUSCODE_BADALREADYEXISTS;
     case GDS_ENOTLEADER: return UA_STATUSCODE_BADINVALIDSTATE; /* clients retry on the primary */
+    case GDS_EUNSUPPORTED: return UA_STATUSCODE_BADNOTSUPPORTED;
     }
     return UA_STATUSCODE_BADINTERNALERROR;
 }
