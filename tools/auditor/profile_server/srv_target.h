@@ -43,6 +43,7 @@ typedef struct {
     bool snapTaken;
     bool tlPushed;             /* SRV-TL-02 passed: ca is in the applied trust list */
     bool certQueued;           /* SRV-UPD-01 queued t-good in the admin session */
+    bool listQueued;           /* SRV-TXN-02 queued t->queued next to t-good */
     bool applied;              /* SRV-TXN-03 passed: t-good and the queued list are in use */
     bool restored;             /* the snapshot was pushed back */
     bool keyReplaced;          /* SRV-UPD-09 put a key of the Auditor's in use */
@@ -101,6 +102,19 @@ GDS_MUST_CHECK UA_StatusCode st_write_trustlist(UA_Client *c, const UA_TrustList
 GDS_MUST_CHECK UA_StatusCode st_write_trustlist_ex(UA_Client *c, const UA_TrustListDataType *tl,
                                                    size_t chunk, bool update,
                                                    bool *applyRequired, ga_ctx *ctx);
+/* The two halves of st_write_trustlist_ex: Open(0x06) and Write in chunks
+ * (the handle stays open), then Close or CloseAndUpdate. */
+GDS_MUST_CHECK UA_StatusCode st_tl_open_write(UA_Client *c, const UA_TrustListDataType *tl,
+                                              size_t chunk, UA_UInt32 *handle, ga_ctx *ctx);
+GDS_MUST_CHECK UA_StatusCode st_tl_finish(UA_Client *c, UA_UInt32 handle, bool update,
+                                          bool *applyRequired, ga_ctx *ctx);
+/* ApplyChangesRequired as returned by every Good UpdateCertificate and
+ * CloseAndUpdate of the run (SRV-TXN-01). */
+typedef struct {
+    size_t calls, falses;
+    const char *firstFalse; /* the Method of the first FALSE */
+} st_acr_log;
+const st_acr_log *st_acr(void);
 /* OpenWithMasks -> Read until empty -> Close: the file bytes (bounded). */
 GDS_MUST_CHECK UA_StatusCode st_read_trustlist_raw(UA_Client *c, UA_UInt32 masks, gds_buf *raw);
 /* OpenWithMasks -> Read until empty -> Close, decoded and bounded. */

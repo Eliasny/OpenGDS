@@ -56,7 +56,7 @@ Sessions run only over SignAndEncrypt. SecurityPolicy None is open only for Find
 
 | `approval` | Approved on arrival | Waits for an administrator |
 |---|---|---|
-| `renewals` (default) | a request from an application that holds a valid certificate in that group and of that type | every other request |
+| `renewals` (default) | a request from an application over a secure channel that uses its newest valid certificate of that group and type (the holder of the prior certificate) | every other request |
 | `manual` | none | every request |
 | `auto` | every request (test benches) | none |
 
@@ -81,6 +81,15 @@ gdsadm approvals reject ...same options... REQUEST_ID
 A session with the CertificateAuthorityAdmin role calls RevokeCertificate (OPC 10000-12 §7.9.6) on the Directory object with the ApplicationId and the certificate. Bad_NotFound means the application is not registered; Bad_InvalidArgument means this GDS did not issue that certificate to that application. UnregisterApplication revokes every certificate of the application before it deletes the record (§6.5.8).
 
 The store marks the certificate revoked first. Then `opengds-signer` puts its serial on a new CRL (CRL number + 1), and only if the store marks that serial revoked, so `opengdsd` cannot revoke a certificate on its own. Every trust list of the group carries the CA's CRL, so applications see the revocation at their next trust list update. Revoking again succeeds and changes nothing, so a call that failed at the signer can simply be repeated. A revoked certificate stays on the CRL; GetCertificateStatus then answers that an update is required.
+
+With gdsadm, as a user with CertificateAuthorityAdmin (revoke) or DiscoveryAdmin (unregister):
+
+```sh
+gdsadm certs revoke urn:example:device --revoke-cert device-cert.der CONNECTION
+gdsadm apps unregister urn:example:device CONNECTION
+```
+
+CONNECTION is the same as for `gdsadm push now`: `--gds URL --cert DER --key DER --trust DER [--crl DER] --user NAME --password-file FILE`.
 
 ## Inspecting a running GDS
 

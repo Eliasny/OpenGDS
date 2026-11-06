@@ -143,6 +143,7 @@ typedef struct {
      * session keeps only the Anonymous Role (OPC 10000-4 §7.40.5). */
     UA_DateTime notAfter;
     UA_String clientAppUri; /* SAN URI of the channel's client certificate */
+    UA_ByteString clientCert; /* that certificate (DER), set with clientAppUri */
     UA_MessageSecurityMode securityMode; /* of the session's endpoint */
     UA_String securityPolicyUri;
     gds_tl_handle tl[GDS_SESSION_TL_HANDLES];
@@ -179,6 +180,9 @@ static inline bool gds_session_has(const void *sessionContext, unsigned roles) {
 /* The application itself (ApplicationSelfAdmin, OPC 10000-12 §7.2): the
  * session's client certificate carries this ApplicationUri. */
 bool gds_session_is_app(const void *sessionContext, const UA_String *applicationUri);
+/* The session's secure channel uses exactly this certificate (DER), which
+ * the GDS CA issued: the caller holds its private key. */
+bool gds_session_holds_cert(const void *sessionContext, const gds_buf *der);
 
 /* May this session Call on the node (RolePermissions of embedder nodes,
  * gds_nodes.c)? True when the node has none. Thread safe. */

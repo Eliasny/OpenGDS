@@ -48,5 +48,9 @@ AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources @network-io
+SystemCallFilter=~@privileged @resources
+# The signer only talks over the socket systemd hands it on fd 3 (it needs
+# recvmsg/sendmsg/getsockopt from @network-io for that), so it may not open,
+# bind, connect or accept any other socket.
+SystemCallFilter=~socket socketpair connect bind listen accept accept4
 SystemCallErrorNumber=EPERM

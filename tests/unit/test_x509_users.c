@@ -85,6 +85,13 @@ static void *loop_main(void *arg) {
     return NULL;
 }
 
+/* UA_Server_run reads *running without atomics, so the flag is cleared on
+ * the server thread itself, from a callback. */
+static void stop_cb(UA_Server *ua, void *data) {
+    (void)ua;
+    *(UA_Boolean *)data = false;
+}
+
 /* ---- certificates and clients ---- */
 
 static bool make_cert(const char *cn, const char *uri, pair *p) {
@@ -294,7 +301,8 @@ static void serve(fixture *f, gds_server *s, UA_UInt16 port, bool x509) {
     /* the password user is unchanged */
     CHECK_EQ_INT(switch_as(url, &f->app, sc, NULL, NULL), UA_STATUSCODE_GOOD);
     CHECK(last_user_is("pw"));
-    __atomic_store_n(&running, false, __ATOMIC_SEQ_CST);
+    (void)UA_Server_addTimedCallback(gds_server_ua(s), stop_cb, &running,
+                                     UA_DateTime_nowMonotonic(), NULL);
     (void)pthread_join(loop, NULL);
 }
 

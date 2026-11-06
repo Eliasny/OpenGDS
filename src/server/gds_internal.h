@@ -185,9 +185,10 @@ GDS_MUST_CHECK UA_StatusCode gds_approvals_raise(gds_server *s, const gds_reques
 /* The node role changed: re-synchronise the dialogs with the store on the
  * server thread (none on a STANDBY). Any thread. */
 void gds_approvals_role_changed(gds_server *s);
-/* Policy (gds_policy.c): Received (approved) or Pending. Takes storeLock. */
-GDS_MUST_CHECK gds_status gds_policy_initial_state(gds_server *s, const gds_request *q,
-                                                   gds_req_state *out);
+/* Policy (gds_policy.c): Received (approved) or Pending for a request made
+ * by sessionContext. Takes storeLock. */
+GDS_MUST_CHECK gds_status gds_policy_initial_state(gds_server *s, const void *sessionContext,
+                                                   const gds_request *q, gds_req_state *out);
 
 /* Signing worker (gds_certmgr.c). */
 GDS_MUST_CHECK gds_status gds_worker_start(gds_server *s);

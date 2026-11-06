@@ -1,0 +1,5 @@
+# Build context for packaging/docker/Dockerfile: sources only.
+.git
+build*/
+demo-run/
+**/__pycache__

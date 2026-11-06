@@ -238,9 +238,24 @@ UA_StatusCode st_write_trustlist(UA_Client *c, const UA_TrustListDataType *tl, s
     return st_write_trustlist_ex(c, tl, chunk, true, applyRequired, ctx);
 }
 
-UA_StatusCode st_write_trustlist_ex(UA_Client *c, const UA_TrustListDataType *tl, size_t chunk,
-                                    bool update, bool *applyRequired, ga_ctx *ctx) {
-    *applyRequired = false;
+/* ApplyChangesRequired of every UpdateCertificate and CloseAndUpdate (SRV-TXN-01) */
+static st_acr_log acrLog;
+
+const st_acr_log *st_acr(void) {
+    return &acrLog;
+}
+
+static void acr_seen(bool v, const char *what) {
+    acrLog.calls++;
+    if(!v) {
+        acrLog.falses++;
+        acrLog.firstFalse = acrLog.firstFalse ? acrLog.firstFalse : what;
+    }
+}
+
+UA_StatusCode st_tl_open_write(UA_Client *c, const UA_TrustListDataType *tl, size_t chunk,
+                               UA_UInt32 *handle, ga_ctx *ctx) {
+    *handle = 0;
     UA_ByteString file = UA_BYTESTRING_NULL;
     UA_StatusCode r = UA_encodeBinary(tl, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], &file, NULL);
     if(r != UA_STATUSCODE_GOOD)
@@ -284,31 +299,49 @@ UA_StatusCode st_write_trustlist_ex(UA_Client *c, const UA_TrustListDataType *tl
         close_handle(c, h);
         return r;
     }
-    UA_Variant_setScalar(&in[0], &h, &UA_TYPES[UA_TYPES_UINT32]);
+    ga_note(ctx, "Write %zu bytes in %zu chunk(s)", total, chunks);
+    *handle = h;
+    return UA_STATUSCODE_GOOD;
+}
+
+UA_StatusCode st_tl_finish(UA_Client *c, UA_UInt32 h, bool update, bool *applyRequired,
+                           ga_ctx *ctx) {
+    *applyRequired = false;
+    UA_Variant in;
+    UA_Variant_setScalar(&in, &h, &UA_TYPES[UA_TYPES_UINT32]);
+    size_t outN = 0;
+    UA_Variant *out = NULL;
     if(!update) { /* Close discards the written data (12 §7.8.2.1) */
-        r = call(c, tl_node(),
-                 UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_CLOSE,
-                 1, in, 0, &outN, &out);
-        ga_note(ctx, "Write %zu bytes in %zu chunk(s); Close -> %s", total, chunks,
-                UA_StatusCode_name(r));
+        UA_StatusCode r = call(c, tl_node(),
+                               UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_CLOSE,
+                               1, &in, 0, &outN, &out);
+        ga_note(ctx, "Close -> %s", UA_StatusCode_name(r));
         if(r == UA_STATUSCODE_GOOD)
             free_out(out, outN);
         return r;
     }
-    r = call(c, tl_node(),
-             UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_CLOSEANDUPDATE,
-             1, in, 1, &outN, &out);
-    ga_note(ctx, "Write %zu bytes in %zu chunk(s); CloseAndUpdate -> %s", total, chunks,
-            UA_StatusCode_name(r));
+    UA_StatusCode r = call(c, tl_node(),
+                           UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_CLOSEANDUPDATE,
+                           1, &in, 1, &outN, &out);
+    ga_note(ctx, "CloseAndUpdate -> %s", UA_StatusCode_name(r));
     if(r != UA_STATUSCODE_GOOD)
         return r;
     const UA_Boolean *acr = uac_out_scalar(out, outN, 0, &UA_TYPES[UA_TYPES_BOOLEAN]);
-    if(acr)
+    if(acr) {
         *applyRequired = *acr;
-    else
+        acr_seen(*acr, "CloseAndUpdate");
+    } else
         r = UA_STATUSCODE_BADUNEXPECTEDERROR;
     free_out(out, outN);
     return r;
+}
+
+UA_StatusCode st_write_trustlist_ex(UA_Client *c, const UA_TrustListDataType *tl, size_t chunk,
+                                    bool update, bool *applyRequired, ga_ctx *ctx) {
+    *applyRequired = false;
+    UA_UInt32 h = 0;
+    UA_StatusCode r = st_tl_open_write(c, tl, chunk, &h, ctx);
+    return r == UA_STATUSCODE_GOOD ? st_tl_finish(c, h, update, applyRequired, ctx) : r;
 }
 
 static bool lists_in_bounds(const UA_TrustListDataType *l) {
@@ -475,9 +508,10 @@ static UA_StatusCode update_call(UA_Client *c, UA_NodeId type, const gds_buf *ce
     if(r != UA_STATUSCODE_GOOD)
         return r;
     const UA_Boolean *acr = uac_out_scalar(out, outN, 0, &UA_TYPES[UA_TYPES_BOOLEAN]);
-    if(acr)
+    if(acr) {
         *applyRequired = *acr;
-    else
+        acr_seen(*acr, "UpdateCertificate");
+    } else
         r = UA_STATUSCODE_BADUNEXPECTEDERROR;
     free_out(out, outN);
     return r;

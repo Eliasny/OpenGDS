@@ -79,3 +79,6 @@ if(OPENGDS_BUILD_AUDITOR)
     # tracer drives gdsaudit and pull_test_client against opengdsd
     add_subdirectory(tests/integration)
 endif()
+
+# Install rules and packages (.deb, .rpm, .tar.gz); docs/packaging.md
+add_subdirectory(packaging)

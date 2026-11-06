@@ -37,6 +37,17 @@ GDS_MUST_CHECK UA_StatusCode gdsc_register_application(UA_Client *c, UA_UInt16 n
                                                        const UA_ApplicationRecordDataType *rec,
                                                        UA_NodeId *applicationId);
 
+/* UnregisterApplication (12 §6.5.8); the GDS revokes the application's
+ * certificates. */
+GDS_MUST_CHECK UA_StatusCode gdsc_unregister_application(UA_Client *c, UA_UInt16 ns,
+                                                         const UA_NodeId *applicationId);
+
+/* RevokeCertificate (12 §7.9.6): cert (DER) must have been issued by this GDS
+ * to applicationId. */
+GDS_MUST_CHECK UA_StatusCode gdsc_revoke_certificate(UA_Client *c, UA_UInt16 ns,
+                                                     const UA_NodeId *applicationId,
+                                                     const gds_buf *cert);
+
 /* StartSigningRequest (12 §7.9.4) then FinishRequest (§7.9.6) until the
  * request completes or pollSeconds pass (Bad_NothingToDo while pending).
  * certOut: the issued certificate; issuersOut[GDS_MAX_CHAIN_LEN]: its issuer
