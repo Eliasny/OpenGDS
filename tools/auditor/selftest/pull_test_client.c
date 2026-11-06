@@ -340,6 +340,17 @@ static int probe_connect(const char *pki, const char *url, const gds_buf *cert, 
 }
 
 /* Is the issued certificate one we may install? 12 §7.9.5, 4 §6.1.3 */
+/* Signed by one of the trusted CAs or the bootstrap trust */
+static bool signed_by_any(const ptc *x, const gds_buf *c, const gds_buf *cas, size_t n) {
+    for(size_t i = 0; i < n; i++)
+        if(x509_signed_by(c, &cas[i]))
+            return true;
+    for(size_t i = 0; i < x->bootN; i++)
+        if(x509_signed_by(c, &x->boot[i]))
+            return true;
+    return false;
+}
+
 static bool acceptable(const ptc *x, const gds_buf *nc, const gds_buf *reqKey,
                        const UA_ByteString *issuers, size_t nIssuers) {
     if(!is_mutant("install-wrong-key") && !x509_key_matches(nc, reqKey)) {
@@ -364,20 +375,12 @@ static bool acceptable(const ptc *x, const gds_buf *nc, const gds_buf *reqKey,
         return true;
     static gds_buf cas[MAX_DIR_FILES];
     size_t n = load_dir(x->pki, "trusted/certs", cas, MAX_DIR_FILES, GDS_MAX_CERT_SIZE);
-    bool chained = false;
-    for(size_t i = 0; i < n && !chained; i++)
-        chained = x509_signed_by(nc, &cas[i]);
-    for(size_t i = 0; i < x->bootN && !chained; i++)
-        chained = x509_signed_by(nc, &x->boot[i]);
+    bool chained = signed_by_any(x, nc, cas, n);
     /* Through one intermediate from IssuerCertificates (12 §7.9.5) */
     for(size_t i = 0; i < nIssuers && !chained; i++) {
         gds_buf in = {issuers[i].data, issuers[i].length};
-        if(!x509_signed_by(nc, &in) || x509_is_self_signed(&in))
-            continue;
-        for(size_t j = 0; j < n && !chained; j++)
-            chained = x509_signed_by(&in, &cas[j]);
-        for(size_t j = 0; j < x->bootN && !chained; j++)
-            chained = x509_signed_by(&in, &x->boot[j]);
+        chained = x509_signed_by(nc, &in) && !x509_is_self_signed(&in) &&
+                  signed_by_any(x, &in, cas, n);
     }
     free_list(cas, n);
     if(!chained)

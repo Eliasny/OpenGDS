@@ -48,13 +48,15 @@ static UA_StatusCode probe_activate(UA_Server *server, UA_AccessControl *ac,
     UA_StatusCode r = P.origActivate(server, ac, ep, cert, sessionId, token, sessionContext);
     if(r == UA_STATUSCODE_GOOD && !P.connected) {
         P.connected = true;
-        if(cert && cert->length && P.lastChain.len > cert->length &&
-           memcmp(P.lastChain.data, cert->data, cert->length) == 0)
-            cert = NULL; /* the full chain of the same certificate is kept below */
-        if(!cert && gds_buf_dup(P.lastChain.data, P.lastChain.len, &P.clientCert) != GDS_OK)
-            P.clientCert.len = 0;
-        else if(cert && cert->length && cert->length <= GDS_MAX_CERT_SIZE * GDS_MAX_CHAIN_LEN &&
-           gds_buf_dup(cert->data, cert->length, &P.clientCert) != GDS_OK)
+        /* the full chain sent in OpenSecureChannel when it starts with
+         * this certificate; else the certificate alone */
+        gds_buf src = P.lastChain;
+        if(cert && cert->length &&
+           !(P.lastChain.len > cert->length &&
+             memcmp(P.lastChain.data, cert->data, cert->length) == 0))
+            src = (gds_buf){cert->data, cert->length};
+        if(src.len && src.len <= GDS_MAX_CERT_SIZE * GDS_MAX_CHAIN_LEN &&
+           gds_buf_dup(src.data, src.len, &P.clientCert) != GDS_OK)
             P.clientCert.len = 0;
     }
     return r;
