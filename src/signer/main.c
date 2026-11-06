@@ -4,8 +4,10 @@
  *   opengds-signer --fd N --store PATH --ca-dir DIR [--organization O]
  *                  [--passphrase-file F] [--plugin-fd N]
  *
- * --fd is a connected SOCK_SEQPACKET socket to opengdsd (inherited, or from
- * systemd socket activation). The CA key passphrase comes from
+ * --fd is a connected SOCK_SEQPACKET socket to opengdsd: inherited from
+ * opengdsd (`signer` in its configuration), or `--fd systemd` for socket
+ * activation (opengds-signer.socket with Accept=yes, one instance per
+ * opengdsd connection). The CA key passphrase comes from
  * --passphrase-file or $CREDENTIALS_DIRECTORY/ca-passphrase (systemd
  * LoadCredentialEncrypted=); never from argv or the environment.
  * Sandboxing (seccomp, Landlock) follows in the MVP milestone.
@@ -17,6 +19,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "ca.h"
 #include "common/buf.h"
@@ -40,6 +43,19 @@ static int usage(void) {
     return 2;
 }
 
+/* Socket activation (sd_listen_fds protocol, opengds-signer.socket with
+ * Accept=yes): exactly one connected socket on fd 3, meant for this pid. */
+static bool systemd_fd(long *fd) {
+    long pid = 0, n = 0;
+    const char *ep = getenv("LISTEN_PID"); /* not secrets: process ids */
+    const char *en = getenv("LISTEN_FDS");
+    if(!ep || !en || !gds_parse_long(ep, 1, 0x7fffffffL, &pid) || !gds_parse_long(en, 1, 1, &n) ||
+       pid != (long)getpid())
+        return false;
+    *fd = 3; /* SD_LISTEN_FDS_START */
+    return true;
+}
+
 static bool parse_args(int argc, char **argv, options *o) {
     memset(o, 0, sizeof(*o));
     o->fd = -1;
@@ -50,7 +66,9 @@ static bool parse_args(int argc, char **argv, options *o) {
         if(!v)
             return false;
         bool ok = true;
-        if(strcmp(a, "--fd") == 0)
+        if(strcmp(a, "--fd") == 0 && strcmp(v, "systemd") == 0)
+            ok = systemd_fd(&o->fd);
+        else if(strcmp(a, "--fd") == 0)
             ok = gds_parse_long(v, 0, 65535, &o->fd);
         else if(strcmp(a, "--plugin-fd") == 0)
             ok = gds_parse_long(v, 0, 65535, &o->pluginFd);

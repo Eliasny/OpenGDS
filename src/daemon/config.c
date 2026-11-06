@@ -33,6 +33,7 @@ static const field fields[] = {
     F("organization", organization, T_STR, false),
     F("ca_dir", caDir, T_PATH, true),
     F("signer", signer, T_PATH, false),
+    F("signer_socket", signerSocket, T_PATH, false),
     F("ca_passphrase_file", caPassphraseFile, T_PATH, false),
     F("port", port, T_PORT, false),
     F("loopback_only", loopbackOnly, T_BOOL, false),
@@ -149,6 +150,8 @@ gds_status gdsd_config_parse(const char *text, size_t len, gdsd_config *out, uns
             return GDS_EINVAL;
         }
     }
+    if(out->signer[0] && out->signerSocket[0])
+        return GDS_EINVAL; /* one way to reach the signer */
     return GDS_OK;
 }
 

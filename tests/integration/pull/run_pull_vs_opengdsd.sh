@@ -5,6 +5,9 @@
 #   3. restart opengdsd: records, certificates and the GDS's own certificate
 #      persist; the client finds itself registered and up to date
 #   4. gdsadm reads the store while opengdsd runs
+#   5. the production split: opengds-signer socket-activated in its own
+#      process tree (systemd-socket-activate, as opengds-signer.socket does),
+#      opengdsd connecting through signer_socket
 # Usage: run_pull_vs_opengdsd.sh <build-dir> <work-dir> <expected.csv>
 # SPDX-License-Identifier: MPL-2.0
 set -u
@@ -100,4 +103,33 @@ expect "urn:opengds:pull-tracer:gds" "$W/apps.txt"
 expect "valid until" "$W/certs.txt"
 cat "$W/apps.txt"
 stop_gds
+
+echo "=============== 5. socket-activated signer (signer_socket) ==============="
+if command -v systemd-socket-activate > /dev/null 2>&1; then
+    # a short path: sun_path holds at most 107 bytes
+    SOCKDIR=$(mktemp -d /tmp/ogs-pull.XXXXXX)
+    SOCK="$SOCKDIR/signer.sock"
+    systemd-socket-activate --seqpacket -a -l "$SOCK" \
+        "$SIGNER" --fd systemd --store "$W/data/opengds.db" --ca-dir "$W/ca" \
+        --passphrase-file "$W/ca.pw" > "$W/activate.log" 2>&1 &
+    ACT=$!
+    trap 'cleanup; kill "$ACT" 2>/dev/null; rm -rf "$SOCKDIR"; true' EXIT INT TERM
+    i=0
+    until [ -S "$SOCK" ]; do
+        i=$((i + 1)); [ $i -gt 100 ] && fail "socket activation did not listen"; sleep 0.1
+    done
+    sed -e '/^signer = /d' -e '/^ca_passphrase_file = /d' "$W/opengds.conf" > "$W/socket.conf"
+    echo "signer_socket = $SOCK" >> "$W/socket.conf"
+    cp "$W/socket.conf" "$W/opengds.conf"
+    start_gds "$W/gds3.log"
+    "$PULL" --gds "opc.tcp://127.0.0.1:$PORT" --pki "$W/pki-pull2" --trust "$W/ca/ca.der" \
+        --crl "$W/ca/ca.crl" --user registrar --password-file "$W/registrar.pw" \
+        --app-uri "urn:opengds:pull-tracer:second" > "$W/pull3.log" 2>&1 \
+        || { cat "$W/pull3.log" "$W/activate.log"; fail "pull through the socket-activated signer"; }
+    expect "PULL WORKFLOW COMPLETE" "$W/pull3.log"
+    stop_gds
+    kill "$ACT" 2>/dev/null
+else
+    echo "SKIPPED: systemd-socket-activate not installed"
+fi
 echo "PULL TRACER PASSED"

@@ -11,7 +11,10 @@ CertificateManager and the DefaultApplicationGroup trust list
 | `opengdsd` | the store (read-write), its own certificate and key, user sessions | clients over OPC UA; `opengds-signer` over a socketpair |
 | `opengds-signer` | the CA key (decision G1) | `opengdsd` only; the store read-only |
 
-`opengdsd` starts the signer itself when `signer` is set in the configuration. A signing request carries only the request id. The signer reads the record and the CSR from the store itself, so it signs only what the store holds.
+There are two ways to run the signer:
+
+- **Production, `signer_socket`:** systemd runs the signer as its own unit under the `opengds-ca` user (`packaging/systemd/opengds-signer.socket` and `opengds-signer@.service`). `opengdsd` connects to `/run/opengds/signer.sock`, which only `opengds-ca` and the `opengds` group can open. The signer holds the CA passphrase through `LoadCredentialEncrypted=`, so `opengdsd` never sees it. The signer reads the store read-only through its membership in the `opengds` group, so `opengdsd` keeps the store group-readable (umask 027).
+- **`signer`:** `opengdsd` starts the signer itself over a socketpair. This is simpler, but both processes run as the same user. A signing request carries only the request id. The signer reads the record and the CSR from the store itself, so it signs only what the store holds.
 
 Without `signer`, the CA runs inside `opengdsd`. That mode is for development only, and the daemon warns about it at startup.
 
@@ -30,7 +33,7 @@ Without `signer`, the CA runs inside `opengdsd`. That mode is for development on
 
    An application can always manage itself through a client certificate issued by this GDS (ApplicationSelfAdmin).
 
-2. Store the CA key passphrase. Under systemd, use `LoadCredentialEncrypted=ca-passphrase:...` (see `packaging/systemd/opengds.service`). Otherwise use a 0600 file named in `ca_passphrase_file`. The passphrase is never passed on argv or in the environment.
+2. Store the CA key passphrase. Under systemd it belongs to the signer's unit: `systemd-creds encrypt --name=ca-passphrase - /etc/opengds/ca-passphrase.cred` (see `packaging/systemd/opengds-signer@.service`). Otherwise use a 0600 file named in `ca_passphrase_file`. The passphrase is never passed on argv or in the environment.
 
 3. Write `opengds.conf`. Every key is listed in `src/daemon/config.h`, and `packaging/opengds.conf.example` is an example.
 

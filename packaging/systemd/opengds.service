@@ -1,25 +1,26 @@
-# OpenGDS Global Discovery Server. opengdsd starts opengds-signer itself over a
-# socketpair; the CA key passphrase reaches only the signer, through
-# systemd credentials ($CREDENTIALS_DIRECTORY/ca-passphrase), never argv or
-# the environment. Put it in place with:
-#   systemd-creds encrypt --name=ca-passphrase - /etc/opengds/ca-passphrase.cred
+# OpenGDS Global Discovery Server (opengdsd). The CA key lives in
+# opengds-signer@.service under its own user; opengdsd reaches it only
+# through opengds-signer.socket (signer_socket in opengds.conf) and never
+# sees the CA passphrase.
 # SPDX-License-Identifier: MPL-2.0
 [Unit]
 Description=OpenGDS OPC UA Global Discovery Server
 Documentation=https://github.com/Eliasny/OpenGDS
-After=network-online.target
+After=network-online.target opengds-signer.socket
 Wants=network-online.target
+Requires=opengds-signer.socket
 
 [Service]
 Type=simple
 User=opengds
-Group=opengds
 ExecStart=/usr/bin/opengdsd --config /etc/opengds/opengds.conf
-LoadCredentialEncrypted=ca-passphrase:/etc/opengds/ca-passphrase.cred
-StateDirectory=opengds opengds-signer
-StateDirectoryMode=0700
+# The store is group-readable (group opengds) so the signer, whose user
+# opengds-ca is in that group, can re-read every request it signs.
+Group=opengds
+StateDirectory=opengds
+StateDirectoryMode=0750
 ConfigurationDirectory=opengds
-UMask=0077
+UMask=0027
 Restart=on-failure
 RestartSec=2s
 

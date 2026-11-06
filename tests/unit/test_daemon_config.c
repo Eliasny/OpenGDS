@@ -43,6 +43,10 @@ static void test_refused(void) {
     CHECK(parse(BASE "data_dir = /again\n", &c, &line) == GDS_EINVAL && line == 5);
     CHECK(parse(BASE "hostname =\n", &c, &line) == GDS_EINVAL);
     CHECK(parse(BASE "no equals sign\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "signer = /s\nsigner_socket = /run/s.sock\n", &c, &line) == GDS_EINVAL &&
+          line == 0); /* exclusive */
+    CHECK(parse(BASE "signer_socket = /run/opengds/signer.sock\n", &c, &line) == GDS_OK &&
+          strcmp(c.signerSocket, "/run/opengds/signer.sock") == 0);
     CHECK(parse(BASE "hostname = a\x01" "b\n", &c, &line) == GDS_EINVAL);
     CHECK(parse("data_dir = /x\nusers_file = /u\nca_dir = /c\n", &c, &line) == GDS_EINVAL &&
           line == 0); /* application_uri missing */

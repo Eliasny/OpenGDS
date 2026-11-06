@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -91,6 +92,28 @@ static gds_status start_signer(const gdsd_config *c, const char *storePath, pid_
     }
     (void)close(sv[1]);
     return gds_ca_ipc_open(sv[0], SIGNER_TIMEOUT_MS, ca);
+}
+
+/* A signer started by systemd (opengds-signer.socket, Accept=yes): one
+ * connection is one signer instance. Only the opengds and opengds-ca users
+ * can open the socket (SocketMode=0660). */
+static gds_status connect_signer(const char *path, gds_ca **ca) {
+    struct sockaddr_un a;
+    memset(&a, 0, sizeof(a));
+    a.sun_family = AF_UNIX;
+    size_t n = strlen(path);
+    if(n >= sizeof(a.sun_path))
+        return GDS_ETOOBIG;
+    memcpy(a.sun_path, path, n + 1);
+    int fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+    if(fd < 0)
+        return GDS_EIO;
+    if(connect(fd, (const struct sockaddr *)&a, sizeof(a)) != 0) {
+        fprintf(stderr, "opengdsd: signer socket %s: cannot connect\n", path);
+        (void)close(fd);
+        return GDS_EREMOTE;
+    }
+    return gds_ca_ipc_open(fd, SIGNER_TIMEOUT_MS, ca);
 }
 
 static gds_status read_passphrase(const char *file, gds_buf *out) {
@@ -172,7 +195,7 @@ static gds_status start(daemon_state *d) {
         fprintf(stderr, "opengdsd: users file %s: %s\n", d->cfg.usersFile, gds_status_name(r));
         return r;
     }
-    r = gds_mkdirs(d->cfg.dataDir, 0700);
+    r = gds_mkdirs(d->cfg.dataDir, 0750);
     if(r == GDS_OK)
         r = gds_path(storePath, sizeof(storePath), "%s/opengds.db", d->cfg.dataDir);
     if(r == GDS_OK)
@@ -181,8 +204,12 @@ static gds_status start(daemon_state *d) {
         fprintf(stderr, "opengdsd: store in %s: %s\n", d->cfg.dataDir, gds_status_name(r));
         return r;
     }
-    r = d->cfg.signer[0] ? start_signer(&d->cfg, storePath, &d->signer, &d->ca)
-                         : start_inprocess_ca(&d->cfg, &d->ca);
+    if(d->cfg.signerSocket[0])
+        r = connect_signer(d->cfg.signerSocket, &d->ca);
+    else if(d->cfg.signer[0])
+        r = start_signer(&d->cfg, storePath, &d->signer, &d->ca);
+    else
+        r = start_inprocess_ca(&d->cfg, &d->ca);
     if(r != GDS_OK) {
         fprintf(stderr, "opengdsd: CA: %s\n", gds_status_name(r));
         return r;
@@ -225,7 +252,10 @@ static void stop(daemon_state *d) {
 int main(int argc, char **argv) {
     if(argc != 3 || strcmp(argv[1], "--config") != 0)
         return usage();
-    umask(077);
+    /* The store is group-readable: with signer_socket the signer runs as its
+     * own user in the daemon's group and re-reads every request it signs.
+     * Keys are written 0600 explicitly, data_dir/own is 0700. */
+    umask(027);
     install_signals();
     static daemon_state d;
     unsigned line = 0;

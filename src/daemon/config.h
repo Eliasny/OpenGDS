@@ -13,12 +13,17 @@
  *   users_file       = /etc/opengds/users           (required)
  *   organization     = Example Oy                   (O= in issued certificates)
  *   ca_dir           = /var/lib/opengds-signer/ca   (required)
- *   signer           = /usr/libexec/opengds-signer  (default: the CA runs in opengdsd)
+ *   signer           = /usr/libexec/opengds-signer  (opengdsd starts the signer itself)
+ *   signer_socket    = /run/opengds/signer.sock     (connect to a signer started by systemd,
+ *                                                    opengds-signer.socket; production)
+ *   (neither: the CA runs in opengdsd, development only)
  *   ca_passphrase_file = /etc/opengds/ca-passphrase (default: $CREDENTIALS_DIRECTORY/ca-passphrase)
  *   auto_approve     = true                         (T1 default, decision G7)
  *
- * With `signer` set the CA key never enters opengdsd (decision G1); the
- * passphrase file path (not its content) is passed to the signer.
+ * With `signer` or `signer_socket` the CA key never enters opengdsd
+ * (decision G1). With `signer` the passphrase file path (not its content)
+ * is passed to the child; with `signer_socket` the signer's own unit holds
+ * the passphrase and opengdsd never sees it. The two keys are exclusive.
  * SPDX-License-Identifier: MPL-2.0 */
 #ifndef OPENGDS_DAEMON_CONFIG_H
 #define OPENGDS_DAEMON_CONFIG_H
@@ -42,6 +47,7 @@ typedef struct {
     char organization[GDSD_MAX_VALUE];
     char caDir[GDS_MAX_PATH];
     char signer[GDS_MAX_PATH];
+    char signerSocket[GDS_MAX_PATH];
     char caPassphraseFile[GDS_MAX_PATH];
     uint16_t port;
     bool loopbackOnly;
