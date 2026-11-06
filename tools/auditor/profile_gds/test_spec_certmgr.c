@@ -284,7 +284,7 @@ const ga_test spec_certmgr_tests[] = {
      true, false, t_status_new},
     {"gds.cm.bad_csr", "12 §7.9.3", "StartSigningRequest refuses data that is not a CSR",
      true, false, t_bad_csr},
-    {"gds.cm.signing_flow", "12 §7.9.4, §7.9.6, Annex G.1", "Signing flow issues a certificate from the record and the CSR key",
+    {"gds.cm.signing_flow", "12 §7.9.3, §7.9.5, Annex G.1", "Signing flow issues a certificate from the record and the CSR key",
      true, false, t_signing_flow},
     {"gds.cm.csr_wrong_uri", "12 §7.9.3", "A CSR's SAN URI never overrides the registered ApplicationUri",
      true, false, t_csr_wrong_uri},

@@ -7,12 +7,14 @@
  * Request bodies:
  *   SIGN_CSR   requestId (16 bytes). The signer reads the CSR, the record
  *              and the request state from the store itself.
+ *   REVOKE     serialLen u16 | serial. The signer revokes only a serial
+ *              that the store holds and marks revoked.
  *   GET_CHAIN  empty
  *   ISSUE_CRL  empty
  * Reply body: status u32, then on GDS_OK:
  *   SIGN_CSR   notBefore i64 | notAfter i64 | serialLen u16 | serial |
  *              derLen u32 | der
- *   GET_CHAIN, ISSUE_CRL   derLen u32 | der
+ *   GET_CHAIN, ISSUE_CRL, REVOKE   derLen u32 | der (REVOKE: the new CRL)
  * SPDX-License-Identifier: MPL-2.0 */
 #ifndef OPENGDS_SIGNER_PROTO_H
 #define OPENGDS_SIGNER_PROTO_H
@@ -37,16 +39,24 @@
 /* Op codes follow gds_ca_op; GET_CHAIN has no CA operation of its own. */
 typedef enum {
     GDS_SIGP_SIGN_CSR = GDS_CA_OP_SIGN_CSR,
+    GDS_SIGP_REVOKE = GDS_CA_OP_REVOKE,
     GDS_SIGP_ISSUE_CRL = GDS_CA_OP_ISSUE_CRL,
     GDS_SIGP_GET_CHAIN = 5
 } gds_sigp_op;
 
 GDS_MUST_CHECK gds_status gds_sigp_encode_request(gds_sigp_op op, const UA_Guid *requestId,
                                                   gds_buf *out);
+GDS_MUST_CHECK gds_status gds_sigp_encode_revoke(const gds_buf *serial, gds_buf *out);
+/* Decodes any request. serial (may be NULL) receives the REVOKE serial,
+ * owned by the caller. */
+GDS_MUST_CHECK gds_status gds_sigp_decode_request_ex(const uint8_t *msg, size_t len,
+                                                     gds_sigp_op *op, UA_Guid *requestId,
+                                                     gds_buf *serial);
+/* gds_sigp_decode_request_ex without the serial. */
 GDS_MUST_CHECK gds_status gds_sigp_decode_request(const uint8_t *msg, size_t len, gds_sigp_op *op,
                                                   UA_Guid *requestId);
 
-/* issued for SIGN_CSR, der for GET_CHAIN / ISSUE_CRL; both ignored unless
+/* issued for SIGN_CSR, der for GET_CHAIN / ISSUE_CRL / REVOKE; both ignored unless
  * status is GDS_OK. */
 GDS_MUST_CHECK gds_status gds_sigp_encode_reply(gds_sigp_op op, gds_status status,
                                                 const gds_ca_issued *issued, const gds_buf *der,

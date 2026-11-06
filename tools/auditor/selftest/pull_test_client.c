@@ -70,7 +70,8 @@ static const char *const mutants[] = {
     "trustlist-merge",    "issuers-trusted",     "install-ignored",    "renew-keep-old",
     "install-unverified", "install-wrong-key",   "install-wrong-uri",  "install-expired",
     "send-password-untrusted", "trust-any-gds",  "ignore-gds-crl",     "accept-expired-gds",
-    "no-gds-uri-check",   "use-sign-only",       "prefer-deprecated"};
+    "no-gds-uri-check",   "use-sign-only",       "prefer-deprecated",  "ignore-crls",
+    "parse-garbage",      "no-length-check",     "reconnect-storm"};
 
 static bool is_mutant(const char *name) {
     return mutant && strcmp(mutant, name) == 0;
@@ -297,7 +298,7 @@ static int probe_connect(const char *pki, const char *url, const gds_buf *cert, 
     } else {
         tn = load_dir(pki, "trusted/certs", trust, MAX_DIR_FILES, GDS_MAX_CERT_SIZE);
     }
-    cn = load_dir(pki, "trusted/crl", crls, MAX_DIR_FILES, GDS_MAX_CRL_SIZE);
+    cn = is_mutant("ignore-crls") ? 0 : load_dir(pki, "trusted/crl", crls, MAX_DIR_FILES, GDS_MAX_CRL_SIZE);
     if(is_mutant("issuers-trusted")) {
         tn += load_dir(pki, "issuer/certs", trust + tn, MAX_DIR_FILES, GDS_MAX_CERT_SIZE);
         cn += load_dir(pki, "issuer/crl", crls + cn, MAX_DIR_FILES, GDS_MAX_CRL_SIZE);
@@ -413,7 +414,8 @@ static fin_outcome install(const ptc *x, const UA_Variant *out, size_t outN, con
     const void *issuers = NULL;
     size_t nIssuers = 0;
     if(!newCert || newCert->length == 0 || newCert->length > GDS_MAX_CERT_SIZE || outN < 3 ||
-       gds_arg_array(&out[2], &UA_TYPES[UA_TYPES_BYTESTRING], GDS_MAX_CHAIN_LEN, &issuers,
+       gds_arg_array(&out[2], &UA_TYPES[UA_TYPES_BYTESTRING],
+                     is_mutant("no-length-check") ? 100000 : GDS_MAX_CHAIN_LEN, &issuers,
                      &nIssuers) != UA_STATUSCODE_GOOD) {
         fail("FinishRequest result", UA_STATUSCODE_BADUNEXPECTEDERROR);
         return FIN_ERROR;
@@ -645,6 +647,29 @@ static UA_Client *gds_client(const gds_buf *cert, const gds_buf *key, const gds_
     return c;
 }
 
+/* What main holds, freed at exit whichever return it took */
+static struct {
+    gds_buf *cert, *key, *newKey, *pendKey, *trust, *crls;
+    UA_Client **client;
+} held;
+
+static void free_held(void) {
+    if(!held.cert)
+        return;
+    if(held.client && *held.client) {
+        UA_Client_delete(*held.client);
+        *held.client = NULL;
+    }
+    gds_buf_free(held.cert);
+    gds_buf_free_secret(held.key);
+    gds_buf_free_secret(held.newKey);
+    gds_buf_free_secret(held.pendKey);
+    for(size_t i = 0; i < MAX_TRUST; i++) {
+        gds_buf_free(&held.trust[i]);
+        gds_buf_free(&held.crls[i]);
+    }
+}
+
 /* Self-test main: one linear script of steps, kept in one place on purpose. */
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 int main(int argc, char **argv) {
@@ -717,11 +742,19 @@ int main(int argc, char **argv) {
     printf("OpenGDS pull test client (Auditor self-test target)  app=%s  gds=%s\n", appUri, gds);
 
     uac_step("Load identity and the explicitly trusted GDS issuer");
-    gds_buf cert = {0}, key = {0}, newKey = {0}, pendKey = {0};
+    /* static, so that the exit handler can free them on the early error
+     * returns as well (LeakSanitizer turns a leak into a crash exit) */
+    static gds_buf cert, key, newKey, pendKey, trust[MAX_TRUST], crls[MAX_TRUST];
+    held.cert = &cert;
+    held.key = &key;
+    held.newKey = &newKey;
+    held.pendKey = &pendKey;
+    held.trust = trust;
+    held.crls = crls;
+    (void)atexit(free_held);
     gds_status gs = ensureOwnIdentity(pki, &cert, &key);
     if(gs != GDS_OK)
         return failg("own identity", gs);
-    gds_buf trust[MAX_TRUST] = {{0}}, crls[MAX_TRUST] = {{0}};
     for(size_t i = 0; i < trustN; i++)
         if((gs = gds_file_read(trustFiles[i], GDS_MAX_CERT_SIZE, &trust[i])) != GDS_OK)
             return failg(trustFiles[i], gs);
@@ -750,7 +783,8 @@ int main(int argc, char **argv) {
      * ApplicationSelfAdmin (Anonymous); credentials only for the first one,
      * or when the GDS offers no Anonymous token. */
     bool selfAdmin = !x509_is_self_signed(&cert) && !is_mutant("renew-with-password");
-    UA_Client *client = NULL;
+    static UA_Client *client;
+    held.client = &client;
     UA_StatusCode r = UA_STATUSCODE_BADINTERNALERROR;
     for(int attempt = 0; attempt < 2 && r != UA_STATUSCODE_GOOD; attempt++) {
         bool anonymous = attempt == 0 ? (selfAdmin || !user) : false;
@@ -776,9 +810,31 @@ int main(int argc, char **argv) {
         fprintf(stderr, "the GDS certificate does not name the GDS ApplicationUri - not trusted\n");
         UA_Client_disconnect(client);
         UA_Client_delete(client);
+        client = NULL;
         return 1;
     }
     uac_info("connected");
+    if(is_mutant("reconnect-storm")) {
+        /* MUTANT: when the GDS closes the session, reconnect at once, again and again */
+        for(int i = 0; i < 6; i++) {
+            UA_Variant fa;
+            UA_String u = UA_STRING((char *)(uintptr_t)appUri);
+            size_t fN = 0;
+            UA_Variant *fo = NULL;
+            UA_Variant_setScalar(&fa, &u, &UA_TYPES[UA_TYPES_STRING]);
+            UA_UInt16 nsi = 0;
+            if(UA_Client_getNamespaceIndex(client, UA_STRING(GDS_NS_URI), &nsi) == UA_STATUSCODE_GOOD)
+                r = uac_call(client, "FindApplications", UA_NODEID_NUMERIC(nsi, UA_GDSID_DIRECTORY),
+                               UA_NODEID_NUMERIC(nsi, UA_GDSID_DIRECTORY_FINDAPPLICATIONS), 1, &fa, 1,
+                               &fN, &fo);
+            freeOut(&fo, &fN);
+            uac_info("MUTANT: reconnect at once (%s)", UA_StatusCode_name(r));
+            UA_Client_disconnect(client);
+            r = UA_Client_connect(client, gds); /* as ApplicationSelfAdmin */
+            if(r != UA_STATUSCODE_GOOD)
+                return fail("reconnect", r);
+        }
+    }
 
     /* Bind the GDS namespace index at runtime */
     UA_UInt16 ns = 0;
@@ -992,9 +1048,14 @@ int main(int argc, char **argv) {
         uac_info("trust list unchanged since the last download: skipped");
     } else {
         UA_TrustListDataType tl;
-        r = (is_mutant("read-one-chunk") || is_mutant("no-close"))
+        r = (is_mutant("read-one-chunk") || is_mutant("no-close") || is_mutant("no-length-check"))
                 ? mutant_read_trustlist(client, tlId, &tl)
                 : uac_read_trustlist(client, tlId, &tl);
+        if(r != UA_STATUSCODE_GOOD && is_mutant("parse-garbage")) {
+            uac_info("MUTANT: the old trust list is dropped before the new one parsed");
+            wipe_dir(pki, "trusted/certs");
+            wipe_dir(pki, "trusted/crl");
+        }
         if(r != UA_STATUSCODE_GOOD)
             return fail("TrustList read", r);
         uac_info("trusted certs=%zu trusted CRLs=%zu issuer certs=%zu issuer CRLs=%zu",
@@ -1023,6 +1084,7 @@ int main(int argc, char **argv) {
     uac_step("Disconnect (Part 12 §6.3: stay connected to the GDS as briefly as possible)");
     UA_Client_disconnect(client);
     UA_Client_delete(client);
+    client = NULL;
     UA_NodeId_clear(&appId);
     UA_NodeId_clear(&groupId);
     UA_NodeId_clear(&tlId);

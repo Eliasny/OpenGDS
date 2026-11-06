@@ -93,21 +93,13 @@ bool cli_cycle_for(cli_profile *p, fault_id fault, ga_ctx *ctx, cli_cycle *out) 
     return cycle_usable(out, r, ctx);
 }
 
-bool cli_probe(cli_profile *p, fg_ca_id issuer, ga_ctx *ctx, cli_probe_result *out) {
-    memset(out, 0, sizeof(*out));
-    gds_status r = probe_start(p->probePort, issuer);
-    if(r != GDS_OK) {
-        ga_not_tested(ctx, "probe server on port %ld: %s", p->probePort, gds_status_name(r));
-        return false;
-    }
+/* Have the client connect to the started probe server; record the result */
+static bool probe_run(cli_profile *p, const char *label, ga_ctx *ctx, cli_probe_result *out) {
     p->trig.action = "probe";
     p->trig.probeUrl = probe_url();
-    printf("#   probe connection (%s)\n", issuer == FG_CA_MAIN    ? "GDS CA"
-           : issuer == FG_CA_X     ? "CA X"
-           : issuer == FG_CA_ROGUE ? "ca-rogue"
-                                   : "CA Y");
+    printf("#   probe connection (%s)\n", label);
     fflush(stdout);
-    r = trig_run(&p->trig, p->user, &out->run);
+    gds_status r = trig_run(&p->trig, p->user, &out->run);
     p->trig.action = NULL;
     p->trig.probeUrl = NULL;
     out->connected = probe_connected();
@@ -120,9 +112,40 @@ bool cli_probe(cli_profile *p, fg_ca_id issuer, ga_ctx *ctx, cli_probe_result *o
         cli_probe_clear(out);
         return false;
     }
-    ga_note(ctx, "probe: %s (trigger exit %d)", out->connected ? "connected" : "no session",
-            out->run.exitStatus);
+    ga_note(ctx, "probe (%s): %s (trigger exit %d)", label,
+            out->connected ? "connected" : "no session", out->run.exitStatus);
     return true;
+}
+
+bool cli_probe(cli_profile *p, fg_ca_id issuer, ga_ctx *ctx, cli_probe_result *out) {
+    memset(out, 0, sizeof(*out));
+    gds_status r = probe_start(p->probePort, issuer);
+    if(r != GDS_OK) {
+        ga_not_tested(ctx, "probe server on port %ld: %s", p->probePort, gds_status_name(r));
+        return false;
+    }
+    return probe_run(p,
+                     issuer == FG_CA_MAIN    ? "GDS CA"
+                     : issuer == FG_CA_X     ? "CA X"
+                     : issuer == FG_CA_ROGUE ? "ca-rogue"
+                                             : "CA Y",
+                     ctx, out);
+}
+
+bool cli_probe_identity(cli_profile *p, const gds_buf *cert, const gds_buf *key, const char *label,
+                        ga_ctx *ctx, cli_probe_result *out) {
+    memset(out, 0, sizeof(*out));
+    gds_status r = probe_start_identity(p->probePort, cert, key);
+    if(r != GDS_OK) {
+        ga_not_tested(ctx, "probe server on port %ld: %s", p->probePort, gds_status_name(r));
+        return false;
+    }
+    return probe_run(p, label, ctx, out);
+}
+
+/* Did the trigger end on its own, without a crash? */
+bool cli_survived(const trig_result *r) {
+    return r->exited && r->exitStatus >= 0 && r->exitStatus < 128;
 }
 
 void cli_probe_clear(cli_probe_result *r) {

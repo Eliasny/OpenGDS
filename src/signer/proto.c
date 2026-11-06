@@ -140,7 +140,8 @@ static gds_status read_header(rd *r, gds_sigp_op *op) {
         return GDS_EINVAL;
     if(magic != GDS_SIGP_MAGIC || version != GDS_SIGP_VERSION || body != r->len - GDS_SIGP_HEADER)
         return GDS_EINVAL;
-    if(o != GDS_SIGP_SIGN_CSR && o != GDS_SIGP_GET_CHAIN && o != GDS_SIGP_ISSUE_CRL)
+    if(o != GDS_SIGP_SIGN_CSR && o != GDS_SIGP_GET_CHAIN && o != GDS_SIGP_ISSUE_CRL &&
+       o != GDS_SIGP_REVOKE)
         return GDS_EUNSUPPORTED;
     *op = (gds_sigp_op)o;
     return GDS_OK;
@@ -149,24 +150,58 @@ static gds_status read_header(rd *r, gds_sigp_op *op) {
 /* ---- requests ---- */
 
 gds_status gds_sigp_encode_request(gds_sigp_op op, const UA_Guid *requestId, gds_buf *out) {
-    if(op == GDS_SIGP_SIGN_CSR && !requestId)
-        return GDS_EINVAL;
+    if((op == GDS_SIGP_SIGN_CSR && !requestId) || op == GDS_SIGP_REVOKE) {
+        memset(out, 0, sizeof(*out));
+        return GDS_EINVAL; /* REVOKE: gds_sigp_encode_revoke */
+    }
     gds_status r = begin(out, op);
     if(r == GDS_OK && op == GDS_SIGP_SIGN_CSR)
         r = put_guid(out, requestId);
     return finish(out, r);
 }
 
-gds_status gds_sigp_decode_request(const uint8_t *msg, size_t len, gds_sigp_op *op,
-                                   UA_Guid *requestId) {
+gds_status gds_sigp_encode_revoke(const gds_buf *serial, gds_buf *out) {
+    if(!serial || !serial->data || serial->len == 0 || serial->len > GDS_SIGP_MAX_SERIAL) {
+        memset(out, 0, sizeof(*out));
+        return GDS_EINVAL;
+    }
+    gds_status r = begin(out, GDS_SIGP_REVOKE);
+    if(r == GDS_OK)
+        r = put_u16(out, (uint16_t)serial->len);
+    if(r == GDS_OK)
+        r = put(out, serial->data, serial->len);
+    return finish(out, r);
+}
+
+gds_status gds_sigp_decode_request_ex(const uint8_t *msg, size_t len, gds_sigp_op *op,
+                                      UA_Guid *requestId, gds_buf *serial) {
     rd r = {msg, len, 0};
+    if(serial)
+        memset(serial, 0, sizeof(*serial));
+    UA_Guid_init(requestId);
     gds_status s = read_header(&r, op);
     if(s != GDS_OK)
         return s;
-    UA_Guid_init(requestId);
     if(*op == GDS_SIGP_SIGN_CSR && !get_guid(&r, requestId))
         return GDS_EINVAL;
+    if(*op == GDS_SIGP_REVOKE) {
+        gds_buf tmp = {0};
+        s = get_blob(&r, 2, GDS_SIGP_MAX_SERIAL, &tmp);
+        if(s != GDS_OK)
+            return GDS_EINVAL;
+        if(r.pos != r.len || !serial) {
+            gds_buf_free(&tmp);
+            return r.pos == r.len ? GDS_OK : GDS_EINVAL;
+        }
+        *serial = tmp;
+        return GDS_OK;
+    }
     return r.pos == r.len ? GDS_OK : GDS_EINVAL;
+}
+
+gds_status gds_sigp_decode_request(const uint8_t *msg, size_t len, gds_sigp_op *op,
+                                   UA_Guid *requestId) {
+    return gds_sigp_decode_request_ex(msg, len, op, requestId, NULL);
 }
 
 /* ---- replies ---- */
