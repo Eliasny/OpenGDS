@@ -8,7 +8,8 @@
 
 static const char *const names[FAULT_COUNT] = {"none", "renew", "sign-uri-invalid", "pending", "reject", "tl-short-reads",
     "tl-with-x", "tl-main", "tl-issuer-y", "issue-untrusted", "issue-wrong-key", "issue-wrong-uri",
-    "issue-expired", "gds-rogue", "gds-revoked", "gds-expired", "gds-wronguri"};
+    "issue-expired", "gds-rogue", "gds-revoked", "gds-expired", "gds-wronguri",
+    "tl-revoking", "tl-garbage", "huge-issuers", "tl-over-read", "close-sessions"};
 
 const char *fault_name(fault_id f) {
     return (unsigned)f < FAULT_COUNT ? names[f] : "?";
@@ -79,6 +80,25 @@ fg_behaviour fault_behaviour(fault_id f) {
         break;
     case FAULT_GDS_WRONG_URI:
         b.identity = FG_ID_WRONGURI;
+        break;
+    case FAULT_TL_REVOKING:
+        b.tlChanged = true;
+        b.tlRevokes = true;
+        break;
+    case FAULT_TL_GARBAGE:
+        b.tlChanged = true;
+        b.tlGarbage = true;
+        break;
+    case FAULT_HUGE_ISSUERS:
+        b.forceUpdateRequired = true;
+        b.hugeIssuers = 10000;
+        break;
+    case FAULT_TL_OVER_READ:
+        b.tlChanged = true;
+        b.tlOverRead = true;
+        break;
+    case FAULT_CLOSE_SESSIONS:
+        b.closeSessions = true;
         break;
     case FAULT_NONE:
     case FAULT_COUNT:

@@ -42,3 +42,7 @@ accept-expired-gds,CLI-TRU-04,warn
 no-gds-uri-check,CLI-TRU-05,fail
 use-sign-only,CLI-TRU-06,fail
 prefer-deprecated,CLI-TRU-07,warn
+ignore-crls,CLI-TL-04,fail
+parse-garbage,CLI-FLT-02,fail
+no-length-check,CLI-FLT-08,fail
+reconnect-storm,CLI-FLT-09,warn
