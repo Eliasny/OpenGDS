@@ -1,0 +1,32 @@
+# Expected verdicts of gdsaudit gds against opengdsd (with opengds-signer),
+# recorded by tests/integration/pull/run_pull_vs_opengdsd.sh. CI fails when
+# any verdict changes. OpenGDS passes every T0 spec test.
+#
+# R1 of the .NET reference (gds.cm.status_new) passes here: an application
+# with no certificate yet needs one, so GetCertificateStatus answers
+# updateRequired=true (OPC 10000-12 §7.9.10).
+gds.sec.endpoints,pass
+gds.sec.none_session,pass
+gds.sec.anonymous_register,pass
+gds.dir.find_unknown,pass
+gds.dir.register_valid,pass
+gds.dir.register_no_uri,pass
+gds.dir.register_bad_type,pass
+gds.dir.register_server_no_urls,pass
+gds.dir.register_no_names,pass
+gds.dir.get_application,pass
+gds.dir.get_unknown,pass
+gds.dir.update_application,pass
+gds.dir.unregister,pass
+gds.dir.query_by_uri,pass
+gds.cm.groups,pass
+gds.cm.groups_unknown,pass
+gds.cm.status_new,pass
+gds.cm.bad_csr,pass
+gds.cm.signing_flow,pass
+gds.cm.csr_wrong_uri,pass
+gds.cm.finish_unknown,pass
+gds.cm.status_after_issue,pass
+gds.tl.get_trustlist,pass
+gds.tl.read_bad_handle,pass
+gds.tl.write_anonymous,pass

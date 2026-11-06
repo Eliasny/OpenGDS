@@ -47,12 +47,18 @@ static gds_status db_err(sq_store *s, const char *what, int rc) {
     return GDS_EIO;
 }
 
-/* Create the file with 0600 before SQLite opens it (no umask surprises). */
-static gds_status create_private(const char *path) {
-    int fd = open(path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+/* Create the file with 0640 before SQLite opens it, and enforce the mode on
+ * every open (no umask surprises). Group read is for opengds-signer, which
+ * runs as its own user in the daemon's group and reads the store to check
+ * each request it signs (decision G1). SQLite gives the -wal and -shm files
+ * the database file's mode. The store holds no private keys: should one
+ * ever be stored (StartNewKeyPairRequest), it must be encrypted first. */
+#define STORE_MODE 0640
+static gds_status create_store_file(const char *path) {
+    int fd = open(path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, STORE_MODE);
     if(fd < 0)
         return GDS_EIO;
-    gds_status r = fchmod(fd, 0600) == 0 ? GDS_OK : GDS_EIO;
+    gds_status r = fchmod(fd, STORE_MODE) == 0 ? GDS_OK : GDS_EIO;
     close(fd);
     return r;
 }
@@ -107,7 +113,7 @@ static gds_status sq_open_readonly(const char *path, sq_store **out) {
 
 static gds_status sq_open(const char *path, sq_store **out) {
     *out = NULL;
-    gds_status r = create_private(path);
+    gds_status r = create_store_file(path);
     if(r != GDS_OK)
         return r;
     sq_store *s = NULL;
