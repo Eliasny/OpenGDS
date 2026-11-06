@@ -16,8 +16,8 @@
  * LoadCredentialEncrypted=); never from argv or the environment.
  * Once its sockets, store and CA are open (with --listen: once it listens),
  * the signer sandboxes itself (common/sandbox.h): Landlock leaves it the CA
- * directory, the store's directory (read, and write to SQLite's existing
- * shared-memory file) and the passphrase source; seccomp leaves it no
+ * directory, the store's directory (read-only) and the passphrase
+ * source; seccomp leaves it no
  * exec, no new sockets and no connect.
  * SPDX-License-Identifier: MPL-2.0 */
 #include <openssl/crypto.h>
@@ -232,7 +232,7 @@ static gds_status sandbox(const options *o) {
         return r;
     gds_sb_path paths[3] = {
         {o->caDir, GDS_SB_CREATE}, /* CRL and serial updates; created at first start */
-        {storeDir, GDS_SB_WRITE},  /* read-only store; SQLite's -shm is opened read-write */
+        {storeDir, GDS_SB_READ},   /* read-only store; SQLite falls back to a read-only -shm */
         {NULL, GDS_SB_READ},
     };
     size_t n = 2;
