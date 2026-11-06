@@ -104,7 +104,7 @@ The same commit, built in the same pinned build container, gives byte-identical 
 
 The Debian and Ubuntu build containers are pinned by digest. The container image's build stage installs its packages from a fixed snapshot.debian.org date.
 
-Signing adds bytes: an RPM carries its signature inside, so compare the unsigned payload with `rpm --delsign` before comparing hashes. The `.deb` and `.tar.gz` files are signed with detached signatures and stay byte-identical.
+Signing adds bytes: an RPM carries its signature inside, so compare the unsigned payload with `rpm --delsign` before comparing hashes. The `.deb` and `.tar.gz` files are signed with detached signatures and stay byte-identical. An RPM's SBOM records the SHA-256 of the unsigned package.
 
 ## SBOM
 

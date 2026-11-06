@@ -21,7 +21,7 @@ if [ -z "${OPEN62541_PREFIX:-}" ]; then
         OPENSSL_ROOT=$OPENSSL_PREFIX "$SRC/scripts/build_open62541.sh" "$OPEN62541_PREFIX"
 fi
 for n in a b; do
-    rm -rf "$W/$n"
+    rm -rf "${W:?}/$n"
     # Different depths, so a leaked path changes the bytes.
     d="$W/$n"; [ "$n" = b ] && d="$W/$n/deeper/tree"
     git clone --quiet --no-hardlinks "$SRC" "$d/opengds"

@@ -71,6 +71,10 @@ case "$FORMAT" in
     RPM) PKGREL="1.$DIST" ;;
 esac
 ARCH=$(uname -m)
+# EL 9: GCC 13 from gcc-toolset-13 (scripts/release/install-build-deps.sh).
+if [ -z "${CC:-}" ] && [ -r /opt/rh/gcc-toolset-13/enable ]; then
+    set +u; . /opt/rh/gcc-toolset-13/enable; set -u
+fi
 
 mkdir -p "$OUT" "$WORK"
 OUT=$(cd "$OUT" && pwd)

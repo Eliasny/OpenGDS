@@ -11,7 +11,7 @@ name: automerge
 
 on:
   workflow_run:
-    workflows: [ci, reference-gds]
+    workflows: [ci, reference-gds, release]
     types: [completed]
 
 permissions:
