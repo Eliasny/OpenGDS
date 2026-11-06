@@ -14,6 +14,13 @@ typedef enum {
     FAULT_PENDING,        /* a new request; FinishRequest says Bad_NothingToDo 3 times (12 §7.9.5) */
     FAULT_REJECT,         /* a new request; FinishRequest says Bad_RequestNotAllowed (12 §7.9.5) */
     FAULT_TL_SHORT_READS, /* the trust list changed; Read returns at most 256 bytes (10000-20 §4.2.4) */
+    FAULT_TL_WITH_X,      /* the trust list changed: CA X added to TrustedCertificates */
+    FAULT_TL_MAIN,        /* the trust list changed back: X removed (12 §7.8.2.8 replaces) */
+    FAULT_TL_ISSUER_Y,    /* the trust list changed: CA Y in IssuerCertificates only */
+    FAULT_ISSUE_UNTRUSTED, /* a new request; the certificate is from a CA no list holds */
+    FAULT_ISSUE_WRONG_KEY, /* a new request; the certificate is for another key */
+    FAULT_ISSUE_WRONG_URI, /* a new request; the certificate names another ApplicationUri */
+    FAULT_ISSUE_EXPIRED,  /* a new request; the certificate has expired */
     FAULT_COUNT
 } fault_id;
 

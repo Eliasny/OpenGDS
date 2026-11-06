@@ -31,6 +31,8 @@ typedef struct {
     testca_t ca;               /* the run's test CA ("OpenGDS Auditor TEST") */
     gds_buf caDer, caCrl;
     gds_buf peerCert, peerKey; /* peer-good: client certificate from ca */
+    testca_t caInt;            /* ca-int: intermediate under ca (st_intermediate) */
+    gds_buf caIntDer, caIntCrl, peerInt; /* ca-int, its CRL, peer-int (from ca-int) */
     gds_buf snapCert;          /* snapshot: the certificate the endpoint presented */
     gds_buf tGood;             /* t-good, queued by SRV-UPD-01 */
     UA_NodeId certType;        /* the DefaultApplicationGroup CertificateType under test */
@@ -43,12 +45,17 @@ typedef struct {
     bool certQueued;           /* SRV-UPD-01 queued t-good in the admin session */
     bool applied;              /* SRV-TXN-03 passed: t-good and the queued list are in use */
     bool restored;             /* the snapshot was pushed back */
+    bool slow;                 /* --slow: run the tests flagged slow */
     char adminPassword[256];
     char userPassword[256];
     char targetUri[GDS_MAX_APPLICATION_URI + 1]; /* learned from GetEndpoints */
 } srv_target;
 
 /* Status of the target's verdict-relevant calls is always noted with ga_note. */
+
+/* ca-int (intermediate CA under ca, with an empty CRL) and peer-int (a leaf
+ * from ca-int), made once per run in memory. */
+GDS_MUST_CHECK gds_status st_intermediate(srv_target *t);
 
 /* Who a connection acts as (catalogue fixtures admin, user, anon) */
 typedef enum { ST_ADMIN, ST_USER, ST_ANON } st_role;
@@ -68,6 +75,10 @@ GDS_MUST_CHECK UA_StatusCode st_admin(srv_target *t);
 /* A second admin session on its own connection (fresh read-back). */
 GDS_MUST_CHECK UA_StatusCode st_admin_fresh(const srv_target *t, bool withPinned, UA_Client **out);
 void st_close(srv_target *t);
+/* Undo what a probing session got accepted by mistake (CancelChanges, if the
+ * target has it), then close the session, which discards its transaction
+ * (12 §7.10.2), and free the client. */
+void st_discard(UA_Client *c);
 void st_client_free(UA_Client *c);
 void st_clear(srv_target *t);
 
@@ -83,6 +94,13 @@ GDS_MUST_CHECK UA_StatusCode st_presented(const srv_target *t, gds_buf *out);
 GDS_MUST_CHECK UA_StatusCode st_write_trustlist(UA_Client *c, const UA_TrustListDataType *tl,
                                                 size_t chunk, bool *applyRequired,
                                                 ga_ctx *ctx);
+/* As st_write_trustlist; with update false the handle is closed with Close
+ * instead of CloseAndUpdate (the written data is discarded). */
+GDS_MUST_CHECK UA_StatusCode st_write_trustlist_ex(UA_Client *c, const UA_TrustListDataType *tl,
+                                                   size_t chunk, bool update,
+                                                   bool *applyRequired, ga_ctx *ctx);
+/* OpenWithMasks -> Read until empty -> Close: the file bytes (bounded). */
+GDS_MUST_CHECK UA_StatusCode st_read_trustlist_raw(UA_Client *c, UA_UInt32 masks, gds_buf *raw);
 /* OpenWithMasks -> Read until empty -> Close, decoded and bounded. */
 GDS_MUST_CHECK UA_StatusCode st_read_trustlist(UA_Client *c, UA_UInt32 masks,
                                                UA_TrustListDataType *out);
@@ -131,5 +149,14 @@ UA_NodeId st_policy_cert_type(const UA_String *policyUri);
 GDS_MUST_CHECK UA_StatusCode st_restore(srv_target *t, char *why, size_t whyLen);
 
 const char *st_short_policy(const UA_String *policyUri);
+
+/* Test certificates the test CA cannot make with testca_issue. */
+#define ST_MAX_CERT_PAD 12000
+/* A certificate for `key` with subject O=TESTCA_ORG, CN=cn, valid from
+ * now+fromSec to now+toSec, issued by `issuer` (NULL: self-signed with key),
+ * with basicConstraints CA:TRUE if isCa and `pad` bytes of nsComment (0: none). */
+GDS_MUST_CHECK gds_status st_make_cert(const testca_t *issuer, EVP_PKEY *key, const char *cn,
+                                       long fromSec, long toSec, bool isCa, size_t pad,
+                                       gds_buf *out);
 
 #endif
