@@ -3,10 +3,13 @@
 
 # Engine API and result list: events as JSON Lines, HTML and JUnit reports.
 # libc only, so the desktop UI links it without open62541.
+include(cu_table.cmake)
 add_library(gdsaudit_report STATIC
     report/results.c
     report/jsonl.c
-    report/report.c)
+    report/report.c
+    report/cu.c
+    "${GA_CU_TABLE_C}")
 target_include_directories(gdsaudit_report PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/report"
     PRIVATE "${CMAKE_SOURCE_DIR}/src")

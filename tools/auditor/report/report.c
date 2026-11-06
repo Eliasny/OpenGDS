@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "cu.h"
 #include "results.h"
 
 #include "common/banned.h"
@@ -49,6 +50,8 @@ static void html_head(FILE *f, const ga_results *r) {
           "body{font:15px/1.45 system-ui,sans-serif;margin:2rem auto;max-width:72rem;"
           "padding:0 1rem;color:#1b1b1f;background:#fff}\n"
           "h1{font-size:1.4rem;margin:0 0 .25rem}\n"
+          "h2{font-size:1.1rem;margin:1.5rem 0 .5rem}\n"
+          "table.units{margin-bottom:1rem}\n"
           ".note{color:#5a5a66;margin:0 0 1rem}\n"
           ".banner{background:#fff4d6;border:1px solid #d9a400;padding:.5rem .75rem;"
           "border-radius:6px;margin:1rem 0}\n"
@@ -96,9 +99,97 @@ static void html_summary(FILE *f, const ga_results *r) {
     fputs("</dd>\n</dl>\n", f);
 }
 
+/* One row of the ConformanceUnit table. unit is the catalogue's name,
+ * GA_CU_TBD or NULL (not in the catalogue). */
+typedef struct {
+    const char *unit;
+    size_t counts[GA_VERDICT_COUNT];
+    size_t noVerdict;
+} unit_row;
+
+#define MAX_UNITS 32
+
+static bool same_unit(const char *a, const char *b) {
+    return a == b || (a && b && strcmp(a, b) == 0);
+}
+
+static size_t find_unit(const unit_row *rows, size_t n, const char *unit) {
+    size_t k = 0;
+    while(k < n && !same_unit(rows[k].unit, unit))
+        k++;
+    return k;
+}
+
+/* Units in order of first appearance. The last row is kept for tests not in
+ * the catalogue, so past MAX_UNITS - 1 named units the rest count there. */
+static size_t collect_units(const ga_results *r, unit_row *rows) {
+    size_t n = 0;
+    for(size_t i = 0; i < r->n; i++) {
+        const ga_result *x = &r->items[i];
+        const char *unit = ga_conformance_unit(x->id);
+        size_t k = find_unit(rows, n, unit);
+        if(k == n && n >= MAX_UNITS - 1) {
+            unit = NULL;
+            k = find_unit(rows, n, NULL);
+        }
+        if(k == n) {
+            memset(&rows[n++], 0, sizeof(rows[0]));
+            rows[k].unit = unit;
+        }
+        if(x->done && (size_t)x->verdict < GA_VERDICT_COUNT)
+            rows[k].counts[x->verdict]++;
+        else
+            rows[k].noVerdict++;
+    }
+    return n;
+}
+
+static const char *unit_outcome(const unit_row *u) {
+    if(u->counts[GA_FAIL])
+        return "Failed";
+    if(u->counts[GA_NOT_TESTED] || u->noVerdict)
+        return "Incomplete";
+    return "Passed";
+}
+
+/* Results per ConformanceUnit, from the test catalogue. The same rule as
+ * the run outcome: any Fail fails the unit, any Not tested leaves it
+ * Incomplete. */
+static void html_units(FILE *f, const ga_results *r) {
+    unit_row rows[MAX_UNITS];
+    size_t n = collect_units(r, rows);
+    if(n == 0)
+        return;
+    fputs("<h2>ConformanceUnits</h2>\n<p class=\"note\">Grouped by the ConformanceUnit each "
+          "test names in the Auditor's test catalogue. " SELF_TEST_NOTE "</p>\n"
+          "<table class=\"units\">\n<thead><tr><th>ConformanceUnit</th>",
+          f);
+    for(size_t v = 0; v < GA_VERDICT_COUNT; v++)
+        fprintf(f, "<th>%s</th>", ga_verdict_label((ga_verdict)v));
+    fputs("<th>Result</th></tr></thead>\n<tbody>\n", f);
+    for(size_t k = 0; k < n; k++) {
+        const unit_row *u = &rows[k];
+        fputs("<tr><td>", f);
+        if(!u->unit)
+            fputs("<em>Not in the test catalogue</em>", f);
+        else if(strcmp(u->unit, GA_CU_TBD) == 0)
+            fputs("<em>Not named yet in the test catalogue</em>", f);
+        else
+            esc(f, u->unit);
+        fputs("</td>", f);
+        for(size_t v = 0; v < GA_VERDICT_COUNT; v++)
+            fprintf(f, "<td>%zu</td>", u->counts[v]);
+        const char *o = unit_outcome(u);
+        fprintf(f, "<td class=\"v %s\">%s</td></tr>\n",
+                o[0] == 'F' ? "fail" : o[0] == 'P' ? "pass" : "nt", o);
+    }
+    fputs("</tbody></table>\n<h2>Tests</h2>\n", f);
+}
+
 bool ga_report_html(FILE *f, const ga_results *r) {
     html_head(f, r);
     html_summary(f, r);
+    html_units(f, r);
     fputs("<table>\n<thead><tr><th>Test</th><th>Clause</th><th>Title and evidence</th>"
           "<th>Verdict</th><th>Time</th></tr></thead>\n<tbody>\n",
           f);
