@@ -769,7 +769,8 @@ static UA_StatusCode set_cb(UA_UInt32 id, UA_MethodCallback cb) {
 /* Advertise what this target supports (§7.10.3): one RSA slot, no private
  * keys pushed, the size limit tlWrite enforces, and transactions (§7.10.2). */
 static UA_StatusCode advertise(UA_Server *server) {
-    UA_NodeId types[2] = {ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE), UA_NODEID_NULL};
+    UA_NodeId types[3] = {ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE), UA_NODEID_NULL,
+                          UA_NODEID_NULL};
     size_t nTypes = 1;
     if(breaking("mixed-cert-types"))
         types[nTypes++] = ns0(UA_NS0ID_HTTPSCERTIFICATETYPE);
