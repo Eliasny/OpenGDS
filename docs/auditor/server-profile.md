@@ -93,8 +93,8 @@ ConformanceUnit: Push Model for Global Certificate and TrustList Management.
 | SRV-CSR-03 | 12 §7.10.10; 6 §6.2.2 | W | Read the CSR's subjectAltName | Exactly one URI, equal to the target's ApplicationUri, and at least one DNS name or IP address | Fail: URI missing or different. Warn: no DNS name or IP | `csr-no-san` |
 | SRV-CSR-04 | 12 §7.10.10 | W | CreateSigningRequest with RegeneratePrivateKey TRUE and a 32-byte Nonce | The CSR's public key differs from the current certificate's | Fail: same key | `csr-regen-ignored` |
 | SRV-CSR-05 | 12 §7.10.10 | W | RegeneratePrivateKey TRUE with a 16-byte Nonce | Bad_InvalidArgument | Fail: Good. Warn: another Bad code | `csr-short-nonce` |
-| SRV-CSR-06 | 12 §7.10.10 | W | After SRV-CSR-04, close the session; on a new session call UpdateCertificate with a certificate for the new key | Good | Fail: refused because the key is unknown | `csr-key-per-session` |
-| SRV-CSR-07 | 12 §7.10.10 | W | Two CSRs with RegeneratePrivateKey TRUE; UpdateCertificate with a certificate for the first new key | Refused (the first new key pair was discarded) | Fail: accepted | `csr-keep-old-new-key` |
+| SRV-CSR-06 | 12 §7.10.10 | W | As SRV-CSR-04 on its own session, then close it; on a new session call UpdateCertificate with a certificate from `ca` for the new key; close that session (the change is discarded) | Good | Fail: refused. Not tested: SupportsTransactions is not TRUE (the new key would be in use at once and the restore step cannot put the old key back) | `csr-key-per-session` |
+| SRV-CSR-07 | 12 §7.10.10 | W | Two CSRs with RegeneratePrivateKey TRUE; UpdateCertificate with a certificate for the first new key; close the session | Refused (the first new key pair was discarded) | Fail: accepted. Not tested: as SRV-CSR-06 | `csr-keep-old-new-key` |
 | SRV-CSR-08 | 12 §7.10.10 | W | CreateSigningRequest with a CertificateTypeId that is not in the group's CertificateTypes | Bad_InvalidArgument | Fail: Good. Warn: another Bad code | `csr-any-type` |
 
 ## Certificate update (`srv_update.c`)

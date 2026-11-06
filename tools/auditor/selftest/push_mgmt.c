@@ -22,6 +22,7 @@
 
 #include "common/compiler.h"
 #include "common/limits.h"
+#include "push_csr.h"
 #include "x509util.h"
 #include "common/banned.h"
 
@@ -88,6 +89,14 @@ static const struct {
     {"remove-ca-in-use", "SRV-TL-15", "RemoveCertificate removes a CA another certificate needs"},
     {"remove-keeps-crl", "SRV-TL-16", "RemoveCertificate of a CA keeps its CRLs"},
     {"no-activity-timeout", "SRV-TL-18", "an idle write handle is never closed"},
+    {"csr-new-key-always", "SRV-CSR-01", "CreateSigningRequest always makes a new key pair"},
+    {"csr-empty-subject", "SRV-CSR-02", "the CSR has an empty subject"},
+    {"csr-no-san", "SRV-CSR-03", "the CSR has no subjectAltName"},
+    {"csr-regen-ignored", "SRV-CSR-04", "RegeneratePrivateKey TRUE reuses the active key"},
+    {"csr-short-nonce", "SRV-CSR-05", "RegeneratePrivateKey TRUE accepts a Nonce under 32 bytes"},
+    {"csr-key-per-session", "SRV-CSR-06", "the new key pair is usable only from its own Session"},
+    {"csr-keep-old-new-key", "SRV-CSR-07", "a later CreateSigningRequest keeps the older new key pair"},
+    {"csr-any-type", "SRV-CSR-08", "CreateSigningRequest accepts any CertificateTypeId"},
 };
 
 bool pm_mutant_known(const char *name) {
@@ -129,9 +138,14 @@ static struct {
     bool hasCert;
     UA_ByteString cert;
     UA_NodeId certType;
-    UA_ByteString ownKey; /* only for wire-old-cert */
+    UA_ByteString certKey; /* key of the queued certificate (empty: the active key) */
+    UA_ByteString ownKey;  /* the active private key */
+    /* the new key pair of the last CreateSigningRequest with
+     * RegeneratePrivateKey (12 §7.10.10); prevKey only for csr-keep-old-new-key */
+    UA_ByteString newKey, prevKey;
+    UA_NodeId newKeySession; /* only for csr-key-per-session */
     pm_mode_fn modeOf;
-    UA_MethodCallback libCsr, libRejected;
+    UA_MethodCallback libRejected;
 } P;
 
 bool pm_breaking(const char *name) {
@@ -159,6 +173,12 @@ static UA_NodeId ns0(UA_UInt32 id) {
     return UA_NODEID_NUMERIC(0, id);
 }
 
+static void secret_clear(UA_ByteString *b) {
+    if(b->length)
+        OPENSSL_cleanse(b->data, b->length);
+    UA_ByteString_clear(b);
+}
+
 static void txn_clear(void) {
     P.txn = false;
     UA_NodeId_clear(&P.owner);
@@ -166,6 +186,7 @@ static void txn_clear(void) {
     P.hasList = false;
     UA_ByteString_clear(&P.cert);
     UA_NodeId_clear(&P.certType);
+    secret_clear(&P.certKey);
     P.hasCert = false;
 }
 
@@ -229,9 +250,10 @@ void pm_session_closed(const UA_NodeId *sessionId) {
 }
 
 void pm_clear(void) {
-    if(P.ownKey.length)
-        OPENSSL_cleanse(P.ownKey.data, P.ownKey.length);
-    UA_ByteString_clear(&P.ownKey);
+    secret_clear(&P.ownKey);
+    secret_clear(&P.newKey);
+    secret_clear(&P.prevKey);
+    UA_NodeId_clear(&P.newKeySession);
     for(size_t i = 0; i < PM_MAX_FILES; i++)
         if(P.files[i].used)
             file_free(&P.files[i]);
@@ -602,6 +624,131 @@ static UA_StatusCode tlSetPosition(METHOD_ARGS) {
     return UA_STATUSCODE_GOOD;
 }
 
+/* ---------------- CreateSigningRequest (12 §7.10.10) ----------------
+ * This target's own implementation: open62541 v1.5.10 throws the
+ * regenerated key away. The new key pair is kept (one at a time, any later
+ * call discards it) and usable from any Session until a certificate for it
+ * is applied. */
+
+/* The certificate in use for RsaSha256 (from the SecurityPolicies). */
+static const UA_ByteString *current_cert(void) {
+    UA_ServerConfig *cfg = UA_Server_getConfig(P.server);
+    const UA_NodeId rsa = ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
+    for(size_t i = 0; i < cfg->securityPoliciesSize; i++)
+        if(UA_NodeId_equal(&cfg->securityPolicies[i].certificateTypeId, &rsa) &&
+           cfg->securityPolicies[i].localCertificate.length > 0)
+            return &cfg->securityPolicies[i].localCertificate;
+    return NULL;
+}
+
+static UA_StatusCode new_key(UA_ByteString *out) {
+    gds_buf k = {0};
+    if(x509_new_rsa_key(2048, &k) != GDS_OK)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    UA_ByteString b = {k.len, k.data};
+    UA_StatusCode r = UA_ByteString_copy(&b, out);
+    gds_buf_free_secret(&k);
+    return r;
+}
+
+/* Discard the unused new key pair (any CreateSigningRequest does, §7.10.10)
+ * and keep `fresh` (may be empty) as the new one. */
+static void replace_new_key(UA_ByteString *fresh, const UA_NodeId *session) {
+    if(breaking("csr-keep-old-new-key")) {
+        if(P.newKey.length) {
+            secret_clear(&P.prevKey);
+            P.prevKey = P.newKey;
+            UA_ByteString_init(&P.newKey);
+        }
+    } else
+        secret_clear(&P.prevKey);
+    secret_clear(&P.newKey);
+    P.newKey = *fresh;
+    UA_ByteString_init(fresh);
+    UA_NodeId_clear(&P.newKeySession);
+    if(UA_NodeId_copy(session, &P.newKeySession) != UA_STATUSCODE_GOOD)
+        UA_NodeId_init(&P.newKeySession);
+}
+
+static UA_StatusCode csr_args(size_t inputSize, const UA_Variant *input) {
+    if(inputSize != 5 || !scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_NODEID]) ||
+       !scalar(input, inputSize, 1, &UA_TYPES[UA_TYPES_NODEID]) ||
+       !scalar(input, inputSize, 2, &UA_TYPES[UA_TYPES_STRING]) ||
+       !scalar(input, inputSize, 3, &UA_TYPES[UA_TYPES_BOOLEAN]) ||
+       !scalar(input, inputSize, 4, &UA_TYPES[UA_TYPES_BYTESTRING]))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    /* only the one slot this target has; a null group is the default */
+    const UA_NodeId *group = input[0].data, *type = input[1].data;
+    const UA_NodeId dag = ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
+    const UA_NodeId rsa = ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
+    if(!UA_NodeId_isNull(group) && !UA_NodeId_equal(group, &dag))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(!UA_NodeId_equal(type, &rsa) && !breaking("csr-any-type"))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    /* "at least 32 bytes" when the key is regenerated */
+    bool regen = *(const UA_Boolean *)input[3].data;
+    if(regen && ((const UA_ByteString *)input[4].data)->length < 32 && !breaking("csr-short-nonce"))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    return UA_STATUSCODE_GOOD;
+}
+
+static UA_StatusCode scCreateSigningRequest(METHOD_ARGS) {
+    UNUSED_ARGS;
+    UA_StatusCode r = need_channel(sessionId, true);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    if(outputSize < 1)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    if((r = csr_args(inputSize, input)) != UA_STATUSCODE_GOOD)
+        return r;
+    bool regen = *(const UA_Boolean *)input[3].data;
+    if(breaking("csr-new-key-always"))
+        regen = true;
+    if(breaking("csr-regen-ignored"))
+        regen = false;
+    const UA_ByteString *cur = current_cert();
+    if(!cur)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    UA_ByteString fresh = UA_BYTESTRING_NULL;
+    if(regen && (r = new_key(&fresh)) != UA_STATUSCODE_GOOD)
+        return r;
+    gds_buf kb = regen ? (gds_buf){fresh.data, fresh.length} : (gds_buf){P.ownKey.data, P.ownKey.length};
+    EVP_PKEY *k = x509_parse_key(&kb);
+    UA_ByteString csr = UA_BYTESTRING_NULL;
+    r = k ? pc_build(cur, k, input[2].data, breaking("csr-empty-subject"), breaking("csr-no-san"), &csr)
+          : UA_STATUSCODE_BADINTERNALERROR;
+    EVP_PKEY_free(k);
+    if(r == UA_STATUSCODE_GOOD) {
+        replace_new_key(&fresh, sessionId);
+        r = UA_Variant_setScalarCopy(&output[0], &csr, &UA_TYPES[UA_TYPES_BYTESTRING]);
+        UA_ByteString_clear(&csr);
+    }
+    secret_clear(&fresh);
+    return r;
+}
+
+/* The key of `cert` for UpdateCertificate without a PrivateKey: the active
+ * key (*key empty) or the new key pair of CreateSigningRequest (§7.10.5).
+ * Bad_CertificateInvalid for any other key. */
+static UA_StatusCode key_for(const UA_ByteString *cert, const UA_NodeId *session,
+                             UA_ByteString *key) {
+    UA_ByteString_init(key);
+    gds_buf c = {cert->data, cert->length};
+    gds_buf own = {P.ownKey.data, P.ownKey.length};
+    if(x509_key_matches(&c, &own))
+        return UA_STATUSCODE_GOOD;
+    const UA_ByteString *cand[2] = {&P.newKey, &P.prevKey};
+    for(size_t i = 0; i < 2; i++) {
+        gds_buf k = {cand[i]->data, cand[i]->length};
+        if(k.len == 0 || !x509_key_matches(&c, &k))
+            continue;
+        if(i == 0 && breaking("csr-key-per-session") && !UA_NodeId_equal(session, &P.newKeySession))
+            break; /* the mutant binds the new key to its Session */
+        return UA_ByteString_copy(cand[i], key);
+    }
+    return UA_STATUSCODE_BADCERTIFICATEINVALID;
+}
+
 /* ---------------- ServerConfiguration methods (12 §7.10) ---------------- */
 
 static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
@@ -633,11 +780,19 @@ static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
     if(!x)
         return UA_STATUSCODE_BADCERTIFICATEINVALID;
     X509_free(x);
-    UA_StatusCode r = txn_join(sessionId);
+    UA_ByteString ck = UA_BYTESTRING_NULL;
+    /* a pushed key gets here only with accept-key-unadvertised, which ignores it */
+    UA_StatusCode r = key->length > 0 ? UA_STATUSCODE_GOOD : key_for(cert, sessionId, &ck);
     if(r != UA_STATUSCODE_GOOD)
         return r;
+    if((r = txn_join(sessionId)) != UA_STATUSCODE_GOOD) {
+        secret_clear(&ck);
+        return r;
+    }
     UA_ByteString_clear(&P.cert);
     UA_NodeId_clear(&P.certType);
+    secret_clear(&P.certKey);
+    P.certKey = ck;
     r = UA_ByteString_copy(cert, &P.cert);
     if(r == UA_STATUSCODE_GOOD)
         r = UA_NodeId_copy(type, &P.certType);
@@ -698,10 +853,17 @@ static UA_StatusCode apply(void) {
             return UA_STATUSCODE_BADOUTOFMEMORY;
         r = UA_Server_updateCertificate(
             P.server, ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP),
-            P.certType, P.cert, NULL);
+            P.certType, P.cert, P.certKey.length ? &P.certKey : NULL);
         if(sp && r == UA_STATUSCODE_GOOD && P.ownKey.length)
             r = sp->updateCertificate(sp, old, P.ownKey);
         UA_ByteString_clear(&old);
+        if(r == UA_STATUSCODE_GOOD && P.certKey.length) { /* the new key pair is in use */
+            secret_clear(&P.ownKey);
+            P.ownKey = P.certKey;
+            UA_ByteString_init(&P.certKey);
+            secret_clear(&P.newKey);
+            secret_clear(&P.prevKey);
+        }
     }
     return r;
 }
@@ -743,22 +905,6 @@ static UA_StatusCode scCancelChanges(METHOD_ARGS) {
     if(r == UA_STATUSCODE_GOOD)
         txn_clear();
     return r;
-}
-
-/* The library's own methods, behind the same channel check */
-static UA_StatusCode scCreateSigningRequest(METHOD_ARGS) {
-    UA_StatusCode sec = need_channel(sessionId, true);
-    if(sec != UA_STATUSCODE_GOOD)
-        return sec;
-    /* §7.10.10 Bad_InvalidArgument: only the one slot this target has */
-    const UA_NodeId dag = ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
-    const UA_NodeId rsa = ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
-    if(inputSize < 2 || !scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_NODEID]) ||
-       !scalar(input, inputSize, 1, &UA_TYPES[UA_TYPES_NODEID]) ||
-       !UA_NodeId_equal(input[0].data, &dag) || !UA_NodeId_equal(input[1].data, &rsa))
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
-    return P.libCsr(server, sessionId, sessionContext, methodId, methodContext, objectId,
-                    objectContext, inputSize, input, outputSize, output);
 }
 
 static UA_StatusCode scGetRejectedList(METHOD_ARGS) {
@@ -1123,7 +1269,7 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
     P.server = server;
     P.brk = mutant;
     P.modeOf = modeOf;
-    if(breaking("wire-old-cert") && UA_ByteString_copy(ownKey, &P.ownKey) != UA_STATUSCODE_GOOD)
+    if(UA_ByteString_copy(ownKey, &P.ownKey) != UA_STATUSCODE_GOOD)
         return UA_STATUSCODE_BADOUTOFMEMORY;
     P.maxSize = PM_MAX_TL_SIZE;
 #define TL(x) UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_##x
@@ -1136,8 +1282,7 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
     r |= set_cb(TL(CLOSEANDUPDATE), tlCloseAndUpdate);
     r |= set_cb(TL(GETPOSITION), tlGetPosition);
     r |= set_cb(TL(SETPOSITION), tlSetPosition);
-    r |= wrap_lib(UA_NS0ID_SERVERCONFIGURATION_CREATESIGNINGREQUEST, &P.libCsr,
-                  scCreateSigningRequest);
+    r |= set_cb(UA_NS0ID_SERVERCONFIGURATION_CREATESIGNINGREQUEST, scCreateSigningRequest);
     r |= wrap_lib(UA_NS0ID_SERVERCONFIGURATION_GETREJECTEDLIST, &P.libRejected, scGetRejectedList);
     r |= set_cb(TL(ADDCERTIFICATE), tlAddCertificate);
     r |= set_cb(TL(REMOVECERTIFICATE), tlRemoveCertificate);
