@@ -38,6 +38,7 @@ typedef enum {
 const char *fg_method_name(fg_method m);
 
 #define FG_MAX_URI 256
+#define FG_MAX_DURLS 4
 #define FG_NO_SESSION ((size_t)-1)
 
 typedef enum { FG_TOKEN_ANONYMOUS = 0, FG_TOKEN_USERNAME, FG_TOKEN_X509, FG_TOKEN_OTHER } fg_token;
@@ -52,6 +53,7 @@ typedef struct {
     double tOpen, tClose;         /* monotonic ms */
     bool closed;                  /* CloseSession or timeout */
     bool killed;                  /* closed by the fake GDS (CLI-FLT-09) */
+    char user[64];                /* UserName token: the user name */
 } fg_session;
 
 /* What FinishRequest issues (CLI-FLT-03..06) */
@@ -62,7 +64,9 @@ typedef enum {
     FG_ISSUE_WRONG_URI, /* SAN URI of another application */
     FG_ISSUE_EXPIRED,   /* notAfter in the past */
     FG_ISSUE_ROGUE,     /* signed by FG_CA_ROGUE (the rogue GDS hands it out) */
-    FG_ISSUE_BAD_CHAIN  /* recorded only: a good certificate in an over-long answer */
+    FG_ISSUE_BAD_CHAIN, /* recorded only: a good certificate in an over-long answer */
+    FG_ISSUE_INTERMEDIATE, /* signed by ca-int, an intermediate under the GDS CA */
+    FG_ISSUE_SHORT      /* valid, but expires issueLifetimeS after issue (CLI-REN-03) */
 } fg_issue;
 
 /* Content of the trust list the TrustList file serves (CLI-TL-03..06) */
@@ -94,7 +98,7 @@ typedef struct {
     char appUri[FG_MAX_URI]; /* ApplicationUri of the record the call names ("" if none) */
     UA_ApplicationType appType;
     size_t discoveryUrlsN;
-    char discoveryUrl0[FG_MAX_URI];
+    char discoveryUrls[FG_MAX_DURLS][FG_MAX_URI]; /* the first FG_MAX_DURLS of them */
     gds_buf csr;            /* StartSigningRequest: CertificateRequest exactly as sent */
     UA_NodeId group;        /* CertificateGroupId argument (Sign, NewKeyPair) */
     UA_NodeId certType;     /* CertificateTypeId argument (Sign, NewKeyPair) */
@@ -103,6 +107,8 @@ typedef struct {
     UA_NodeId requestId;    /* StartSigningRequest result, FinishRequest argument */
     size_t bytes;           /* TrustList.Read: bytes returned */
     gds_buf issued;         /* FinishRequest Good: the certificate returned */
+    double hungMs;          /* FinishRequest held back this long (hangFinishMs) */
+    bool clientGone;        /* the client process ended while the call was held back */
     fg_issue issueMode;     /* how it was made (FG_ISSUE_GOOD: a valid one) */
 } fg_event;
 
@@ -122,6 +128,12 @@ typedef struct {
     bool tlOverRead;            /* Read returns more than Length: another (rogue) list */
     size_t hugeIssuers;         /* not 0: FinishRequest IssuerCertificates has this many entries */
     bool closeSessions;         /* each session is closed by the GDS after its first call */
+    bool dropAfterSign;         /* after StartSigningRequest: close the session, forget the request */
+    bool tlDropAfterRead;       /* close the session after the first TrustList.Read */
+    unsigned hangFinishMs;      /* FinishRequest does not answer for this long (or until the client is gone) */
+    double updateFrequencyMs;   /* TrustList UpdateFrequency (12 §7.8.2.1); 0: none */
+    long issueLifetimeS;        /* FG_ISSUE_SHORT: the certificate expires this long after issue */
+    bool refuseAnonymous;       /* ActivateSession refuses Anonymous (credentials needed) */
 } fg_behaviour;
 
 typedef struct {
@@ -152,6 +164,8 @@ const fg_session *fg_session_at(size_t i);
 size_t fg_trustlist_size(void);
 
 /* A CA of the fixture (for the probe server's identities) */
+/* ca-int, the intermediate under the GDS CA */
+const testca_t *fg_ca_int(void);
 const testca_t *fg_ca(fg_ca_id which);
 
 /* Files the trigger hands to the client */
@@ -159,6 +173,11 @@ const char *fg_url(void);
 const char *fg_ca_path(void);
 const char *fg_crl_path(void);
 const char *fg_password_path(void);
+/* A second user, "operator", whose password the trigger hook types at the
+ * client's prompt (CLI-REG-05); the password itself for the file scan */
+#define FG_OPERATOR_USER "operator"
+const char *fg_operator_password_path(void);
+const char *fg_operator_password(void);
 
 /* The NodeIds the fake GDS offers (GDS namespace bound at start) */
 UA_NodeId fg_default_group(void);

@@ -1,6 +1,6 @@
 /* OpenGDS Auditor client profile - Pending approval (CLI-PEN-*).
  * Rows of docs/auditor/client-profile.md, "Pending approval (cli_pending.c)".
- * CLI-PEN-04 (restart hook), -06 (session drop) and -08 (slow) follow.
+ * CLI-PEN-08 is slow.
  * SPDX-License-Identifier: MPL-2.0 */
 #include "client_profile.h"
 #include "common/banned.h"
@@ -172,11 +172,126 @@ static void t_pen_sessions(ga_ctx *ctx, void *profile) {
         ga_pass(ctx, "all %zu session(s) closed when the cycle ended", end - first);
 }
 
+/* CLI-PEN-06: the session drops after StartSigningRequest and the GDS has
+ * forgotten the request; the client must recover in a later cycle. */
+static void t_pen_recover(ga_ctx *ctx, void *profile) {
+    cli_profile *p = profile;
+    if(!cli_base_cycle(p, ctx))
+        return;
+    cli_cycle c;
+    if(!cli_cycle_for(p, FAULT_DROP_AFTER_SIGN, ctx, &c))
+        return;
+    if(!cli_count(&c, FG_M_SIGN)) {
+        ga_not_tested(ctx, "the client made no signing request in the faulty cycle");
+        return;
+    }
+    size_t invalid = 0;
+    for(int k = 0; k < 2; k++) {
+        if(!cli_cycle_for(p, FAULT_RENEW, ctx, &c))
+            return;
+        if(cli_count(&c, FG_M_SIGN) || cli_count(&c, FG_M_NEWKEYPAIR)) {
+            ga_pass(ctx, "a new request in cycle %d after the forgotten one", k + 2);
+            return;
+        }
+        for(size_t i = c.first; i < c.end; i++)
+            invalid += fg_event_at(i)->method == FG_M_FINISH &&
+                       fg_event_at(i)->result == UA_STATUSCODE_BADINVALIDARGUMENT;
+    }
+    ga_warn(ctx, "stuck: no new request in 2 cycles (%zu FinishRequest calls answered "
+                 "Bad_InvalidArgument)", invalid);
+}
+
+/* CLI-PEN-04: the client restarts while a request is pending; it must
+ * resume the persisted RequestId (12 §7.6) */
+static void t_pen_restart(ga_ctx *ctx, void *profile) {
+    cli_profile *p = profile;
+    if(!cli_base_cycle(p, ctx))
+        return;
+    cli_cycle c;
+    if(!cli_cycle_for(p, FAULT_PENDING_HOLD, ctx, &c))
+        return;
+    const fg_event *sign = NULL;
+    for(size_t i = c.first; i < c.end; i++)
+        if((fg_event_at(i)->method == FG_M_SIGN || fg_event_at(i)->method == FG_M_NEWKEYPAIR) &&
+           fg_event_at(i)->result == UA_STATUSCODE_GOOD)
+            sign = fg_event_at(i);
+    if(!sign) {
+        ga_not_tested(ctx, "the client made no request in the pending cycle");
+        return;
+    }
+    if(!cli_restart(p, ctx) || !cli_cycle_for(p, FAULT_NONE, ctx, &c))
+        return;
+    for(size_t i = c.first; i < c.end; i++) {
+        const fg_event *ev = fg_event_at(i);
+        if(ev->method == FG_M_SIGN || ev->method == FG_M_NEWKEYPAIR) {
+            ga_warn(ctx, "after the restart the client made a new %s instead of resuming the "
+                         "pending request", fg_method_name(ev->method));
+            return;
+        }
+        if(ev->method == FG_M_FINISH) {
+            if(UA_NodeId_equal(&ev->requestId, &sign->requestId))
+                ga_pass(ctx, "after the restart the client resumed the pending RequestId");
+            else
+                ga_warn(ctx, "after the restart the client polled another RequestId");
+            return;
+        }
+    }
+    ga_warn(ctx, "after the restart the client did not come back to the pending request");
+}
+
+/* CLI-PEN-08 (slow): the second cycle of the client's own schedule starts
+ * after a random delay of 1 % up to at least 10 % of the period (12 §6.3).
+ * Three runs; the delay is the start-to-start time less the period. */
+#define PEN_JITTER_RUNS 3
+static void t_pen_jitter(ga_ctx *ctx, void *profile) {
+    cli_profile *p = profile;
+    if(!cli_slow_ready(p, ctx) || !cli_base_cycle(p, ctx))
+        return;
+    double periodMs = 1000.0 * (double)p->period, d[PEN_JITTER_RUNS];
+    for(int k = 0; k < PEN_JITTER_RUNS; k++) {
+        cli_cycle c;
+        if(!cli_run_for(p, FAULT_NONE, p->period + p->period / 5 + 10, ctx, &c))
+            return;
+        /* cycle starts: sessions more than half a period apart */
+        double t1 = -1, t2 = -1;
+        for(size_t i = c.sessFirst; i < c.sessEnd && t2 < 0; i++) {
+            const fg_session *s = fg_session_at(i);
+            if(t1 < 0)
+                t1 = s->tOpen;
+            else if(s->tOpen - t1 > periodMs / 2)
+                t2 = s->tOpen;
+        }
+        if(t2 < 0) {
+            ga_not_tested(ctx, "run %d: the client ran no second cycle", k + 1);
+            return;
+        }
+        d[k] = t2 - t1 - periodMs;
+        ga_note(ctx, "run %d: second cycle %.0f ms after the period (%.1f %%)", k + 1, d[k],
+                100.0 * d[k] / periodMs);
+    }
+    double lo = d[0], hi = d[0];
+    for(int k = 1; k < PEN_JITTER_RUNS; k++) {
+        lo = d[k] < lo ? d[k] : lo;
+        hi = d[k] > hi ? d[k] : hi;
+    }
+    if(lo < 0.01 * periodMs)
+        ga_warn(ctx, "a second cycle started %.0f ms after the period, under 1 %% of it", lo);
+    else if(hi - lo < 0.002 * periodMs)
+        ga_warn(ctx, "the delays of %d runs are the same within %.0f ms: not random",
+                PEN_JITTER_RUNS, hi - lo);
+    else
+        ga_pass(ctx, "delays %.1f to %.1f %% of the period", 100.0 * lo / periodMs,
+                100.0 * hi / periodMs);
+}
+
 const ga_test cli_pending_tests[] = {
     {"CLI-PEN-01", "12 §7.9.5, §7.6", "A pending request is completed", false, true, t_pen_complete},
     {"CLI-PEN-02", "12 §7.6, §7.9.5", "FinishRequest is polled with a delay", false, true, t_pen_backoff},
     {"CLI-PEN-03", "12 §7.6", "The next cycle resumes the pending request", false, true, t_pen_resume},
+    {"CLI-PEN-04", "12 §7.6", "A pending request survives a restart", false, true, t_pen_restart},
     {"CLI-PEN-05", "12 §7.9.5, §7.6", "A rejected request is not polled again", false, true, t_pen_reject},
+    {"CLI-PEN-06", "12 §7.9.5", "Recovers when the GDS forgot the pending request", false, true, t_pen_recover},
     {"CLI-PEN-07", "12 §6.3", "No session is held between cycles", false, true, t_pen_sessions},
+    {"CLI-PEN-08", "12 §6.3", "The second cycle starts after a random delay (slow)", false, true, t_pen_jitter},
 };
 const size_t cli_pending_count = GDS_ARRAY_SIZE(cli_pending_tests);

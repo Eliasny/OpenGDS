@@ -2,7 +2,7 @@
  *
  *   gdsaudit client [--listen PORT] [--listen-any] [--work DIR] [--user NAME]
  *                   [--only PREFIX] [--expect FILE.csv] [--cycle-timeout S]
- *                   [--list] -- TRIGGER [ARG...]
+ *                   [--list] [--slow --cycle-period S] -- TRIGGER [ARG...]
  *
  * Starts the fake GDS and, for every pull cycle a test needs, runs TRIGGER
  * (no shell) with GDSAUDIT_GDS_URL, GDSAUDIT_GDS_CA, GDSAUDIT_GDS_CRL,
@@ -37,13 +37,25 @@ gds_status cli_run_cycle(cli_profile *p, fault_id fault, cli_cycle *out) {
     memset(out, 0, sizeof(*out));
     out->fault = fault;
     fg_behaviour b = fault_behaviour(fault);
+    if(fault == FAULT_UPDATE_FREQUENCY)
+        b.updateFrequencyMs = p->ufMs;
+    if(fault == FAULT_ISSUE_SHORT)
+        b.issueLifetimeS = p->lifetimeS;
     fg_set_behaviour(&b);
+    p->trig.runSeconds = p->runSeconds;
+    if(p->runSeconds) {
+        p->trig.action = "run";
+        printf("#   cycle %u: the client's own schedule for %ld s\n", p->cycles + 1, p->runSeconds);
+    }
     out->first = fg_event_count();
     out->sessFirst = fg_session_count();
     out->tStart = cli_now_ms();
     printf("#   cycle %u: fault %s\n", ++p->cycles, fault_name(fault));
     fflush(stdout);
     gds_status r = trig_run(&p->trig, p->user, &out->run);
+    p->trig.action = NULL;
+    p->trig.runSeconds = 0;
+    p->runSeconds = 0;
     out->end = fg_event_count();
     out->sessEnd = fg_session_count();
     out->tEnd = cli_now_ms();
@@ -59,7 +71,10 @@ static bool cycle_usable(const cli_cycle *c, gds_status r, ga_ctx *ctx) {
         ga_not_tested(ctx, "the trigger could not be started: %s", gds_status_name(r));
         return false;
     }
-    if(!c->run.exited)
+    if(!c->run.exited && c->run.exitStatus >= 128)
+        ga_note(ctx, "cycle %s: the trigger ended on signal %d", fault_name(c->fault),
+                c->run.exitStatus - 128);
+    else if(!c->run.exited)
         ga_note(ctx, "cycle %s: the trigger was killed after the timeout", fault_name(c->fault));
     else
         ga_note(ctx, "cycle %s: trigger exit %d after %.0f ms, %zu calls", fault_name(c->fault),
@@ -143,6 +158,45 @@ bool cli_probe_identity(cli_profile *p, const gds_buf *cert, const gds_buf *key,
     return probe_run(p, label, ctx, out);
 }
 
+bool cli_run_for(cli_profile *p, fault_id fault, long seconds, ga_ctx *ctx, cli_cycle *out) {
+    p->runSeconds = seconds;
+    gds_status r = cli_run_cycle(p, fault, out);
+    if(r == GDS_OK && out->run.exited && out->run.exitStatus != 0) {
+        ga_not_tested(ctx, "the trigger hook did not run the client's own schedule (exit %d)",
+                      out->run.exitStatus);
+        return false;
+    }
+    return cycle_usable(out, r, ctx);
+}
+
+bool cli_slow_ready(const cli_profile *p, ga_ctx *ctx) {
+    if(!p->slow)
+        ga_not_tested(ctx, "a slow test: run with --slow --cycle-period S");
+    else if(p->period <= 0)
+        ga_not_tested(ctx, "a slow test needs --cycle-period S, the client's cycle period");
+    return p->slow && p->period > 0;
+}
+
+/* Restart the client through the trigger hook (GDSAUDIT_ACTION=restart) */
+bool cli_restart(cli_profile *p, ga_ctx *ctx) {
+    p->trig.action = "restart";
+    printf("#   restart the client\n");
+    fflush(stdout);
+    trig_result run;
+    gds_status r = trig_run(&p->trig, p->user, &run);
+    p->trig.action = NULL;
+    if(r != GDS_OK) {
+        ga_not_tested(ctx, "the trigger could not be started for a restart: %s", gds_status_name(r));
+        return false;
+    }
+    if(!run.exited || run.exitStatus != 0) {
+        ga_not_tested(ctx, "the trigger hook did not restart the client (exit %d)", run.exitStatus);
+        return false;
+    }
+    ga_note(ctx, "restart: trigger exit 0 after %.0f ms", run.ms);
+    return true;
+}
+
 /* Did the trigger end on its own, without a crash? */
 bool cli_survived(const trig_result *r) {
     return r->exited && r->exitStatus >= 0 && r->exitStatus < 128;
@@ -162,7 +216,8 @@ const fg_event *cli_last_issued(void) {
     for(size_t i = fg_event_count(); i-- > 0;) {
         const fg_event *ev = fg_event_at(i);
         if(ev->method == FG_M_FINISH && ev->result == UA_STATUSCODE_GOOD && ev->issued.len &&
-           ev->issueMode == FG_ISSUE_GOOD)
+           (ev->issueMode == FG_ISSUE_GOOD || ev->issueMode == FG_ISSUE_INTERMEDIATE ||
+            ev->issueMode == FG_ISSUE_SHORT))
             return ev;
     }
     return NULL;
@@ -209,6 +264,7 @@ static int usage(void) {
     fprintf(stderr,
             "usage: gdsaudit client [--listen PORT (the probe server uses PORT+1)] [--listen-any] [--work DIR] [--user NAME]\n"
             "       [--only PREFIX] [--expect FILE.csv] [--cycle-timeout S] [--list]\n"
+            "       [--slow --cycle-period S]\n"
             "       -- TRIGGER [ARG...]\n"
             "TRIGGER runs one pull cycle of the client under test against the fake GDS;\n"
             "it gets GDSAUDIT_GDS_URL, _GDS_CA, _GDS_CRL, _GDS_USER, _GDS_PASSWORD_FILE\n"
@@ -221,6 +277,8 @@ typedef struct {
     bool listenAny, list;
     const char *work, *user;
     unsigned timeout;
+    bool slow;
+    long period;
     ga_run_options opt;
     char **trigger;
 } cli_args;
@@ -236,6 +294,7 @@ static bool parse_args(int argc, char **argv, cli_args *a) {
         }
         if(!strcmp(k, "--listen-any")) { a->listenAny = true; continue; }
         if(!strcmp(k, "--list")) { a->list = true; continue; }
+        if(!strcmp(k, "--slow")) { a->slow = true; continue; }
         if(i + 1 >= argc)
             return false;
         const char *v = argv[++i];
@@ -246,6 +305,7 @@ static bool parse_args(int argc, char **argv, cli_args *a) {
         else if(!strcmp(k, "--only")) a->opt.only = v;
         else if(!strcmp(k, "--expect")) a->opt.expectCsv = v;
         else if(!strcmp(k, "--cycle-timeout") && gds_parse_long(v, 1, 3600, &n)) a->timeout = (unsigned)n;
+        else if(!strcmp(k, "--cycle-period") && gds_parse_long(v, 4, 86400, &n)) a->period = n;
         else return false;
     }
     return true;
@@ -255,7 +315,7 @@ int gdsaudit_client_main(int argc, char **argv) {
     static ga_test all[CLI_MAX_TESTS];
     size_t nTests = collect(all);
     cli_args a = {CLI_DEFAULT_PORT, false, false, "./gdsaudit-client-work", "registrar", 60,
-                  {NULL, false, NULL, false}, NULL};
+                  false, 0, {NULL, false, NULL, false}, NULL};
     if(!parse_args(argc, argv, &a))
         return usage();
     if(a.list) {
@@ -288,6 +348,8 @@ int gdsaudit_client_main(int argc, char **argv) {
     p.trig.timeoutSeconds = a.timeout;
     p.user = a.user;
     p.probePort = a.port + 1;
+    p.slow = a.slow;
+    p.period = a.period;
     a.opt.operatorAvailable = a.trigger != NULL;
     printf("# fake GDS %s, CA %s, trigger log %s%s\n", fg_url(), fg_ca_path(), logPath,
            a.trigger ? "" : " (no trigger: every test is Not tested)");

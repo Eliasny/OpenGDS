@@ -70,7 +70,13 @@ static gds_status build_env(trig_env *e, const trig_cfg *cfg, const char *user) 
     if(r == GDS_OK) r = env_add(e, "GDSAUDIT_GDS_PASSWORD_FILE", fg_password_path());
     if(r == GDS_OK) r = env_add(e, "GDSAUDIT_CLIENT_DIR", cfg->clientDir);
     if(r == GDS_OK) r = env_add(e, "GDSAUDIT_ACTION", cfg->action);
-    if(r == GDS_OK && cfg->action) r = env_add(e, "GDSAUDIT_PROBE_URL", cfg->probeUrl);
+    if(r == GDS_OK && cfg->probeUrl) r = env_add(e, "GDSAUDIT_PROBE_URL", cfg->probeUrl);
+    if(r == GDS_OK) r = env_add(e, "GDSAUDIT_PROMPT_USER", cfg->promptUser);
+    if(r == GDS_OK) r = env_add(e, "GDSAUDIT_PROMPT_PASSWORD_FILE", cfg->promptPasswordFile);
+    char rs[24];
+    if(r == GDS_OK && cfg->runSeconds > 0 &&
+       (r = gds_path(rs, sizeof(rs), "%ld", cfg->runSeconds)) == GDS_OK)
+        r = env_add(e, "GDSAUDIT_RUN_SECONDS", rs);
     return r;
 }
 
@@ -92,6 +98,18 @@ static gds_status spawn(const trig_cfg *cfg, char *const *envp, pid_t *pid) {
         return GDS_EIO;
     }
     return GDS_OK;
+}
+
+static pid_t current; /* the hook trig_run waits for, 0 if none */
+
+bool trig_child_running(void) {
+    if(current <= 0)
+        return false;
+    siginfo_t si;
+    memset(&si, 0, sizeof(si));
+    if(waitid(P_PID, (id_t)current, &si, WEXITED | WNOHANG | WNOWAIT) != 0)
+        return false;
+    return si.si_pid == 0;
 }
 
 /* SIGTERM, then SIGKILL after 2 s; reaps the child. */
@@ -120,6 +138,7 @@ gds_status trig_run(const trig_cfg *cfg, const char *user, trig_result *res) {
     double t0 = now_ms();
     if((r = spawn(cfg, env.envp, &pid)) != GDS_OK)
         return r;
+    current = pid;
     for(;;) {
         int st = 0;
         pid_t w = waitpid(pid, &st, WNOHANG);
@@ -132,13 +151,14 @@ gds_status trig_run(const trig_cfg *cfg, const char *user, trig_result *res) {
             r = GDS_EIO;
             break;
         }
-        if(now_ms() - t0 > 1000.0 * cfg->timeoutSeconds) {
+        if(now_ms() - t0 > 1000.0 * ((double)cfg->timeoutSeconds + (double)cfg->runSeconds)) {
             stop_child(pid);
             res->exited = false;
             break;
         }
         serve();
     }
+    current = 0;
     /* Serve what the client sent just before it exited (CloseSession) */
     for(int i = 0; i < 5; i++)
         serve();
