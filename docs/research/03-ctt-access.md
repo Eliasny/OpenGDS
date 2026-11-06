@@ -33,6 +33,6 @@ The [CTT Agreement of Use](https://opcfoundation.org/license/ctt/1.1/):
 - results may not be disclosed to third parties without the Foundation's written approval, so the Auditor docs must not publish CTT results side by side with Auditor results unless approved;
 - no reverse engineering. The Auditor must be built from Part 12 itself, never from studying CTT scripts. Keep a note in the Auditor repo that no CTT material was used.
 
-## Recommendation
+## Decision
 
-Take **Startup membership** once a company exists, at $500 a year. It gives the CTT for OpenGDS 1.0 and for cross-checking Auditor verdicts privately. Move to **Corporate D** ($3,000) in the year UASM goes to the certification lab, where the 50% discount on a multi-day GDS test should pay for the difference. The paid service without membership costs more and only covers one certification run.
+Decided 2026-11-06, as recommended: take **Startup membership** once a company exists, at $500 a year. It gives the CTT for OpenGDS 1.0 and for cross-checking Auditor verdicts privately. Move to **Corporate D** ($3,000) in the year UASM goes to the certification lab, where the 50% discount on a multi-day GDS test should pay for the difference. The paid service without membership costs more and only covers one certification run.
