@@ -104,7 +104,8 @@ jobs:
       - name: clang-tidy
         run: |
           cmake -S . -B build-tidy -G Ninja -DOPEN62541_PREFIX="${{ runner.temp }}/open62541"
-          git ls-files '*.c' | xargs clang-tidy -p build-tidy --quiet --warnings-as-errors='*'
+          # docs/spikes: throwaway evidence code, not built or held to the rules
+          git ls-files '*.c' ':!docs/' | xargs clang-tidy -p build-tidy --quiet --warnings-as-errors='*'
       - name: cppcheck
         run: >
           cppcheck --enable=warning,portability,performance --error-exitcode=1
@@ -112,6 +113,6 @@ jobs:
           --suppress=missingIncludeSystem src tools
       - name: Banned functions
         run: |
-          if git grep -nE '\b(strcpy|strcat|sprintf|vsprintf|gets|strtok|atoi|atol|atof|system|popen|tmpnam|mktemp)\s*\(' -- '*.c' '*.h' ':!src/common/banned.h'; then
+          if git grep -nE '\b(strcpy|strcat|sprintf|vsprintf|gets|strtok|atoi|atol|atof|system|popen|tmpnam|mktemp)\s*\(' -- '*.c' '*.h' ':!src/common/banned.h' ':!docs/'; then
             echo "banned function used (docs/architecture.md)"; exit 1
           fi

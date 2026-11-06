@@ -177,7 +177,7 @@ gds_status gds_mkdirs(const char *path, mode_t mode) {
 gds_status gds_path(char *out, size_t outLen, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    int n = vsnprintf(out, outLen, fmt, ap);
+    int n = vsnprintf(out, outLen, fmt, ap); // NOLINT(clang-analyzer-valist.Uninitialized): va_start above
     va_end(ap);
     if(n < 0 || (size_t)n >= outLen) {
         if(outLen > 0)
