@@ -32,7 +32,15 @@ typedef struct {
     cli_cycle shared[CLI_SHARED_COUNT];
     gds_status sharedStatus[CLI_SHARED_COUNT];
     unsigned cycles;
+    long probePort;
 } cli_profile;
+
+/* One connection of the client to the probe server */
+typedef struct {
+    bool connected;      /* a session was activated */
+    gds_buf cert;        /* the client certificate it presented (chain included) */
+    trig_result run;
+} cli_probe_result;
 
 /* Start one cycle of the client with the fake GDS answering per `fault`. */
 GDS_MUST_CHECK gds_status cli_run_cycle(cli_profile *p, fault_id fault, cli_cycle *out);
@@ -43,6 +51,15 @@ const cli_cycle *cli_shared_cycle(cli_profile *p, cli_shared which, ga_ctx *ctx)
 #define cli_base_cycle(p, ctx) cli_shared_cycle((p), CLI_SHARED_BASE, (ctx))
 /* Run a cycle for one test; NULL (Not tested decided) on failure. */
 GDS_MUST_CHECK bool cli_cycle_for(cli_profile *p, fault_id fault, ga_ctx *ctx, cli_cycle *out);
+
+/* Start the probe with an identity from `issuer`, have the client connect
+ * to it, record what it presented. false (Not tested decided) on failure. */
+GDS_MUST_CHECK bool cli_probe(cli_profile *p, fg_ca_id issuer, ga_ctx *ctx, cli_probe_result *out);
+void cli_probe_clear(cli_probe_result *r);
+/* true if `presented` (a chain as sent) begins with exactly `cert` */
+bool cli_cert_is(const gds_buf *presented, const gds_buf *cert);
+/* The last valid certificate the fake GDS issued (FinishRequest Good), or NULL */
+const fg_event *cli_last_issued(void);
 
 /* The n-th call of method m in the cycle, or NULL. */
 const fg_event *cli_find(const cli_cycle *c, fg_method m, size_t n);
@@ -61,6 +78,10 @@ extern const ga_test cli_renew_tests[];
 extern const size_t cli_renew_count;
 extern const ga_test cli_trustlist_tests[];
 extern const size_t cli_trustlist_count;
+extern const ga_test cli_install_tests[];
+extern const size_t cli_install_count;
+extern const ga_test cli_faults_tests[];
+extern const size_t cli_faults_count;
 
 /* `gdsaudit client ...` */
 int gdsaudit_client_main(int argc, char **argv);

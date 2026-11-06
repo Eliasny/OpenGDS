@@ -1,6 +1,7 @@
 /* OpenGDS Auditor client profile - Trust list download (CLI-TL-*).
  * Rows of docs/auditor/client-profile.md, "Trust list (cli_trustlist.c)".
- * CLI-TL-03..06 need the probe server and follow with it; CLI-TL-08 is slow.
+ * CLI-TL-03, -05 and -06 use the probe server. CLI-TL-04 (a CRL that revokes)
+ * and CLI-TL-08 (slow) follow.
  * SPDX-License-Identifier: MPL-2.0 */
 #include "client_profile.h"
 #include "common/banned.h"
@@ -87,9 +88,78 @@ static void t_tl_skip_unchanged(ga_ctx *ctx, void *profile) {
         ga_pass(ctx, "LastUpdateTime unchanged: no download");
 }
 
+/* A cycle with a changed list (fault), then a probe from `issuer` */
+static bool cycle_then_probe(cli_profile *p, fault_id fault, fg_ca_id issuer, ga_ctx *ctx,
+                             cli_probe_result *pr) {
+    cli_cycle c;
+    if(!cli_base_cycle(p, ctx) || !cli_cycle_for(p, fault, ctx, &c))
+        return false;
+    if(cli_count(&c, FG_M_TL_OPEN) == 0) {
+        ga_not_tested(ctx, "the client did not download the changed trust list");
+        return false;
+    }
+    return cli_probe(p, issuer, ctx, pr);
+}
+
+/* CA X added, then removed: TL-03 and TL-05 share it */
+static int with_x(cli_profile *p, ga_ctx *ctx) {
+    static int state = -1; /* -1 not run, 0 failed to run, 1 refused, 2 connected */
+    if(state < 0) {
+        cli_probe_result pr;
+        state = cycle_then_probe(p, FAULT_TL_WITH_X, FG_CA_X, ctx, &pr) ? 1 + pr.connected : 0;
+        if(state)
+            cli_probe_clear(&pr);
+        return state;
+    }
+    if(state == 0)
+        ga_not_tested(ctx, "the trust list with CA X could not be served or probed");
+    return state;
+}
+
+static void t_tl_trusted(ga_ctx *ctx, void *profile) {
+    int s = with_x(profile, ctx);
+    if(s == 2)
+        ga_pass(ctx, "the probe with a certificate from CA X (now in TrustedCertificates) was accepted");
+    else if(s == 1)
+        ga_fail(ctx, "the probe with a certificate from CA X was refused: the new trust list is not in use");
+}
+
+static void t_tl_replace(ga_ctx *ctx, void *profile) {
+    cli_profile *p = profile;
+    int s = with_x(p, ctx);
+    if(s == 0)
+        return;
+    if(s == 1) {
+        ga_not_tested(ctx, "CA X was never accepted, so its removal cannot be seen");
+        return;
+    }
+    cli_probe_result pr;
+    if(!cycle_then_probe(p, FAULT_TL_MAIN, FG_CA_X, ctx, &pr))
+        return;
+    if(pr.connected)
+        ga_fail(ctx, "CA X is still trusted after the list without it was installed (merged, not replaced)");
+    else
+        ga_pass(ctx, "CA X is no longer trusted once the list without it is installed");
+    cli_probe_clear(&pr);
+}
+
+static void t_tl_issuers(ga_ctx *ctx, void *profile) {
+    cli_probe_result pr;
+    if(!cycle_then_probe(profile, FAULT_TL_ISSUER_Y, FG_CA_Y, ctx, &pr))
+        return;
+    if(pr.connected)
+        ga_fail(ctx, "a leaf from CA Y, which is only in IssuerCertificates, was accepted");
+    else
+        ga_pass(ctx, "a leaf from an issuer-only CA was refused");
+    cli_probe_clear(&pr);
+}
+
 const ga_test cli_trustlist_tests[] = {
     {"CLI-TL-01", "12 §7.9.9, §7.8.2.4", "Reads the trust list to the end of the file", false, true, t_tl_read_all},
     {"CLI-TL-02", "12 §7.8.2.4", "Closes the file after reading", false, true, t_tl_close},
+    {"CLI-TL-03", "12 §7.9.9; 4 §6.1.3", "A CA added to the trust list is trusted", false, true, t_tl_trusted},
+    {"CLI-TL-05", "12 §7.8.2.8; 4 §6.1.3", "A new trust list replaces the old one", false, true, t_tl_replace},
+    {"CLI-TL-06", "12 §7.8.2.8; 4 §6.1.3", "Issuer-only CAs are not trusted", false, true, t_tl_issuers},
     {"CLI-TL-07", "12 §7.6", "Skips the download when the list is unchanged", false, true, t_tl_skip_unchanged},
 };
 const size_t cli_trustlist_count = GDS_ARRAY_SIZE(cli_trustlist_tests);
