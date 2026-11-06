@@ -81,10 +81,14 @@ admin clients ┼──► opengdsd  (user opengds, no key)  ───┘    (pu
 ### Threads and ownership across them
 
 - The open62541 server thread only decodes, dispatches and encodes. Method callbacks that do more than a lookup are async (`UA_Server_setAsyncCallMethodResult`) and run on the worker pool.
+- **Async results are completed on the server thread** (docs/spikes/02). A worker never calls `UA_Server_setAsyncCallMethodResult` and never sees the output pointer: it posts its result to a queue that a server-thread callback drains. The upstream tutorial pattern (completing from the worker) deadlocks with the cancel callback in v1.5.10. The cancel callback runs under the server lock and takes no lock of ours. No lock of ours is held across any call into open62541.
+- **Signing is not an async method call.** StartSigningRequest and StartNewKeyPairRequest validate and store the request (synchronous, about a millisecond), return the request id, and queue the signing or key generation as a background job to the signer. FinishRequest reads the store. A disconnect loses nothing and no call ties up a session while the signer works. Async method calls stay for calls that must answer with a slow result, such as push work on a managed server.
+- Bounds: `maxAsyncOperationQueueSize` 256 (a full worker queue refuses with `Bad_TooManyOperations`), `asyncOperationTimeout` 30 s (clients are told to wait longer), event `queueSizeLimits.max` 10000 so pending approval dialogs survive a ConditionRefresh (docs/spikes/01), and a configured cap on pending approvals.
+- Shutdown order: stop the server loop and join its thread, stop and join the workers, run the completion callback once on the deleting thread, then `UA_Server_delete`.
 - A job handed to the worker pool **owns** its input: the server thread deep-copies the method arguments into the job (`UA_copy`) and never touches them again. The worker frees them. No pointer into open62541's request buffers crosses a thread.
 - Shared state is one of: immutable after start, owned by one thread and reached by message, or protected by a single named mutex with a documented lock order (`docs/locking.md`). No lock is held across a call into a plugin, OpenSSL, the store or the network.
 - Reference-counted buffers (encoded trust lists) use C11 atomics and are immutable once published.
-- TSan runs the integration tests on every push.
+- TSan runs the integration tests on every push, with `tsan.supp` holding the two lock-order reports inside open62541 v1.5.10 (`UA_Timer_add`, `UA_Timer_process`) that cannot deadlock because the event loop mutex gates them. The file names the open62541 version and is re-checked when the pin moves. Timeout, cancel, disconnect mid-call, full queue and shutdown with calls in flight each get a test under TSan and ASan.
 
 ## Coding standard: the OpenGDS C rules
 
@@ -332,6 +336,9 @@ New or changed files, in the plan's file-by-file style.
 | OpenGDS: `src/common/` | Adds `compiler.h`, `banned.h`, `safeint.h`, `buf.*`, `limits.h`, `args.*`, `arena.*`, `sandbox.*` | Rules need homes |
 | OpenGDS: CI | Adds GCC `-fanalyzer`, allocation-failure injection, checksec, Scorecard; analysis gates at zero findings | F7 |
 | OpenGDS: timeline | Signer adds about 1.5 coding days in T1 (thin version: `SIGN_CSR` only) and 1 day in W2; sandboxing about 1 day in MVP. Calendar-bound work unchanged | AI-assisted estimate; review time included in the calendar, not compressed |
+| OpenGDS: Risks, "A&C experimental" | Downgrade to low: DialogCondition approvals with Respond2 work in v1.5.10 with three small workarounds, kept in `gds_approvals.c`, the only file that touches A&C; the hand-rolled event fallback is dropped | docs/spikes/01 |
+| OpenGDS: `gds_certmgr.c`, `gds_config.c`, `src/common/threadpool.c` | Signing as a background job, not an async call; server-thread handoff for async results; queue and timeout bounds above | docs/spikes/02 |
+| OpenGDS: `tests/spec/test_spec_events.c` | Refresh after restart shows pending dialogs; Respond and Respond2 both work; second answer gives `Bad_DialogNotActive`; wrong role gives `Bad_UserAccessDenied`; more pending dialogs than the queue cap | docs/spikes/01 |
 | Auditor: core | Response validation and `fuzz_auditor_responses.c`; hooks via `posix_spawn` | Hostile targets |
 | UASM | CA ceremony plugin and HSM profiles load into the signer; per-node signer in the cluster | Same protection for the commercial CA path |
 

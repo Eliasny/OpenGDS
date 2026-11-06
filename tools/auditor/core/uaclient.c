@@ -16,8 +16,19 @@
 
 /* Single-threaded tools: one step counter per process is enough. */
 static unsigned stepNo = 0;
+static bool quiet = false;
+
+void uac_set_quiet(bool q) {
+    quiet = q;
+}
+
+UA_LogLevel uac_log_level(void) {
+    return quiet ? UA_LOGLEVEL_FATAL : UA_LOGLEVEL_WARNING;
+}
 
 void uac_step(const char *fmt, ...) {
+    if(quiet)
+        return;
     va_list ap;
     va_start(ap, fmt);
     printf("\n[%u] ", ++stepNo);
@@ -28,6 +39,8 @@ void uac_step(const char *fmt, ...) {
 }
 
 void uac_info(const char *fmt, ...) {
+    if(quiet)
+        return;
     va_list ap;
     va_start(ap, fmt);
     printf("    ");
@@ -53,7 +66,7 @@ UA_Client *uac_new_secure(const gds_buf *cert, const gds_buf *key, const gds_buf
                           const char *applicationUri) {
     UA_ClientConfig cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.logging = UA_Log_Stdout_new(UA_LOGLEVEL_WARNING);
+    cfg.logging = UA_Log_Stdout_new(uac_log_level());
     if(!cfg.logging || UA_ClientConfig_setDefault(&cfg) != UA_STATUSCODE_GOOD) {
         UA_ClientConfig_clear(&cfg);
         return NULL;
@@ -91,7 +104,7 @@ UA_StatusCode uac_fetch_server_cert(const char *url, UA_ByteString *out) {
     UA_ByteString_init(out);
     UA_ClientConfig cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.logging = UA_Log_Stdout_new(UA_LOGLEVEL_WARNING);
+    cfg.logging = UA_Log_Stdout_new(uac_log_level());
     if(!cfg.logging || UA_ClientConfig_setDefault(&cfg) != UA_STATUSCODE_GOOD) {
         UA_ClientConfig_clear(&cfg);
         return UA_STATUSCODE_BADOUTOFMEMORY;

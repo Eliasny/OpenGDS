@@ -8,6 +8,8 @@
 
 #include <open62541/client.h>
 
+#include <stdbool.h>
+
 #include "common/ua_args.h"
 #include "x509util.h"
 
@@ -49,5 +51,9 @@ const void *uac_out_scalar(const UA_Variant *out, size_t outSize, size_t i,
 /* Progress printing for the self-test tools. */
 void uac_step(const char *fmt, ...) GDS_FORMAT(1, 2);
 void uac_info(const char *fmt, ...) GDS_FORMAT(1, 2);
+/* Silence uac_step/uac_info (the Auditor prints TAP on stdout). */
+void uac_set_quiet(bool q);
+/* Log level for new clients: warnings, or fatal only when quiet. */
+UA_LogLevel uac_log_level(void);
 
 #endif

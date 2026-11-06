@@ -1,0 +1,29 @@
+# OpenGDS phase that turns each GDS spec test green (OpenGDS plan, "Spec tests
+# first, then tracer bullets"). T1 is the pull tracer (week 2), W1 the
+# Directory widening (week 5), W2 CertificateManager and TrustList (week 7).
+id,phase
+gds.sec.endpoints,T1
+gds.sec.none_session,T1
+gds.sec.anonymous_register,T1
+gds.dir.find_unknown,T1
+gds.dir.register_valid,T1
+gds.dir.register_no_uri,T1
+gds.dir.register_bad_type,W1
+gds.dir.register_server_no_urls,W1
+gds.dir.register_no_names,W1
+gds.dir.get_application,W1
+gds.dir.get_unknown,W1
+gds.dir.update_application,W1
+gds.dir.unregister,W1
+gds.dir.query_by_uri,W1
+gds.cm.groups,T1
+gds.cm.groups_unknown,W2
+gds.cm.status_new,W2
+gds.cm.bad_csr,T1
+gds.cm.signing_flow,T1
+gds.cm.csr_wrong_uri,T1
+gds.cm.finish_unknown,W2
+gds.cm.status_after_issue,W2
+gds.tl.get_trustlist,T1
+gds.tl.read_bad_handle,W2
+gds.tl.write_anonymous,T1
