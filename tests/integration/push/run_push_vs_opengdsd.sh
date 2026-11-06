@@ -93,8 +93,11 @@ conn() { # conn <user> <password-file>
 }
 
 echo "=============== 2. the device, self-signed, trusting the GDS CA ==============="
+# --break deprecated-policy adds Basic128Rsa15/Basic256 endpoints, which
+# present the RsaMinApplicationCertificateType certificate: the push replaces
+# only the RsaSha256 one (12 §7.8.4), and gdsadm must not expect it on them.
 "$DEV" --port "$DEV_PORT" --pki "$W/pki-dev" --trust "$W/ca/ca.der" --crl "$W/ca/ca.crl" \
-    --admin-cert "$ADM_CERT" > "$W/device.log" 2>&1 &
+    --admin-cert "$ADM_CERT" --break deprecated-policy > "$W/device.log" 2>&1 &
 DPID=$!
 wait_log "$DPID" "$W/device.log" push_test_server
 DEV_CERT=$(ls "$W"/pki-dev/ApplCerts/own/certs/selfsigned*.der 2>/dev/null | head -1)
