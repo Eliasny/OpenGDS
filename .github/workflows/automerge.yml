@@ -61,5 +61,26 @@ jobs:
               exit 0
             fi
           done
-          gh pr merge "$pr" --repo "$REPO" --squash --match-head-commit "$SHA"
-          echo "Merged #$pr at $SHA."
+          # Only a failure Elias must act on fails this job (GitHub emails him
+          # for failed runs he is the actor of). Conflicts are fixed by whoever
+          # owns the PR and a lost race with a parallel run is harmless, so
+          # those end green with a warning annotation instead.
+          if out=$(gh pr merge "$pr" --repo "$REPO" --squash --match-head-commit "$SHA" 2>&1); then
+            echo "Merged #$pr at $SHA."
+            exit 0
+          fi
+          echo "$out"
+          state=$(gh pr view "$pr" --repo "$REPO" --json state --jq .state)
+          if [ "$state" != "OPEN" ]; then
+            echo "#$pr is already $state; nothing to do."
+            exit 0
+          fi
+          case "$out" in
+            *"workflows"*"permission"*)
+              # GITHUB_TOKEN may not merge changes under .github/workflows.
+              echo "::error::#$pr changes a workflow; GITHUB_TOKEN cannot merge it. Merge it by hand."
+              exit 1 ;;
+            *)
+              echo "::warning::#$pr was not merged at $SHA (conflict or not mergeable yet); a later push will retry."
+              exit 0 ;;
+          esac
