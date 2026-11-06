@@ -1,0 +1,25 @@
+<!-- OpenGDS Auditor reference run: a pull-managed client on the OPC Foundation
+     .NET GDS client library (Opc.Ua.Gds.Client.Common). run_dotnet_client.sh
+     copies this folder into the pinned UA-.NETStandard checkout as
+     Applications/AuditorPullClient and builds it there, so it uses that
+     checkout's package versions. SPDX-License-Identifier: MPL-2.0 -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net8.0</TargetFrameworks>
+    <AssemblyName>AuditorPullClient</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <Nullable>disable</Nullable>
+    <NoWarn>$(NoWarn);CS0618;CA1303;CA1031;CA2007;CA1062;CA1307;CA1309;CA1310;CA1852;CA5394;IDE0005;IDE0008;IDE0011;IDE0058;IDE0161</NoWarn>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\Stack\Opc.Ua.Core\Opc.Ua.Core.csproj" />
+    <ProjectReference Include="..\..\Libraries\Opc.Ua.Configuration\Opc.Ua.Configuration.csproj" />
+    <ProjectReference Include="..\..\Libraries\Opc.Ua.Client\Opc.Ua.Client.csproj" />
+    <ProjectReference Include="..\..\Libraries\Opc.Ua.Gds.Client.Common\Opc.Ua.Gds.Client.Common.csproj" />
+  </ItemGroup>
+</Project>

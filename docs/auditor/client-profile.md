@@ -124,3 +124,13 @@ In every fault test the Auditor first lets one good cycle finish, so the client 
 | CLI-FLT-07 | 12 §7.6 | O, slow | Stop answering in the middle of a FinishRequest (the answer is held back 40 s, or until the client process ends) | The client gives up the call within those 40 s and runs the next cycle | Warn: it still waits after 40 s | `no-call-timeout` |
 | CLI-FLT-08 | 12 §7.8.2.4; OPC 10000-20 (FileType Read) | O | Answer a Read with more bytes than requested, and FinishRequest with a 10 000-element IssuerCertificates array | The client keeps running and keeps its last good state | Fail: it crashes or installs | `no-length-check` |
 | CLI-FLT-09 | 12 §6.3 | O | The fake GDS closes the client's session mid-cycle (a GDS may do so when short of resources) | The client retries in its next cycle, not in a tight loop | Warn: more than 3 reconnects within 10 s | `reconnect-storm` |
+
+## Reference runs
+
+Two clients gate the profile (AT3). `selftest/pull_test_client.c` passes every test, and each of its mutants is caught by the test that names it (`expected/pull_test_client.csv`, `ctest -L client_profile`).
+
+The second is a pull client on the OPC Foundation .NET GDS client library (UA-.NETStandard 1.5.378.182, `Opc.Ua.Gds.Client.Common`). UA-.NETStandard ships no ready pull-client application, so `tools/auditor/reference/dotnet_pull_client` is a small trigger hook on that library: one pull cycle per run, the RequestId and new key kept across runs, the trust list fetched only when LastUpdateTime changes. `reference/run_dotnet_client.sh <gdsaudit> <UA-.NETStandard checkout> <workdir>` builds it inside the pinned checkout and runs the profile; the `reference-client` workflow does the same in CI and fails when a verdict in `expected/dotnet_reference.csv` changes. The result is pass 45, fail 3, not supported 2, not tested 4:
+
+- CLI-TL-01 fails and CLI-FLT-08 fails because of the library itself. `GlobalDiscoveryServerClient.ReadTrustListAsync` reads 4096 bytes per call and stops at the first Read whose result length is not 4096. A short Read therefore ends the download early, although only an empty result marks the end of the file (OPC 10000-20 §4.2.4), and a Read longer than requested is taken as the whole list and installed.
+- CLI-TRU-02 fails as a consequence of CLI-FLT-08: after the rogue list the client's own certificate no longer validates, so later runs do not start. Run alone (`--only CLI-TRU-02`) it passes, and so does CLI-FLT-09, which is Not tested in the full run for the same reason.
+- CLI-CSR-05 and CLI-REG-03 are Not supported: the hook is a pure Client with no DiscoveryUrls. The slow tests are Not tested, since the hook has no schedule of its own (`GDSAUDIT_ACTION=run` exits 2).
