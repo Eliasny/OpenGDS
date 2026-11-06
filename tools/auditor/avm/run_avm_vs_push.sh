@@ -35,7 +35,7 @@ until grep -q "Creating listen socket" "$W/server.log" 2>/dev/null; do
 done
 
 "$B/avm_selftest" "$3" "$W/run" -- "$B/gdsaudit" server --url "opc.tcp://127.0.0.1:$PORT" \
-    --tofu --work "$W/auditor" --user operator --user-password-file "$W/user.pw" --allow-changes
+    --tofu --work "$W/auditor" --user operator --user-password-file "$W/user.pw" --allow-changes --slow
 RC=$?
 [ $RC -ne 0 ] && { echo "--- engine output"; cat "$W/run/output.log"; }
 exit $RC

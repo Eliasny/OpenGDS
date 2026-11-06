@@ -30,6 +30,7 @@ typedef struct {
     AvmProfile profile;
     AvmPreset preset;
     gboolean allowChanges; /* set from the preset, the user can change it */
+    gboolean slow;         /* server: run the tests flagged slow; set from the preset */
     char *workDir;
     /* server and gds */
     char *url;

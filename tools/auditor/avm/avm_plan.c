@@ -78,6 +78,7 @@ void avm_plan_clear(AvmPlan *p) {
 void avm_plan_apply_preset(AvmPlan *p, AvmPreset preset) {
     p->preset = preset;
     p->allowChanges = preset != AVM_PRESET_QUICK;
+    p->slow = preset != AVM_PRESET_QUICK; /* a full run is every test */
 }
 
 static gboolean set(const char *s) {
@@ -147,6 +148,8 @@ static void add_opt(GPtrArray *a, const char *flag, const char *value) {
 }
 
 static void add_server_args(GPtrArray *a, const AvmPlan *p) {
+    if(p->slow)
+        add(a, "--slow");
     if(p->tofu)
         add(a, "--tofu");
     else

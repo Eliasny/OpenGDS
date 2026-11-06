@@ -34,8 +34,10 @@ static void test_presets(void) {
     avm_plan_init(&p);
     g_assert_true(p.preset == AVM_PRESET_QUICK);
     g_assert_false(p.allowChanges); /* read-only is the default */
+    g_assert_false(p.slow);
     avm_plan_apply_preset(&p, AVM_PRESET_FULL);
     g_assert_true(p.allowChanges);
+    g_assert_true(p.slow); /* a full run is every test */
     avm_plan_apply_preset(&p, AVM_PRESET_CERT);
     g_assert_true(p.allowChanges);
     eq_str(avm_preset_label(AVM_PRESET_CERT), "Preparation for certification");
@@ -70,7 +72,7 @@ static void test_server(void) {
     g_assert_null(avm_plan_check(&p));
     s = joined(&p);
     eq_str(s, "/bin/gdsaudit server --events /dev/fd/3 --report /r/report --work /w "
-                           "--url opc.tcp://plc:4840 --allow-changes --server-cert /c/srv.der "
+                           "--url opc.tcp://plc:4840 --allow-changes --slow --server-cert /c/srv.der "
                            "--user admin --user-password-file /c/pw");
     g_free(s);
     avm_plan_set(&p.adminCert, "/c/a.der");
@@ -81,7 +83,7 @@ static void test_server(void) {
     g_assert_null(avm_plan_check(&p));
     s = joined(&p);
     eq_str(s, "/bin/gdsaudit server --events /dev/fd/3 --report /r/report --work /w "
-              "--url opc.tcp://plc:4840 --allow-changes --server-cert /c/srv.der "
+              "--url opc.tcp://plc:4840 --allow-changes --slow --server-cert /c/srv.der "
               "--admin-cert /c/a.der --admin-key /c/a.key --user admin --user-password-file /c/pw");
     g_free(s);
     avm_plan_set(&p.url, "http://plc");
