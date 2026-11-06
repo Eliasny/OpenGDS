@@ -70,6 +70,10 @@ struct gds_server {
     gds_job *plugQueue, *plugQueueTail, *plugDone;
     size_t plugQueued;
     gds_job *plugInflight[GDS_PLUGIN_QUEUE];
+    /* issuance holds (gds_registrar.c, UASM ask A13), not replicated */
+    pthread_mutex_t holdLock;
+    UA_Guid *holds;
+    size_t nHolds, capHolds;
 };
 
 /* ---- caller views (gds_caller.c, issue #17) ---- */
@@ -171,6 +175,17 @@ GDS_MUST_CHECK UA_StatusCode gds_load_app(gds_server *s, const UA_Guid *id,
 GDS_MUST_CHECK UA_StatusCode gds_directory_install(gds_server *s);
 GDS_MUST_CHECK UA_StatusCode gds_certmgr_install(gds_server *s);
 GDS_MUST_CHECK UA_StatusCode gds_trustlist_install(gds_server *s);
+/* The DefaultApplicationGroup trust list (the CA certificate and its CRL),
+ * the lists in masks only; *out is a deep copy. Any thread. */
+GDS_MUST_CHECK UA_StatusCode gds_trustlist_data(gds_server *s, UA_UInt32 masks,
+                                                UA_TrustListDataType *out);
+/* Issuance holds (gds_registrar.c, UASM ask A13): is this application's
+ * issuance held back? Any thread; holdLock is a leaf lock. */
+bool gds_issuance_held(gds_server *s, const UA_Guid *appId);
+void gds_holds_free(gds_server *s);
+/* Audit log + event with ClientUserId user (gds_audit.c). */
+GDS_MUST_CHECK gds_status gds_audit_raise(gds_server *s, const char *user,
+                                          const gds_audit_event *ev, int64_t *seq);
 /* RevokeCertificate (gds_revoke.c). */
 GDS_MUST_CHECK UA_StatusCode gds_revoke_install(gds_server *s);
 /* Revoke every certificate of appId: store first, then the CA's CRL.

@@ -77,3 +77,8 @@ set_tests_properties(unit_revoke PROPERTIES TIMEOUT 120)
 add_executable(test_embed_roles test_embed_roles.c)
 target_link_libraries(test_embed_roles PRIVATE gds_server)
 add_test(NAME unit_embed_roles COMMAND test_embed_roles "${CMAKE_CURRENT_BINARY_DIR}/roles-run")
+
+add_executable(test_registrar test_registrar.c)
+target_link_libraries(test_registrar PRIVATE gds_server)
+add_test(NAME unit_registrar COMMAND test_registrar "${CMAKE_CURRENT_BINARY_DIR}/registrar-run")
+set_tests_properties(unit_registrar PROPERTIES TIMEOUT 120)

@@ -87,6 +87,28 @@ static bool csr_ok(const UA_ByteString *csr) {
 
 /* ---- StartSigningRequest ---- */
 
+/* StartSigningRequest's arguments and checks (§7.9.3). */
+static UA_StatusCode signing_args(gds_server *s, void *sessionContext, size_t inputSize,
+                                  const UA_Variant *input, UA_Guid *appId, UA_UInt32 *group,
+                                  UA_UInt32 *type, const UA_ByteString **csr) {
+    UA_StatusCode r = gds_in_guid(s, inputSize, input, 0, appId);
+    if(r == UA_STATUSCODE_GOOD)
+        r = check_app(s, sessionContext, appId, 0);
+    if(r == UA_STATUSCODE_GOOD)
+        r = group_arg(s, inputSize, input, 1, group);
+    if(r == UA_STATUSCODE_GOOD)
+        r = type_arg(inputSize, input, 2, type);
+    if(r == UA_STATUSCODE_GOOD && inputSize < 4)
+        r = UA_STATUSCODE_BADARGUMENTSMISSING;
+    if(r == UA_STATUSCODE_GOOD && gds_arg_bytes(&input[3], GDS_MAX_CSR_SIZE, csr) != UA_STATUSCODE_GOOD)
+        r = UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(r == UA_STATUSCODE_GOOD && !csr_ok(*csr))
+        r = UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(r == UA_STATUSCODE_GOOD && gds_issuance_held(s, appId))
+        r = UA_STATUSCODE_BADREQUESTNOTALLOWED; /* held by the embedder (A13) */
+    return r;
+}
+
 static GDS_METHOD(start_signing_request) {
     GDS_METHOD_UNUSED;
     gds_server *s = gds_ctx(methodContext);
@@ -95,19 +117,7 @@ static GDS_METHOD(start_signing_request) {
     UA_Guid appId;
     UA_UInt32 group = 0, type = 0;
     const UA_ByteString *csr = NULL;
-    UA_StatusCode r = gds_in_guid(s, inputSize, input, 0, &appId);
-    if(r == UA_STATUSCODE_GOOD)
-        r = check_app(s, sessionContext, &appId, 0);
-    if(r == UA_STATUSCODE_GOOD)
-        r = group_arg(s, inputSize, input, 1, &group);
-    if(r == UA_STATUSCODE_GOOD)
-        r = type_arg(inputSize, input, 2, &type);
-    if(r == UA_STATUSCODE_GOOD && inputSize < 4)
-        r = UA_STATUSCODE_BADARGUMENTSMISSING;
-    if(r == UA_STATUSCODE_GOOD && gds_arg_bytes(&input[3], GDS_MAX_CSR_SIZE, &csr) != UA_STATUSCODE_GOOD)
-        r = UA_STATUSCODE_BADINVALIDARGUMENT;
-    if(r == UA_STATUSCODE_GOOD && !csr_ok(csr))
-        r = UA_STATUSCODE_BADINVALIDARGUMENT;
+    UA_StatusCode r = signing_args(s, sessionContext, inputSize, input, &appId, &group, &type, &csr);
     if(r != UA_STATUSCODE_GOOD)
         return r;
     gds_request q;
@@ -301,10 +311,16 @@ static bool process_one(gds_server *s) {
     }
     gds_ca_subject subj = {&q.id, &rec, q.groupId, q.certType};
     gds_ca_issued issued;
-    r = gds_ca_sign_csr(s->ca, &subj, &q.csr, &issued);
+    memset(&issued, 0, sizeof(issued));
+    bool held = gds_issuance_held(s, &q.appId); /* A13: held after it was stored */
+    r = held ? GDS_EDENIED : gds_ca_sign_csr(s->ca, &subj, &q.csr, &issued);
     bool more = true;
     gds_lock(s);
-    if(r == GDS_OK) {
+    if(held) {
+        if(gds_store_req_set_state(s->store, &q.id, GDS_REQ_FAILED, NULL,
+                                   UA_STATUSCODE_BADREQUESTNOTALLOWED) != GDS_OK)
+            more = false;
+    } else if(r == GDS_OK) {
         gds_status w = gds_store_cert_add(s->store, &q.appId, q.groupId, q.certType,
                                           &issued.serial, &issued.der, issued.notBefore,
                                           issued.notAfter);

@@ -24,7 +24,8 @@ static gds_tl_handle *find_handle(void *sessionContext, UA_UInt32 h) {
     return NULL;
 }
 
-static UA_StatusCode build_file(gds_server *s, UA_UInt32 masks, UA_ByteString *out) {
+UA_StatusCode gds_trustlist_data(gds_server *s, UA_UInt32 masks, UA_TrustListDataType *out) {
+    UA_TrustListDataType_init(out);
     gds_buf crl = {0};
     gds_status st = gds_ca_get_crl(s->ca, &crl);
     if(st != GDS_OK)
@@ -41,9 +42,18 @@ static UA_StatusCode build_file(gds_server *s, UA_UInt32 masks, UA_ByteString *o
         tl.trustedCrls = &l;
         tl.trustedCrlsSize = 1;
     }
-    *out = UA_BYTESTRING_NULL;
-    UA_StatusCode r = UA_encodeBinary(&tl, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], out, NULL);
+    UA_StatusCode r = UA_TrustListDataType_copy(&tl, out);
     gds_buf_free(&crl);
+    return r;
+}
+
+static UA_StatusCode build_file(gds_server *s, UA_UInt32 masks, UA_ByteString *out) {
+    UA_TrustListDataType tl;
+    UA_StatusCode r = gds_trustlist_data(s, masks, &tl);
+    *out = UA_BYTESTRING_NULL;
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_encodeBinary(&tl, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], out, NULL);
+    UA_TrustListDataType_clear(&tl);
     return r;
 }
 
