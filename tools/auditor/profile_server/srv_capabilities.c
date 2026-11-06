@@ -545,13 +545,13 @@ static gds_status filler(const testca_t *ca, EVP_PKEY *key, unsigned idx, size_t
     X509 *x = X509_new();
     X509_NAME *nm = X509_NAME_new();
     ASN1_IA5STRING *cm = ASN1_IA5STRING_new();
-    BIGNUM *sn = BN_new();
+    BIGNUM *sn = BN_new(); /* 62 random bits, top bit set: a fixed-length DER serial */
     char cn[64];
     (void)snprintf(cn, sizeof(cn), "%s big list %u", TESTCA_ORG, idx);
     unsigned char *der = NULL;
     int len = -1;
     if(x && nm && cm && sn && pad <= sizeof(padding) && X509_set_version(x, 2) == 1 &&
-       BN_rand(sn, 63, BN_RAND_TOP_ANY, BN_RAND_BOTTOM_ANY) == 1 &&
+       BN_rand(sn, 62, BN_RAND_TOP_ONE, BN_RAND_BOTTOM_ANY) == 1 &&
        BN_to_ASN1_INTEGER(sn, X509_get_serialNumber(x)) &&
        X509_set_issuer_name(x, X509_get_subject_name(ca->cert)) == 1 &&
        X509_NAME_add_entry_by_txt(nm, "O", MBSTRING_UTF8, (const unsigned char *)TESTCA_ORG, -1,
