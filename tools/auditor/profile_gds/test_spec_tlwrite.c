@@ -225,14 +225,14 @@ static void t_write_update(ga_ctx *ctx, void *p) {
     UA_TrustListDataType before, after, changed;
     UA_TrustListDataType_init(&after);
     UA_TrustListDataType_init(&changed);
-    UA_DateTime t0 = 0, t1 = 0;
+    UA_DateTime lu0 = 0, lu1 = 0;
     UA_StatusCode r = read_list(t->client, tl, &before);
     gds_buf extra = {0};
     if(r != UA_STATUSCODE_GOOD || fresh_cert(t, &extra) != GDS_OK) {
         ga_not_tested(ctx, "setup: read the trust list -> %s", UA_StatusCode_name(r));
         goto done;
     }
-    gtl_last_update(t->client, tl, &t0);
+    gtl_last_update(t->client, tl, &lu0);
     before.specifiedLists = 0xf;
     r = UA_TrustListDataType_copy(&before, &changed);
     UA_ByteString eb = {extra.len, extra.data};
@@ -250,7 +250,7 @@ static void t_write_update(ga_ctx *ctx, void *p) {
     }
     ga_note(ctx, "CloseAndUpdate ApplyChangesRequired=%s", acr ? "true" : "false");
     r = read_list(t->client, tl, &after);
-    UA_StatusCode rt = gtl_last_update(t->client, tl, &t1);
+    UA_StatusCode rt = gtl_last_update(t->client, tl, &lu1);
     bool restoreAcr = false;
     UA_StatusCode rs = gtl_write(t->client, tl, &before, true, &restoreAcr);
     if(rs != UA_STATUSCODE_GOOD)
@@ -260,7 +260,7 @@ static void t_write_update(ga_ctx *ctx, void *p) {
     else if(!gtl_has(after.trustedCertificates, after.trustedCertificatesSize, &extra))
         ga_fail(ctx, "the written certificate is not in the trust list after CloseAndUpdate%s",
                 acr ? " (ApplyChangesRequired=true: the Directory has no ApplyChanges)" : "");
-    else if(rt != UA_STATUSCODE_GOOD || t1 <= t0)
+    else if(rt != UA_STATUSCODE_GOOD || lu1 <= lu0)
         ga_fail(ctx, "LastUpdateTime did not advance (%s)", UA_StatusCode_name(rt));
     else if(rs != UA_STATUSCODE_GOOD)
         ga_warn(ctx, "applied, but writing the original list back failed: %s",
@@ -286,17 +286,17 @@ static void t_add_remove(ga_ctx *ctx, void *p) {
         gds_buf_free(&extra);
         return;
     }
-    UA_DateTime t0 = 0, t1 = 0, t2 = 0;
-    gtl_last_update(t->client, tl, &t0);
+    UA_DateTime lu0 = 0, lu1 = 0, lu2 = 0;
+    gtl_last_update(t->client, tl, &lu0);
     UA_StatusCode ra = gtl_add(t->client, tl, &extra, true);
     UA_TrustListDataType mid, end;
     UA_TrustListDataType_init(&mid);
     UA_TrustListDataType_init(&end);
     UA_StatusCode r1 = ra == UA_STATUSCODE_GOOD ? read_list(t->client, tl, &mid) : ra;
-    gtl_last_update(t->client, tl, &t1);
+    gtl_last_update(t->client, tl, &lu1);
     UA_StatusCode rr = ra == UA_STATUSCODE_GOOD ? gtl_remove_thumb(t->client, tl, tp, true) : ra;
     UA_StatusCode r2 = rr == UA_STATUSCODE_GOOD ? read_list(t->client, tl, &end) : rr;
-    gtl_last_update(t->client, tl, &t2);
+    gtl_last_update(t->client, tl, &lu2);
     (void)gt_absent(ctx, ra, false, "AddCertificate");
     if(ra != UA_STATUSCODE_GOOD)
         ga_fail(ctx, "AddCertificate(self-signed, trusted) -> %s", UA_StatusCode_name(ra));
@@ -308,7 +308,7 @@ static void t_add_remove(ga_ctx *ctx, void *p) {
     else if(r2 != UA_STATUSCODE_GOOD ||
             gtl_has(end.trustedCertificates, end.trustedCertificatesSize, &extra))
         ga_fail(ctx, "the removed certificate is still in the Trusted list");
-    else if(!(t1 > t0 && t2 > t1))
+    else if(!(lu1 > lu0 && lu2 > lu1))
         ga_fail(ctx, "LastUpdateTime did not advance on AddCertificate and RemoveCertificate");
     else
         ga_pass(ctx, "AddCertificate and RemoveCertificate change the list and LastUpdateTime");
@@ -370,10 +370,9 @@ static void t_add_no_issuer(ga_ctx *ctx, void *p) {
         if(x509_thumbprint(&leaf, tp) == GDS_OK &&
            gtl_remove_thumb(t->client, tl, tp, true) != UA_STATUSCODE_GOOD)
             ga_note(ctx, "could not remove the certificate again");
-    } else if((r & 0xFFFF0000u) >= UA_STATUSCODE_BADCERTIFICATEINVALID &&
-              (r & 0xFFFF0000u) <= UA_STATUSCODE_BADCERTIFICATEREVOKED) {
-        ga_pass(ctx, "refused with the validation error %s", UA_StatusCode_name(r));
-    } else if(r == UA_STATUSCODE_BADCERTIFICATECHAININCOMPLETE ||
+    } else if(((r & 0xFFFF0000u) >= UA_STATUSCODE_BADCERTIFICATEINVALID &&
+               (r & 0xFFFF0000u) <= UA_STATUSCODE_BADCERTIFICATEREVOKED) ||
+              r == UA_STATUSCODE_BADCERTIFICATECHAININCOMPLETE ||
               r == UA_STATUSCODE_BADSECURITYCHECKSFAILED) {
         ga_pass(ctx, "refused with the validation error %s", UA_StatusCode_name(r));
     } else {

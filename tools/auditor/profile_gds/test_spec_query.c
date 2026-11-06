@@ -262,6 +262,54 @@ static void t_name(ga_ctx *ctx, void *p) {
 
 /* Records come back in increasing record id order; NextRecordId continues
  * the query; LastCounterResetTime does not change between pages. */
+typedef struct {
+    size_t got, calls;
+    bool order, resetStable, ended;
+    UA_StatusCode r;
+} page_walk;
+
+/* One page of MaxRecordsToReturn 1; false ends the walk. Returns -1 when the
+ * test already has its verdict. */
+static int page_step(ga_ctx *ctx, gds_target *t, qset *s, UA_UInt32 *start,
+                     UA_DateTime *reset0, page_walk *w) {
+    qres q;
+    w->r = query_apps(t, *start, 1, NULL, s->pattern, 0, NULL, NULL, 0, &q);
+    w->calls++;
+    if(w->r != UA_STATUSCODE_GOOD)
+        return 0;
+    if(w->calls == 1)
+        *reset0 = q.reset;
+    else if(q.reset != *reset0)
+        w->resetStable = false;
+    if(q.n > 1) {
+        ga_fail(ctx, "MaxRecordsToReturn 1 returned %zu records", q.n);
+        qres_clear(&q);
+        return -1;
+    }
+    if(q.n == 1) {
+        if(w->got >= 3) {
+            w->order = false;
+        } else {
+            UA_String want = UA_STRING(s->uri[w->got]);
+            if(!UA_String_equal(&q.apps[0].applicationUri, &want))
+                w->order = false;
+        }
+        w->got++;
+    }
+    UA_UInt32 next = q.next;
+    qres_clear(&q);
+    if(next == 0) {
+        w->ended = true;
+        return 0;
+    }
+    if(next <= *start) {
+        ga_fail(ctx, "NextRecordId %u does not increase (StartingRecordId %u)", next, *start);
+        return -1;
+    }
+    *start = next;
+    return 1;
+}
+
 static void t_paging(ga_ctx *ctx, void *p) {
     gds_target *t = p;
     qset s;
@@ -275,57 +323,21 @@ static void t_paging(ga_ctx *ctx, void *p) {
     }
     UA_UInt32 start = 0;
     UA_DateTime reset0 = 0;
-    size_t got = 0, calls = 0;
-    bool order = true, resetStable = true, ended = false;
-    UA_StatusCode r = UA_STATUSCODE_GOOD;
-    while(calls < 6) {
-        qres q;
-        r = query_apps(t, start, 1, NULL, s.pattern, 0, NULL, NULL, 0, &q);
-        calls++;
-        if(r != UA_STATUSCODE_GOOD)
-            break;
-        if(calls == 1)
-            reset0 = q.reset;
-        else if(q.reset != reset0)
-            resetStable = false;
-        if(q.n > 1) {
-            ga_fail(ctx, "MaxRecordsToReturn 1 returned %zu records", q.n);
-            qres_clear(&q);
-            qset_clear(&s);
-            return;
-        }
-        if(q.n == 1) {
-            if(got >= 3) {
-                order = false;
-            } else {
-                UA_String want = UA_STRING(s.uri[got]);
-                if(!UA_String_equal(&q.apps[0].applicationUri, &want))
-                    order = false;
-            }
-            got++;
-        }
-        UA_UInt32 next = q.next;
-        qres_clear(&q);
-        if(next == 0) {
-            ended = true;
-            break;
-        }
-        if(next <= start) {
-            ga_fail(ctx, "NextRecordId %u does not increase (StartingRecordId %u)", next, start);
-            qset_clear(&s);
-            return;
-        }
-        start = next;
-    }
-    if(r != UA_STATUSCODE_GOOD)
-        ga_fail(ctx, "QueryApplications page %zu -> %s", calls, UA_StatusCode_name(r));
-    else if(got != 3)
-        ga_fail(ctx, "paging with MaxRecordsToReturn 1 returned %zu of 3 records", got);
-    else if(!order)
+    page_walk w = {0, 0, true, true, false, UA_STATUSCODE_GOOD};
+    int step = 1;
+    while(step == 1 && w.calls < 6)
+        step = page_step(ctx, t, &s, &start, &reset0, &w);
+    if(step < 0)
+        ; /* verdict given */
+    else if(w.r != UA_STATUSCODE_GOOD)
+        ga_fail(ctx, "QueryApplications page %zu -> %s", w.calls, UA_StatusCode_name(w.r));
+    else if(w.got != 3)
+        ga_fail(ctx, "paging with MaxRecordsToReturn 1 returned %zu of 3 records", w.got);
+    else if(!w.order)
         ga_fail(ctx, "records not returned in creation (record id) order");
-    else if(!ended)
+    else if(!w.ended)
         ga_fail(ctx, "NextRecordId never became 0 after the last record");
-    else if(!resetStable)
+    else if(!w.resetStable)
         ga_warn(ctx, "LastCounterResetTime changed between pages without a reset");
     else
         ga_pass(ctx, "3 pages of 1 record in record id order, then NextRecordId 0");

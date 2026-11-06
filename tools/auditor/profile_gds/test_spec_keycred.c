@@ -7,7 +7,6 @@
 #include <open62541/client_highlevel.h>
 #include <open62541/nodeids_gds.h>
 
-#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -242,17 +241,31 @@ static void t_start_unknown_uri(ga_ctx *ctx, void *p) {
     UA_NodeId_clear(&k.svc);
 }
 
+static unsigned char upper(char c) {
+    unsigned char u = (unsigned char)c;
+    return (u >= 'a' && u <= 'z') ? (unsigned char)(u - 0x20u) : u;
+}
+
+/* The thumbprint, in any letter case, is the SHA1 of the certificate */
+static bool thumb_is(const gds_buf *cert, const char *thumb) {
+    char want[X509_THUMBPRINT_LEN];
+    if(x509_thumbprint(cert, want) != GDS_OK || strlen(thumb) != strlen(want))
+        return false;
+    for(size_t i = 0; want[i]; i++)
+        if(upper(thumb[i]) != upper(want[i]))
+            return false;
+    return true;
+}
+
 static void t_request_flow(ga_ctx *ctx, void *p) {
     gds_target *t = p;
     kc_svc k;
     if(!admin(ctx, t) || !find_svc(ctx, t, &k))
         return;
     kc_cred c;
+    memset(&c, 0, sizeof(c));
     UA_StatusCode r = full_flow(ctx, t, &k, &c);
-    char want[X509_THUMBPRINT_LEN];
-    bool tpOk = x509_thumbprint(&t->cert, want) == GDS_OK && strlen(c.thumb) == strlen(want);
-    for(size_t i = 0; tpOk && want[i]; i++)
-        tpOk = toupper((unsigned char)c.thumb[i]) == toupper((unsigned char)want[i]);
+    bool tpOk = thumb_is(&t->cert, c.thumb);
     if(r == UA_STATUSCODE_BADNOTHINGTODO || r == UA_STATUSCODE_BADREQUESTNOTCOMPLETE)
         ga_not_tested(ctx, "request still pending after %u s (manual approval?)", t->pollSeconds);
     else if(r != UA_STATUSCODE_GOOD)
