@@ -74,7 +74,7 @@ target_link_libraries(test_revoke PRIVATE gds_server)
 add_test(NAME unit_revoke COMMAND test_revoke "${CMAKE_CURRENT_BINARY_DIR}/revoke-run")
 set_tests_properties(unit_revoke PROPERTIES TIMEOUT 120)
 add_executable(test_sandbox test_sandbox.c)
-target_link_libraries(test_sandbox PRIVATE gds_common)
+target_link_libraries(test_sandbox PRIVATE gds_common Threads::Threads)
 add_test(NAME unit_sandbox COMMAND test_sandbox "${CMAKE_CURRENT_BINARY_DIR}/sandbox-run")
 
 add_executable(test_embed_roles test_embed_roles.c)
