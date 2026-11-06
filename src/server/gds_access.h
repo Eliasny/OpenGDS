@@ -117,6 +117,12 @@ static inline bool gds_session_has(const void *sessionContext, unsigned roles) {
  * session's client certificate carries this ApplicationUri. */
 bool gds_session_is_app(const void *sessionContext, const UA_String *applicationUri);
 
+/* The activated sessions with any of these Roles (or every session when
+ * anonymous, every non-anonymous one when authenticated): their ids are
+ * copied to out (at most max; the caller clears them). Thread safe. */
+size_t gds_access_sessions_with(unsigned roles, bool anonymous, bool authenticated,
+                                UA_NodeId *out, size_t max);
+
 /* getUserExecutable: may this session call this method? Namespace 0:
  * the open methods, the ServerConfiguration methods for SecurityAdmin, and
  * DialogConditionType Respond/Respond2 (approvals) for

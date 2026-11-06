@@ -5,6 +5,9 @@
 #   -DOPENGDS_SANITIZE=thread              TSan (CI on every push)
 # Sanitizer reports are fatal: -fno-sanitize-recover=all.
 
+# Included by OpenGDS and by embedders that build it as a subproject (UASM).
+include_guard(GLOBAL)
+
 set(OPENGDS_SANITIZE "" CACHE STRING "Comma-separated sanitizers (address,undefined | thread)")
 if(OPENGDS_SANITIZE)
     if(OPENGDS_SANITIZE MATCHES "thread" AND OPENGDS_SANITIZE MATCHES "address")

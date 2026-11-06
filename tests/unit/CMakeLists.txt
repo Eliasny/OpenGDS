@@ -54,3 +54,8 @@ add_executable(test_approvals test_approvals.c)
 target_link_libraries(test_approvals PRIVATE gds_server)
 add_test(NAME unit_approvals COMMAND test_approvals "${CMAKE_CURRENT_BINARY_DIR}/approvals-run")
 set_tests_properties(unit_approvals PROPERTIES TIMEOUT 120)
+
+add_executable(test_audit test_audit.c)
+target_link_libraries(test_audit PRIVATE gds_server)
+add_test(NAME unit_audit COMMAND test_audit "${CMAKE_CURRENT_BINARY_DIR}/audit-run")
+set_tests_properties(unit_audit PROPERTIES TIMEOUT 120)

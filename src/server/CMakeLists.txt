@@ -3,6 +3,7 @@
 add_library(gds_server STATIC
     gds_access.c
     gds_approvals.c
+    gds_audit.c
     gds_caller.c
     gds_certmgr.c
     gds_directory.c

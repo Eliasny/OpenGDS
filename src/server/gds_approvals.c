@@ -376,6 +376,8 @@ static UA_StatusCode sync_dialogs(gds_server *s) {
     gds_lock(s);
     gds_status st = gds_store_req_scan(s->store, GDS_REQ_PENDING, collect, &l);
     gds_unlock(s);
+    if(st == GDS_EUNSUPPORTED && s->approval == GDS_APPROVE_ALL)
+        st = GDS_OK; /* a backend without req_scan: nothing ever waits */
     UA_StatusCode r = st != GDS_OK ? gds_status_to_ua(st)
                       : l.oom      ? UA_STATUSCODE_BADOUTOFMEMORY
                                    : UA_STATUSCODE_GOOD;
