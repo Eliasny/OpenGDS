@@ -7,5 +7,5 @@ target_link_libraries(gds_daemon PUBLIC gds_server gds_ca_ipc)
 add_executable(opengdsd main.c)
 target_link_libraries(opengdsd PRIVATE gds_daemon)
 
-add_executable(gdsadm gdsadm.c gdsadm_push.c)
+add_executable(gdsadm gdsadm.c gdsadm_push.c gdsadm_import.c)
 target_link_libraries(gdsadm PRIVATE gds_server gds_push gds_client)

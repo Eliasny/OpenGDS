@@ -93,3 +93,9 @@ add_executable(test_backup test_backup.c)
 target_link_libraries(test_backup PRIVATE gds_backup)
 add_test(NAME unit_backup
          COMMAND test_backup "${CMAKE_CURRENT_BINARY_DIR}/backup-run" "$<TARGET_FILE:gdsctl>")
+
+add_executable(test_gdsadm_import test_gdsadm_import.c
+               "${PROJECT_SOURCE_DIR}/src/daemon/gdsadm_import.c")
+target_include_directories(test_gdsadm_import PRIVATE "${PROJECT_SOURCE_DIR}/src/daemon")
+target_link_libraries(test_gdsadm_import PRIVATE gds_server)
+add_test(NAME unit_gdsadm_import COMMAND test_gdsadm_import)
