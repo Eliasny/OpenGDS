@@ -8,6 +8,7 @@
 
 #include "common/limits.h"
 #include "gds_target.h"
+#include "gds_tl.h"
 #include "spec_tests.h"
 #include "common/banned.h"
 
@@ -290,6 +291,69 @@ static void t_unregister(ga_ctx *ctx, void *p) {
     UA_NodeId_clear(&id);
 }
 
+/* §6.5.8: "If the application has Certificates issued by the
+ * CertificateManager, these Certificates shall be revoked when this Method
+ * is called." Revoked = listed in a CRL of the group trust list, or
+ * BadCertificateRevoked from CheckRevocationStatus (Optional, §7.9.11).
+ * *tlStatus is the trust list read result. */
+static bool is_revoked(gds_target *t, const gds_buf *cert, UA_StatusCode *tlStatus) {
+    UA_TrustListDataType tl;
+    *tlStatus = gtl_read_group(t, &tl);
+    bool hit = *tlStatus == UA_STATUSCODE_GOOD && gtl_crl_lists(&tl, cert);
+    UA_TrustListDataType_clear(&tl);
+    if(hit)
+        return true;
+    UA_ByteString c = {cert->len, cert->data};
+    UA_Variant in;
+    UA_Variant_setScalar(&in, &c, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    size_t outN = 0;
+    UA_Variant *out = NULL;
+    UA_StatusCode r = gt_call(t, UA_GDSID_DIRECTORY_CHECKREVOCATIONSTATUS, 1, &in, 2, &outN, &out);
+    if(r != UA_STATUSCODE_GOOD)
+        return false; /* Optional method: the CRL is the answer */
+    const UA_StatusCode *st = uac_out_scalar(out, outN, 0, &UA_TYPES[UA_TYPES_STATUSCODE]);
+    hit = st && *st == UA_STATUSCODE_BADCERTIFICATEREVOKED;
+    gt_free_out(out, outN);
+    return hit;
+}
+
+static void t_unregister_revokes(ga_ctx *ctx, void *p) {
+    gds_target *t = p;
+    if(!need_session(ctx, t))
+        return;
+    char uri[URI_LEN];
+    UA_NodeId id;
+    gds_buf cert = {0}, issuer = {0};
+    UA_StatusCode r = gt_issue(t, ctx, uri, sizeof(uri), &id, &cert, &issuer);
+    if(r != UA_STATUSCODE_GOOD) {
+        ga_not_tested(ctx, "setup: register and sign -> %s", UA_StatusCode_name(r));
+        return;
+    }
+    UA_Variant in;
+    UA_Variant_setScalar(&in, &id, &UA_TYPES[UA_TYPES_NODEID]);
+    size_t outN = 0;
+    UA_Variant *out = NULL;
+    r = gt_call(t, UA_GDSID_DIRECTORY_UNREGISTERAPPLICATION, 1, &in, 0, &outN, &out);
+    gt_free_out(out, outN);
+    if(gt_absent(ctx, r, false, "UnregisterApplication")) {
+        /* verdict recorded */
+    } else if(r != UA_STATUSCODE_GOOD) {
+        ga_fail(ctx, "UnregisterApplication -> %s", UA_StatusCode_name(r));
+    } else {
+        UA_StatusCode tlr = UA_STATUSCODE_GOOD;
+        if(is_revoked(t, &cert, &tlr))
+            ga_pass(ctx, "the certificate of the unregistered application is revoked");
+        else if(tlr != UA_STATUSCODE_GOOD)
+            ga_fail(ctx, "reading the group trust list after unregister -> %s",
+                    UA_StatusCode_name(tlr));
+        else
+            ga_fail(ctx, "the certificate of the unregistered application is not revoked");
+    }
+    UA_NodeId_clear(&id);
+    gds_buf_free(&cert);
+    gds_buf_free(&issuer);
+}
+
 static void t_query_by_uri(ga_ctx *ctx, void *p) {
     gds_target *t = p;
     if(!need_session(ctx, t))
@@ -359,6 +423,8 @@ const ga_test spec_directory_tests[] = {
      true, false, t_update_application},
     {"gds.dir.unregister", "12 §6.5.8", "UnregisterApplication removes the record",
      true, false, t_unregister},
+    {"gds.dir.unregister_revokes", "12 §6.5.8", "UnregisterApplication revokes the application's certificates",
+     true, false, t_unregister_revokes},
     {"gds.dir.query_by_uri", "12 §6.5.10", "QueryApplications filters by ApplicationUri",
      true, false, t_query_by_uri},
 };
