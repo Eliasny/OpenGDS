@@ -67,7 +67,7 @@ The clause numbers in the plan's catalogue were correct at the level of clause i
 
 | Plan said | Catalogue says | Why |
 | --- | --- | --- |
-| Persistence: 12 Annex F; certificate and trust list unchanged after restart | SRV-PER-01 is a Warn; SRV-PER-02 (LastUpdateTime) and SRV-PER-03 (the CSR's new key pair) are Fail | Annex F has no persistence rule. §7.8.2.1 and §7.10.10 do have one for LastUpdateTime and the new key pair. See Q1 |
+| Persistence: 12 Annex F; certificate and trust list unchanged after restart | SRV-PER-01 is a Warn; SRV-PER-02 (LastUpdateTime) and SRV-PER-03 (the CSR's new key pair) are Fail | Annex F has no persistence rule. §7.8.2.1 and §7.10.10 do have one for LastUpdateTime and the new key pair. See D1 |
 | Security: methods refuse unencrypted sessions | Split by method: UpdateCertificate, CreateSigningRequest and the KeyCredential methods need encryption (Fail on Sign); the other ServerConfiguration and TrustList methods need only an authenticated channel (Warn on Sign, because §7.4 says encrypted) | §7.10.5, §7.10.10 and §8.6 say "encrypted"; §7.10.9, §7.10.11, §7.10.12, §7.8.2.2–§7.8.2.7 say "authenticated" |
 | Rejected list: an unknown client's certificate appears | SRV-REJ-01 is a Warn; SRV-REJ-02 (a certificate with an unsuppressible error must not appear) is a Fail | §7.10.12 only recommends adding; §7.8.3.2 says only valid but untrusted certificates are added |
 | Registration: FindApplications before RegisterApplication | CLI-REG-04 is a Warn when a client stops on Bad_EntryExists | §6.5.6 does not require FindApplications first; RegisterApplication needs DiscoveryAdmin or ApplicationAdmin, so many clients are registered by an administrator instead |
@@ -77,16 +77,18 @@ The clause numbers in the plan's catalogue were correct at the level of clause i
 | Signing request: no private key leaves the client | Kept as Fail (CLI-CSR-07); StartNewKeyPairRequest is a Warn (CLI-CSR-09) | The CSR proves possession of the caller's own key (§7.9.3); §7.6 strongly recommends client-generated keys, but StartNewKeyPairRequest is standard |
 | Server groups as listed | Added: CreateSelfSignedCertificate, DeleteCertificate, GetCertificates (in Certificate update), ResetToServerDefaults (in Push setup), Audit events (new file `srv_audit.c`) | They are part of ServerConfigurationType (§7.10.3); audit events are required when the server supports auditing (§7.8.2.13, §7.10.27) |
 
-## Open questions
+## Decisions
 
-Each is settled against the spec text, a reference run or the OPC Foundation before the test's code is written. When one is raised with the Foundation, its issue id goes in the row.
+The open questions of the first version were settled on 6 Nov 2026 and confirmed by Elias. They bind the rows named.
 
-| # | Question | Tests | Assumed until settled |
+| # | Question | Decision | Tests |
 | --- | --- | --- | --- |
-| Q1 | Does Part 12 require applied certificates and trust lists to survive a restart, or is it implied by "apply"? | SRV-PER-01 | Warn on loss. OpenGDS's device interop matrix treats this Warn as blocking |
-| Q2 | Is a server that accepts its own expired certificate in UpdateCertificate right (validity is suppressible) or wrong? | SRV-UPD-08, SRV-TL-08, CLI-FLT-06 | Warn when accepted |
-| Q3 | Should UpdateCertificate check the SAN URI against the ApplicationUri, given that §7.10.5 does not say so but Part 6 §6.2.2 requires it of the certificate? | SRV-UPD-03 | Fail when accepted; confirm with a reference run against UA-.NETStandard |
-| Q4 | How does a server advertise the 1.05.07 SecureChannel enhancements, and can a client tell from outside? | SRV-SEC-09 | Warn when not seen; check OPC 10000-6 v1.05.07 |
-| Q5 | The spec writes "Bad_BadSessionIdInvalid" in §7.10.9 and §7.10.11; the code in the status code list is Bad_SessionIdInvalid | SRV-TXN-07 | Expect Bad_SessionIdInvalid; report to the Foundation |
-| Q6 | Which client-side ConformanceUnits (profiles.opcfoundation.org) do the client tests map to? | All CLI-* | ConformanceUnit `TBD` |
-| Q7 | How long may a server take to close sessions after a trust list change (§7.8.2.5 says it "could take a significant amount of time")? | SRV-WIRE-02, -07, -08 | Warn after 30 s, Fail after the settle timeout (default 300 s) |
+| D1 | Does Part 12 require applied certificates and trust lists to survive a restart? It states no rule | Losing pushed state after a restart is a Warn. OpenGDS's device interop matrix treats this Warn as blocking | SRV-PER-01 |
+| D2 | Validity is a suppressible error in Part 4. Is accepting or installing an expired certificate right or wrong? | Fail. An expired certificate accepted by a server (in UpdateCertificate or in a trust list) or installed by a client is a Fail | SRV-UPD-08, SRV-TL-08, CLI-FLT-06 |
+| D3 | §7.10.5 does not require UpdateCertificate to check the SAN URI against the ApplicationUri; Part 6 §6.2.2 requires the match of the certificate | Fail when accepted, after a UA-.NETStandard reference run confirms the reading | SRV-UPD-03 |
+| D4 | How does a server advertise the 1.05.07 SecureChannel enhancements? | Keep the test; a missing enhancement is a Warn. How it is seen from outside is read in OPC 10000-6 v1.05.07 before the code is written | SRV-SEC-09 |
+| D5 | §7.10.9 and §7.10.11 write "Bad_BadSessionIdInvalid" | Expect Bad_SessionIdInvalid; any other Bad code is a Warn. A typo report for the OPC Foundation is drafted and sent only with Elias's OK | SRV-TXN-07 |
+| D6 | Which client-side ConformanceUnits do the client tests map to? | Elias reads them on profiles.opcfoundation.org; they are filled in here | All CLI-* |
+| D7 | How long may a server take to close sessions and re-key after a trust list or certificate change? | Warn after 30 s, Fail after `--settle-timeout` (default 300 s) | SRV-WIRE-02, -07, -08 |
+
+Later OPC UA questions are settled from the spec text, and the row cites the clause. Only product, process or legal choices go to Elias, and nothing is assumed in the meantime.
