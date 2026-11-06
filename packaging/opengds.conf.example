@@ -1,0 +1,15 @@
+# opengdsd configuration (all keys: src/daemon/config.h)
+application_uri = urn:example.com:opengds
+application_name = OpenGDS
+hostname = gds.example.com
+port = 58810
+data_dir = /var/lib/opengds
+users_file = /etc/opengds/users
+ca_dir = /var/lib/opengds-signer/ca
+# production: the signer runs as its own unit (opengds-signer.socket)
+signer_socket = /run/opengds/signer.sock
+# development alternative: opengdsd starts the signer itself
+# signer = /usr/libexec/opengds/opengds-signer
+organization = Example Oy
+# ca_dir is read by the signer only; with signer_socket the passphrase
+# belongs to opengds-signer@.service (LoadCredentialEncrypted)

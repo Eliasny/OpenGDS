@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: MPL-2.0 */
 #define _POSIX_C_SOURCE 200809L
 #include "trigger.h"
+#include "probe.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -34,6 +35,11 @@ static double now_ms(void) {
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
 }
 
+static void serve(void) {
+    fg_iterate();
+    probe_iterate();
+}
+
 typedef struct {
     char store[TRIG_ENV_MAX][TRIG_ENV_LEN];
     char *envp[TRIG_ENV_MAX + 1];
@@ -63,6 +69,8 @@ static gds_status build_env(trig_env *e, const trig_cfg *cfg, const char *user) 
     if(r == GDS_OK) r = env_add(e, "GDSAUDIT_GDS_USER", user);
     if(r == GDS_OK) r = env_add(e, "GDSAUDIT_GDS_PASSWORD_FILE", fg_password_path());
     if(r == GDS_OK) r = env_add(e, "GDSAUDIT_CLIENT_DIR", cfg->clientDir);
+    if(r == GDS_OK) r = env_add(e, "GDSAUDIT_ACTION", cfg->action);
+    if(r == GDS_OK && cfg->action) r = env_add(e, "GDSAUDIT_PROBE_URL", cfg->probeUrl);
     return r;
 }
 
@@ -94,7 +102,7 @@ static void stop_child(pid_t pid) {
     while(now_ms() - t0 < 2000.0) {
         if(waitpid(pid, &st, WNOHANG) == pid)
             return;
-        fg_iterate();
+        serve();
     }
     (void)kill(pid, SIGKILL);
     (void)waitpid(pid, &st, 0);
@@ -129,11 +137,11 @@ gds_status trig_run(const trig_cfg *cfg, const char *user, trig_result *res) {
             res->exited = false;
             break;
         }
-        fg_iterate();
+        serve();
     }
     /* Serve what the client sent just before it exited (CloseSession) */
     for(int i = 0; i < 5; i++)
-        fg_iterate();
+        serve();
     res->ms = now_ms() - t0;
     return r;
 }

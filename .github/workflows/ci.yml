@@ -6,13 +6,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Dispatched by automerge after each merge (GITHUB_TOKEN pushes start no runs).
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
+  # Superseded pull request runs are cancelled (no failure email); every push
+  # to main still runs to the end so each merge commit is tested.
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-test:

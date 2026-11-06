@@ -8,8 +8,12 @@
 
 extern const ga_test srv_security_tests[];
 extern const size_t srv_security_count;
+extern const ga_test srv_capabilities_tests[];
+extern const size_t srv_capabilities_count;
 extern const ga_test srv_trustlist_tests[];
 extern const size_t srv_trustlist_count;
+extern const ga_test srv_csr_tests[];
+extern const size_t srv_csr_count;
 extern const ga_test srv_update_tests[];
 extern const size_t srv_update_count;
 extern const ga_test srv_transaction_tests[];

@@ -274,7 +274,7 @@ The plugin API (`include/opengds/`) is the seam UASM builds on, so its shape dec
 - Plugin errors fail closed: a policy plugin error refuses the request; an event sink error is logged and counted but never blocks an issuance (audit goes to the store first).
 - The CA slot runs in the signer, so CA plugins (UASM ceremonies, HSM profiles) get the signer's protections; store, policy, events, push and cluster plugins run in `opengdsd`.
 - The cluster slot (`opengds_set_role`) is the only way to change the node role; on a standby the core refuses state-changing methods with `Bad_InvalidState` before any plugin sees them.
-- Plugin API headers compile cleanly under `-std=c11 -Wpedantic -Werror` and C++17, and contain no open62541 types except stable ones (`UA_StatusCode`, `UA_NodeId`, `UA_ByteString`), so a library upgrade does not break the ABI.
+- Plugin API headers compile cleanly under `-std=c11 -Wpedantic -Werror` and C++17, and contain no open62541 types except stable ones (`UA_StatusCode`, `UA_NodeId`, `UA_ByteString`, and for method plugins `UA_Variant` and `UA_Argument`, which carry method arguments in OPC UA's own encoding), so a library upgrade does not break the ABI.
 
 ## The Auditor under these rules
 
@@ -310,7 +310,7 @@ New or changed files, in the plan's file-by-file style.
 | `src/signer/proto.c/.h` | Fixed, versioned, length-prefixed request and reply encoding; fuzzed |
 | `src/signer/checks.c` | Re-reads record and approval from the store, rate limits |
 | `src/signer/journal.c` | Signer's own hash-chained issuance log |
-| `packaging/systemd/opengds-signer.service`, `opengds.socket` | Signer unit and the socket between the two |
+| `packaging/systemd/opengds-signer@.service`, `opengds-signer.socket` | Signer unit (one instance per opengdsd connection, `Accept=yes`) and the socket between the two |
 | `docs/memory-safety.md` | Published memory-safety roadmap (F1) |
 | `docs/locking.md` | Lock order and thread ownership |
 | `tests/unit/test_alloc_fail.c` | Allocation failure injection |

@@ -24,7 +24,8 @@
 typedef UA_MessageSecurityMode (*pm_mode_fn)(const UA_NodeId *sessionId);
 
 /* Install the methods. mutant is NULL or a name from pm_mutant_known;
- * ownKey (the server's private key) is copied only for wire-old-cert. */
+ * ownKey (the server's private key, DER or PEM) is copied: CreateSigningRequest
+ * signs with it and UpdateCertificate checks certificates against it. */
 UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteString *ownKey,
                          pm_mode_fn modeOf);
 /* True if mutant `name` is active (push_test_server's own mutants). */
