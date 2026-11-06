@@ -1,0 +1,16 @@
+# Verdicts of the server profile against the good selftest/push_test_server.
+# A verdict that changes (also to pass) fails CI, so this file is the
+# conformance record of the self-test target.
+SRV-SEC-01,pass
+SRV-SEC-02,pass
+SRV-SEC-03,pass
+SRV-SEC-04,pass
+SRV-SEC-05,pass
+SRV-SEC-06,not_supported   # TransactionDiagnostics comes with SRV-TXN-12
+SRV-SEC-07,pass
+SRV-SEC-08,pass
+SRV-TL-02,pass
+SRV-UPD-01,pass
+SRV-TXN-03,pass
+SRV-WIRE-01,pass
+SRV-RESTORE,pass
