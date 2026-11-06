@@ -1,0 +1,309 @@
+/* OpenGDS unit test: the CA slot and the built-in OpenSSL backend (src/ca).
+ * Checks decision G5: everything in an issued certificate comes from the
+ * record; the CSR's subject and SAN are ignored.
+ * SPDX-License-Identifier: MPL-2.0 */
+#include <open62541/nodeids.h>
+#include <openssl/evp.h>
+#include <openssl/x509v3.h>
+
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include "ca.h"
+#include "check.h"
+#include "common/buf.h"
+#include "common/ids.h"
+#include "common/banned.h"
+
+#define APP_URI "urn:opengds:test:server"
+
+static UA_Guid reqId;
+
+/* A CSR that tries to choose its own subject and ApplicationUri. */
+static gds_status make_csr(EVP_PKEY *key, gds_buf *out) {
+    X509_REQ *req = X509_REQ_new();
+    X509_NAME *n = X509_NAME_new();
+    GENERAL_NAMES *gens = sk_GENERAL_NAME_new_null();
+    GENERAL_NAME *g = GENERAL_NAME_new();
+    ASN1_IA5STRING *uri = ASN1_IA5STRING_new();
+    STACK_OF(X509_EXTENSION) *exts = sk_X509_EXTENSION_new_null();
+    gds_status r = GDS_ECRYPTO;
+    if(!req || !n || !gens || !g || !uri || !exts)
+        goto done;
+    X509_NAME_add_entry_by_NID(n, NID_commonName, MBSTRING_UTF8, (const unsigned char *)"evil", -1,
+                               -1, 0);
+    ASN1_STRING_set(uri, "urn:evil:other", -1);
+    GENERAL_NAME_set0_value(g, GEN_URI, uri);
+    uri = NULL;
+    sk_GENERAL_NAME_push(gens, g);
+    g = NULL;
+    X509_EXTENSION *ext = X509V3_EXT_i2d(NID_subject_alt_name, 0, gens);
+    sk_X509_EXTENSION_push(exts, ext);
+    if(X509_REQ_set_subject_name(req, n) == 1 && X509_REQ_set_pubkey(req, key) == 1 &&
+       X509_REQ_add_extensions(req, exts) == 1 && X509_REQ_sign(req, key, EVP_sha256()) > 0) {
+        int len = i2d_X509_REQ(req, NULL);
+        out->data = malloc((size_t)len);
+        unsigned char *p = out->data;
+        out->len = (size_t)len;
+        r = (out->data && i2d_X509_REQ(req, &p) == len) ? GDS_OK : GDS_ECRYPTO;
+    }
+done:
+    sk_X509_EXTENSION_pop_free(exts, X509_EXTENSION_free);
+    GENERAL_NAMES_free(gens);
+    GENERAL_NAME_free(g);
+    ASN1_IA5STRING_free(uri);
+    X509_NAME_free(n);
+    X509_REQ_free(req);
+    return r;
+}
+
+static void make_record(UA_ApplicationRecordDataType *rec, UA_LocalizedText *name,
+                        UA_String urls[4]) {
+    UA_ApplicationRecordDataType_init(rec);
+    rec->applicationUri = UA_STRING(APP_URI);
+    rec->applicationType = UA_APPLICATIONTYPE_SERVER;
+    *name = UA_LOCALIZEDTEXT("en", "Unit Test Server");
+    rec->applicationNames = name;
+    rec->applicationNamesSize = 1;
+    urls[0] = UA_STRING("opc.tcp://host1.example:4840/ua");
+    urls[1] = UA_STRING("opc.tcp://HOST1.example:4841");
+    urls[2] = UA_STRING("opc.tcp://192.0.2.7:4840");
+    urls[3] = UA_STRING("opc.https://[2001:db8::1]:443/");
+    rec->discoveryUrls = urls;
+    rec->discoveryUrlsSize = 4;
+}
+
+static X509 *parse_cert(const gds_buf *der) {
+    const unsigned char *p = der->data;
+    return d2i_X509(NULL, &p, (long)der->len);
+}
+
+static int count_san(X509 *x, int type, const char *want) {
+    GENERAL_NAMES *gens = X509_get_ext_d2i(x, NID_subject_alt_name, NULL, NULL);
+    int hits = 0;
+    for(int i = 0; gens && i < sk_GENERAL_NAME_num(gens); i++) {
+        GENERAL_NAME *g = sk_GENERAL_NAME_value(gens, i);
+        if(g->type != type)
+            continue;
+        if(type == GEN_IPADD) {
+            ASN1_OCTET_STRING *ip = a2i_IPADDRESS(want);
+            hits += ip && ASN1_OCTET_STRING_cmp(ip, g->d.iPAddress) == 0;
+            ASN1_OCTET_STRING_free(ip);
+        } else {
+            const ASN1_IA5STRING *s = g->d.ia5;
+            hits += (size_t)s->length == strlen(want) && memcmp(s->data, want, strlen(want)) == 0;
+        }
+    }
+    GENERAL_NAMES_free(gens);
+    return hits;
+}
+
+static void check_subject(X509 *x) {
+    char cn[128] = {0};
+    X509_NAME_get_text_by_NID(X509_get_subject_name(x), NID_commonName, cn, sizeof(cn));
+    CHECK(strcmp(cn, "Unit Test Server") == 0);
+    char o[128] = {0};
+    X509_NAME_get_text_by_NID(X509_get_subject_name(x), NID_organizationName, o, sizeof(o));
+    CHECK(strcmp(o, "OpenGDS Test") == 0);
+    CHECK_EQ_INT(count_san(x, GEN_URI, APP_URI), 1);
+    CHECK_EQ_INT(count_san(x, GEN_URI, "urn:evil:other"), 0);
+    CHECK_EQ_INT(count_san(x, GEN_DNS, "host1.example"), 1); /* deduplicated */
+    CHECK_EQ_INT(count_san(x, GEN_IPADD, "192.0.2.7"), 1);
+    CHECK_EQ_INT(count_san(x, GEN_IPADD, "2001:db8::1"), 1);
+}
+
+static void check_profile(X509 *x) {
+    CHECK_EQ_INT(X509_get_version(x), X509_VERSION_3);
+    CHECK(X509_check_ca(x) == 0);
+    uint32_t ku = X509_get_key_usage(x);
+    CHECK((ku & (KU_DIGITAL_SIGNATURE | KU_NON_REPUDIATION | KU_KEY_ENCIPHERMENT |
+                 KU_DATA_ENCIPHERMENT)) == (KU_DIGITAL_SIGNATURE | KU_NON_REPUDIATION |
+                                            KU_KEY_ENCIPHERMENT | KU_DATA_ENCIPHERMENT));
+    CHECK((ku & (KU_KEY_CERT_SIGN | KU_CRL_SIGN)) == 0);
+    uint32_t xku = X509_get_extended_key_usage(x);
+    CHECK((xku & (XKU_SSL_SERVER | XKU_SSL_CLIENT)) == (XKU_SSL_SERVER | XKU_SSL_CLIENT));
+    CHECK(X509_get0_subject_key_id(x) != NULL && X509_get0_authority_key_id(x) != NULL);
+}
+
+/* The issued certificate chains to the CA and passes a CRL check. */
+static void check_chain(X509 *leaf, gds_ca *ca) {
+    gds_buf caDer = {0}, crlDer = {0};
+    CHECK(gds_ca_get_ca_cert(ca, &caDer) == GDS_OK);
+    CHECK(gds_ca_get_crl(ca, &crlDer) == GDS_OK);
+    X509 *caCert = parse_cert(&caDer);
+    const unsigned char *p = crlDer.data;
+    X509_CRL *crl = d2i_X509_CRL(NULL, &p, (long)crlDer.len);
+    X509_STORE *st = X509_STORE_new();
+    X509_STORE_CTX *ctx = X509_STORE_CTX_new();
+    CHECK(caCert && crl && st && ctx);
+    if(caCert && crl && st && ctx) {
+        CHECK(X509_check_ca(caCert) == 1);
+        X509_STORE_add_cert(st, caCert);
+        X509_STORE_add_crl(st, crl);
+        X509_STORE_set_flags(st, X509_V_FLAG_CRL_CHECK);
+        X509_STORE_CTX_init(ctx, st, leaf, NULL);
+        int ok = X509_verify_cert(ctx);
+        if(ok != 1)
+            fprintf(stderr, "verify: %s\n",
+                    X509_verify_cert_error_string(X509_STORE_CTX_get_error(ctx)));
+        CHECK(ok == 1);
+        CHECK(ASN1_TIME_compare(X509_get0_notAfter(leaf), X509_get0_notAfter(caCert)) <= 0);
+    }
+    X509_STORE_CTX_free(ctx);
+    X509_STORE_free(st);
+    X509_CRL_free(crl);
+    X509_free(caCert);
+    gds_buf_free(&caDer);
+    gds_buf_free(&crlDer);
+}
+
+static void test_issue(gds_ca *ca, const gds_ca_subject *subj, const gds_buf *csr) {
+    gds_ca_issued out;
+    CHECK(gds_ca_sign_csr(ca, subj, csr, &out) == GDS_OK);
+    CHECK_EQ_INT(out.serial.len, 20);
+    CHECK(out.notAfter > out.notBefore);
+    X509 *x = parse_cert(&out.der);
+    CHECK(x != NULL);
+    if(x) {
+        check_subject(x);
+        check_profile(x);
+        check_chain(x, ca);
+    }
+    X509_free(x);
+    gds_ca_issued_clear(&out);
+}
+
+static void test_refusals(gds_ca *ca, const gds_ca_subject *subj, const gds_buf *csr) {
+    gds_ca_issued out;
+    /* tampered signature: no proof of possession */
+    gds_buf bad = {0};
+    CHECK(gds_buf_dup(csr->data, csr->len, &bad) == GDS_OK);
+    bad.data[bad.len - 3] ^= 0x55u;
+    CHECK(gds_ca_sign_csr(ca, subj, &bad, &out) == GDS_EINVAL);
+    gds_buf_free(&bad);
+    /* trailing bytes */
+    CHECK(gds_buf_dup(csr->data, csr->len, &bad) == GDS_OK);
+    CHECK(gds_buf_append(&bad, "x", 1, csr->len + 1) == GDS_OK);
+    CHECK(gds_ca_sign_csr(ca, subj, &bad, &out) == GDS_EINVAL);
+    gds_buf_free(&bad);
+    /* not a CSR */
+    uint8_t junk[] = {0x30, 0x03, 0x02, 0x01, 0x00};
+    gds_buf j = {junk, sizeof(junk)};
+    CHECK(gds_ca_sign_csr(ca, subj, &j, &out) == GDS_EINVAL);
+    /* RsaMin is not issued */
+    gds_ca_subject s2 = *subj;
+    s2.certificateType = UA_NS0ID_RSAMINAPPLICATIONCERTIFICATETYPE;
+    CHECK(gds_ca_sign_csr(ca, &s2, csr, &out) == GDS_EUNSUPPORTED);
+    CHECK(out.der.data == NULL);
+}
+
+static void test_small_key(gds_ca *ca, const gds_ca_subject *subj) {
+    EVP_PKEY *k = EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)1024);
+    gds_buf csr = {0};
+    CHECK(k && make_csr(k, &csr) == GDS_OK);
+    gds_ca_issued out;
+    CHECK(gds_ca_sign_csr(ca, subj, &csr, &out) == GDS_EINVAL);
+    gds_buf_free(&csr);
+    EVP_PKEY_free(k);
+}
+
+/* A backend whose pre_sign refuses: sign_csr is never reached (issue #13). */
+static int signCalls = 0;
+static gds_status refuse_pre_sign(void *ctx, gds_ca_op op, const gds_ca_subject *s) {
+    (void)ctx;
+    CHECK(op == GDS_CA_OP_SIGN_CSR && s->requestId && UA_Guid_equal(s->requestId, &reqId));
+    return GDS_ESTATE;
+}
+static gds_status count_sign(void *ctx, const gds_ca_subject *s, const gds_buf *c,
+                             gds_ca_issued *o) {
+    (void)ctx, (void)s, (void)c, (void)o;
+    signCalls++;
+    return GDS_OK;
+}
+static gds_status no_buf(void *ctx, gds_buf *out) {
+    (void)ctx, (void)out;
+    return GDS_ENOTFOUND;
+}
+static void no_destroy(void *ctx) {
+    (void)ctx;
+}
+
+static void test_pre_sign(const gds_ca_subject *subj, const gds_buf *csr) {
+    const gds_ca_backend b = {GDS_CA_ABI_VERSION, refuse_pre_sign, count_sign, no_buf, no_buf,
+                              no_destroy};
+    gds_ca *ca = NULL;
+    CHECK(gds_ca_wrap(&b, NULL, &ca) == GDS_OK);
+    gds_ca_issued out;
+    CHECK(ca && gds_ca_sign_csr(ca, subj, csr, &out) == GDS_ESTATE);
+    CHECK_EQ_INT(signCalls, 0);
+    gds_ca_close(ca);
+    gds_ca_backend wrong = b;
+    wrong.abiVersion = 99;
+    CHECK(gds_ca_wrap(&wrong, NULL, &ca) == GDS_EINVAL && ca == NULL);
+}
+
+static void test_reopen(const gds_ca_config *cfg, const gds_buf *firstCa) {
+    gds_ca *ca = NULL;
+    CHECK(gds_ca_openssl_open(cfg, &ca) == GDS_OK);
+    gds_buf again = {0};
+    CHECK(ca && gds_ca_get_ca_cert(ca, &again) == GDS_OK);
+    CHECK(again.data && firstCa->data && again.len == firstCa->len &&
+          memcmp(again.data, firstCa->data, again.len) == 0);
+    gds_buf_free(&again);
+    gds_ca_close(ca);
+    /* a certificate without its key is refused, never replaced */
+    char key[1024];
+    CHECK(gds_path(key, sizeof(key), "%s/ca.key.pem", cfg->dir) == GDS_OK);
+    CHECK(unlink(key) == 0);
+    CHECK(gds_ca_openssl_open(cfg, &ca) == GDS_ESTATE && ca == NULL);
+}
+
+int main(int argc, char **argv) {
+    if(argc < 2) {
+        fprintf(stderr, "usage: %s <dir>\n", argv[0]);
+        return 2;
+    }
+    char dir[1024];
+    CHECK(gds_path(dir, sizeof(dir), "%s/ca", argv[1]) == GDS_OK);
+    char f[1100];
+    CHECK(gds_path(f, sizeof(f), "%s/ca.key.pem", dir) == GDS_OK);
+    (void)unlink(f);
+    CHECK(gds_path(f, sizeof(f), "%s/ca.der", dir) == GDS_OK);
+    (void)unlink(f);
+    CHECK(gds_path(f, sizeof(f), "%s/ca.crl", dir) == GDS_OK);
+    (void)unlink(f);
+
+    gds_ca_config cfg;
+    gds_ca_config_init(&cfg);
+    cfg.dir = dir;
+    cfg.organization = "OpenGDS Test";
+    cfg.caKeyBits = 2048; /* fast test; the default is 3072 */
+    gds_ca *ca = NULL;
+    if(!CHECK(gds_ca_openssl_open(&cfg, &ca) == GDS_OK) || !ca)
+        return CHECK_DONE();
+
+    CHECK(gds_guid_random(&reqId) == GDS_OK);
+    UA_ApplicationRecordDataType rec;
+    UA_LocalizedText name;
+    UA_String urls[4];
+    make_record(&rec, &name, urls);
+    gds_ca_subject subj = {&reqId, &rec, 615, UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE};
+    EVP_PKEY *key = EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)2048);
+    gds_buf csr = {0};
+    CHECK(key && make_csr(key, &csr) == GDS_OK);
+
+    test_issue(ca, &subj, &csr);
+    test_refusals(ca, &subj, &csr);
+    test_small_key(ca, &subj);
+    test_pre_sign(&subj, &csr);
+    gds_buf first = {0};
+    CHECK(gds_ca_get_ca_cert(ca, &first) == GDS_OK);
+    gds_ca_close(ca);
+    test_reopen(&cfg, &first);
+
+    gds_buf_free(&first);
+    gds_buf_free(&csr);
+    EVP_PKEY_free(key);
+    return CHECK_DONE();
+}
