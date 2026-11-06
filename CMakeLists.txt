@@ -14,6 +14,23 @@ endif()
 
 option(OPENGDS_WERROR "Treat warnings as errors" ON)
 option(OPENGDS_BUILD_AUDITOR "Build the OpenGDS Auditor (tools/auditor)" ON)
+# tests/fuzz as libFuzzer targets (clang). Off: the same targets replay their
+# seed corpus as plain tests.
+option(OPENGDS_FUZZ "Build tests/fuzz with libFuzzer (clang, ASan + UBSan)" OFF)
+if(OPENGDS_FUZZ)
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "OPENGDS_FUZZ needs clang (libFuzzer)")
+    endif()
+    if(NOT OPENGDS_SANITIZE)
+        set(OPENGDS_SANITIZE "address,undefined" CACHE STRING
+            "Comma-separated sanitizers (address,undefined | thread)" FORCE)
+    endif()
+    if(NOT OPENGDS_SANITIZE MATCHES "address")
+        message(FATAL_ERROR "OPENGDS_FUZZ runs under ASan: OPENGDS_SANITIZE must include address")
+    endif()
+    # Coverage feedback for all our code; the fuzz targets link -fsanitize=fuzzer
+    add_compile_options(-fsanitize=fuzzer-no-link)
+endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(sanitizers)
@@ -41,6 +58,7 @@ add_subdirectory(src/daemon)
 add_subdirectory(src/client)
 add_subdirectory(src/push)
 add_subdirectory(tests/unit)
+add_subdirectory(tests/fuzz)
 add_subdirectory(examples)
 
 if(OPENGDS_BUILD_AUDITOR)
