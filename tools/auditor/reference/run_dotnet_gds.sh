@@ -14,7 +14,7 @@ W=$3
 HERE=$(cd "$(dirname "$0")" && pwd)
 EXPECT="$HERE/../profile_gds/expected/dotnet_reference.csv"
 TFM=${TFM:-net8.0}
-URL=${GDS_URL:-opc.tcp://localhost:58810/GlobalDiscoveryServer}
+URL=${GDS_URL:-opc.tcp://127.0.0.1:58810/GlobalDiscoveryServer}
 DATA="$HOME/.local/share/OPC Foundation/GDS"
 
 mkdir -p "$W"
