@@ -117,6 +117,19 @@ static void *loop_main(void *arg) {
     return NULL;
 }
 
+/* UA_Server_run reads *running without atomics, so the flag is cleared on
+ * the server thread itself, from a callback (the server lock orders the
+ * add against the loop). */
+static void stop_cb(UA_Server *ua, void *data) {
+    (void)ua;
+    *(UA_Boolean *)data = false;
+}
+
+static void stop_loop(gds_server *s) {
+    (void)UA_Server_addTimedCallback(gds_server_ua(s), stop_cb, &running, UA_DateTime_nowMonotonic(),
+                                     NULL);
+}
+
 /* ---- clients ---- */
 
 static bool make_cert(const char *cn, const char *uri, UA_ByteString *cert, UA_ByteString *key) {
@@ -288,7 +301,7 @@ static void test_served(fixture *f, const char *dir) {
         char url[64];
         (void)snprintf(url, sizeof(url), "opc.tcp://127.0.0.1:%u", (unsigned)port);
         run_clients(s, &f->cert, url);
-        __atomic_store_n(&running, false, __ATOMIC_SEQ_CST);
+        stop_loop(s);
         (void)pthread_join(loop, NULL);
         CHECK_EQ_INT(runResult, GDS_OK);
     }
