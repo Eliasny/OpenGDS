@@ -20,7 +20,7 @@ The spike also changes how much needs to be async at all: Part 12 is already asy
 |---|---|
 | 16 calls of 200 ms each | All Good with output, 408 ms wall time (serial would be 3,200 ms) |
 | Read on a second session meanwhile | Under 0.5 ms (idle: 0.05 ms) |
-| 40 calls at once against a queue of 16 | About 22 Good, the rest `Bad_TooManyOperations` at once, nothing queued without bound |
+| 40 calls at once against a queue of 16 | About 24 Good, the rest `Bad_ServerTooBusy` at once (D2), nothing queued without bound |
 | 4 s job against the 1.5 s timeout | Client gets `Bad_Timeout` (the check runs once a second, so it fires at 1.5 to 2.5 s); the worker's late result is dropped, never written into freed memory |
 | Cancel service on a pending call | `cancelCount = 1`; response `Bad_RequestCancelledByClient` with no results; late result dropped |
 | Client disconnects mid-call | open62541 does **not** cancel the operation. The job completes, the response is dropped ("Session no longer exists") |
@@ -50,7 +50,7 @@ ThreadSanitizer reports this as a lock-order inversion on every run of `PATTERN=
 
 ## The pattern that works (handoff)
 
-1. **Server thread, method callback.** Check the arguments, refuse at once with `Bad_TooManyOperations` if our queue is full, deep-copy the inputs into a job (`UA_copy`), record the job and its output pointer in an in-flight table, queue the job, return `Good_CompletesAsynchronously`.
+1. **Server thread, method callback.** Check the arguments, refuse at once with `Bad_ServerTooBusy` if our queue is full (D2), deep-copy the inputs into a job (`UA_copy`), record the job and its output pointer in an in-flight table, queue the job, return `Good_CompletesAsynchronously`.
 2. **Worker.** Run the job using only job-owned memory. Push the finished job onto a completion list (its own mutex, held only for the list operation), release it, then wake the server thread with `UA_Server_addTimedCallback(now)`. No lock of ours is held during that call.
 3. **Server thread, completion callback.** Take the completion list. For each job whose output pointer is still set, write the output and call `UA_Server_setAsyncCallMethodResult`; otherwise drop the result. Free the job.
 4. **Cancel callback.** Find the job by output pointer in the in-flight table and set its output pointer to NULL. No lock is taken.
@@ -69,13 +69,21 @@ deadlock:UA_Timer_add
 deadlock:UA_Timer_process
 ```
 
+## Decisions from the specifications
+
+**D1. Timeouts.** Part 4 v1.05 §7.32 (RequestHeader, `timeoutHint`): for a Server the value "is only a hint"; it may be used to cancel long-running operations to free resources, the Server then returns `Bad_Timeout`, it should wait at least the timeout after receiving the request before cancelling, and 0 means no timeout. So the Client's `timeoutHint` sets the per-call deadline, not a fixed Server value. open62541 v1.5.10 ignores `timeoutHint` for async operations and applies one global `asyncOperationTimeout`. OpenGDS therefore uses that global value only as a resource backstop, and keeps it at or above the longest hint it accepts (the open62541 default of 120 s is kept); the method callback stores the request's deadline in the job, and the worker skips a job whose deadline has passed and completes it with `Bad_Timeout`, which is the behaviour §7.32 allows.
+
+**D2. A full queue.** Part 4 v1.05 §7.38.2 Table 178: `Bad_TooManyOperations` means "the request ... specified too many operations" (the request itself is too large, as checked against the OperationLimits); `Bad_ServerTooBusy` means "the Server does not have the resources to process the request at this time". A full worker queue is the second case, so OpenGDS answers `Bad_ServerTooBusy`. open62541's own `maxAsyncOperationQueueSize` answers `Bad_TooManyOperations`, so it is kept as a higher backstop that our own queue limit always reaches first. The queue length itself is a resource setting (configuration, default sized to the worker count), not a protocol question.
+
+**D3. Cancel and shutdown.** Table 178: `Bad_RequestCancelledByClient` and `Bad_Shutdown` are the codes; open62541 already uses both (measured above).
+
 ## Changes this suggests
 
 | Where | Change |
 |---|---|
 | `docs/architecture.md`, Threads and ownership | Add: "No lock of ours is held across any call into open62541. Async results are completed on the server thread; workers never see the output pointer. The cancel callback runs under the server lock and takes no lock." |
-| `src/common/threadpool.c` | The handoff pattern above; bounded queue that refuses with `Bad_TooManyOperations`; shutdown order as above. |
-| `src/server/gds_config.c` | Set `maxAsyncOperationQueueSize` (proposed 256) and `asyncOperationTimeout` (proposed 30 s; the client's own timeout should be longer). |
+| `src/common/threadpool.c` | The handoff pattern above; bounded queue that refuses with `Bad_ServerTooBusy` (D2); per-job deadline from `timeoutHint` (D1); shutdown order as above. |
+| `src/server/gds_config.c` | Worker queue length as configuration; `maxAsyncOperationQueueSize` above it as a backstop; `asyncOperationTimeout` kept at 120 s as a backstop (D1). |
 | `src/server/gds_certmgr.c` | StartSigningRequest / StartNewKeyPairRequest validate and store the request (synchronous, about a millisecond), return the request id, and queue signing or key generation as a background job, not as an async method call. FinishRequest reads the store. A disconnect then loses nothing, because the result is in the store, and no call ties up a session while the signer works. Async method calls stay for calls that must answer with a slow result (for example UpdateCertificate push work on a managed server). |
 | CI | `tsan.supp` as above for the `tsan` job, with a comment naming the open62541 version, so it is re-checked when the pin moves. |
 | Tests | Timeout, Cancel, disconnect mid-call, queue full and shutdown with calls in flight, each under TSan and ASan. |

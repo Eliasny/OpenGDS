@@ -169,31 +169,30 @@ emitRespondAudit(const UA_NodeId *sessionId, const Approval *a, UA_Int32 resp,
         printf("INFO  audit event failed: %s\n", UA_StatusCode_name(rv));
 }
 
+/* Respond (Part 9 v1.05 5.6.3, Mandatory) and Respond2 (5.6.4, Optional)
+ * share one handler. 5.6.3: if Auditing is supported, every invocation
+ * generates an AuditConditionRespondEventType, failed ones included. */
 static UA_StatusCode
-respond2Callback(UA_Server *s, const UA_NodeId *sessionId, void *sessionContext,
-                 const UA_NodeId *methodId, void *methodContext,
-                 const UA_NodeId *objectId, void *objectContext,
-                 size_t inputSize, const UA_Variant *input,
-                 size_t outputSize, UA_Variant *output) {
-    (void)s; (void)sessionContext; (void)methodId; (void)methodContext;
-    (void)output; (void)outputSize;
-    /* Arguments are type-checked by the stack against InputArguments. */
-    if(inputSize != 2)
-        return UA_STATUSCODE_BADARGUMENTSMISSING;
+respondCommon(UA_Server *s, const UA_NodeId *sessionId, const UA_NodeId *objectId,
+              void *objectContext, UA_Int32 resp, const UA_LocalizedText *comment) {
     Approval *a = (Approval*)objectContext;
     if(!a || !UA_NodeId_equal(&a->condition, objectId))
         return UA_STATUSCODE_BADNODEIDUNKNOWN; /* method called on a non-approval */
+    UA_StatusCode res = UA_STATUSCODE_GOOD;
     if(a->state != PENDING)
-        return UA_STATUSCODE_BADDIALOGNOTACTIVE;
-    UA_Int32 resp = *(UA_Int32*)input[0].data;
-    const UA_LocalizedText *comment = (const UA_LocalizedText*)input[1].data;
-    if(resp != RESP_APPROVE && resp != RESP_REJECT)
-        return UA_STATUSCODE_BADDIALOGRESPONSEINVALID;
+        res = UA_STATUSCODE_BADDIALOGNOTACTIVE;
+    else if(resp != RESP_APPROVE && resp != RESP_REJECT)
+        res = UA_STATUSCODE_BADDIALOGRESPONSEINVALID;
+    else if(comment && comment->text.length > 1024)
+        res = UA_STATUSCODE_BADINVALIDARGUMENT;  /* 5.6.4 Table 30 */
+    if(res != UA_STATUSCODE_GOOD) {
+        emitRespondAudit(sessionId, a, resp, false);
+        return res;
+    }
 
     /* In OpenGDS the decision goes to the store first (one transaction), and
      * only then to the address space and events. Here: memory only. */
     a->state = (resp == RESP_APPROVE) ? APPROVED : REJECTED;
-    UA_LocalizedText_copy(comment, &a->comment);
     char who[64];
     snprintf(who, sizeof(who), "session %u", sessionId->identifier.numeric);
     a->decidedBy = UA_STRING_ALLOC(who);
@@ -203,7 +202,13 @@ respond2Callback(UA_Server *s, const UA_NodeId *sessionId, void *sessionContext,
     UA_StatusCode rv = UA_STATUSCODE_GOOD;
     rv |= setField(a->condition, "LastResponse", &resp, &UA_TYPES[UA_TYPES_INT32]);
     rv |= setTwoState(a->condition, "DialogState", false, "Inactive");
-    rv |= setField(a->condition, "Comment", comment, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
+    /* 5.6.4: a NULL Comment (locale and text empty) is ignored and the
+     * existing comment stays; an empty text with a locale resets it. */
+    if(comment && (comment->locale.length > 0 || comment->text.length > 0)) {
+        UA_LocalizedText_clear(&a->comment);
+        UA_LocalizedText_copy(comment, &a->comment);
+        rv |= setField(a->condition, "Comment", comment, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
+    }
     rv |= setField(a->condition, "ClientUserId", &user, &UA_TYPES[UA_TYPES_STRING]);
     rv |= setField(a->condition, "Retain", &retain, &UA_TYPES[UA_TYPES_BOOLEAN]);
     if(rv != UA_STATUSCODE_GOOD)
@@ -211,6 +216,30 @@ respond2Callback(UA_Server *s, const UA_NodeId *sessionId, void *sessionContext,
     rv = UA_Server_triggerConditionEvent(s, a->condition, approvalsSource, NULL);
     emitRespondAudit(sessionId, a, resp, rv == UA_STATUSCODE_GOOD);
     return rv;
+}
+
+static UA_StatusCode
+respond2Callback(UA_Server *s, const UA_NodeId *sessionId, void *sessionContext,
+                 const UA_NodeId *methodId, void *methodContext,
+                 const UA_NodeId *objectId, void *objectContext,
+                 size_t inputSize, const UA_Variant *input,
+                 size_t outputSize, UA_Variant *output) {
+    /* Arguments are type-checked by the stack against InputArguments. */
+    if(inputSize != 2)
+        return UA_STATUSCODE_BADARGUMENTSMISSING;
+    return respondCommon(s, sessionId, objectId, objectContext, *(UA_Int32*)input[0].data,
+                         (const UA_LocalizedText*)input[1].data);
+}
+
+static UA_StatusCode
+respondCallback(UA_Server *s, const UA_NodeId *sessionId, void *sessionContext,
+                const UA_NodeId *methodId, void *methodContext,
+                const UA_NodeId *objectId, void *objectContext,
+                size_t inputSize, const UA_Variant *input,
+                size_t outputSize, UA_Variant *output) {
+    if(inputSize != 1)
+        return UA_STATUSCODE_BADARGUMENTSMISSING;
+    return respondCommon(s, sessionId, objectId, objectContext, *(UA_Int32*)input[0].data, NULL);
 }
 
 /* Role gate: in OpenGDS only RegistrationAuthorityAdmin / DiscoveryAdmin
@@ -263,6 +292,10 @@ startServer(void) {
         UA_NS0ID(DIALOGCONDITIONTYPE_RESPOND2), respond2Callback);
     CHECK(rv == UA_STATUSCODE_GOOD, "server: callback bound to DialogConditionType.Respond2 (%s)",
           UA_StatusCode_name(rv));
+    rv = UA_Server_setMethodNodeCallback(server, UA_NS0ID(DIALOGCONDITIONTYPE_RESPOND),
+                                         respondCallback);
+    CHECK(rv == UA_STATUSCODE_GOOD, "server: callback bound to DialogConditionType.Respond (%s)",
+          UA_StatusCode_name(rv));
 }
 
 /* ------------------------------------------------------------------ client */
@@ -278,6 +311,7 @@ typedef struct {
     UA_Int32 lastResponse;
     UA_Boolean hasDialogFields;
     size_t optionCount;
+    UA_ByteString eventId;
 } SeenEvent;
 
 static SeenEvent seen[16384];
@@ -296,6 +330,8 @@ onEvent(UA_Client *c, UA_UInt32 subId, void *subCtx, UA_UInt32 monId, void *monC
         f[i] = fields.map[i].value;
     SeenEvent *e = &seen[seenCount++];
     memset(e, 0, sizeof(*e));
+    if(UA_Variant_hasScalarType(&f[F_EVENTID], &UA_TYPES[UA_TYPES_BYTESTRING]))
+        UA_ByteString_copy((UA_ByteString*)f[F_EVENTID].data, &e->eventId);
     if(UA_Variant_hasScalarType(&f[F_EVENTTYPE], &UA_TYPES[UA_TYPES_NODEID]))
         UA_NodeId_copy((UA_NodeId*)f[F_EVENTTYPE].data, &e->eventType);
     if(UA_Variant_hasScalarType(&f[F_CONDID], &UA_TYPES[UA_TYPES_NODEID]))
@@ -343,10 +379,21 @@ countType(size_t from, UA_UInt32 ns0type) {
     return n;
 }
 
+/* Last EventId seen for a condition in seen[from..to). */
+static const UA_ByteString *
+lastEventIdOf(const UA_NodeId *cond, size_t from, size_t to) {
+    const UA_ByteString *id = NULL;
+    for(size_t i = from; i < to; i++)
+        if(UA_NodeId_equal(&seen[i].condition, cond) && seen[i].eventId.length)
+            id = &seen[i].eventId;
+    return id;
+}
+
 static UA_StatusCode
 callRespond2(UA_Client *c, const UA_NodeId cond, UA_Int32 resp, const char *text) {
     UA_Variant in[2];
-    UA_LocalizedText comment = UA_LOCALIZEDTEXT("en", (char*)(uintptr_t)text);
+    /* "" means a NULL LocalizedText: no locale, no text. */
+    UA_LocalizedText comment = UA_LOCALIZEDTEXT(*text ? "en" : "", (char*)(uintptr_t)text);
     UA_Variant_setScalar(&in[0], &resp, &UA_TYPES[UA_TYPES_INT32]);
     UA_Variant_setScalar(&in[1], &comment, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
     size_t outSize = 0; UA_Variant *out = NULL;
@@ -532,13 +579,22 @@ main(int argc, char **argv) {
         CHECK(rv == UA_STATUSCODE_BADINVALIDARGUMENT || rv == UA_STATUSCODE_BADTYPEMISMATCH,
               "Respond2(String) -> rejected by stack (%s)", UA_StatusCode_name(rv));
     }
-    /* 8. Old Respond (mandatory) has no callback in the stack. */
+    /* 8. Respond (1.04, Mandatory) on a fresh dialog. */
     {
-        UA_Variant in; UA_Int32 r = 0;
+        UA_NodeId c4;
+        raiseApproval("REQ-4", "urn:example:io4", &c4);
+        UA_Variant in; UA_Int32 r = RESP_REJECT;
         UA_Variant_setScalar(&in, &r, &UA_TYPES[UA_TYPES_INT32]);
         size_t os = 0; UA_Variant *o = NULL;
-        rv = UA_Client_call(client, c2, UA_NS0ID(DIALOGCONDITIONTYPE_RESPOND), 1, &in, &os, &o);
-        printf("INFO  Respond (v1, no callback bound) -> %s\n", UA_StatusCode_name(rv));
+        rv = UA_Client_call(client, c4, UA_NS0ID(DIALOGCONDITIONTYPE_RESPOND), 1, &in, &os, &o);
+        CHECK(rv == UA_STATUSCODE_GOOD && approvals[approvalCount - 1].state == REJECTED,
+              "Respond (1.04, Mandatory) answers a dialog too (%s)", UA_StatusCode_name(rv));
+    }
+    /* 8a. Every invocation is audited, failed ones included (5.6.3). */
+    {
+        unsigned before = auditEventsEmitted;
+        callRespond2(client, c1, RESP_REJECT, "decided already");
+        CHECK(auditEventsEmitted == before + 1, "failed Respond2 also emits AuditConditionRespondEventType");
     }
 
     /* 8b. Role gate through the access control plugin. */
@@ -550,8 +606,16 @@ main(int argc, char **argv) {
           UA_StatusCode_name(rv));
 
     /* 9. Reject dialog 2, then refresh: only dialog 3 is still retained. */
-    rv = callRespond2(client, c2, RESP_REJECT, "Unknown device");
-    CHECK(rv == UA_STATUSCODE_GOOD && approvals[1].state == REJECTED, "Respond2(Reject) on dialog 2");
+    /* NULL comment (no locale, no text) leaves the existing comment (5.6.4). */
+    {
+        UA_LocalizedText seed = UA_LOCALIZEDTEXT("en", "first look: unknown vendor");
+        setField(c2, "Comment", &seed, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
+        UA_LocalizedText_copy(&seed, &approvals[1].comment);
+    }
+    rv = callRespond2(client, c2, RESP_REJECT, "");
+    CHECK(rv == UA_STATUSCODE_GOOD && approvals[1].comment.text.length > 0,
+          "Respond2 with a NULL comment keeps the existing comment");
+    CHECK(approvals[1].state == REJECTED, "Respond2(Reject) on dialog 2");
     pump(client, 200);
     mark = seenCount;
     conditionRefresh(client, subId);
@@ -559,6 +623,15 @@ main(int argc, char **argv) {
     CHECK(countDialogEvents(mark, true, true) == 1 && countDialogEvents(mark, false, false) == 0,
           "refresh after decisions: only the one pending dialog is resent (got %zu active)",
           countDialogEvents(mark, true, true));
+    {
+        /* Part 9 v1.05 5.5.7: the EventId of a refreshed Notification shall be
+         * identical to the one of the original Notification. */
+        const UA_ByteString *before = lastEventIdOf(&c3, 0, mark);
+        const UA_ByteString *after = lastEventIdOf(&c3, mark, seenCount);
+        int same = before && after && UA_ByteString_equal(before, after);
+        printf("INFO  Part 9 5.5.7 refreshed EventId equals the original: %s "
+               "(open62541 v1.5.10 deviation if no)\n", same ? "yes" : "no");
+    }
 
     /* 10. Delete a decided condition. */
     rv = UA_Server_deleteCondition(server, c1, approvalsSource);
@@ -591,7 +664,7 @@ main(int argc, char **argv) {
            countType(mark, UA_NS0ID_REFRESHENDEVENTTYPE) ? "yes" : "no",
            countType(mark, UA_NS0ID_EVENTQUEUEOVERFLOWEVENTTYPE));
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    for(size_t i = 3; i < 3 + 100 && i < approvalCount; i++)
+    for(size_t i = 4; i < 4 + 100 && i < approvalCount; i++)
         callRespond2(client, approvals[i].condition, RESP_APPROVE, "bulk");
     double respMs = msSince(&t0);
     printf("INFO  100 sequential Respond2 round trips: %.0f ms (%.2f ms each)\n", respMs, respMs / 100);
@@ -605,6 +678,7 @@ main(int argc, char **argv) {
     for(size_t i = 0; i < seenCount; i++) {
         UA_NodeId_clear(&seen[i].eventType);
         UA_NodeId_clear(&seen[i].condition);
+        UA_ByteString_clear(&seen[i].eventId);
     }
     for(size_t i = 0; i < approvalCount; i++) {
         UA_String_clear(&approvals[i].decidedBy);
