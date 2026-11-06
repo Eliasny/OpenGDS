@@ -37,6 +37,11 @@ LDHARDEN="-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack"
 if [ -n "$SANITIZE" ]; then
     HARDEN="-O1 -g -fno-omit-frame-pointer -fsanitize=$SANITIZE"
     LDHARDEN="-fsanitize=$SANITIZE"
+    # Clang's UBSan "function" check fires on open62541's own EventLoop
+    # function-pointer casts (v1.5.10); every other UBSan check stays on.
+    case "$SANITIZE" in
+        *undefined*) "${CC:-cc}" --version | grep -q clang && HARDEN="$HARDEN -fno-sanitize=function" ;;
+    esac
 fi
 
 # JSON stays on: v1.5.10 needs it for event filter parsing (events, A&C).

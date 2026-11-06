@@ -13,4 +13,9 @@ if(OPENGDS_SANITIZE)
     add_compile_options(-fsanitize=${OPENGDS_SANITIZE} -fno-sanitize-recover=all
                         -fno-omit-frame-pointer -g)
     add_link_options(-fsanitize=${OPENGDS_SANITIZE})
+    # Clang's UBSan "function" check fires on open62541's EventLoop
+    # function-pointer casts (v1.5.10); our own code is held to the rest.
+    if(OPENGDS_SANITIZE MATCHES "undefined" AND CMAKE_C_COMPILER_ID MATCHES "Clang")
+        add_compile_options(-fno-sanitize=function)
+    endif()
 endif()

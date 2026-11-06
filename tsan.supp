@@ -1,0 +1,6 @@
+# ThreadSanitizer suppressions for the CI tsan job.
+# open62541 v1.5.10: the timer mutex is always taken inside the event loop
+# mutex, so these lock-order reports cannot deadlock (docs/spikes/02).
+# Re-check when the open62541 pin moves.
+deadlock:UA_Timer_add
+deadlock:UA_Timer_process

@@ -31,7 +31,13 @@ wait_listen() {
     done
 }
 expect() { # expect <pattern> <file>: fail the self-test if the pattern is missing
-    if ! grep -q "$1" "$2"; then echo "SELFTEST FAILED: '$1' not found in $2"; cat "$2"; exit 1; fi
+    if ! grep -q "$1" "$2"; then
+        echo "SELFTEST FAILED: '$1' not found in $2"; cat "$2"
+        for l in "$W"/mock_gds.log "$W"/push_server*.log; do
+            [ -f "$l" ] && { echo "--- tail of $l"; tail -40 "$l"; }
+        done
+        exit 1
+    fi
 }
 
 printf 'secret\n' > "$W/registrar.pw"
