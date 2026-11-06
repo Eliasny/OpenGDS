@@ -151,8 +151,8 @@ ConformanceUnit: Push Model for Global Certificate and TrustList Management.
 | SRV-WIRE-04 | 12 §7.10.9; 4 §6.1.3 | W | With `ca` in the applied trust list, connect as `peer-good` | Session created | Fail: refused | `wire-trustlist-not-loaded` |
 | SRV-WIRE-05 | 12 §7.10.9; 4 §6.1.3 | W | With `ca`'s CRL in the applied trust list, connect as `peer-revoked` | Refused (Bad_CertificateRevoked, or Bad_SecurityChecksFailed which hides the reason) | Fail: session created | `wire-ignore-crl` |
 | SRV-WIRE-06 | 4 §6.1.3 | — | Connect as `peer-unknown` | Refused (Bad_CertificateUntrusted or Bad_SecurityChecksFailed) | Fail: session created | `wire-trust-all` |
-| SRV-WIRE-07 | 12 §7.8.2.5 | W | Open a session as `peer-good`; RemoveCertificate(`peer-good`); apply | The `peer-good` session and channel are closed | Warn: still open after 30 s. Fail: still open after the settle timeout | `wire-keep-removed-sessions` |
-| SRV-WIRE-08 | 12 §7.8.2.5; 4 §6.1.3 | W | Open a session as `peer-good`; push a new CRL from `ca` that lists it; apply | The session and channel are closed | Warn: still open after 30 s. Fail: still open after the settle timeout | `wire-crl-no-reeval` |
+| SRV-WIRE-07 | 12 §7.8.2.5 | W | Open a session as `peer-good`; RemoveCertificate(`peer-good`); apply | The `peer-good` session is closed: a Read on it fails | Warn: still open after 30 s. Fail: still open after the settle timeout | `wire-keep-removed-sessions` |
+| SRV-WIRE-08 | 12 §7.8.2.5; 4 §6.1.3 | W | Open a session as `peer-good`; push a new CRL from `ca` that lists it; apply | The session is closed: a Read on it fails | Warn: still open after 30 s. Fail: still open after the settle timeout | `wire-crl-no-reeval` |
 
 ## Restore (`srv_restore.c`)
 

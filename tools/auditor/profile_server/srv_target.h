@@ -48,6 +48,7 @@ typedef struct {
     bool restored;             /* the snapshot was pushed back */
     bool keyReplaced;          /* SRV-UPD-09 put a key of the Auditor's in use */
     bool slow;                 /* --slow: run the tests flagged slow */
+    long settleSec;            /* --settle-timeout (catalogue Fixtures), default 300 */
     const char *only;          /* --only: tests that run only when selected by name check it */
     char adminPassword[256];
     char userPassword[256];

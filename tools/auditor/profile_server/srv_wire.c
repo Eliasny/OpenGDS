@@ -6,6 +6,7 @@
 #include <time.h>
 
 #include <open62541/client_config_default.h>
+#include <open62541/client_highlevel.h>
 
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
@@ -326,6 +327,149 @@ static void t_wire_unknown(ga_ctx *ctx, void *p) {
                       UA_StatusCode_name(r));
 }
 
+/* ---------------- SRV-WIRE-07, -08: sessions after a trust list change ---------------- */
+
+#define WATCH_WARN_SEC 30
+#define TL_OBJ UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST
+
+static void nap_ms(long ms) {
+    struct timespec ts = {ms / 1000, (ms % 1000) * 1000000L};
+    nanosleep(&ts, NULL);
+}
+
+/* Write l on the admin session and apply it (Bad_NothingToDo: the target
+ * has no transactions and put it in use at once). */
+static UA_StatusCode push_apply(srv_target *t, const UA_TrustListDataType *l, ga_ctx *ctx) {
+    UA_StatusCode r = st_admin(t);
+    bool acr = false;
+    if(r == UA_STATUSCODE_GOOD)
+        r = st_write_trustlist(t->client, l, 4096, &acr, ctx);
+    if(r == UA_STATUSCODE_GOOD)
+        r = st_apply(t->client);
+    return r == UA_STATUSCODE_BADNOTHINGTODO ? UA_STATUSCODE_GOOD : r;
+}
+
+/* Read ServerStatus/State on c until the Read fails: the session is gone.
+ * Within 30 s passes, within the settle timeout warns, else fails. */
+static void watch_closed(ga_ctx *ctx, const srv_target *t, UA_Client *c, const char *what) {
+    time_t start = time(NULL);
+    long waited = 0;
+    UA_StatusCode r = UA_STATUSCODE_GOOD;
+    while(waited <= t->settleSec) {
+        UA_Variant v;
+        UA_Variant_init(&v);
+        r = UA_Client_readValueAttribute(c, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERSTATUS_STATE),
+                                         &v);
+        UA_Variant_clear(&v);
+        if(r != UA_STATUSCODE_GOOD)
+            break;
+        nap_ms(500);
+        waited = (long)(time(NULL) - start);
+    }
+    if(r == UA_STATUSCODE_GOOD)
+        ga_fail(ctx, "the session of %s is still open after the settle timeout (%ld s)", what,
+                t->settleSec);
+    else if(waited > WATCH_WARN_SEC)
+        ga_warn(ctx, "the session of %s was closed only after %ld s (%s)", what, waited,
+                UA_StatusCode_name(r));
+    else
+        ga_pass(ctx, "the session of %s was closed within %ld s (Read -> %s)", what, waited,
+                UA_StatusCode_name(r));
+}
+
+static UA_StatusCode remove_trusted(UA_Client *c, const gds_buf *cert) {
+    char tp[X509_THUMBPRINT_LEN];
+    if(x509_thumbprint(cert, tp) != GDS_OK)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    UA_String thumb = UA_STRING(tp);
+    UA_Boolean tr = true;
+    UA_Variant in[2];
+    UA_Variant_setScalar(&in[0], &thumb, &UA_TYPES[UA_TYPES_STRING]);
+    UA_Variant_setScalar(&in[1], &tr, &UA_TYPES[UA_TYPES_BOOLEAN]);
+    size_t outN = 0;
+    UA_Variant *out = NULL;
+    UA_StatusCode r = UA_Client_call(
+        c, UA_NODEID_NUMERIC(0, TL_OBJ),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_REMOVECERTIFICATE),
+        2, in, &outN, &out);
+    UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
+    return r;
+}
+
+/* SRV-WIRE-07 (12 §7.8.2.5): peer-good trusted on its own (ca only as an
+ * issuer), a session as peer-good, RemoveCertificate(peer-good), apply. */
+static void t_wire_removed(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!t->applied) {
+        ga_not_tested(ctx, "builds on SRV-TXN-03 (the test CA's t-good in use)");
+        return;
+    }
+    UA_TrustListDataType l;
+    UA_TrustListDataType_init(&l);
+    UA_ByteString ca = {t->caDer.len, t->caDer.data}, crl = {t->caCrl.len, t->caCrl.data};
+    UA_StatusCode r = st_list_copy_add(&t->snap, &t->peerCert, NULL, &l);
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Array_appendCopy((void **)&l.issuerCertificates, &l.issuerCertificatesSize, &ca,
+                                &UA_TYPES[UA_TYPES_BYTESTRING]);
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Array_appendCopy((void **)&l.issuerCrls, &l.issuerCrlsSize, &crl,
+                                &UA_TYPES[UA_TYPES_BYTESTRING]);
+    if(r == UA_STATUSCODE_GOOD)
+        r = push_apply(t, &l, ctx);
+    UA_TrustListDataType_clear(&l);
+    UA_Client *c = NULL;
+    if(r == UA_STATUSCODE_GOOD)
+        r = peer_connect(t, &t->peerCert, &t->peerKey, &c);
+    UA_StatusCode rm = r == UA_STATUSCODE_GOOD ? remove_trusted(t->client, &t->peerCert) : r;
+    UA_StatusCode ra = rm == UA_STATUSCODE_GOOD ? st_apply(t->client) : rm;
+    if(ra == UA_STATUSCODE_BADNOTHINGTODO)
+        ra = UA_STATUSCODE_GOOD; /* RemoveCertificate was in use at once */
+    if(r != UA_STATUSCODE_GOOD || rm != UA_STATUSCODE_GOOD || ra != UA_STATUSCODE_GOOD) {
+        st_client_free(c);
+        ga_not_tested(ctx, "setup: peer-good trusted and connected -> %s; RemoveCertificate -> "
+                           "%s; ApplyChanges -> %s",
+                      UA_StatusCode_name(r), UA_StatusCode_name(rm), UA_StatusCode_name(ra));
+        return;
+    }
+    watch_closed(ctx, t, c, "peer-good after RemoveCertificate");
+    st_client_free(c);
+}
+
+/* SRV-WIRE-08: ca trusted with its empty CRL, a session as peer-good, then a
+ * CRL from ca that lists peer-good is applied. */
+static void t_wire_crl_session(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!t->applied) {
+        ga_not_tested(ctx, "builds on SRV-TXN-03 (the test CA's t-good in use)");
+        return;
+    }
+    UA_TrustListDataType l;
+    UA_TrustListDataType_init(&l);
+    gds_buf crl = {0};
+    UA_Client *c = NULL;
+    UA_StatusCode r = push_apply(t, &t->pushed, ctx);
+    if(r == UA_STATUSCODE_GOOD)
+        r = peer_connect(t, &t->peerCert, &t->peerKey, &c);
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_status_to_ua(revoking_crl(&t->ca, &t->peerCert, &crl));
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_TrustListDataType_copy(&t->pushed, &l);
+    if(r == UA_STATUSCODE_GOOD)
+        r = swap_crl(&l, &t->caCrl, &crl);
+    if(r == UA_STATUSCODE_GOOD)
+        r = push_apply(t, &l, ctx);
+    UA_TrustListDataType_clear(&l);
+    gds_buf_free(&crl);
+    if(r != UA_STATUSCODE_GOOD) {
+        st_client_free(c);
+        ga_not_tested(ctx, "setup: peer-good connected, then a CRL listing it applied -> %s",
+                      UA_StatusCode_name(r));
+        return;
+    }
+    watch_closed(ctx, t, c, "peer-good after a CRL that lists it");
+    st_client_free(c);
+}
+
 const ga_test srv_wire_tests[] = {
     {"SRV-WIRE-01", "12 §7.10.9, §7.8.4.8, §7.8.4.9",
      "Every endpoint of the updated CertificateType presents the new certificate", true, false,
@@ -336,5 +480,9 @@ const ga_test srv_wire_tests[] = {
      false, t_wire_revoked},
     {"SRV-WIRE-06", "4 §6.1.3", "An untrusted client certificate is refused", false, false,
      t_wire_unknown},
+    {"SRV-WIRE-07", "12 §7.8.2.5", "Sessions of a removed client certificate are closed", true,
+     false, t_wire_removed},
+    {"SRV-WIRE-08", "12 §7.8.2.5; 4 §6.1.3", "Sessions of a newly revoked client are closed", true,
+     false, t_wire_crl_session},
 };
 const size_t srv_wire_count = GDS_ARRAY_SIZE(srv_wire_tests);

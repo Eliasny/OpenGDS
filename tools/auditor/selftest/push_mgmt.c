@@ -83,6 +83,9 @@ static const struct {
      "client certificates are checked against the trust list of the start, not the applied one"},
     {"wire-ignore-crl", "SRV-WIRE-05", "a revoked client certificate is accepted"},
     {"wire-trust-all", "SRV-WIRE-06", "every client certificate is accepted"},
+    {"wire-keep-removed-sessions", "SRV-WIRE-07",
+     "sessions of a client whose certificate was removed stay open"},
+    {"wire-crl-no-reeval", "SRV-WIRE-08", "sessions of a client that a new CRL revokes stay open"},
     {"diag-stale", "SRV-TXN-12", "ApplyChanges leaves TransactionDiagnostics as it was"},
     {"diag-cancel-good", "SRV-TXN-13", "after CancelChanges the diagnostics Result is Good"},
     {"size-readable", "SRV-TL-19", "the TrustList Size Property returns a value"},
@@ -189,6 +192,11 @@ static struct {
 } P;
 
 static bool acceptKeys; /* set before pm_install */
+static void (*onListInstalled)(void);
+
+void pm_on_list_installed(void (*fn)(void)) {
+    onListInstalled = fn;
+}
 static UA_CertificateGroup startupPki; /* wire-trustlist-not-loaded */
 static bool hasStartupPki;
 
@@ -946,6 +954,8 @@ static UA_StatusCode install_list(const UA_TrustListDataType *l) {
             P.server,
             ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_LASTUPDATETIME),
             v);
+    if(onListInstalled)
+        onListInstalled(); /* sessions are checked against the new list (§7.8.2.5) */
     return r;
 }
 

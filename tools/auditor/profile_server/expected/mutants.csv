@@ -76,3 +76,5 @@ wire-old-cert,SRV-WIRE-01,fail
 wire-trustlist-not-loaded,SRV-WIRE-04,fail
 wire-ignore-crl,SRV-WIRE-05,fail
 wire-trust-all,SRV-WIRE-06,fail
+wire-keep-removed-sessions,SRV-WIRE-07,fail
+wire-crl-no-reeval,SRV-WIRE-08,fail

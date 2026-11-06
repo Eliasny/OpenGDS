@@ -58,6 +58,7 @@ static int usage(const char *argv0) {
             "       [--admin-cert C --admin-key K | --admin-user U --admin-password-file F]\n"
             "       [--user U --user-password-file F] [--work DIR] [--allow-changes] [--only PREFIX]\n"
             "       [--expect FILE.csv] [--list] [--init-only] [--slow] [--stop-after ID]\n"
+            "       [--settle-timeout S]\n"
             "       %s client --help\n"
             "Every subcommand also takes --events FILE (JSON Lines) and --report DIR.\n",
             argv0, argv0, argv0);
@@ -311,8 +312,16 @@ static int server_main(int argc, char **argv) {
             if(k == nTests)
                 return usage(argv[0]);
             nTests = k + 1;
+        } else if(!strcmp(a, "--settle-timeout")) {
+            char *end = NULL;
+            long sec = strtol(v, &end, 10);
+            if(!end || *end || sec < 1 || sec > 3600)
+                return usage(argv[0]);
+            t.settleSec = sec;
         } else return usage(argv[0]);
     }
+    if(t.settleSec == 0)
+        t.settleSec = 300;
     if(!initOnly && (!t.url || (!serverCert == !tofu))) {
         fprintf(stderr, "--url and one of --server-cert or --tofu (test setups only) are needed\n");
         goto cleanup;
