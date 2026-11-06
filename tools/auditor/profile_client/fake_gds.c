@@ -513,7 +513,7 @@ static UA_StatusCode h_finish(fg_event *ev, size_t inN, const UA_Variant *in, UA
     if(G.b.hangFinishMs) {
         /* Hold the answer back (CLI-FLT-07); stop once the client gave up */
         double t0 = now_ms();
-        struct timespec step = {0, 100 * 1000 * 1000};
+        struct timespec step = {0, 100000000L};
         while(now_ms() - t0 < (double)G.b.hangFinishMs && trig_child_running())
             (void)nanosleep(&step, NULL);
         ev->hungMs = now_ms() - t0;
