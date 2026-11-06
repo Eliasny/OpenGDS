@@ -13,10 +13,14 @@
 #include "ca.h"
 #include "common/ua_args.h"
 #include "gds_access.h"
+#include "gds_plugin.h"
 #include "gds_server.h"
 #include "store.h"
 
 #define GDS_NS_URI "http://opcfoundation.org/UA/GDS/"
+#define GDS_MAX_PRIVILEGE_PROVIDERS 8
+/* Anonymous, AuthenticatedUser and every role of gds_role_table */
+#define GDS_MAX_CALLER_ROLES 16
 
 struct gds_server {
     UA_Server *ua;
@@ -40,7 +44,37 @@ struct gds_server {
     pthread_mutex_t workLock;
     pthread_cond_t workCond;
     bool workPending, workStop;
+    /* plugin privilege providers, fixed before the server runs */
+    gds_privilege_provider privProviders[GDS_MAX_PRIVILEGE_PROVIDERS];
+    size_t nPrivProviders;
 };
+
+/* ---- caller views (gds_caller.c, issue #17) ---- */
+struct gds_privilege_set {
+    char *names[GDS_MAX_PRIVILEGES];
+    size_t n;
+};
+
+/* A gds_caller and the memory it points to; one per plugin call. */
+typedef struct {
+    gds_caller view;
+    UA_NodeId sessionId;
+    UA_NodeId roles[GDS_MAX_CALLER_ROLES];
+    size_t nRoles;
+    UA_NodeId applicationId;
+    char user[GDS_MAX_USER_NAME + 1];
+    char *appUri;
+    char *policyUri;
+    gds_privilege_set priv;
+} gds_caller_buf;
+
+/* Builds the view for a session: reads the store (for the ApplicationId)
+ * and runs the privilege providers, so call it on a worker thread without
+ * holding storeLock. GDS_EDENIED without a session or when a provider
+ * fails; *b is then cleared. */
+GDS_MUST_CHECK gds_status gds_caller_build(gds_server *s, const UA_NodeId *sessionId,
+                                           const void *sessionContext, gds_caller_buf *b);
+void gds_caller_buf_clear(gds_caller_buf *b);
 
 #define GDS_METHOD(name)                                                                 \
     UA_StatusCode name(UA_Server *server, const UA_NodeId *sessionId, void *sessionContext, \
