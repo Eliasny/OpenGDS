@@ -11,7 +11,11 @@
 #include <open62541/plugin/log_stdout.h>
 
 #include <openssl/crypto.h>
+#include <openssl/err.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +29,9 @@
 #define PM_MODE_READ 0x01
 #define PM_MODE_WRITE_ERASE 0x06
 #define PM_MASK_ALL 15u
+#define PM_MAX_TL_SIZE 65535u /* the MaxTrustListSize default of 12 §7.10.3 */
+/* ActivityTimeout (12 §7.8.2.1), short so that SRV-TL-18 stays quick in CI */
+#define PM_ACTIVITY_TIMEOUT_MS 2000.0
 
 /* ---------------- Mutants ---------------- */
 
@@ -50,6 +57,37 @@ static const struct {
     {"deprecated-policy", "SRV-SEC-08", "Basic128Rsa15 and Basic256 endpoints offered"},
     {"wire-old-cert", "SRV-WIRE-01",
      "after ApplyChanges the Basic256Sha256 policy keeps the old certificate"},
+    {"no-rejected-list-method", "SRV-CAP-01", "ServerConfiguration has no GetRejectedList"},
+    {"no-default-group", "SRV-CAP-02", "CertificateGroups does not reference DefaultApplicationGroup"},
+    {"mixed-cert-types", "SRV-CAP-03",
+     "DefaultApplicationGroup advertises an application and an HTTPS CertificateType"},
+    {"bad-capability-id", "SRV-CAP-04", "ServerCapabilities holds an identifier not in Annex D"},
+    {"bad-key-format-name", "SRV-CAP-05", "SupportedPrivateKeyFormats is [\"DER\"]"},
+    {"accept-key-unadvertised", "SRV-CAP-06",
+     "UpdateCertificate accepts (and ignores) a private key although none is advertised"},
+    {"ignore-max-size", "SRV-CAP-07", "TrustList Write ignores MaxTrustListSize"},
+    {"transactions-no-cancel", "SRV-CAP-08", "SupportsTransactions TRUE without CancelChanges"},
+    {"advertise-unsupported-type", "SRV-CAP-09",
+     "RsaMinApplicationCertificateType advertised but CreateSigningRequest refuses it"},
+    {"open-any-mode", "SRV-TL-01", "TrustList Open accepts any mode with Write or EraseExisting"},
+    {"trustlist-wrapped", "SRV-TL-03", "the TrustList file is wrapped in an ExtensionObject"},
+    {"mask-ignored", "SRV-TL-04", "CloseAndUpdate replaces all four lists whatever SpecifiedLists"},
+    {"openwithmasks-ignores", "SRV-TL-05", "OpenWithMasks returns all four lists"},
+    {"close-applies", "SRV-TL-06", "Close on a write handle queues the list like CloseAndUpdate"},
+    {"accept-invalid-cert", "SRV-TL-07", "CloseAndUpdate does not check certificate signatures"},
+    {"accept-expired-ca", "SRV-TL-08", "CloseAndUpdate does not check certificate validity times"},
+    {"lastupdate-frozen", "SRV-TL-17", "ApplyChanges does not move LastUpdateTime"},
+    {"size-readable", "SRV-TL-19", "the TrustList Size Property returns a value"},
+    {"updatefreq-readonly", "SRV-TL-20", "the TrustList has a read-only UpdateFrequency"},
+    {"addcert-noop", "SRV-TL-09", "AddCertificate returns Good and adds nothing"},
+    {"addcert-issuer-allowed", "SRV-TL-10", "AddCertificate(IsTrustedCertificate FALSE) adds an issuer"},
+    {"addcert-no-chain-check", "SRV-TL-11", "AddCertificate does not need the issuer in the TrustList"},
+    {"addcert-while-open", "SRV-TL-12", "AddCertificate works while the TrustList is open for writing"},
+    {"remove-unknown-good", "SRV-TL-13", "RemoveCertificate of an unknown thumbprint returns Good"},
+    {"remove-noop", "SRV-TL-14", "RemoveCertificate returns Good and removes nothing"},
+    {"remove-ca-in-use", "SRV-TL-15", "RemoveCertificate removes a CA another certificate needs"},
+    {"remove-keeps-crl", "SRV-TL-16", "RemoveCertificate of a CA keeps its CRLs"},
+    {"no-activity-timeout", "SRV-TL-18", "an idle write handle is never closed"},
 };
 
 bool pm_mutant_known(const char *name) {
@@ -74,6 +112,7 @@ typedef struct {
     UA_ByteString data;
     size_t pos;
     size_t lastWrite; /* bytes of the last Write (drop-last-chunk) */
+    UA_DateTime lastUse; /* monotonic time of the last call on the handle */
 } pm_file;
 
 static struct {
@@ -92,7 +131,7 @@ static struct {
     UA_NodeId certType;
     UA_ByteString ownKey; /* only for wire-old-cert */
     pm_mode_fn modeOf;
-    UA_MethodCallback libCsr, libRejected, libAdd, libRemove;
+    UA_MethodCallback libCsr, libRejected;
 } P;
 
 bool pm_breaking(const char *name) {
@@ -148,15 +187,30 @@ static void file_free(pm_file *f) {
     memset(f, 0, sizeof(*f));
 }
 
+/* §7.8.2.1: a handle idle for ActivityTimeout is closed, changes discarded */
+static void expire_files(void) {
+    if(breaking("no-activity-timeout"))
+        return;
+    UA_DateTime now = UA_DateTime_nowMonotonic();
+    for(size_t i = 0; i < PM_MAX_FILES; i++)
+        if(P.files[i].used &&
+           now - P.files[i].lastUse > (UA_DateTime)(PM_ACTIVITY_TIMEOUT_MS * UA_DATETIME_MSEC))
+            file_free(&P.files[i]);
+}
+
 static pm_file *file_get(const UA_NodeId *session, UA_UInt32 handle) {
+    expire_files();
     for(size_t i = 0; i < PM_MAX_FILES; i++)
         if(P.files[i].used && P.files[i].handle == handle &&
-           UA_NodeId_equal(&P.files[i].session, session))
+           UA_NodeId_equal(&P.files[i].session, session)) {
+            P.files[i].lastUse = UA_DateTime_nowMonotonic();
             return &P.files[i];
+        }
     return NULL;
 }
 
 static bool write_open(void) {
+    expire_files();
     for(size_t i = 0; i < PM_MAX_FILES; i++)
         if(P.files[i].used && P.files[i].mode == PM_MODE_WRITE_ERASE)
             return true;
@@ -215,15 +269,52 @@ static void keep_masked(UA_TrustListDataType *l, UA_UInt32 masks) {
     l->specifiedLists = masks & PM_MASK_ALL;
 }
 
-static bool certs_parse(const UA_ByteString *l, size_t n) {
-    for(size_t i = 0; i < n; i++) {
-        gds_buf b = {l[i].data, l[i].length};
-        X509 *x = x509_parse_cert(&b);
-        if(!x)
-            return false;
-        X509_free(x);
+/* The certificates of a new list (§7.8.2.5): each parses, is within its
+ * validity period, and, where its issuer is in the list, carries a valid
+ * signature of that issuer. Bad_CertificateInvalid or
+ * Bad_CertificateTimeInvalid; the whole list is then discarded. */
+#define PM_MAX_CHECK (2 * GDS_MAX_TRUSTLIST_ENTRIES)
+static UA_StatusCode one_cert(X509 *x, X509 *const *all, size_t n) {
+    if(!breaking("accept-expired-ca") && (X509_cmp_current_time(X509_get0_notBefore(x)) > 0 ||
+                                          X509_cmp_current_time(X509_get0_notAfter(x)) < 0))
+        return UA_STATUSCODE_BADCERTIFICATETIMEINVALID;
+    if(breaking("accept-invalid-cert"))
+        return UA_STATUSCODE_GOOD;
+    for(size_t k = 0; k < n; k++) {
+        if(X509_check_issued(all[k], x) != X509_V_OK)
+            continue;
+        EVP_PKEY *pk = X509_get0_pubkey(all[k]);
+        if(pk && X509_verify(x, pk) == 1)
+            return UA_STATUSCODE_GOOD;
     }
-    return true;
+    /* no issuer in the list verifies it: fine only if none is there */
+    for(size_t k = 0; k < n; k++)
+        if(X509_check_issued(all[k], x) == X509_V_OK)
+            return UA_STATUSCODE_BADCERTIFICATEINVALID;
+    return UA_STATUSCODE_GOOD;
+}
+
+static UA_StatusCode certs_check(const UA_TrustListDataType *in) {
+    static X509 *all[PM_MAX_CHECK];
+    size_t n = 0;
+    UA_StatusCode r = UA_STATUSCODE_GOOD;
+    const UA_ByteString *lists[2] = {in->trustedCertificates, in->issuerCertificates};
+    const size_t sizes[2] = {in->trustedCertificatesSize, in->issuerCertificatesSize};
+    for(size_t l = 0; l < 2 && r == UA_STATUSCODE_GOOD; l++)
+        for(size_t i = 0; i < sizes[l] && r == UA_STATUSCODE_GOOD; i++) {
+            gds_buf b = {lists[l][i].data, lists[l][i].length};
+            X509 *x = n < PM_MAX_CHECK ? x509_parse_cert(&b) : NULL;
+            if(!x)
+                r = UA_STATUSCODE_BADCERTIFICATEINVALID;
+            else
+                all[n++] = x;
+        }
+    for(size_t i = 0; i < n && r == UA_STATUSCODE_GOOD; i++)
+        r = one_cert(all[i], all, n);
+    for(size_t i = 0; i < n; i++)
+        X509_free(all[i]);
+    ERR_clear_error();
+    return r;
 }
 
 static UA_StatusCode replace(UA_ByteString **dst, size_t *dstN, const UA_ByteString *src,
@@ -244,7 +335,7 @@ static UA_StatusCode queue_list(const UA_TrustListDataType *in) {
     UA_StatusCode r = P.hasList ? UA_TrustListDataType_copy(&P.list, &base) : current_list(&base);
     if(r != UA_STATUSCODE_GOOD)
         return r;
-    UA_UInt32 m = in->specifiedLists;
+    UA_UInt32 m = breaking("mask-ignored") ? PM_MASK_ALL : in->specifiedLists;
     if(m & UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES)
         r |= replace(&base.trustedCertificates, &base.trustedCertificatesSize,
                      in->trustedCertificates, in->trustedCertificatesSize);
@@ -301,6 +392,7 @@ static UA_StatusCode new_file(const UA_NodeId *session, UA_Byte mode, UA_ByteStr
     f->mode = mode;
     f->data = *data;
     f->pos = 0;
+    f->lastUse = UA_DateTime_nowMonotonic();
     return UA_Variant_setScalarCopy(&output[0], &f->handle, &UA_TYPES[UA_TYPES_UINT32]);
 }
 
@@ -309,9 +401,15 @@ static UA_StatusCode open_read(const UA_NodeId *session, UA_UInt32 masks, UA_Var
     UA_StatusCode r = current_list(&l);
     if(r != UA_STATUSCODE_GOOD)
         return r;
-    keep_masked(&l, masks);
+    keep_masked(&l, breaking("openwithmasks-ignores") ? PM_MASK_ALL : masks);
     UA_ByteString enc = UA_BYTESTRING_NULL;
-    r = UA_encodeBinary(&l, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], &enc, NULL);
+    if(breaking("trustlist-wrapped")) { /* §7.8.2.1 forbids the ExtensionObject */
+        UA_ExtensionObject eo;
+        UA_ExtensionObject_setValue(&eo, &l, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE]);
+        r = UA_encodeBinary(&eo, &UA_TYPES[UA_TYPES_EXTENSIONOBJECT], &enc, NULL);
+    } else {
+        r = UA_encodeBinary(&l, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], &enc, NULL);
+    }
     UA_TrustListDataType_clear(&l);
     if(r != UA_STATUSCODE_GOOD)
         return r;
@@ -328,6 +426,8 @@ static UA_StatusCode tlOpen(METHOD_ARGS) {
     UA_Byte mode = *(const UA_Byte *)input[0].data;
     if(mode == PM_MODE_READ)
         return open_read(sessionId, PM_MASK_ALL, output);
+    if(breaking("open-any-mode") && (mode & PM_MODE_WRITE_ERASE))
+        mode = PM_MODE_WRITE_ERASE;
     if(mode != PM_MODE_WRITE_ERASE)
         return UA_STATUSCODE_BADNOTSUPPORTED; /* §7.8.2.2 */
     if(P.txn && !UA_NodeId_equal(&P.owner, sessionId))
@@ -386,8 +486,10 @@ static UA_StatusCode tlWrite(METHOD_ARGS) {
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     if(f->mode != PM_MODE_WRITE_ERASE)
         return UA_STATUSCODE_BADINVALIDSTATE;
-    if(d->length > P.maxSize || f->pos > P.maxSize - d->length)
-        return UA_STATUSCODE_BADREQUESTTOOLARGE; /* §7.10.3 MaxTrustListSize */
+    /* §7.10.3 MaxTrustListSize; ignore-max-size keeps only the hard cap */
+    size_t cap = breaking("ignore-max-size") ? GDS_MAX_TRUSTLIST_SIZE : P.maxSize;
+    if(d->length > cap || f->pos > cap - d->length)
+        return UA_STATUSCODE_BADREQUESTTOOLARGE;
     size_t end = f->pos + d->length;
     if(end > f->data.length) {
         UA_Byte *nd = realloc(f->data.data, end ? end : 1);
@@ -403,34 +505,8 @@ static UA_StatusCode tlWrite(METHOD_ARGS) {
     return UA_STATUSCODE_GOOD;
 }
 
-static UA_StatusCode tlClose(METHOD_ARGS) {
-    UNUSED_ARGS;
-    UA_StatusCode sec = need_channel(sessionId, false);
-    if(sec != UA_STATUSCODE_GOOD)
-        return sec;
-    (void)output;
-    (void)outputSize;
-    if(!scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_UINT32]))
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
-    pm_file *f = file_get(sessionId, *(const UA_UInt32 *)input[0].data);
-    if(!f)
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
-    file_free(f); /* a write handle closed without CloseAndUpdate changes nothing */
-    return UA_STATUSCODE_GOOD;
-}
-
-static UA_StatusCode tlCloseAndUpdate(METHOD_ARGS) {
-    UNUSED_ARGS;
-    UA_StatusCode sec = need_channel(sessionId, false);
-    if(sec != UA_STATUSCODE_GOOD)
-        return sec;
-    if(!scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_UINT32]) || outputSize < 1)
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
-    pm_file *f = file_get(sessionId, *(const UA_UInt32 *)input[0].data);
-    if(!f)
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
-    if(f->mode != PM_MODE_WRITE_ERASE)
-        return UA_STATUSCODE_BADINVALIDSTATE;
+/* CloseAndUpdate on write handle f (freed here): decode, check, queue. */
+static UA_StatusCode close_and_update(const UA_NodeId *sessionId, pm_file *f) {
     UA_ByteString data = f->data;
     if(breaking("drop-last-chunk") && data.length >= f->lastWrite)
         data.length -= f->lastWrite;
@@ -447,14 +523,47 @@ static UA_StatusCode tlCloseAndUpdate(METHOD_ARGS) {
        in.issuerCertificatesSize > GDS_MAX_TRUSTLIST_ENTRIES ||
        in.issuerCrlsSize > GDS_MAX_TRUSTLIST_ENTRIES)
         r = UA_STATUSCODE_BADREQUESTTOOLARGE;
-    else if(!certs_parse(in.trustedCertificates, in.trustedCertificatesSize) ||
-            !certs_parse(in.issuerCertificates, in.issuerCertificatesSize))
-        r = UA_STATUSCODE_BADCERTIFICATEINVALID; /* §7.8.2.5: the whole list is discarded */
+    else
+        r = certs_check(&in); /* §7.8.2.5: on error the whole list is discarded */
     if(r == UA_STATUSCODE_GOOD)
         r = txn_join(sessionId);
     if(r == UA_STATUSCODE_GOOD)
         r = queue_list(&in);
     UA_TrustListDataType_clear(&in);
+    return r;
+}
+
+static UA_StatusCode tlClose(METHOD_ARGS) {
+    UNUSED_ARGS;
+    UA_StatusCode sec = need_channel(sessionId, false);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
+    (void)output;
+    (void)outputSize;
+    if(!scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_UINT32]))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    pm_file *f = file_get(sessionId, *(const UA_UInt32 *)input[0].data);
+    if(!f)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(breaking("close-applies") && f->mode == PM_MODE_WRITE_ERASE)
+        return close_and_update(sessionId, f);
+    file_free(f); /* a write handle closed without CloseAndUpdate changes nothing (§7.8.2.1) */
+    return UA_STATUSCODE_GOOD;
+}
+
+static UA_StatusCode tlCloseAndUpdate(METHOD_ARGS) {
+    UNUSED_ARGS;
+    UA_StatusCode sec = need_channel(sessionId, false);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
+    if(!scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_UINT32]) || outputSize < 1)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    pm_file *f = file_get(sessionId, *(const UA_UInt32 *)input[0].data);
+    if(!f)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(f->mode != PM_MODE_WRITE_ERASE)
+        return UA_STATUSCODE_BADINVALIDSTATE;
+    UA_StatusCode r = close_and_update(sessionId, f);
     if(r != UA_STATUSCODE_GOOD)
         return r;
     UA_Boolean applyRequired = true;
@@ -515,7 +624,7 @@ static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
     const UA_NodeId rsa = ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
     if(!UA_NodeId_equal(group, &dag) || !UA_NodeId_equal(type, &rsa))
         return UA_STATUSCODE_BADINVALIDARGUMENT; /* §7.10.5: not in the group's CertificateTypes */
-    if(key->length > 0)
+    if(key->length > 0 && !breaking("accept-key-unadvertised"))
         return UA_STATUSCODE_BADNOTSUPPORTED; /* SupportedPrivateKeyFormats is empty */
     if(cert->length == 0 || cert->length > GDS_MAX_CERT_SIZE)
         return UA_STATUSCODE_BADCERTIFICATEINVALID;
@@ -558,20 +667,27 @@ static UA_SecurityPolicy *stale_policy(void) {
     return NULL;
 }
 
-static UA_StatusCode apply(void) {
-    UA_StatusCode r = UA_STATUSCODE_GOOD;
-    if(P.hasList) {
-        UA_CertificateGroup *g = pki();
-        r = g->setTrustList(g, &P.list);
-        if(r != UA_STATUSCODE_GOOD)
-            return r;
-        UA_DateTime now = UA_DateTime_now();
-        UA_Variant v;
-        UA_Variant_setScalar(&v, &now, &UA_TYPES[UA_TYPES_DATETIME]);
+/* Put a list in use and move LastUpdateTime (§7.8.2.1). */
+static UA_StatusCode install_list(const UA_TrustListDataType *l) {
+    UA_CertificateGroup *g = pki();
+    UA_StatusCode r = g->setTrustList(g, l);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    UA_DateTime now = breaking("lastupdate-frozen") ? 0 : UA_DateTime_now();
+    UA_Variant v;
+    UA_Variant_setScalar(&v, &now, &UA_TYPES[UA_TYPES_DATETIME]);
+    if(now)
         r = UA_Server_writeValue(
             P.server,
             ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_LASTUPDATETIME),
             v);
+    return r;
+}
+
+static UA_StatusCode apply(void) {
+    UA_StatusCode r = UA_STATUSCODE_GOOD;
+    if(P.hasList) {
+        r = install_list(&P.list);
         if(r != UA_STATUSCODE_GOOD)
             return r;
     }
@@ -634,6 +750,13 @@ static UA_StatusCode scCreateSigningRequest(METHOD_ARGS) {
     UA_StatusCode sec = need_channel(sessionId, true);
     if(sec != UA_STATUSCODE_GOOD)
         return sec;
+    /* §7.10.10 Bad_InvalidArgument: only the one slot this target has */
+    const UA_NodeId dag = ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
+    const UA_NodeId rsa = ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
+    if(inputSize < 2 || !scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_NODEID]) ||
+       !scalar(input, inputSize, 1, &UA_TYPES[UA_TYPES_NODEID]) ||
+       !UA_NodeId_equal(input[0].data, &dag) || !UA_NodeId_equal(input[1].data, &rsa))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
     return P.libCsr(server, sessionId, sessionContext, methodId, methodContext, objectId,
                     objectContext, inputSize, input, outputSize, output);
 }
@@ -646,20 +769,211 @@ static UA_StatusCode scGetRejectedList(METHOD_ARGS) {
                          objectContext, inputSize, input, outputSize, output);
 }
 
+/* ---------------- AddCertificate, RemoveCertificate (12 §7.8.2.6, §7.8.2.7) ----------------
+ * Both act on the list in use at once; they refuse while a write handle is
+ * open (Bad_InvalidState) or a transaction is in progress
+ * (Bad_TransactionPending). */
+
+static UA_StatusCode list_change_allowed(void) {
+    if(write_open())
+        return UA_STATUSCODE_BADINVALIDSTATE;
+    return P.txn ? UA_STATUSCODE_BADTRANSACTIONPENDING : UA_STATUSCODE_GOOD;
+}
+
+/* The CA in `l` (trusted or issuer) whose signature verifies x. */
+static bool issuer_in(X509 *x, const UA_TrustListDataType *l) {
+    const UA_ByteString *lists[2] = {l->trustedCertificates, l->issuerCertificates};
+    const size_t sizes[2] = {l->trustedCertificatesSize, l->issuerCertificatesSize};
+    bool found = false;
+    for(size_t k = 0; k < 2 && !found; k++)
+        for(size_t i = 0; i < sizes[k] && !found; i++) {
+            gds_buf b = {lists[k][i].data, lists[k][i].length};
+            X509 *ca = x509_parse_cert(&b);
+            if(ca && X509_cmp(ca, x) != 0 && X509_check_issued(ca, x) == X509_V_OK) {
+                EVP_PKEY *pk = X509_get0_pubkey(ca);
+                found = pk && X509_verify(x, pk) == 1;
+            }
+            X509_free(ca);
+        }
+    ERR_clear_error();
+    return found;
+}
+
+/* OPC 10000-4 validation, as far as this target goes: validity times, and a
+ * CA-issued certificate needs its issuer in the TrustList (§7.8.2.6). */
+static UA_StatusCode validate_new(const UA_ByteString *cert, const UA_TrustListDataType *cur) {
+    gds_buf b = {cert->data, cert->length};
+    X509 *x = x509_parse_cert(&b);
+    if(!x)
+        return UA_STATUSCODE_BADCERTIFICATEINVALID;
+    UA_StatusCode r = UA_STATUSCODE_GOOD;
+    if(X509_cmp_current_time(X509_get0_notBefore(x)) > 0 ||
+       X509_cmp_current_time(X509_get0_notAfter(x)) < 0)
+        r = UA_STATUSCODE_BADCERTIFICATETIMEINVALID;
+    else if(X509_check_issued(x, x) != X509_V_OK && !breaking("addcert-no-chain-check") &&
+            !issuer_in(x, cur))
+        r = UA_STATUSCODE_BADCERTIFICATECHAININCOMPLETE;
+    X509_free(x);
+    ERR_clear_error();
+    return r;
+}
+
+static bool in_list(const UA_ByteString *l, size_t n, const UA_ByteString *x) {
+    for(size_t i = 0; i < n; i++)
+        if(UA_ByteString_equal(&l[i], x))
+            return true;
+    return false;
+}
+
 static UA_StatusCode tlAddCertificate(METHOD_ARGS) {
-    UA_StatusCode sec = need_channel(sessionId, false);
-    if(sec != UA_STATUSCODE_GOOD)
-        return sec;
-    return P.libAdd(server, sessionId, sessionContext, methodId, methodContext, objectId,
-                    objectContext, inputSize, input, outputSize, output);
+    UNUSED_ARGS;
+    (void)output;
+    (void)outputSize;
+    UA_StatusCode r = need_channel(sessionId, false);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    if(!scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_BYTESTRING]) ||
+       !scalar(input, inputSize, 1, &UA_TYPES[UA_TYPES_BOOLEAN]))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    const UA_ByteString *cert = input[0].data;
+    bool trusted = *(const UA_Boolean *)input[1].data;
+    if(!breaking("addcert-while-open") && (r = list_change_allowed()) != UA_STATUSCODE_GOOD)
+        return r;
+    if(!trusted && !breaking("addcert-issuer-allowed"))
+        return UA_STATUSCODE_BADCERTIFICATEINVALID; /* issuers come with CRLs: Write only */
+    UA_TrustListDataType cur;
+    r = current_list(&cur);
+    if(r == UA_STATUSCODE_GOOD)
+        r = validate_new(cert, &cur);
+    UA_ByteString **dst = trusted ? &cur.trustedCertificates : &cur.issuerCertificates;
+    size_t *dstN = trusted ? &cur.trustedCertificatesSize : &cur.issuerCertificatesSize;
+    bool add = r == UA_STATUSCODE_GOOD && !breaking("addcert-noop") && !in_list(*dst, *dstN, cert);
+    if(add)
+        r = UA_Array_appendCopy((void **)dst, dstN, cert, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    if(add && r == UA_STATUSCODE_GOOD &&
+       UA_calcSizeBinary(&cur, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], NULL) > P.maxSize)
+        r = UA_STATUSCODE_BADREQUESTTOOLARGE;
+    if(add && r == UA_STATUSCODE_GOOD)
+        r = install_list(&cur);
+    UA_TrustListDataType_clear(&cur);
+    return r;
+}
+
+/* Index of the certificate with this SHA-1 thumbprint (hex, any case). */
+static bool find_thumb(const UA_ByteString *l, size_t n, const UA_String *thumb, size_t *at) {
+    for(size_t i = 0; i < n; i++) {
+        unsigned char md[20];
+        unsigned int mdLen = 0;
+        char hex[41];
+        if(EVP_Digest(l[i].data, l[i].length, md, &mdLen, EVP_sha1(), NULL) != 1 ||
+           mdLen != sizeof(md))
+            continue;
+        for(size_t k = 0; k < sizeof(md); k++)
+            (void)snprintf(hex + 2 * k, 3, "%02X", md[k]);
+        if(thumb->length != 40)
+            continue;
+        bool eq = true;
+        for(size_t k = 0; k < 40 && eq; k++) {
+            char c = (char)thumb->data[k];
+            if(c >= 'a' && c <= 'f')
+                c = (char)(c - 'a' + 'A');
+            eq = c == hex[k];
+        }
+        if(eq) {
+            *at = i;
+            return true;
+        }
+    }
+    ERR_clear_error();
+    return false;
+}
+
+/* Does CA `ca` issue another certificate of the list? */
+static bool ca_in_use(X509 *ca, const UA_TrustListDataType *l) {
+    const UA_ByteString *lists[2] = {l->trustedCertificates, l->issuerCertificates};
+    const size_t sizes[2] = {l->trustedCertificatesSize, l->issuerCertificatesSize};
+    bool used = false;
+    for(size_t k = 0; k < 2 && !used; k++)
+        for(size_t i = 0; i < sizes[k] && !used; i++) {
+            gds_buf b = {lists[k][i].data, lists[k][i].length};
+            X509 *x = x509_parse_cert(&b);
+            used = x && X509_cmp(ca, x) != 0 && X509_check_issued(ca, x) == X509_V_OK;
+            X509_free(x);
+        }
+    ERR_clear_error();
+    return used;
+}
+
+/* Drop the CRLs issued by ca from a list of CRLs. */
+static void drop_crls_of(X509 *ca, UA_ByteString **l, size_t *n) {
+    if(*n == 0)
+        return; /* *l may be UA_EMPTY_ARRAY_SENTINEL */
+    size_t w = 0;
+    for(size_t i = 0; i < *n; i++) {
+        const unsigned char *q = (*l)[i].data;
+        X509_CRL *crl = d2i_X509_CRL(NULL, &q, (long)(*l)[i].length);
+        bool of = crl && X509_NAME_cmp(X509_CRL_get_issuer(crl), X509_get_subject_name(ca)) == 0;
+        X509_CRL_free(crl);
+        if(of)
+            UA_ByteString_clear(&(*l)[i]);
+        else
+            (*l)[w++] = (*l)[i];
+    }
+    *n = w;
+    if(w == 0) {
+        UA_free(*l);
+        *l = NULL;
+    }
+    ERR_clear_error();
+}
+
+static UA_StatusCode remove_at(UA_TrustListDataType *cur, bool trusted, size_t at) {
+    UA_ByteString *l = trusted ? cur->trustedCertificates : cur->issuerCertificates;
+    size_t *n = trusted ? &cur->trustedCertificatesSize : &cur->issuerCertificatesSize;
+    gds_buf b = {l[at].data, l[at].length};
+    X509 *x = x509_parse_cert(&b);
+    bool isCa = x && X509_check_ca(x) > 0;
+    if(isCa && !breaking("remove-ca-in-use") && ca_in_use(x, cur)) {
+        X509_free(x);
+        return UA_STATUSCODE_BADCERTIFICATECHAININCOMPLETE;
+    }
+    UA_ByteString_clear(&l[at]);
+    l[at] = l[*n - 1];
+    (*n)--;
+    if(isCa && !breaking("remove-keeps-crl")) { /* §7.8.2.7: its CRLs go too */
+        drop_crls_of(x, &cur->trustedCrls, &cur->trustedCrlsSize);
+        drop_crls_of(x, &cur->issuerCrls, &cur->issuerCrlsSize);
+    }
+    X509_free(x);
+    return UA_STATUSCODE_GOOD;
 }
 
 static UA_StatusCode tlRemoveCertificate(METHOD_ARGS) {
-    UA_StatusCode sec = need_channel(sessionId, false);
-    if(sec != UA_STATUSCODE_GOOD)
-        return sec;
-    return P.libRemove(server, sessionId, sessionContext, methodId, methodContext, objectId,
-                       objectContext, inputSize, input, outputSize, output);
+    UNUSED_ARGS;
+    (void)output;
+    (void)outputSize;
+    UA_StatusCode r = need_channel(sessionId, false);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    if(!scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_STRING]) ||
+       !scalar(input, inputSize, 1, &UA_TYPES[UA_TYPES_BOOLEAN]))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    const UA_String *thumb = input[0].data;
+    bool trusted = *(const UA_Boolean *)input[1].data;
+    if((r = list_change_allowed()) != UA_STATUSCODE_GOOD)
+        return r;
+    UA_TrustListDataType cur;
+    if((r = current_list(&cur)) != UA_STATUSCODE_GOOD)
+        return r;
+    size_t at = 0;
+    bool found = trusted ? find_thumb(cur.trustedCertificates, cur.trustedCertificatesSize, thumb, &at)
+                         : find_thumb(cur.issuerCertificates, cur.issuerCertificatesSize, thumb, &at);
+    if(!found)
+        r = breaking("remove-unknown-good") ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADINVALIDARGUMENT;
+    else if(!breaking("remove-noop") && (r = remove_at(&cur, trusted, at)) == UA_STATUSCODE_GOOD)
+        r = install_list(&cur);
+    UA_TrustListDataType_clear(&cur);
+    return r;
 }
 
 static UA_StatusCode wrap_lib(UA_UInt32 id, UA_MethodCallback *orig, UA_MethodCallback cb) {
@@ -677,6 +991,132 @@ static UA_StatusCode set_cb(UA_UInt32 id, UA_MethodCallback cb) {
     return UA_Server_setMethodNodeCallback(P.server, ns0(id), cb);
 }
 
+/* Advertise what this target supports (§7.10.3): one RSA slot, no private
+ * keys pushed, the size limit tlWrite enforces, and transactions (§7.10.2). */
+static UA_StatusCode advertise(UA_Server *server) {
+    UA_NodeId types[3] = {ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE), UA_NODEID_NULL,
+                          UA_NODEID_NULL};
+    size_t nTypes = 1;
+    if(breaking("mixed-cert-types"))
+        types[nTypes++] = ns0(UA_NS0ID_HTTPSCERTIFICATETYPE);
+    if(breaking("advertise-unsupported-type"))
+        types[nTypes++] = ns0(UA_NS0ID_RSAMINAPPLICATIONCERTIFICATETYPE);
+    UA_Variant v;
+    UA_Variant_setArray(&v, types, nTypes, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_StatusCode r = UA_Server_writeValue(
+        server, ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_CERTIFICATETYPES),
+        v);
+    UA_String der = UA_STRING_STATIC("DER");
+    if(breaking("bad-key-format-name"))
+        UA_Variant_setArray(&v, &der, 1, &UA_TYPES[UA_TYPES_STRING]);
+    else
+        UA_Variant_setArray(&v, UA_EMPTY_ARRAY_SENTINEL, 0, &UA_TYPES[UA_TYPES_STRING]);
+    r |= UA_Server_writeValue(server, ns0(UA_NS0ID_SERVERCONFIGURATION_SUPPORTEDPRIVATEKEYFORMATS), v);
+    /* Annex D "NA": no capability information (this target registers nowhere) */
+    UA_String cap = UA_STRING_STATIC("NA");
+    if(breaking("bad-capability-id"))
+        cap = UA_STRING((char *)(uintptr_t)"NOT-A-CAPABILITY");
+    UA_Variant_setArray(&v, &cap, 1, &UA_TYPES[UA_TYPES_STRING]);
+    r |= UA_Server_writeValue(server, ns0(UA_NS0ID_SERVERCONFIGURATION_SERVERCAPABILITIES), v);
+    UA_UInt32 max = (UA_UInt32)P.maxSize;
+    UA_Variant_setScalar(&v, &max, &UA_TYPES[UA_TYPES_UINT32]);
+    r |= UA_Server_writeValue(server, ns0(UA_NS0ID_SERVERCONFIGURATION_MAXTRUSTLISTSIZE), v);
+    /* SupportsTransactions (Optional) is not in the library's ns0 instance */
+    UA_Boolean yes = true;
+    UA_VariableAttributes va = UA_VariableAttributes_default;
+    UA_Variant_setScalar(&va.value, &yes, &UA_TYPES[UA_TYPES_BOOLEAN]);
+    va.dataType = UA_TYPES[UA_TYPES_BOOLEAN].typeId;
+    va.displayName = UA_LOCALIZEDTEXT("", "SupportsTransactions");
+    UA_StatusCode a = UA_Server_addVariableNode(
+        server, ns0(UA_NS0ID_SERVERCONFIGURATION_SUPPORTSTRANSACTIONS),
+        ns0(UA_NS0ID_SERVERCONFIGURATION), ns0(UA_NS0ID_HASPROPERTY),
+        UA_QUALIFIEDNAME(0, "SupportsTransactions"), ns0(UA_NS0ID_PROPERTYTYPE), va, NULL, NULL);
+    if(a == UA_STATUSCODE_BADNODEIDEXISTS)
+        a = UA_Server_writeValue(server, ns0(UA_NS0ID_SERVERCONFIGURATION_SUPPORTSTRANSACTIONS),
+                                 va.value);
+    return r | a;
+}
+
+/* Size has no meaning for a TrustList (12 §7.8.2.1): OPC 10000-20 §4.2.1
+ * says it is returned with Bad_NotSupported. */
+static UA_StatusCode size_read(UA_Server *server, const UA_NodeId *sessionId,
+                               void *sessionContext, const UA_NodeId *nodeId, void *nodeContext,
+                               UA_Boolean includeSourceTimeStamp, const UA_NumericRange *range,
+                               UA_DataValue *value) {
+    (void)server, (void)sessionId, (void)sessionContext, (void)nodeId, (void)nodeContext;
+    (void)includeSourceTimeStamp, (void)range;
+    value->hasStatus = true;
+    value->status = UA_STATUSCODE_BADNOTSUPPORTED;
+    return UA_STATUSCODE_BADNOTSUPPORTED;
+}
+
+#define TLP(x) UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_##x
+
+/* TrustList Properties: Size refused; UpdateFrequency absent, as 7.8.2.1
+ * requires for a TrustList inside ServerConfiguration. */
+static UA_StatusCode trustlist_props(UA_Server *server) {
+    UA_StatusCode r = UA_STATUSCODE_GOOD;
+    if(!breaking("size-readable")) {
+        UA_CallbackValueSource src = {size_read, NULL};
+        r = UA_Server_setVariableNode_callbackValueSource(server, ns0(TLP(SIZE)), src);
+    } else {
+        UA_UInt64 size = 4096;
+        UA_Variant v;
+        UA_Variant_setScalar(&v, &size, &UA_TYPES[UA_TYPES_UINT64]);
+        r = UA_Server_writeValue(server, ns0(TLP(SIZE)), v);
+    }
+    (void)UA_Server_deleteNode(server, ns0(TLP(UPDATEFREQUENCY)), true);
+    /* ActivityTimeout (Optional) is not in the library's ns0 instance */
+    UA_Double timeout = PM_ACTIVITY_TIMEOUT_MS;
+    UA_VariableAttributes at = UA_VariableAttributes_default;
+    UA_Variant_setScalar(&at.value, &timeout, &UA_TYPES[UA_TYPES_DOUBLE]);
+    at.dataType = UA_TYPES[UA_TYPES_DURATION].typeId;
+    at.displayName = UA_LOCALIZEDTEXT("", "ActivityTimeout");
+    UA_StatusCode a = UA_Server_addVariableNode(
+        server, ns0(TLP(ACTIVITYTIMEOUT)),
+        ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST),
+        ns0(UA_NS0ID_HASPROPERTY), UA_QUALIFIEDNAME(0, "ActivityTimeout"),
+        ns0(UA_NS0ID_PROPERTYTYPE), at, NULL, NULL);
+    if(a == UA_STATUSCODE_BADNODEIDEXISTS)
+        a = UA_Server_writeValue(server, ns0(TLP(ACTIVITYTIMEOUT)), at.value);
+    r |= a;
+    if(r == UA_STATUSCODE_GOOD && breaking("updatefreq-readonly")) {
+        UA_Double ms = 3600000.0;
+        UA_VariableAttributes va = UA_VariableAttributes_default;
+        UA_Variant_setScalar(&va.value, &ms, &UA_TYPES[UA_TYPES_DOUBLE]);
+        va.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+        va.accessLevel = UA_ACCESSLEVELMASK_READ;
+        va.displayName = UA_LOCALIZEDTEXT("", "UpdateFrequency");
+        r = UA_Server_addVariableNode(server, ns0(TLP(UPDATEFREQUENCY)),
+                                      ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST),
+                                      ns0(UA_NS0ID_HASPROPERTY),
+                                      UA_QUALIFIEDNAME(0, "UpdateFrequency"),
+                                      ns0(UA_NS0ID_PROPERTYTYPE), va, NULL, NULL);
+    }
+    return r;
+}
+#undef TLP
+
+/* The mutants that remove a node or a reference (SRV-CAP-01, -02, -08). */
+static UA_StatusCode structure_mutants(UA_Server *server) {
+    if(breaking("no-rejected-list-method"))
+        return UA_Server_deleteNode(server, ns0(UA_NS0ID_SERVERCONFIGURATION_GETREJECTEDLIST), true);
+    if(breaking("transactions-no-cancel"))
+        return UA_Server_deleteNode(server, ns0(UA_NS0ID_SERVERCONFIGURATION_CANCELCHANGES), true);
+    if(breaking("no-default-group")) {
+        UA_ExpandedNodeId dag =
+            UA_EXPANDEDNODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
+        const UA_UInt32 refs[] = {UA_NS0ID_ORGANIZES, UA_NS0ID_HASCOMPONENT};
+        bool gone = false;
+        for(size_t i = 0; i < GDS_ARRAY_SIZE(refs); i++)
+            gone |= UA_Server_deleteReference(server,
+                                              ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS),
+                                              ns0(refs[i]), true, dag, true) == UA_STATUSCODE_GOOD;
+        return gone ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNOTFOUND;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
 UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteString *ownKey,
                          pm_mode_fn modeOf) {
     memset(&P, 0, sizeof(P));
@@ -685,7 +1125,7 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
     P.modeOf = modeOf;
     if(breaking("wire-old-cert") && UA_ByteString_copy(ownKey, &P.ownKey) != UA_STATUSCODE_GOOD)
         return UA_STATUSCODE_BADOUTOFMEMORY;
-    P.maxSize = GDS_MAX_TRUSTLIST_SIZE;
+    P.maxSize = PM_MAX_TL_SIZE;
 #define TL(x) UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_##x
     UA_StatusCode r = UA_STATUSCODE_GOOD;
     r |= set_cb(TL(OPEN), tlOpen);
@@ -696,14 +1136,12 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
     r |= set_cb(TL(CLOSEANDUPDATE), tlCloseAndUpdate);
     r |= set_cb(TL(GETPOSITION), tlGetPosition);
     r |= set_cb(TL(SETPOSITION), tlSetPosition);
-#undef TL
     r |= wrap_lib(UA_NS0ID_SERVERCONFIGURATION_CREATESIGNINGREQUEST, &P.libCsr,
                   scCreateSigningRequest);
     r |= wrap_lib(UA_NS0ID_SERVERCONFIGURATION_GETREJECTEDLIST, &P.libRejected, scGetRejectedList);
-    r |= wrap_lib(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_ADDCERTIFICATE,
-                  &P.libAdd, tlAddCertificate);
-    r |= wrap_lib(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_REMOVECERTIFICATE,
-                  &P.libRemove, tlRemoveCertificate);
+    r |= set_cb(TL(ADDCERTIFICATE), tlAddCertificate);
+    r |= set_cb(TL(REMOVECERTIFICATE), tlRemoveCertificate);
+#undef TL
     r |= set_cb(UA_NS0ID_SERVERCONFIGURATION_UPDATECERTIFICATE, scUpdateCertificate);
     r |= set_cb(UA_NS0ID_SERVERCONFIGURATION_APPLYCHANGES, scApplyChanges);
     if(r != UA_STATUSCODE_GOOD)
@@ -711,19 +1149,10 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
     /* CancelChanges is Optional (§7.10.11): offered when the node exists */
     if(set_cb(UA_NS0ID_SERVERCONFIGURATION_CANCELCHANGES, scCancelChanges) != UA_STATUSCODE_GOOD)
         UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "no CancelChanges node");
-
-    /* Advertise what this target supports (§7.10.3): one RSA slot, no
-     * private keys pushed, and the size limit enforced above. */
-    UA_NodeId rsa = ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
-    UA_Variant v;
-    UA_Variant_setArray(&v, &rsa, 1, &UA_TYPES[UA_TYPES_NODEID]);
-    r |= UA_Server_writeValue(
-        server, ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_CERTIFICATETYPES),
-        v);
-    UA_Variant_setArray(&v, UA_EMPTY_ARRAY_SENTINEL, 0, &UA_TYPES[UA_TYPES_STRING]);
-    r |= UA_Server_writeValue(server, ns0(UA_NS0ID_SERVERCONFIGURATION_SUPPORTEDPRIVATEKEYFORMATS), v);
-    UA_UInt32 max = (UA_UInt32)P.maxSize;
-    UA_Variant_setScalar(&v, &max, &UA_TYPES[UA_TYPES_UINT32]);
-    r |= UA_Server_writeValue(server, ns0(UA_NS0ID_SERVERCONFIGURATION_MAXTRUSTLISTSIZE), v);
-    return r == UA_STATUSCODE_GOOD ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADINTERNALERROR;
+    if(advertise(server) != UA_STATUSCODE_GOOD || structure_mutants(server) != UA_STATUSCODE_GOOD ||
+       trustlist_props(server) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    return UA_STATUSCODE_GOOD;
 }
+
+

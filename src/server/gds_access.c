@@ -3,6 +3,7 @@
 #include "gds_access.h"
 
 #include <open62541/nodeids.h>
+#include <open62541/nodeids_gds.h>
 #include <open62541/plugin/accesscontrol_default.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -84,6 +85,35 @@ static bool parse_name(span f, gds_user *u) {
     return true;
 }
 
+static const gds_role_info roleTable[] = {
+    {"DiscoveryAdmin", GDS_ROLE_DISCOVERY_ADMIN, true, UA_GDSID_WELLKNOWNROLE_DISCOVERYADMIN},
+    {"CertificateAuthorityAdmin", GDS_ROLE_CERTIFICATE_AUTHORITY_ADMIN, true,
+     UA_GDSID_WELLKNOWNROLE_CERTIFICATEAUTHORITYADMIN},
+    {"SecurityAdmin", GDS_ROLE_SECURITY_ADMIN, false, UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN},
+    {"Observer", GDS_ROLE_OBSERVER, false, UA_NS0ID_WELLKNOWNROLE_OBSERVER},
+    {"Operator", GDS_ROLE_OPERATOR, false, UA_NS0ID_WELLKNOWNROLE_OPERATOR},
+    {"Engineer", GDS_ROLE_ENGINEER, false, UA_NS0ID_WELLKNOWNROLE_ENGINEER},
+    {"Supervisor", GDS_ROLE_SUPERVISOR, false, UA_NS0ID_WELLKNOWNROLE_SUPERVISOR},
+    {"ConfigureAdmin", GDS_ROLE_CONFIGURE_ADMIN, false, UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN},
+    {"RegistrationAuthorityAdmin", GDS_ROLE_REGISTRATION_AUTHORITY_ADMIN, true,
+     UA_GDSID_WELLKNOWNROLE_REGISTRATIONAUTHORITYADMIN},
+    {"KeyCredentialAdmin", GDS_ROLE_KEY_CREDENTIAL_ADMIN, true,
+     UA_GDSID_WELLKNOWNROLE_KEYCREDENTIALADMIN},
+    {"AuthorizationServiceAdmin", GDS_ROLE_AUTHORIZATION_SERVICE_ADMIN, true,
+     UA_GDSID_WELLKNOWNROLE_AUTHORIZATIONSERVICEADMIN},
+    {"SecurityKeyServerAdmin", GDS_ROLE_SKS_ADMIN, false,
+     UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERADMIN},
+    {"SecurityKeyServerPush", GDS_ROLE_SKS_PUSH, false,
+     UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERPUSH},
+    {"SecurityKeyServerAccess", GDS_ROLE_SKS_ACCESS, false,
+     UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERACCESS},
+};
+
+const gds_role_info *gds_role_table(size_t *n) {
+    *n = sizeof(roleTable) / sizeof(roleTable[0]);
+    return roleTable;
+}
+
 static bool parse_roles(span f, unsigned *roles) {
     *roles = 0;
     if(span_eq(f, "-"))
@@ -94,14 +124,13 @@ static bool parse_roles(span f, unsigned *roles) {
         span r = next_field(&p, &len, ',');
         if(r.n == 0)
             break;
-        if(span_eq(r, "DiscoveryAdmin"))
-            *roles |= GDS_ROLE_DISCOVERY_ADMIN;
-        else if(span_eq(r, "CertificateAuthorityAdmin"))
-            *roles |= GDS_ROLE_CERTIFICATE_AUTHORITY_ADMIN;
-        else if(span_eq(r, "SecurityAdmin"))
-            *roles |= GDS_ROLE_SECURITY_ADMIN;
-        else
+        unsigned bit = 0;
+        for(size_t i = 0; i < sizeof(roleTable) / sizeof(roleTable[0]) && !bit; i++)
+            if(span_eq(r, roleTable[i].name))
+                bit = roleTable[i].bit;
+        if(!bit)
             return false;
+        *roles |= bit;
     }
     return true;
 }
@@ -234,6 +263,7 @@ static void session_free(gds_session *s) {
     if(!s)
         return;
     UA_String_clear(&s->clientAppUri);
+    UA_String_clear(&s->securityPolicyUri);
     for(size_t i = 0; i < GDS_SESSION_TL_HANDLES; i++)
         UA_ByteString_clear(&s->tl[i].file);
     free(s);
@@ -336,6 +366,12 @@ static UA_StatusCode activate(UA_Server *server, UA_AccessControl *ac,
         session_free(old); /* re-activation with a new identity */
     if(s && s->clientAppUri.length == 0)
         s->clientAppUri = cert_app_uri(cert);
+    if(s && ep) {
+        s->securityMode = ep->securityMode;
+        UA_String_clear(&s->securityPolicyUri);
+        if(UA_String_copy(&ep->securityPolicyUri, &s->securityPolicyUri) != UA_STATUSCODE_GOOD)
+            s->securityPolicyUri = UA_STRING_NULL;
+    }
     return UA_STATUSCODE_GOOD;
 }
 
@@ -425,9 +461,11 @@ static bool server_configuration_method(UA_UInt32 id) {
     return false;
 }
 
-bool gds_method_executable(const void *sessionContext, const UA_NodeId *methodId) {
-    if(methodId->namespaceIndex != 0)
-        return true;
+bool gds_method_executable(const struct gds_server *s, const void *sessionContext,
+                           const UA_NodeId *methodId) {
+    int d = gds_embed_decide(s, sessionContext, methodId);
+    if(d >= 0)
+        return d == 1;
     if(methodId->identifierType != UA_NODEIDTYPE_NUMERIC)
         return false;
     UA_UInt32 id = methodId->identifier.numeric;
@@ -439,14 +477,14 @@ bool gds_method_executable(const void *sessionContext, const UA_NodeId *methodId
 
 static UA_Boolean executable(UA_Server *server, UA_AccessControl *ac, const UA_NodeId *sid,
                              void *sctx, const UA_NodeId *methodId, void *mctx) {
-    (void)server, (void)ac, (void)sid, (void)mctx;
-    return gds_method_executable(sctx, methodId);
+    (void)ac, (void)sid, (void)mctx;
+    return gds_method_executable(UA_Server_getConfig(server)->context, sctx, methodId);
 }
 static UA_Boolean executable_on(UA_Server *server, UA_AccessControl *ac, const UA_NodeId *sid,
                                 void *sctx, const UA_NodeId *methodId, void *mctx,
                                 const UA_NodeId *objectId, void *octx) {
-    (void)server, (void)ac, (void)sid, (void)mctx, (void)objectId, (void)octx;
-    return gds_method_executable(sctx, methodId);
+    (void)ac, (void)sid, (void)mctx, (void)objectId, (void)octx;
+    return gds_method_executable(UA_Server_getConfig(server)->context, sctx, methodId);
 }
 
 void gds_access_uninstall(void) {

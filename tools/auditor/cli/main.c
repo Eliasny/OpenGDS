@@ -48,7 +48,7 @@ static int usage(const char *argv0) {
             "   or: %s server --url URL (--server-cert SRV.der | --tofu)\n"
             "       [--admin-cert C --admin-key K | --admin-user U --admin-password-file F]\n"
             "       [--user U --user-password-file F] [--work DIR] [--allow-changes] [--only PREFIX]\n"
-            "       [--expect FILE.csv] [--list] [--init-only]\n"
+            "       [--expect FILE.csv] [--list] [--init-only] [--slow]\n"
             "       %s client --help\n",
             argv0, argv0, argv0);
     return 2;
@@ -206,6 +206,7 @@ static size_t collect_server(ga_test *all) {
         const ga_test *t;
         size_t n;
     } sets[] = {{srv_security_tests, srv_security_count},
+                {srv_capabilities_tests, srv_capabilities_count},
                 {srv_trustlist_tests, srv_trustlist_count},
                 {srv_update_tests, srv_update_count},
                 {srv_transaction_tests, srv_transaction_count},
@@ -253,6 +254,10 @@ static int server_main(int argc, char **argv) {
         }
         if(!strcmp(a, "--tofu")) {
             tofu = true;
+            continue;
+        }
+        if(!strcmp(a, "--slow")) { /* run the tests flagged slow (catalogue Flags) */
+            t.slow = true;
             continue;
         }
         if(!strcmp(a, "--init-only")) { /* create the identity and test PKI, then stop */
