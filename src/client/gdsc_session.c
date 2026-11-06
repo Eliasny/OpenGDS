@@ -69,6 +69,41 @@ int gdsc_policy_rank(const UA_String *policyUri) {
     return 0;
 }
 
+static const struct {
+    const char *name;
+    UA_UInt32 type;
+} policyTypes[] = {
+    /* 12 §7.8.4.8 */
+    {"Basic128Rsa15", UA_NS0ID_RSAMINAPPLICATIONCERTIFICATETYPE},
+    {"Basic256", UA_NS0ID_RSAMINAPPLICATIONCERTIFICATETYPE},
+    /* 12 §7.8.4.9, and the RSA policies of OPC 10000-7 built on it */
+    {"Basic256Sha256", UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE},
+    {"Aes128_Sha256_RsaOaep", UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE},
+    {"Aes256_Sha256_RsaPss", UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE},
+    /* 12 §7.8.4.11 - §7.8.4.16 */
+    {"ECC_nistP256", UA_NS0ID_ECCNISTP256APPLICATIONCERTIFICATETYPE},
+    {"ECC_nistP384", UA_NS0ID_ECCNISTP384APPLICATIONCERTIFICATETYPE},
+    {"ECC_brainpoolP256r1", UA_NS0ID_ECCBRAINPOOLP256R1APPLICATIONCERTIFICATETYPE},
+    {"ECC_brainpoolP384r1", UA_NS0ID_ECCBRAINPOOLP384R1APPLICATIONCERTIFICATETYPE},
+    {"ECC_curve25519", UA_NS0ID_ECCCURVE25519APPLICATIONCERTIFICATETYPE},
+    {"ECC_curve448", UA_NS0ID_ECCCURVE448APPLICATIONCERTIFICATETYPE},
+};
+
+UA_NodeId gdsc_policy_cert_type(const UA_String *policyUri) {
+    const size_t pl = sizeof(POLICY_PREFIX) - 1;
+    if(!policyUri || policyUri->length <= pl ||
+       memcmp(policyUri->data, POLICY_PREFIX, pl) != 0)
+        return UA_NODEID_NULL;
+    const UA_Byte *name = policyUri->data + pl;
+    size_t nameLen = policyUri->length - pl;
+    for(size_t i = 0; i < GDS_ARRAY_SIZE(policyTypes); i++) {
+        if(strlen(policyTypes[i].name) == nameLen &&
+           memcmp(policyTypes[i].name, name, nameLen) == 0)
+            return UA_NODEID_NUMERIC(0, policyTypes[i].type);
+    }
+    return UA_NODEID_NULL;
+}
+
 static bool is_usable(const UA_String *policy, const UA_String *usable, size_t usableN) {
     for(size_t i = 0; i < usableN; i++)
         if(UA_String_equal(policy, &usable[i]))
@@ -429,9 +464,11 @@ void gdsc_session_close(gdsc_session *s) {
     free(s);
 }
 
-/* Every SignAndEncrypt endpoint's certificate starts with `cert` (the field
- * may carry the chain after the leaf, OPC 10000-4 §7.10) */
-static UA_StatusCode endpoints_present(const char *url, const gds_buf *cert) {
+/* Every SignAndEncrypt endpoint of `certType`'s policies has a certificate
+ * that starts with `cert` (the field may carry the chain after the leaf,
+ * OPC 10000-4 §7.10) */
+static UA_StatusCode endpoints_present(const char *url, const UA_NodeId *certType,
+                                       const gds_buf *cert) {
     UA_ClientConfig cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.logging = UA_Log_Stdout_new(UA_LOGLEVEL_ERROR);
@@ -451,6 +488,9 @@ static UA_StatusCode endpoints_present(const char *url, const gds_buf *cert) {
         const UA_ByteString *sc = &eps[i].serverCertificate;
         if(eps[i].securityMode != UA_MESSAGESECURITYMODE_SIGNANDENCRYPT)
             continue;
+        UA_NodeId t = gdsc_policy_cert_type(&eps[i].securityPolicyUri);
+        if(!UA_NodeId_equal(&t, certType))
+            continue;
         if(sc->length < cert->len || memcmp(sc->data, cert->data, cert->len) != 0)
             r = UA_STATUSCODE_BADCERTIFICATEINVALID;
         found++;
@@ -463,15 +503,16 @@ static UA_StatusCode endpoints_present(const char *url, const gds_buf *cert) {
     return r;
 }
 
-UA_StatusCode gdsc_wait_presents(const char *endpointUrl, const gds_buf *cert,
-                                 UA_UInt32 timeoutMs) {
-    if(!endpointUrl || !cert || !cert->data || cert->len == 0)
+UA_StatusCode gdsc_wait_presents(const char *endpointUrl, const UA_NodeId *certType,
+                                 const gds_buf *cert, UA_UInt32 timeoutMs) {
+    if(!endpointUrl || !certType || UA_NodeId_isNull(certType) || !cert || !cert->data ||
+       cert->len == 0)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     const struct timespec step = {0, 200L * 1000L * 1000L};
     UA_UInt32 waited = 0;
     UA_StatusCode r;
     for(;;) {
-        r = endpoints_present(endpointUrl, cert);
+        r = endpoints_present(endpointUrl, certType, cert);
         if(r == UA_STATUSCODE_GOOD || waited >= timeoutMs)
             return r;
         nanosleep(&step, NULL);
