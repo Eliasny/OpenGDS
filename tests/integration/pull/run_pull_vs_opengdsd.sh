@@ -9,6 +9,7 @@
 #      process tree (systemd-socket-activate, as opengds-signer.socket does),
 #      opengdsd connecting through signer_socket
 #   6. opengds-signer --listen (hosts without systemd, e.g. containers):
+#      started before opengdsd has created the store (a first start), then
 #      one signer serves successive opengdsd connections
 # Usage: run_pull_vs_opengdsd.sh <build-dir> <work-dir> <expected.csv>
 # SPDX-License-Identifier: MPL-2.0
@@ -137,7 +138,8 @@ fi
 echo "=============== 6. listening signer (--listen) ==============="
 LDIR=$(mktemp -d /tmp/ogs-listen.XXXXXX)
 LSOCK="$LDIR/signer.sock"
-"$SIGNER" --listen "$LSOCK" --store "$W/data/opengds.db" --ca-dir "$W/ca" \
+# data-listen does not exist yet: opengdsd creates it after the signer starts
+"$SIGNER" --listen "$LSOCK" --store "$W/data-listen/opengds.db" --ca-dir "$W/ca" \
     --passphrase-file "$W/ca.pw" > "$W/listen.log" 2>&1 &
 LST=$!
 trap 'cleanup; kill "$LST" 2>/dev/null; rm -rf "$LDIR"; true' EXIT INT TERM
@@ -148,7 +150,7 @@ until [ -S "$LSOCK" ]; do
 done
 [ "$(stat -c %a "$LSOCK")" = "660" ] || fail "--listen socket mode is $(stat -c %a "$LSOCK"), not 660"
 sed -e '/^signer = /d' -e '/^signer_socket = /d' -e '/^ca_passphrase_file = /d' \
-    "$W/opengds.conf" > "$W/listen.conf"
+    -e "s#^data_dir = .*#data_dir = $W/data-listen#" "$W/opengds.conf" > "$W/listen.conf"
 echo "signer_socket = $LSOCK" >> "$W/listen.conf"
 cp "$W/listen.conf" "$W/opengds.conf"
 for n in 1 2; do # the second start is a second connection to the same signer

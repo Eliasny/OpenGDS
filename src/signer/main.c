@@ -171,9 +171,26 @@ static int listen_at(const char *path) {
     return fd;
 }
 
+static gds_status open_signer(const options *o, gds_signer *s) {
+    gds_status r = gds_store_open_readonly(o->store, &s->store);
+    if(r != GDS_OK) {
+        fprintf(stderr, "opengds-signer: store %s: %s\n", o->store, gds_status_name(r));
+        return r;
+    }
+    r = open_ca(o, &s->ca);
+    if(r != GDS_OK) {
+        gds_store_close(s->store);
+        s->store = NULL;
+    }
+    return r;
+}
+
 /* One opengdsd at a time; each connection is served until it closes. A
- * failed connection (protocol error, peer gone) ends that connection only. */
-static gds_status serve_listen(gds_signer *s, int lfd) {
+ * failed connection (protocol error, peer gone) ends that connection only.
+ * The store and CA are opened at the first connection: opengdsd creates the
+ * store before it connects, so a signer started first (two containers)
+ * comes up cleanly. Until they open, a connection is refused by closing it. */
+static gds_status serve_listen(const options *o, gds_signer *s, int lfd) {
     for(;;) {
         int c = accept(lfd, NULL, NULL); /* the signer never execs */
         if(c < 0) {
@@ -181,7 +198,9 @@ static gds_status serve_listen(gds_signer *s, int lfd) {
                 continue;
             return GDS_EIO;
         }
-        gds_status r = gds_signer_serve(s, c);
+        gds_status r = s->store ? GDS_OK : open_signer(o, s);
+        if(r == GDS_OK)
+            r = gds_signer_serve(s, c);
         if(r != GDS_OK)
             fprintf(stderr, "opengds-signer: connection ended: %s\n", gds_status_name(r));
         (void)close(c);
@@ -196,27 +215,25 @@ int main(int argc, char **argv) {
     /* private key material lives in OpenSSL's secure heap (mlock'd, guarded) */
     if(CRYPTO_secure_malloc_init(SECURE_HEAP_BYTES, 32) == 0)
         fprintf(stderr, "opengds-signer: secure heap unavailable, continuing without it\n");
+    gds_signer s = {NULL, NULL};
+    gds_status r;
     int lfd = -1;
     if(o.listen) {
         lfd = listen_at(o.listen);
         if(lfd < 0)
             return 1;
-    } else if(!is_seqpacket((int)o.fd)) {
-        fprintf(stderr, "opengds-signer: --fd %ld is not a SOCK_SEQPACKET socket\n", o.fd);
-        return 2;
+        r = serve_listen(&o, &s, lfd);
+        (void)close(lfd);
+    } else {
+        if(!is_seqpacket((int)o.fd)) {
+            fprintf(stderr, "opengds-signer: --fd %ld is not a SOCK_SEQPACKET socket\n", o.fd);
+            return 2;
+        }
+        r = open_signer(&o, &s);
+        if(r == GDS_OK)
+            r = gds_signer_serve(&s, (int)o.fd);
     }
-    gds_signer s = {NULL, NULL};
-    gds_status r = gds_store_open_readonly(o.store, &s.store);
-    if(r != GDS_OK) {
-        fprintf(stderr, "opengds-signer: store %s: %s\n", o.store, gds_status_name(r));
-        return 1;
-    }
-    r = open_ca(&o, &s.ca);
-    if(r == GDS_OK)
-        r = o.listen ? serve_listen(&s, lfd) : gds_signer_serve(&s, (int)o.fd);
     gds_ca_close(s.ca);
     gds_store_close(s.store);
-    if(lfd >= 0)
-        (void)close(lfd);
     return r == GDS_OK ? 0 : 1;
 }
