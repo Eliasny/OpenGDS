@@ -39,6 +39,15 @@ static const struct {
     {"update-refuse-valid", "SRV-UPD-01", "UpdateCertificate refuses every certificate"},
     {"apply-ignored", "SRV-TXN-03",
      "ApplyChanges returns Good but drops a transaction that holds a certificate"},
+    {"anon-admin", "SRV-SEC-01", "an anonymous session has SecurityAdmin"},
+    {"no-secadmin", "SRV-SEC-02", "every authenticated user has SecurityAdmin"},
+    {"allow-none", "SRV-SEC-03", "sessions over a None channel are allowed and have SecurityAdmin"},
+    {"sign-is-enough", "SRV-SEC-04", "Sign-only sessions allowed; no method checks the channel"},
+    {"sign-for-apply", "SRV-SEC-05",
+     "Sign-only sessions allowed; only the encrypt-only methods refuse them"},
+    {"diag-public", "SRV-SEC-06", "TransactionDiagnostics readable without SecurityAdmin"},
+    {"trustlist-read-any", "SRV-SEC-07", "OpenWithMasks/Read/Close need no SecurityAdmin"},
+    {"deprecated-policy", "SRV-SEC-08", "Basic128Rsa15 and Basic256 endpoints offered"},
     {"wire-old-cert", "SRV-WIRE-01",
      "after ApplyChanges the Basic256Sha256 policy keeps the old certificate"},
 };
@@ -82,10 +91,29 @@ static struct {
     UA_ByteString cert;
     UA_NodeId certType;
     UA_ByteString ownKey; /* only for wire-old-cert */
+    pm_mode_fn modeOf;
+    UA_MethodCallback libCsr, libRejected, libAdd, libRemove;
 } P;
 
-static bool breaking(const char *name) {
+bool pm_breaking(const char *name) {
     return P.brk && strcmp(P.brk, name) == 0;
+}
+
+static bool breaking(const char *name) {
+    return pm_breaking(name);
+}
+
+/* The channel a method needs (12 §7.4 and each method's clause):
+ * UpdateCertificate and CreateSigningRequest need an encrypted channel
+ * (§7.10.5, §7.10.10), the others an authenticated one (§7.10.9, §7.10.11,
+ * §7.10.12, §7.8.2.2 - §7.8.2.7). */
+static UA_StatusCode need_channel(const UA_NodeId *sessionId, bool encrypt) {
+    if(breaking("allow-none") || breaking("sign-is-enough") || !P.modeOf)
+        return UA_STATUSCODE_GOOD;
+    UA_MessageSecurityMode m = P.modeOf(sessionId);
+    UA_MessageSecurityMode least =
+        encrypt ? UA_MESSAGESECURITYMODE_SIGNANDENCRYPT : UA_MESSAGESECURITYMODE_SIGN;
+    return m >= least ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT;
 }
 
 static UA_NodeId ns0(UA_UInt32 id) {
@@ -292,6 +320,9 @@ static UA_StatusCode open_read(const UA_NodeId *session, UA_UInt32 masks, UA_Var
 
 static UA_StatusCode tlOpen(METHOD_ARGS) {
     UNUSED_ARGS;
+    UA_StatusCode sec = need_channel(sessionId, false);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
     if(!scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_BYTE]) || outputSize < 1)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     UA_Byte mode = *(const UA_Byte *)input[0].data;
@@ -309,6 +340,9 @@ static UA_StatusCode tlOpen(METHOD_ARGS) {
 
 static UA_StatusCode tlOpenWithMasks(METHOD_ARGS) {
     UNUSED_ARGS;
+    UA_StatusCode sec = need_channel(sessionId, false);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
     if(!scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_UINT32]) || outputSize < 1)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     return open_read(sessionId, *(const UA_UInt32 *)input[0].data, output);
@@ -316,6 +350,9 @@ static UA_StatusCode tlOpenWithMasks(METHOD_ARGS) {
 
 static UA_StatusCode tlRead(METHOD_ARGS) {
     UNUSED_ARGS;
+    UA_StatusCode sec = need_channel(sessionId, false);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
     if(!scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_UINT32]) ||
        !scalar(input, inputSize, 1, &UA_TYPES[UA_TYPES_INT32]) || outputSize < 1)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
@@ -335,6 +372,9 @@ static UA_StatusCode tlRead(METHOD_ARGS) {
 
 static UA_StatusCode tlWrite(METHOD_ARGS) {
     UNUSED_ARGS;
+    UA_StatusCode sec = need_channel(sessionId, false);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
     (void)output;
     (void)outputSize;
     if(!scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_UINT32]) ||
@@ -365,6 +405,9 @@ static UA_StatusCode tlWrite(METHOD_ARGS) {
 
 static UA_StatusCode tlClose(METHOD_ARGS) {
     UNUSED_ARGS;
+    UA_StatusCode sec = need_channel(sessionId, false);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
     (void)output;
     (void)outputSize;
     if(!scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_UINT32]))
@@ -378,6 +421,9 @@ static UA_StatusCode tlClose(METHOD_ARGS) {
 
 static UA_StatusCode tlCloseAndUpdate(METHOD_ARGS) {
     UNUSED_ARGS;
+    UA_StatusCode sec = need_channel(sessionId, false);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
     if(!scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_UINT32]) || outputSize < 1)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     pm_file *f = file_get(sessionId, *(const UA_UInt32 *)input[0].data);
@@ -417,6 +463,9 @@ static UA_StatusCode tlCloseAndUpdate(METHOD_ARGS) {
 
 static UA_StatusCode tlGetPosition(METHOD_ARGS) {
     UNUSED_ARGS;
+    UA_StatusCode sec = need_channel(sessionId, false);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
     if(!scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_UINT32]) || outputSize < 1)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     pm_file *f = file_get(sessionId, *(const UA_UInt32 *)input[0].data);
@@ -428,6 +477,9 @@ static UA_StatusCode tlGetPosition(METHOD_ARGS) {
 
 static UA_StatusCode tlSetPosition(METHOD_ARGS) {
     UNUSED_ARGS;
+    UA_StatusCode sec = need_channel(sessionId, false);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
     (void)output;
     (void)outputSize;
     if(!scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_UINT32]) ||
@@ -445,6 +497,9 @@ static UA_StatusCode tlSetPosition(METHOD_ARGS) {
 
 static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
     UNUSED_ARGS;
+    UA_StatusCode sec = need_channel(sessionId, true);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
     if(inputSize != 6 || outputSize < 1 || !scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_NODEID]) ||
        !scalar(input, inputSize, 1, &UA_TYPES[UA_TYPES_NODEID]) ||
        !scalar(input, inputSize, 2, &UA_TYPES[UA_TYPES_BYTESTRING]) ||
@@ -537,6 +592,9 @@ static UA_StatusCode apply(void) {
 
 static UA_StatusCode scApplyChanges(METHOD_ARGS) {
     UNUSED_ARGS;
+    UA_StatusCode sec = need_channel(sessionId, false);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
     (void)input;
     (void)inputSize;
     (void)output;
@@ -558,6 +616,9 @@ static UA_StatusCode scApplyChanges(METHOD_ARGS) {
 
 static UA_StatusCode scCancelChanges(METHOD_ARGS) {
     UNUSED_ARGS;
+    UA_StatusCode sec = need_channel(sessionId, false);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
     (void)input;
     (void)inputSize;
     (void)output;
@@ -568,16 +629,60 @@ static UA_StatusCode scCancelChanges(METHOD_ARGS) {
     return r;
 }
 
+/* The library's own methods, behind the same channel check */
+static UA_StatusCode scCreateSigningRequest(METHOD_ARGS) {
+    UA_StatusCode sec = need_channel(sessionId, true);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
+    return P.libCsr(server, sessionId, sessionContext, methodId, methodContext, objectId,
+                    objectContext, inputSize, input, outputSize, output);
+}
+
+static UA_StatusCode scGetRejectedList(METHOD_ARGS) {
+    UA_StatusCode sec = need_channel(sessionId, false);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
+    return P.libRejected(server, sessionId, sessionContext, methodId, methodContext, objectId,
+                         objectContext, inputSize, input, outputSize, output);
+}
+
+static UA_StatusCode tlAddCertificate(METHOD_ARGS) {
+    UA_StatusCode sec = need_channel(sessionId, false);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
+    return P.libAdd(server, sessionId, sessionContext, methodId, methodContext, objectId,
+                    objectContext, inputSize, input, outputSize, output);
+}
+
+static UA_StatusCode tlRemoveCertificate(METHOD_ARGS) {
+    UA_StatusCode sec = need_channel(sessionId, false);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
+    return P.libRemove(server, sessionId, sessionContext, methodId, methodContext, objectId,
+                       objectContext, inputSize, input, outputSize, output);
+}
+
+static UA_StatusCode wrap_lib(UA_UInt32 id, UA_MethodCallback *orig, UA_MethodCallback cb) {
+    UA_StatusCode r = UA_Server_getMethodNodeCallback(P.server, ns0(id), orig);
+    if(r == UA_STATUSCODE_GOOD && !*orig)
+        r = UA_STATUSCODE_BADINTERNALERROR;
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Server_setMethodNodeCallback(P.server, ns0(id), cb);
+    return r;
+}
+
 /* ---------------- Install ---------------- */
 
 static UA_StatusCode set_cb(UA_UInt32 id, UA_MethodCallback cb) {
     return UA_Server_setMethodNodeCallback(P.server, ns0(id), cb);
 }
 
-UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteString *ownKey) {
+UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteString *ownKey,
+                         pm_mode_fn modeOf) {
     memset(&P, 0, sizeof(P));
     P.server = server;
     P.brk = mutant;
+    P.modeOf = modeOf;
     if(breaking("wire-old-cert") && UA_ByteString_copy(ownKey, &P.ownKey) != UA_STATUSCODE_GOOD)
         return UA_STATUSCODE_BADOUTOFMEMORY;
     P.maxSize = GDS_MAX_TRUSTLIST_SIZE;
@@ -592,6 +697,13 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
     r |= set_cb(TL(GETPOSITION), tlGetPosition);
     r |= set_cb(TL(SETPOSITION), tlSetPosition);
 #undef TL
+    r |= wrap_lib(UA_NS0ID_SERVERCONFIGURATION_CREATESIGNINGREQUEST, &P.libCsr,
+                  scCreateSigningRequest);
+    r |= wrap_lib(UA_NS0ID_SERVERCONFIGURATION_GETREJECTEDLIST, &P.libRejected, scGetRejectedList);
+    r |= wrap_lib(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_ADDCERTIFICATE,
+                  &P.libAdd, tlAddCertificate);
+    r |= wrap_lib(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_REMOVECERTIFICATE,
+                  &P.libRemove, tlRemoveCertificate);
     r |= set_cb(UA_NS0ID_SERVERCONFIGURATION_UPDATECERTIFICATE, scUpdateCertificate);
     r |= set_cb(UA_NS0ID_SERVERCONFIGURATION_APPLYCHANGES, scApplyChanges);
     if(r != UA_STATUSCODE_GOOD)

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MPL-2.0
 add_library(gdsaudit_profile_server STATIC
     srv_target.c
+    srv_security.c
     srv_trustlist.c
     srv_update.c
     srv_transaction.c
