@@ -27,7 +27,7 @@ W=$(cd "$W" && pwd)
 # CustomTestTarget narrows the build to one framework (targets.props)
 CustomTestTarget=net8.0 dotnet publish \
     "$SRC/Applications/ConsoleReferenceServer/ConsoleReferenceServer.csproj" \
-    -c Release -o "$W/server" > "$W/build.log" 2>&1 ||
+    -c Release -f net8.0 -o "$W/server" > "$W/build.log" 2>&1 ||
     { tail -50 "$W/build.log"; echo "reference server build failed"; exit 2; }
 
 # -a: the server accepts the Auditor's application certificates (test setup
