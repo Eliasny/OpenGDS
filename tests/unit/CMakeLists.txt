@@ -6,3 +6,8 @@ add_test(NAME unit_store COMMAND test_store "${CMAKE_CURRENT_BINARY_DIR}/store-r
 add_executable(test_ca test_ca.c)
 target_link_libraries(test_ca PRIVATE gds_ca)
 add_test(NAME unit_ca COMMAND test_ca "${CMAKE_CURRENT_BINARY_DIR}/ca-run")
+add_executable(test_signer test_signer.c)
+target_link_libraries(test_signer PRIVATE gds_signer gds_ca_ipc)
+add_test(NAME unit_signer COMMAND test_signer "${CMAKE_CURRENT_BINARY_DIR}/signer-run")
+add_test(NAME signer_refuses_bad_args COMMAND opengds-signer --fd 0)
+set_tests_properties(signer_refuses_bad_args PROPERTIES WILL_FAIL TRUE)
