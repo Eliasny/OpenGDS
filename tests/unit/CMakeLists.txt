@@ -93,3 +93,8 @@ add_executable(test_backup test_backup.c)
 target_link_libraries(test_backup PRIVATE gds_backup)
 add_test(NAME unit_backup
          COMMAND test_backup "${CMAKE_CURRENT_BINARY_DIR}/backup-run" "$<TARGET_FILE:gdsctl>")
+
+add_executable(test_registrar test_registrar.c)
+target_link_libraries(test_registrar PRIVATE gds_server)
+add_test(NAME unit_registrar COMMAND test_registrar "${CMAKE_CURRENT_BINARY_DIR}/registrar-run")
+set_tests_properties(unit_registrar PROPERTIES TIMEOUT 120)
