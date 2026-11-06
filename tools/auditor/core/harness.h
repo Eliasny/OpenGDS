@@ -50,6 +50,7 @@ typedef struct {
     const char *only;      /* run only ids with this prefix (NULL: all) */
     bool allowChanges;     /* else needsWrite tests are Not tested */
     const char *expectCsv; /* compare verdicts with "id,verdict" lines */
+    bool operatorAvailable; /* a person or hook is there: run needsOperator tests */
 } ga_run_options;
 
 /* Runs the tests in the given (fixed) order and prints TAP to stdout.

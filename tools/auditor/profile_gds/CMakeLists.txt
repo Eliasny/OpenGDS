@@ -10,7 +10,7 @@ target_include_directories(gdsaudit_profile_gds PUBLIC "${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(gdsaudit_profile_gds PUBLIC gdsaudit_core)
 
 add_executable(gdsaudit ../cli/main.c)
-target_link_libraries(gdsaudit PRIVATE gdsaudit_profile_gds)
+target_link_libraries(gdsaudit PRIVATE gdsaudit_profile_gds gdsaudit_profile_client)
 # next to mock_gds and the self-test targets
 set_target_properties(gdsaudit PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/..")
 

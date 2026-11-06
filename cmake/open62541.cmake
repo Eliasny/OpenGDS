@@ -20,7 +20,25 @@ endif()
 
 file(READ "${_o6_cfg}" _o6_config)
 string(REGEX MATCH "#define UA_OPEN62541_VERSION \"([^\"]+)\"" _ "${_o6_config}")
-if(NOT CMAKE_MATCH_1 STREQUAL "v1.5.10")
+if(CMAKE_MATCH_1 STREQUAL "v1.5.10-dirty")
+    # Pinned v1.5.10 plus our carried patches (docs/upstream/README.md). Accept
+    # it only if exactly the patches in this repository were applied.
+    set(_o6_want "")
+    file(GLOB _o6_patches "${CMAKE_SOURCE_DIR}/docs/upstream/patches/v1.5.10/*.patch")
+    list(SORT _o6_patches)
+    foreach(p ${_o6_patches})
+        file(SHA256 "${p}" _h)
+        string(APPEND _o6_want "${_h}\n")
+    endforeach()
+    set(_o6_marker "${OPEN62541_PREFIX}/share/opengds/open62541-patches.sha256")
+    if(NOT EXISTS "${_o6_marker}")
+        message(FATAL_ERROR "open62541 v1.5.10-dirty without ${_o6_marker}: rebuild with scripts/build_open62541.sh")
+    endif()
+    file(READ "${_o6_marker}" _o6_have)
+    if(NOT _o6_have STREQUAL _o6_want)
+        message(FATAL_ERROR "open62541 was built with other patches than docs/upstream/patches/v1.5.10: rebuild with scripts/build_open62541.sh")
+    endif()
+elseif(NOT CMAKE_MATCH_1 STREQUAL "v1.5.10")
     message(FATAL_ERROR "open62541 must be v1.5.10 (pinned), found '${CMAKE_MATCH_1}'")
 endif()
 foreach(feature UA_ENABLE_ENCRYPTION_OPENSSL UA_ENABLE_GDS_PUSHMANAGEMENT)
@@ -32,11 +50,13 @@ if(NOT EXISTS "${_o6_inc}/open62541/nodeids_gds.h")
     message(FATAL_ERROR "GDS headers missing (scripts/build_open62541.sh installs them)")
 endif()
 
-find_package(OpenSSL 3.0 REQUIRED)
-if(OPENSSL_VERSION VERSION_LESS 3.5)
-    message(WARNING "OpenSSL ${OPENSSL_VERSION}: OpenGDS requires 3.5 for production "
-                    "builds (3.0 LTS ended 7 Sep 2026). Test tools still build.")
+# Decision G2: OpenSSL 3.5 LTS from the start (3.0 LTS ended 7 Sep 2026).
+# Ubuntu 24.04 ships 3.0, so build it with scripts/build_openssl.sh <dir> and
+# pass -DOPENSSL_ROOT_DIR=<dir>; static libraries are preferred.
+if(NOT DEFINED OPENSSL_USE_STATIC_LIBS)
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
 endif()
+find_package(OpenSSL 3.5 REQUIRED)
 find_package(Threads REQUIRED)
 
 add_library(open62541::open62541 STATIC IMPORTED GLOBAL)

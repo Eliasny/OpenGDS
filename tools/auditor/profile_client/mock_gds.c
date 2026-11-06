@@ -447,11 +447,9 @@ int main(int argc, char **argv) {
         *config->serverUrls = UA_STRING_ALLOC(url);
         config->serverUrlsSize = 1;
     }
-    /* None only for GetEndpoints/FindServers, never for a session (upstream gap 2) */
-    res = UA_ServerConfig_addSecurityPolicyNone(config, &c);
-    if(res != UA_STATUSCODE_GOOD)
-        return 1;
-    config->securityPolicyNoneDiscoveryOnly = true;
+    /* setDefaultWithSecureSecurityPolicies adds #None for GetEndpoints and
+     * FindServers only, never for a session (carried patch, see
+     * docs/upstream/02-secure-policies-none-discovery.md) */
     config->allowNonePolicyPassword = false;
     UA_String_clear(&config->applicationDescription.applicationUri);
     config->applicationDescription.applicationUri = UA_STRING_ALLOC(GDS_APP_URI);

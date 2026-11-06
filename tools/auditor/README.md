@@ -15,7 +15,10 @@ brought under the rules in `docs/architecture.md`.
 Build:
 
 ```sh
-scripts/build_open62541.sh "$HOME/.cache/open62541"     # pinned v1.5.10, hardened
-cmake -S . -B build -G Ninja -DOPEN62541_PREFIX="$HOME/.cache/open62541"
+scripts/build_openssl.sh "$HOME/.cache/openssl"         # pinned OpenSSL 3.5.9, static
+OPENSSL_ROOT="$HOME/.cache/openssl" \
+  scripts/build_open62541.sh "$HOME/.cache/open62541"   # pinned v1.5.10, hardened
+cmake -S . -B build -G Ninja -DOPEN62541_PREFIX="$HOME/.cache/open62541" \
+  -DOPENSSL_ROOT_DIR="$HOME/.cache/openssl"
 cmake --build build && ctest --test-dir build --output-on-failure
 ```
