@@ -332,7 +332,9 @@ static void t_sec_diag(ga_ctx *ctx, void *p) {
             UA_Variant_clear(&val);
             UA_NodeId_clear(&v);
             ga_note(ctx, "%s: Read %s -> %s", who, diagChildren[i], UA_StatusCode_name(r));
-            if(r == UA_STATUSCODE_GOOD)
+            /* another code (Bad_OutOfService before any transaction, 12
+             * §7.10.17) means the access check let the Read through */
+            if(r != UA_STATUSCODE_BADUSERACCESSDENIED && r != UA_STATUSCODE_BADNOTREADABLE)
                 readable++;
         }
         st_client_free(c);
@@ -341,7 +343,9 @@ static void t_sec_diag(ga_ctx *ctx, void *p) {
     if(tried == 0)
         ga_not_tested(ctx, "no user or anonymous session could be opened");
     else if(readable)
-        ga_fail(ctx, "%zu TransactionDiagnostics value(s) returned without SecurityAdmin", readable);
+        ga_fail(ctx, "%zu TransactionDiagnostics Read(s) without SecurityAdmin not refused with "
+                     "Bad_UserAccessDenied or Bad_NotReadable",
+                readable);
     else
         ga_pass(ctx, "TransactionDiagnostics not readable without SecurityAdmin");
 }
