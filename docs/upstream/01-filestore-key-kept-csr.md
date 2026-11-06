@@ -8,7 +8,7 @@ after a restart. It does not touch the case where the CSR **keeps** the
 current key (`regeneratePrivateKey = false`). Our patch covers that case and
 works with or without #8681 (tested both ways, see below).
 
-**Patch:** [patches/master/0001-filestore-store-key-in-use.patch](patches/master/0001-filestore-store-key-in-use.patch)
+**Patches:** the small fix [patches/master/0001-filestore-store-key-in-use.patch](patches/master/0001-filestore-store-key-in-use.patch), and on top of it the public API proposal [patches/master/0004-filestore-keep-key-in-use-api.patch](patches/master/0004-filestore-keep-key-in-use-api.patch)
 (backport for our pinned build: [patches/v1.5.10/0001-filestore-store-key-in-use.patch](patches/v1.5.10/0001-filestore-store-key-in-use.patch)).
 
 ## What goes wrong
@@ -37,9 +37,8 @@ no key in the store matches, it logs a warning and returns Good as before, so
 nothing that works today starts failing. The key buffers are zeroed after use.
 
 Limit: the fix needs the key in use to be somewhere in `own/private`. An
-application that keeps its key outside the store gets the warning instead. A
-fuller fix would give the filestore wrapper the key at creation time, which
-changes a public signature, so it is left for the maintainers to choose.
+application that keeps its key outside the store gets the warning instead.
+That case is covered by the API proposal below (Elias chose to send both).
 
 ## Test
 
@@ -91,3 +90,42 @@ Checked on open62541 master `24fc6b296` (OpenSSL 3.0, GDS receiver on):
 > **Tests.** New `update_certificate_noKey_storesKeyInUse` in `check_update_certificate.c`. It fails without the change and passes with it; the existing GDS and filestore tests pass.
 >
 > **Security note.** The change copies a private key that is already in `own/private` to a second file in the same directory with the same permissions. It reads only regular files in that directory and does not follow the certificate's subject into the path (the existing `createCertName` sanitising is unchanged).
+
+## Public API proposal (patch 0004, on top of 0001)
+
+open62541's `CONTRIBUTING.md` asks for public API changes to be discussed
+before they are merged, so this goes in as a proposal issue first, with the
+patch attached or linked as a draft PR.
+
+**The change.** New `UA_SecurityPolicy_FilestoreWithKey(policy, innerPolicy,
+storePath, privateKey)` in `securitypolicy_default.h`. The wrapper keeps a copy
+of the key in use, zeroed on clear. When UpdateCertificate brings no new key,
+it stores that copy with the new certificate (after checking the pair),
+before falling back to the `own/private` scan from 0001. A new key installed
+by UpdateCertificate replaces the copy. `UA_ServerConfig_addSecurityPolicies_Filestore`
+already holds the decrypted key and now passes it, so
+`UA_ServerConfig_setDefaultWithFilestore` users get the fix with no code
+change. `UA_SecurityPolicy_Filestore` and `UA_ServerConfig_addSecurityPolicy_Filestore`
+keep their signatures and behaviour, so the change is source and binary
+compatible. It has a `CHANGES.md` entry.
+
+**Test.** New `update_certificate_noKey_storesConfiguredKey`: every copy of
+the key is removed from `own/private`, the matching certificate is pushed
+without a key, and the key must appear under the certificate's name. On master
+`24fc6b296` it fails with only 0001 applied and passes with 0004
+(`check_update_certificate` 20/20; `check_gds_csr_key`,
+`check_server_config_default`, `check_encryption_basic256sha256` pass).
+
+**Security note.** The wrapper now holds one more copy of the private key in
+memory per filestore SecurityPolicy, the same key the inner policy already
+holds. The copy is zeroed with `UA_ByteString_memZero` before it is freed.
+
+### Draft proposal issue
+
+> **Title:** Proposal: let the filestore SecurityPolicy keep the key in use
+>
+> Follow-up to #&lt;gap 1 issue&gt;. The filestore wrapper (`UA_SecurityPolicy_Filestore`) never sees the private key of the inner SecurityPolicy. When UpdateCertificate installs a certificate without a new key (CSR without `regeneratePrivateKey`), #&lt;gap 1 PR&gt; can store a key only if a matching one is already in `own/private`. Applications that keep their key elsewhere still end up with no key for the new certificate after a restart.
+>
+> Proposal: add `UA_SecurityPolicy_FilestoreWithKey(policy, innerPolicy, storePath, privateKey)`. The wrapper keeps a zeroed-on-clear copy of the key in use, stores it with a certificate pushed without a key, and replaces it when UpdateCertificate brings a new key. `UA_ServerConfig_addSecurityPolicies_Filestore` passes the key it already holds, so `UA_ServerConfig_setDefaultWithFilestore` users get it for free. The existing functions keep their signatures and behaviour.
+>
+> A patch with a test and a CHANGES.md entry is ready (stacked on #&lt;gap 1 PR&gt;). Would you take it in this form, or prefer another shape (e.g. a key argument on `UA_ServerConfig_addSecurityPolicy_Filestore`)?
