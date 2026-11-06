@@ -1,0 +1,65 @@
+# Merges a pull request by itself once every check on its head commit has passed.
+# Elias, 6 Nov 2026: "Prs should be automatically checked and passed".
+#
+# Runs from main (workflow_run always uses the default branch's copy of this
+# file), so a pull request cannot change the rules that merge it. Only pull
+# requests from branches of this repository are merged; drafts and forks never
+# are. Every CI workflow must be listed under `workflows:` and its required
+# jobs under REQUIRED, or a PR could merge before they finish.
+# SPDX-License-Identifier: MPL-2.0
+name: automerge
+
+on:
+  workflow_run:
+    workflows: [ci, reference-gds]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+jobs:
+  merge:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+      BRANCH: ${{ github.event.workflow_run.head_branch }}
+      # The jobs of ci.yml; a PR never merges without all of them green.
+      REQUIRED: "gcc release|gcc asan-ubsan|clang release|clang asan-ubsan|clang tsan|static analysis"
+    steps:
+      - name: Merge if every check on the head commit passed
+        run: |
+          set -euo pipefail
+          pr=$(gh pr list --repo "$REPO" --state open --head "$BRANCH" \
+                 --json number,headRefOid,isDraft \
+                 --jq ".[] | select(.headRefOid == \"$SHA\" and (.isDraft | not)) | .number")
+          if [ -z "$pr" ]; then
+            echo "No open, non-draft pull request at $SHA; nothing to merge."
+            exit 0
+          fi
+          runs=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100")
+          # Every check run on the head commit must be finished and green ...
+          pending=$(echo "$runs" | jq '[.check_runs[] | select(.status != "completed" or
+                      (.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral"))] | length')
+          if [ "$pending" != "0" ]; then
+            echo "$pending check(s) on $SHA are not green yet; not merging."
+            exit 0
+          fi
+          # ... and every required job must have run and passed.
+          IFS='|' read -ra req <<< "$REQUIRED"
+          for name in "${req[@]}"; do
+            ok=$(echo "$runs" | jq --arg n "$name" '[.check_runs[] | select(.name == $n and .conclusion == "success")] | length')
+            if [ "$ok" = "0" ]; then
+              echo "Required check '$name' has not passed on $SHA; not merging."
+              exit 0
+            fi
+          done
+          gh pr merge "$pr" --repo "$REPO" --squash --match-head-commit "$SHA"
+          echo "Merged #$pr at $SHA."
