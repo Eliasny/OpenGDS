@@ -5,6 +5,9 @@
 # caches it) and found here with -DOPEN62541_PREFIX=<prefix>. This file
 # refuses any other version, and any build without the features OpenGDS needs.
 
+# Included by OpenGDS and by embedders that build it as a subproject (UASM).
+include_guard(GLOBAL)
+
 set(OPEN62541_PREFIX "" CACHE PATH "Install prefix of the pinned open62541 build")
 if(NOT OPEN62541_PREFIX)
     message(FATAL_ERROR "Set -DOPEN62541_PREFIX=<dir> (build it with scripts/build_open62541.sh <dir>)")
@@ -24,7 +27,7 @@ if(CMAKE_MATCH_1 STREQUAL "v1.5.10-dirty")
     # Pinned v1.5.10 plus our carried patches (docs/upstream/README.md). Accept
     # it only if exactly the patches in this repository were applied.
     set(_o6_want "")
-    file(GLOB _o6_patches "${CMAKE_SOURCE_DIR}/docs/upstream/patches/v1.5.10/*.patch")
+    file(GLOB _o6_patches "${CMAKE_CURRENT_LIST_DIR}/../docs/upstream/patches/v1.5.10/*.patch")
     list(SORT _o6_patches)
     foreach(p ${_o6_patches})
         file(SHA256 "${p}" _h)

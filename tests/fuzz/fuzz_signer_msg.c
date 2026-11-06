@@ -1,0 +1,142 @@
+/* OpenGDS fuzz target: the opengdsd <-> opengds-signer messages
+ * (docs/architecture.md, fuzz_signer_ipc.c; src/signer/proto.h).
+ *
+ * The first input byte picks the side, the rest is one datagram:
+ *   even  request to the signer: gds_signer_handle against a real store
+ *         and CA. It must always answer with a well-formed reply to the
+ *         request's op (SIGN_CSR for a malformed request), and a request
+ *         that decodes must re-encode to the same bytes.
+ *   odd   reply to opengdsd (the ca_ipc client side): gds_sigp_decode_reply
+ *         for the op in bits 1-2. A reply that decodes must re-encode to
+ *         the same bytes.
+ * The fixture (store with one application and one Received request, CA) is
+ * created once, with fixed ids so seeds can name the stored request.
+ * SPDX-License-Identifier: MPL-2.0 */
+#include <open62541/nodeids.h>
+
+#include <stdio.h>
+#include <string.h>
+
+#include "ca.h"
+#include "common/limits.h"
+#include "fuzz.h"
+#include "proto.h"
+#include "signer.h"
+#include "store.h"
+#include "common/banned.h"
+
+static gds_signer signer;
+
+static gds_status seed_store(gds_store *st) {
+    UA_ApplicationRecordDataType rec;
+    UA_ApplicationRecordDataType_init(&rec);
+    UA_LocalizedText name = UA_LOCALIZEDTEXT("en", "Fuzz Client");
+    rec.applicationUri = UA_STRING("urn:opengds:fuzz:client");
+    rec.applicationType = UA_APPLICATIONTYPE_CLIENT;
+    rec.applicationNames = &name;
+    rec.applicationNamesSize = 1;
+    const UA_Guid appId = FUZZ_APP_ID, reqId = FUZZ_REQ_ID;
+    gds_status r = gds_store_app_insert(st, &appId, &rec);
+    gds_request q;
+    memset(&q, 0, sizeof(q));
+    q.id = reqId;
+    q.appId = appId;
+    q.groupId = 615;
+    q.certType = UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE;
+    q.state = GDS_REQ_RECEIVED;
+    if(r == GDS_OK)
+        r = fuzz_make_csr(&q.csr);
+    if(r == GDS_OK)
+        r = gds_store_req_insert(st, &q);
+    gds_buf_free(&q.csr);
+    return r;
+}
+
+static gds_status open_ca(const char *dir) {
+    static gds_buf pass;
+    size_t passLen = 0;
+    const uint8_t *pw = fuzz_passphrase(&passLen);
+    pass.data = (uint8_t *)(uintptr_t)pw;
+    pass.len = passLen;
+    char caDir[GDS_MAX_PATH];
+    gds_status r = gds_path(caDir, sizeof(caDir), "%s/ca", dir);
+    if(r != GDS_OK)
+        return r;
+    gds_ca_config cfg;
+    gds_ca_config_init(&cfg);
+    cfg.dir = caDir;
+    cfg.caKeyBits = 2048;
+    cfg.keyPassphrase = &pass;
+    return gds_ca_openssl_open(&cfg, &signer.ca);
+}
+
+int LLVMFuzzerInitialize(int *argc, char ***argv) {
+    (void)argc, (void)argv;
+    char dir[GDS_MAX_PATH], db[GDS_MAX_PATH];
+    gds_status r = fuzz_tmpdir(dir, sizeof(dir));
+    if(r == GDS_OK)
+        r = gds_path(db, sizeof(db), "%s/store.db", dir);
+    if(r == GDS_OK)
+        r = gds_store_open(db, &signer.store);
+    if(r == GDS_OK)
+        r = seed_store(signer.store);
+    if(r == GDS_OK)
+        r = open_ca(dir);
+    if(r != GDS_OK) {
+        fprintf(stderr, "fuzz_signer_msg: fixture: %s\n", gds_status_name(r));
+        return 1;
+    }
+    return 0;
+}
+
+static bool same(const gds_buf *b, const uint8_t *data, size_t size) {
+    return b->len == size && (size == 0 || memcmp(b->data, data, size) == 0);
+}
+
+static void fuzz_request(const uint8_t *msg, size_t len) {
+    gds_sigp_op op = GDS_SIGP_SIGN_CSR;
+    UA_Guid id;
+    if(gds_sigp_decode_request(msg, len, &op, &id) == GDS_OK) {
+        gds_buf again = {0};
+        GDS_ASSERT(gds_sigp_encode_request(op, &id, &again) == GDS_OK);
+        GDS_ASSERT(same(&again, msg, len));
+        gds_buf_free(&again);
+    } else {
+        op = GDS_SIGP_SIGN_CSR; /* malformed requests are answered as SIGN_CSR */
+    }
+    gds_buf reply = {0};
+    GDS_ASSERT(gds_signer_handle(&signer, msg, len, &reply) == GDS_OK);
+    gds_status st = GDS_OK;
+    gds_ca_issued issued;
+    gds_buf der = {0};
+    GDS_ASSERT(gds_sigp_decode_reply(op, reply.data, reply.len, &st, &issued, &der) == GDS_OK);
+    gds_ca_issued_clear(&issued);
+    gds_buf_free(&der);
+    gds_buf_free(&reply);
+}
+
+static void fuzz_reply(gds_sigp_op op, const uint8_t *msg, size_t len) {
+    gds_status st = GDS_OK;
+    gds_ca_issued issued;
+    gds_buf der = {0};
+    if(gds_sigp_decode_reply(op, msg, len, &st, &issued, &der) != GDS_OK)
+        return;
+    gds_buf again = {0};
+    GDS_ASSERT(gds_sigp_encode_reply(op, st, &issued, &der, &again) == GDS_OK);
+    GDS_ASSERT(same(&again, msg, len));
+    gds_buf_free(&again);
+    gds_ca_issued_clear(&issued);
+    gds_buf_free(&der);
+}
+
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    if(size == 0 || size - 1 > GDS_SIGP_MAX_MSG + 1)
+        return 0;
+    static const gds_sigp_op ops[] = {GDS_SIGP_SIGN_CSR, GDS_SIGP_GET_CHAIN, GDS_SIGP_ISSUE_CRL,
+                                      GDS_SIGP_SIGN_CSR};
+    if(data[0] & 1u)
+        fuzz_reply(ops[(data[0] >> 1) & 3u], data + 1, size - 1);
+    else
+        fuzz_request(data + 1, size - 1);
+    return 0;
+}
