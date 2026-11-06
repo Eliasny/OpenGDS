@@ -31,6 +31,8 @@ typedef struct {
     testca_t ca;               /* the run's test CA ("OpenGDS Auditor TEST") */
     gds_buf caDer, caCrl;
     gds_buf peerCert, peerKey; /* peer-good: client certificate from ca */
+    testca_t caInt;            /* ca-int: intermediate under ca (st_intermediate) */
+    gds_buf caIntDer, caIntCrl, peerInt; /* ca-int, its CRL, peer-int (from ca-int) */
     gds_buf snapCert;          /* snapshot: the certificate the endpoint presented */
     gds_buf tGood;             /* t-good, queued by SRV-UPD-01 */
     UA_NodeId certType;        /* the DefaultApplicationGroup CertificateType under test */
@@ -43,12 +45,17 @@ typedef struct {
     bool certQueued;           /* SRV-UPD-01 queued t-good in the admin session */
     bool applied;              /* SRV-TXN-03 passed: t-good and the queued list are in use */
     bool restored;             /* the snapshot was pushed back */
+    bool slow;                 /* --slow: run the tests flagged slow */
     char adminPassword[256];
     char userPassword[256];
     char targetUri[GDS_MAX_APPLICATION_URI + 1]; /* learned from GetEndpoints */
 } srv_target;
 
 /* Status of the target's verdict-relevant calls is always noted with ga_note. */
+
+/* ca-int (intermediate CA under ca, with an empty CRL) and peer-int (a leaf
+ * from ca-int), made once per run in memory. */
+GDS_MUST_CHECK gds_status st_intermediate(srv_target *t);
 
 /* Who a connection acts as (catalogue fixtures admin, user, anon) */
 typedef enum { ST_ADMIN, ST_USER, ST_ANON } st_role;

@@ -20,4 +20,4 @@ add_test(NAME srv_profile_vs_push_test_server
          COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/run_vs_push.sh"
                  "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/push-run"
                  "${CMAKE_CURRENT_SOURCE_DIR}/expected")
-set_tests_properties(srv_profile_vs_push_test_server PROPERTIES TIMEOUT 600)
+set_tests_properties(srv_profile_vs_push_test_server PROPERTIES TIMEOUT 1500)

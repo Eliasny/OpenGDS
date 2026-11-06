@@ -7,6 +7,7 @@
 #include <openssl/evp.h>
 #include <openssl/rsa.h>
 
+#include <stdint.h>
 #include <string.h>
 
 #include "srv_target.h"
@@ -57,6 +58,8 @@ static UA_StatusCode applied(srv_target *t, UA_TrustListDataType *out) {
 
 /* Write `tl` with CloseAndUpdate and apply it if required. */
 static UA_StatusCode write_apply(UA_Client *c, const UA_TrustListDataType *tl, ga_ctx *ctx) {
+    if(!c) /* the admin session was lost (st_admin failed) */
+        return UA_STATUSCODE_BADSESSIONCLOSED;
     bool acr = false;
     UA_StatusCode r = st_write_trustlist(c, tl, 512, &acr, ctx);
     if(r == UA_STATUSCODE_GOOD && acr)
@@ -400,6 +403,411 @@ static void t_tl_expired(ga_ctx *ctx, void *p) {
     gds_buf_free(&ca);
 }
 
+/* ---------------- AddCertificate, RemoveCertificate (§7.8.2.6, §7.8.2.7) ---------------- */
+
+static UA_StatusCode add_cert(UA_Client *c, const gds_buf *cert, bool trusted) {
+    if(!c)
+        return UA_STATUSCODE_BADSESSIONCLOSED;
+    UA_ByteString b = {cert->len, cert->data};
+    UA_Boolean tr = trusted;
+    UA_Variant in[2];
+    UA_Variant_setScalar(&in[0], &b, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    UA_Variant_setScalar(&in[1], &tr, &UA_TYPES[UA_TYPES_BOOLEAN]);
+    size_t outN = 0;
+    UA_Variant *out = NULL;
+    UA_StatusCode r = UA_Client_call(c, ns0(TLOBJ), ns0(TLM(ADDCERTIFICATE)), 2, in, &outN, &out);
+    if(out)
+        UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
+    return r;
+}
+
+static UA_StatusCode remove_cert(UA_Client *c, const gds_buf *cert, bool trusted) {
+    if(!c)
+        return UA_STATUSCODE_BADSESSIONCLOSED;
+    char tp[X509_THUMBPRINT_LEN];
+    if(x509_thumbprint(cert, tp) != GDS_OK)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    UA_String thumb = UA_STRING(tp);
+    UA_Boolean tr = trusted;
+    UA_Variant in[2];
+    UA_Variant_setScalar(&in[0], &thumb, &UA_TYPES[UA_TYPES_STRING]);
+    UA_Variant_setScalar(&in[1], &tr, &UA_TYPES[UA_TYPES_BOOLEAN]);
+    size_t outN = 0;
+    UA_Variant *out = NULL;
+    UA_StatusCode r =
+        UA_Client_call(c, ns0(TLOBJ), ns0(TLM(REMOVECERTIFICATE)), 2, in, &outN, &out);
+    if(out)
+        UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
+    return r;
+}
+
+static bool has(const UA_ByteString *l, size_t n, const gds_buf *x) {
+    UA_ByteString b = {x->len, x->data};
+    for(size_t i = 0; i < n; i++)
+        if(UA_ByteString_equal(&l[i], &b))
+            return true;
+    return false;
+}
+
+/* After a direct change: ApplyChanges (nothing should be queued), then the
+ * list in use. */
+static UA_StatusCode settle_read(srv_target *t, UA_TrustListDataType *back, ga_ctx *ctx) {
+    UA_TrustListDataType_init(back);
+    UA_StatusCode a = st_apply(t->client);
+    ga_note(ctx, "ApplyChanges -> %s", UA_StatusCode_name(a));
+    return applied(t, back);
+}
+
+/* SRV-TL-09 */
+static void t_tl_add(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!admin_ready(ctx, t, true))
+        return;
+    UA_StatusCode r = add_cert(t->client, &t->peerCert, true);
+    ga_note(ctx, "AddCertificate(peer-good, TRUE) -> %s", UA_StatusCode_name(r));
+    if(r != UA_STATUSCODE_GOOD) {
+        ga_fail(ctx, "AddCertificate refused a valid certificate whose CA is trusted: %s",
+                UA_StatusCode_name(r));
+        return;
+    }
+    UA_TrustListDataType back;
+    r = settle_read(t, &back, ctx);
+    bool in = r == UA_STATUSCODE_GOOD &&
+              has(back.trustedCertificates, back.trustedCertificatesSize, &t->peerCert);
+    UA_TrustListDataType_clear(&back);
+    if(in)
+        ga_pass(ctx, "peer-good is in TrustedCertificates after AddCertificate");
+    else
+        ga_fail(ctx, "AddCertificate returned Good but peer-good is not in the list (%s)",
+                UA_StatusCode_name(r));
+}
+
+/* An Add that should be refused; a Good is undone. */
+static void add_refused(ga_ctx *ctx, srv_target *t, const gds_buf *cert, bool trusted,
+                        const char *what, UA_StatusCode want, UA_StatusCode alsoOk) {
+    UA_StatusCode r = add_cert(t->client, cert, trusted);
+    if(r == UA_STATUSCODE_GOOD) {
+        UA_StatusCode u = remove_cert(t->client, cert, trusted);
+        ga_note(ctx, "undo: RemoveCertificate -> %s", UA_StatusCode_name(u));
+        ga_fail(ctx, "AddCertificate accepted %s", what);
+    } else if(r == want || (alsoOk != UA_STATUSCODE_GOOD && r == alsoOk)) {
+        ga_pass(ctx, "AddCertificate of %s -> %s", what, UA_StatusCode_name(r));
+    } else {
+        ga_warn(ctx, "AddCertificate of %s refused with %s, not %s", what, UA_StatusCode_name(r),
+                UA_StatusCode_name(want));
+    }
+}
+
+/* SRV-TL-10 */
+static void t_tl_add_issuer(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!admin_ready(ctx, t, false))
+        return;
+    add_refused(ctx, t, &t->peerCert, false, "peer-good with IsTrustedCertificate FALSE",
+                UA_STATUSCODE_BADCERTIFICATEINVALID, UA_STATUSCODE_GOOD);
+}
+
+/* SRV-TL-11 */
+static void t_tl_add_nochain(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!admin_ready(ctx, t, false))
+        return;
+    gds_status s = st_intermediate(t);
+    if(s != GDS_OK) {
+        ga_not_tested(ctx, "setup: ca-int and peer-int -> %s", gds_status_name(s));
+        return;
+    }
+    add_refused(ctx, t, &t->peerInt, true, "peer-int while ca-int is not in the list",
+                UA_STATUSCODE_BADCERTIFICATECHAININCOMPLETE, UA_STATUSCODE_BADCERTIFICATEINVALID);
+}
+
+/* SRV-TL-12 */
+static void t_tl_add_open(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!admin_ready(ctx, t, true))
+        return;
+    EVP_PKEY *k = EVP_RSA_gen(2048);
+    gds_buf extra = {NULL, 0};
+    gds_status s = k ? st_make_cert(&t->ca, k, TESTCA_ORG " peer-extra", -3600, DAY, false, 0,
+                                    &extra)
+                     : GDS_ECRYPTO;
+    EVP_PKEY_free(k);
+    if(s != GDS_OK) {
+        ga_not_tested(ctx, "setup: a second peer certificate -> %s", gds_status_name(s));
+        return;
+    }
+    UA_Byte mode = ST_OPEN_WRITE_ERASE;
+    UA_Variant in;
+    UA_Variant_setScalar(&in, &mode, &UA_TYPES[UA_TYPES_BYTE]);
+    size_t outN = 0;
+    UA_Variant *out = NULL;
+    UA_StatusCode r = UA_Client_call(t->client, ns0(TLOBJ), ns0(TLM(OPEN)), 1, &in, &outN, &out);
+    const UA_UInt32 *hp = uac_out_scalar(out, outN, 0, &UA_TYPES[UA_TYPES_UINT32]);
+    UA_UInt32 h = hp ? *hp : 0;
+    if(out)
+        UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
+    if(r != UA_STATUSCODE_GOOD || !hp) {
+        gds_buf_free(&extra);
+        ga_not_tested(ctx, "setup: Open(0x06) -> %s", UA_StatusCode_name(r));
+        return;
+    }
+    r = add_cert(t->client, &extra, true);
+    UA_Variant_setScalar(&in, &h, &UA_TYPES[UA_TYPES_UINT32]);
+    UA_StatusCode cr = UA_Client_call(t->client, ns0(TLOBJ), ns0(TLM(CLOSE)), 1, &in, &outN, &out);
+    if(out)
+        UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
+    ga_note(ctx, "Close -> %s", UA_StatusCode_name(cr));
+    if(r == UA_STATUSCODE_GOOD) {
+        UA_StatusCode u = remove_cert(t->client, &extra, true);
+        ga_note(ctx, "undo: RemoveCertificate -> %s", UA_StatusCode_name(u));
+        ga_fail(ctx, "AddCertificate succeeded while the TrustList was open for writing");
+    } else if(r == UA_STATUSCODE_BADINVALIDSTATE) {
+        ga_pass(ctx, "AddCertificate while open for writing -> Bad_InvalidState");
+    } else {
+        ga_warn(ctx, "AddCertificate while open for writing -> %s, not Bad_InvalidState",
+                UA_StatusCode_name(r));
+    }
+    gds_buf_free(&extra);
+}
+
+/* SRV-TL-13 */
+static void t_tl_remove_unknown(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!admin_ready(ctx, t, false))
+        return;
+    gds_status s = st_intermediate(t);
+    if(s != GDS_OK) {
+        ga_not_tested(ctx, "setup: peer-int -> %s", gds_status_name(s));
+        return;
+    }
+    UA_StatusCode r = remove_cert(t->client, &t->peerInt, true);
+    if(r == UA_STATUSCODE_BADINVALIDARGUMENT)
+        ga_pass(ctx, "RemoveCertificate of a thumbprint not in the list -> Bad_InvalidArgument");
+    else if(r == UA_STATUSCODE_GOOD)
+        ga_fail(ctx, "RemoveCertificate of a thumbprint not in the list returned Good");
+    else
+        ga_warn(ctx, "RemoveCertificate of an unknown thumbprint -> %s, not Bad_InvalidArgument",
+                UA_StatusCode_name(r));
+}
+
+/* SRV-TL-14 */
+static void t_tl_remove(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!admin_ready(ctx, t, true))
+        return;
+    UA_TrustListDataType back;
+    UA_StatusCode r = applied(t, &back);
+    bool there = r == UA_STATUSCODE_GOOD &&
+                 has(back.trustedCertificates, back.trustedCertificatesSize, &t->peerCert);
+    UA_TrustListDataType_clear(&back);
+    if(!there) {
+        ga_not_tested(ctx, "setup: peer-good is not in TrustedCertificates (SRV-TL-09)");
+        return;
+    }
+    r = remove_cert(t->client, &t->peerCert, true);
+    ga_note(ctx, "RemoveCertificate(peer-good, TRUE) -> %s", UA_StatusCode_name(r));
+    UA_StatusCode b = settle_read(t, &back, ctx);
+    there = b != UA_STATUSCODE_GOOD ||
+            has(back.trustedCertificates, back.trustedCertificatesSize, &t->peerCert);
+    UA_TrustListDataType_clear(&back);
+    if(there)
+        ga_fail(ctx, "peer-good is still in TrustedCertificates (RemoveCertificate -> %s)",
+                UA_StatusCode_name(r));
+    else
+        ga_pass(ctx, "peer-good is gone after RemoveCertificate");
+}
+
+/* cur plus ca-int as an issuer, with peer-int trusted or ca-int's CRL. */
+static UA_StatusCode with_ca_int(const srv_target *t, const UA_TrustListDataType *cur,
+                                 bool withPeer, UA_TrustListDataType *out) {
+    UA_StatusCode r = UA_TrustListDataType_copy(cur, out);
+    out->specifiedLists = ST_MASK_ALL;
+    UA_ByteString ci = {t->caIntDer.len, t->caIntDer.data};
+    UA_ByteString x = withPeer ? (UA_ByteString){t->peerInt.len, t->peerInt.data}
+                               : (UA_ByteString){t->caIntCrl.len, t->caIntCrl.data};
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Array_appendCopy((void **)&out->issuerCertificates, &out->issuerCertificatesSize,
+                                &ci, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    if(r == UA_STATUSCODE_GOOD && withPeer)
+        r = UA_Array_appendCopy((void **)&out->trustedCertificates,
+                                &out->trustedCertificatesSize, &x,
+                                &UA_TYPES[UA_TYPES_BYTESTRING]);
+    else if(r == UA_STATUSCODE_GOOD)
+        r = UA_Array_appendCopy((void **)&out->issuerCrls, &out->issuerCrlsSize, &x,
+                                &UA_TYPES[UA_TYPES_BYTESTRING]);
+    return r;
+}
+
+/* SRV-TL-15 and -16: put ca-int in, call RemoveCertificate(ca-int, FALSE),
+ * read back, then put the previous list back. */
+static UA_StatusCode remove_ca_int(srv_target *t, bool withPeer, UA_StatusCode *rr,
+                                   UA_TrustListDataType *back, ga_ctx *ctx) {
+    UA_TrustListDataType cur, in;
+    UA_TrustListDataType_init(&in);
+    UA_TrustListDataType_init(back);
+    gds_status s = st_intermediate(t);
+    UA_StatusCode r = s == GDS_OK ? applied(t, &cur) : UA_STATUSCODE_BADINTERNALERROR;
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    r = with_ca_int(t, &cur, withPeer, &in);
+    if(r == UA_STATUSCODE_GOOD)
+        r = write_apply(t->client, &in, ctx);
+    UA_TrustListDataType_clear(&in);
+    if(r == UA_STATUSCODE_GOOD) {
+        *rr = remove_cert(t->client, &t->caIntDer, false);
+        ga_note(ctx, "RemoveCertificate(ca-int, FALSE) -> %s", UA_StatusCode_name(*rr));
+        r = settle_read(t, back, ctx);
+    }
+    UA_StatusCode b = write_apply(t->client, &cur, ctx);
+    if(b != UA_STATUSCODE_GOOD)
+        ga_note(ctx, "putting the previous list back -> %s", UA_StatusCode_name(b));
+    UA_TrustListDataType_clear(&cur);
+    return r;
+}
+
+static void t_tl_remove_in_use(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!admin_ready(ctx, t, true))
+        return;
+    UA_StatusCode rr = UA_STATUSCODE_GOOD;
+    UA_TrustListDataType back;
+    UA_StatusCode r = remove_ca_int(t, true, &rr, &back, ctx);
+    bool kept = has(back.issuerCertificates, back.issuerCertificatesSize, &t->caIntDer);
+    UA_TrustListDataType_clear(&back);
+    if(r != UA_STATUSCODE_GOOD)
+        ga_not_tested(ctx, "setup: ca-int and peer-int in the list -> %s", UA_StatusCode_name(r));
+    else if(rr == UA_STATUSCODE_GOOD || !kept)
+        ga_fail(ctx, "ca-int was removed although peer-int needs it (-> %s)",
+                UA_StatusCode_name(rr));
+    else if(rr == UA_STATUSCODE_BADCERTIFICATECHAININCOMPLETE)
+        ga_pass(ctx, "RemoveCertificate of a CA in use -> Bad_CertificateChainIncomplete; kept");
+    else
+        ga_warn(ctx, "RemoveCertificate of a CA in use -> %s, not "
+                     "Bad_CertificateChainIncomplete; kept",
+                UA_StatusCode_name(rr));
+}
+
+static void t_tl_remove_crl(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!admin_ready(ctx, t, true))
+        return;
+    UA_StatusCode rr = UA_STATUSCODE_GOOD;
+    UA_TrustListDataType back;
+    UA_StatusCode r = remove_ca_int(t, false, &rr, &back, ctx);
+    bool caLeft = has(back.issuerCertificates, back.issuerCertificatesSize, &t->caIntDer);
+    bool crlLeft = has(back.issuerCrls, back.issuerCrlsSize, &t->caIntCrl) ||
+                   has(back.trustedCrls, back.trustedCrlsSize, &t->caIntCrl);
+    UA_TrustListDataType_clear(&back);
+    if(r != UA_STATUSCODE_GOOD)
+        ga_not_tested(ctx, "setup: ca-int and its CRL in the list -> %s", UA_StatusCode_name(r));
+    else if(caLeft)
+        ga_fail(ctx, "ca-int is still in the list (RemoveCertificate -> %s)",
+                UA_StatusCode_name(rr));
+    else if(crlLeft)
+        ga_fail(ctx, "ca-int was removed but its CRL remains");
+    else
+        ga_pass(ctx, "ca-int and its CRL are gone");
+}
+
+/* SRV-TL-18 (12 §7.8.2.1): an idle write handle is closed after ActivityTimeout */
+static double activity_timeout(UA_Client *c) {
+    UA_NodeId n;
+    double ms = 60000.0; /* the default of §7.8.2.1 */
+    if(uac_find_child(c, ns0(TLOBJ), "ActivityTimeout", &n) == UA_STATUSCODE_GOOD) {
+        UA_Variant v;
+        UA_Variant_init(&v);
+        if(UA_Client_readValueAttribute(c, n, &v) == UA_STATUSCODE_GOOD &&
+           UA_Variant_hasScalarType(&v, &UA_TYPES[UA_TYPES_DOUBLE])) {
+            double d = *(UA_Double *)v.data;
+            if(d > 0 && d < 3600000.0)
+                ms = d;
+        }
+        UA_Variant_clear(&v);
+    }
+    UA_NodeId_clear(&n);
+    return ms;
+}
+
+static UA_StatusCode call_h(UA_Client *c, UA_UInt32 method, UA_UInt32 h, const UA_ByteString *data) {
+    UA_Variant in[2];
+    UA_Variant_setScalar(&in[0], &h, &UA_TYPES[UA_TYPES_UINT32]);
+    if(data)
+        UA_Variant_setScalar(&in[1], (void *)(uintptr_t)data, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    size_t outN = 0;
+    UA_Variant *out = NULL;
+    UA_StatusCode r = UA_Client_call(c, ns0(TLOBJ), ns0(method), data ? 2 : 1, in, &outN, &out);
+    if(out)
+        UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
+    return r;
+}
+
+static void t_tl_idle(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!t->slow) {
+        ga_not_tested(ctx, "slow test (ActivityTimeout + 10 s): run with --slow");
+        return;
+    }
+    if(!admin_ready(ctx, t, true))
+        return;
+    double ms = activity_timeout(t->client);
+    UA_TrustListDataType l0, l1, other;
+    UA_TrustListDataType_init(&l1);
+    UA_TrustListDataType_init(&other);
+    UA_StatusCode r = applied(t, &l0);
+    if(r == UA_STATUSCODE_GOOD)
+        r = st_list_copy_add(&l0, &t->peerCert, NULL, &other);
+    UA_ByteString file = UA_BYTESTRING_NULL;
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_encodeBinary(&other, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], &file, NULL);
+    UA_TrustListDataType_clear(&other);
+    UA_Client *c = NULL;
+    if(r == UA_STATUSCODE_GOOD)
+        r = st_admin_fresh(t, true, &c);
+    UA_Byte mode = ST_OPEN_WRITE_ERASE;
+    UA_Variant in;
+    UA_Variant_setScalar(&in, &mode, &UA_TYPES[UA_TYPES_BYTE]);
+    size_t outN = 0;
+    UA_Variant *out = NULL;
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Client_call(c, ns0(TLOBJ), ns0(TLM(OPEN)), 1, &in, &outN, &out);
+    const UA_UInt32 *hp = uac_out_scalar(out, outN, 0, &UA_TYPES[UA_TYPES_UINT32]);
+    UA_UInt32 h = hp ? *hp : 0;
+    if(out)
+        UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
+    if(r == UA_STATUSCODE_GOOD && !hp)
+        r = UA_STATUSCODE_BADUNEXPECTEDERROR;
+    if(r == UA_STATUSCODE_GOOD)
+        r = call_h(c, TLM(WRITE), h, &file);
+    UA_ByteString_clear(&file);
+    if(r != UA_STATUSCODE_GOOD) {
+        if(c)
+            st_discard(c);
+        UA_TrustListDataType_clear(&l0);
+        ga_not_tested(ctx, "setup: Open and Write -> %s", UA_StatusCode_name(r));
+        return;
+    }
+    ga_note(ctx, "ActivityTimeout %.0f ms; idle for %.0f ms", ms, ms + 10000.0);
+    UA_DateTime end = UA_DateTime_nowMonotonic() + (UA_DateTime)((ms + 10000.0) * UA_DATETIME_MSEC);
+    while(UA_DateTime_nowMonotonic() < end) {
+        (void)UA_Client_run_iterate(c, 200);
+        (void)UA_Client_run_iterate(t->client, 0);
+    }
+    UA_StatusCode cu = call_h(c, TLM(CLOSEANDUPDATE), h, NULL);
+    ga_note(ctx, "CloseAndUpdate after the idle time -> %s", UA_StatusCode_name(cu));
+    st_discard(c);
+    r = applied(t, &l1);
+    char why[160] = "";
+    bool same = r == UA_STATUSCODE_GOOD && st_lists_equal(&l0, &l1, why, sizeof(why));
+    UA_TrustListDataType_clear(&l0);
+    UA_TrustListDataType_clear(&l1);
+    if(cu == UA_STATUSCODE_GOOD)
+        ga_fail(ctx, "CloseAndUpdate succeeded on a handle idle longer than ActivityTimeout");
+    else if(!same)
+        ga_fail(ctx, "CloseAndUpdate failed but the list changed: %s", why);
+    else
+        ga_pass(ctx, "the idle handle was closed (%s); list unchanged", UA_StatusCode_name(cu));
+}
+
 /* CloseAndUpdate then CancelChanges; *has false if the target lacks it. */
 static UA_StatusCode cancelled_txn(UA_Client *c, const UA_TrustListDataType *tl, bool *has,
                                    ga_ctx *ctx) {
@@ -550,8 +958,26 @@ const ga_test srv_trustlist_tests[] = {
      t_tl_badsig},
     {"SRV-TL-08", "12 §7.8.2.5; 4 §6.1.3", "A list with an expired CA certificate is refused",
      true, false, t_tl_expired},
+    {"SRV-TL-09", "12 §7.8.2.6", "AddCertificate adds a trusted certificate", true, false,
+     t_tl_add},
+    {"SRV-TL-10", "12 §7.8.2.6", "AddCertificate refuses IsTrustedCertificate FALSE", true, false,
+     t_tl_add_issuer},
+    {"SRV-TL-11", "12 §7.8.2.6", "AddCertificate needs the issuer in the TrustList", true, false,
+     t_tl_add_nochain},
+    {"SRV-TL-12", "12 §7.8.2.6", "AddCertificate refuses while the TrustList is open", true, false,
+     t_tl_add_open},
+    {"SRV-TL-13", "12 §7.8.2.7", "RemoveCertificate of an unknown thumbprint is refused", true,
+     false, t_tl_remove_unknown},
+    {"SRV-TL-14", "12 §7.8.2.7", "RemoveCertificate removes a trusted certificate", true, false,
+     t_tl_remove},
+    {"SRV-TL-15", "12 §7.8.2.7", "RemoveCertificate keeps a CA another certificate needs", true,
+     false, t_tl_remove_in_use},
+    {"SRV-TL-16", "12 §7.8.2.7", "RemoveCertificate of a CA removes its CRLs", true, false,
+     t_tl_remove_crl},
     {"SRV-TL-17", "12 §7.8.2.1", "LastUpdateTime moves with applied changes only", true, false,
      t_tl_lastupdate},
+    {"SRV-TL-18", "12 §7.8.2.1", "An idle write handle is closed after ActivityTimeout", true,
+     false, t_tl_idle},
     {"SRV-TL-19", "12 §7.8.2.1", "The TrustList Size Property returns no value", false, false,
      t_tl_size},
     {"SRV-TL-20", "12 §7.8.2.1", "UpdateFrequency, if present, is writable for admin", false,

@@ -6,6 +6,7 @@
 #include <open62541/client_highlevel.h>
 #include <open62541/plugin/log_stdout.h>
 #include <openssl/bn.h>
+#include <openssl/rsa.h>
 #include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
@@ -131,6 +132,10 @@ void st_clear(srv_target *t) {
     UA_TrustListDataType_clear(&t->queued);
     UA_NodeId_clear(&t->certType);
     testca_free(&t->ca);
+    testca_free(&t->caInt);
+    gds_buf_free(&t->caIntDer);
+    gds_buf_free(&t->caIntCrl);
+    gds_buf_free(&t->peerInt);
     gds_buf_free(&t->adminCert);
     gds_buf_free_secret(&t->adminKey);
     OPENSSL_cleanse(t->adminPassword, sizeof(t->adminPassword));
@@ -203,6 +208,8 @@ static UA_StatusCode call(UA_Client *c, UA_NodeId obj, UA_UInt32 method, size_t 
                           const UA_Variant *in, size_t minOut, size_t *outN, UA_Variant **out) {
     *outN = 0;
     *out = NULL;
+    if(!c)
+        return UA_STATUSCODE_BADSESSIONCLOSED;
     UA_StatusCode r = UA_Client_call(c, obj, ns0(method), inN, in, outN, out);
     if(r == UA_STATUSCODE_GOOD && *outN < minOut)
         r = UA_STATUSCODE_BADUNEXPECTEDERROR;
@@ -745,6 +752,20 @@ static bool cert_body(X509 *x, const testca_t *issuer, EVP_PKEY *key, const char
         ok = bc && X509_add1_ext_i2d(x, NID_basic_constraints, bc, 1, 0) == 1;
         BASIC_CONSTRAINTS_free(bc);
     }
+    if(ok) { /* key identifiers, so CRLs (AKI keyid:always) and chains match */
+        X509V3_CTX v3;
+        X509V3_set_ctx_nodb(&v3);
+        X509V3_set_ctx(&v3, issuer ? issuer->cert : x, x, NULL, NULL, 0);
+        X509_EXTENSION *ski = X509V3_EXT_conf_nid(NULL, &v3, NID_subject_key_identifier, "hash");
+        ok = ski && X509_add_ext(x, ski, -1) == 1;
+        X509_EXTENSION_free(ski);
+        if(ok && issuer) {
+            X509_EXTENSION *aki =
+                X509V3_EXT_conf_nid(NULL, &v3, NID_authority_key_identifier, "keyid");
+            ok = aki && X509_add_ext(x, aki, -1) == 1;
+            X509_EXTENSION_free(aki);
+        }
+    }
     if(ok && pad) {
         ASN1_IA5STRING *cm = ASN1_IA5STRING_new();
         ok = cm && ASN1_STRING_set(cm, padding, (int)pad) == 1 &&
@@ -786,4 +807,35 @@ void st_discard(UA_Client *c) {
     }
     UA_NodeId_clear(&m);
     st_client_free(c);
+}
+
+gds_status st_intermediate(srv_target *t) {
+    if(t->caInt.cert)
+        return GDS_OK;
+    EVP_PKEY *k = EVP_RSA_gen(2048);
+    EVP_PKEY *lk = EVP_RSA_gen(2048);
+    gds_status s = k && lk ? st_make_cert(&t->ca, k, TESTCA_ORG " ca-int", -3600, 7 * 86400L,
+                                          true, 0, &t->caIntDer)
+                           : GDS_ECRYPTO;
+    if(s == GDS_OK) {
+        t->caInt.cert = x509_parse_cert(&t->caIntDer);
+        t->caInt.key = k;
+        k = NULL;
+        s = t->caInt.cert ? GDS_OK : GDS_ECRYPTO;
+    }
+    if(s == GDS_OK)
+        s = testca_crl_der(&t->caInt, &t->caIntCrl);
+    if(s == GDS_OK)
+        s = st_make_cert(&t->caInt, lk, TESTCA_ORG " peer-int", -3600, 7 * 86400L, false, 0,
+                         &t->peerInt);
+    EVP_PKEY_free(k);
+    EVP_PKEY_free(lk);
+    if(s != GDS_OK) {
+        testca_free(&t->caInt);
+        gds_buf_free(&t->caIntDer);
+        gds_buf_free(&t->caIntCrl);
+        gds_buf_free(&t->peerInt);
+    }
+    ERR_clear_error();
+    return s;
 }
