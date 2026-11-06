@@ -1,0 +1,20 @@
+# OpenGDS clang-tidy checks (docs/architecture.md, OpenGDS C rules)
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  misc-*,
+  readability-function-cognitive-complexity,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-assignment-in-if-condition,
+  -bugprone-reserved-identifier,
+  -cert-dcl37-c,
+  -cert-dcl51-cpp,
+  -misc-include-cleaner,
+  -cert-err33-c,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+CheckOptions:
+  - key: readability-function-cognitive-complexity.Threshold
+    value: '25'
+HeaderFilterRegex: '(src|tools)/.*'
