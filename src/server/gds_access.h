@@ -190,6 +190,15 @@ struct gds_server;
 bool gds_node_call_allowed(struct gds_server *s, const void *sessionContext,
                            const UA_NodeId *nodeId);
 
+/* Is this session activated and open? Thread safe. */
+bool gds_access_session_live(const UA_NodeId *sessionId);
+/* A plugin trust list (gds_plugin_tl.c, A18): is objectId one (and, for a
+ * methodId, one of its FileType or TrustListType methods), and may this
+ * session call its methods? Thread safe. */
+bool gds_ptl_is_list(struct gds_server *s, const UA_NodeId *objectId, const UA_NodeId *methodId);
+bool gds_ptl_may_call(struct gds_server *s, const void *sessionContext,
+                      const UA_NodeId *objectId);
+
 /* The activated sessions with any of these Roles (or every session when
  * anonymous, every non-anonymous one when authenticated): their ids are
  * copied to out (at most max; the caller clears them). Thread safe. */
