@@ -113,6 +113,7 @@ static const gds_store_backend refusingBackend = {
     rf_app_delete, rf_app_scan, rf_req_insert, rf_req_get, rf_req_next, rf_req_set_state,
     rf_cert_add, rf_cert_latest,
     NULL, NULL, /* no audit log (minor 0 behaviour) */
+    NULL,       /* no cert_scan */
 };
 
 static void test_open_backend(void) {

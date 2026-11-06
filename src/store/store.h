@@ -98,6 +98,21 @@ GDS_MUST_CHECK gds_status gds_store_cert_add(gds_store *s, const UA_Guid *appId,
                                              uint32_t certType, const gds_buf *serial,
                                              const gds_buf *der, int64_t notBefore,
                                              int64_t notAfter);
+/* Every issued certificate, in serial order (gdsctl verify-audit, issue
+ * #19). The row's buffers are valid during the callback only; returning
+ * false stops the scan. GDS_EUNSUPPORTED on a backend below minor 2. */
+typedef struct {
+    UA_Guid appId;
+    uint32_t groupId;
+    uint32_t certType;
+    gds_buf serial;
+    gds_buf der;
+    int64_t notBefore;
+    int64_t notAfter;
+    bool revoked;
+} gds_cert_row;
+typedef bool (*gds_cert_scan_cb)(void *ctx, const gds_cert_row *row);
+GDS_MUST_CHECK gds_status gds_store_cert_scan(gds_store *s, gds_cert_scan_cb cb, void *ctx);
 /* Newest unrevoked certificate; GDS_ENOTFOUND if none. */
 GDS_MUST_CHECK gds_status gds_store_cert_latest(gds_store *s, const UA_Guid *appId,
                                                 uint32_t groupId, uint32_t certType, gds_buf *der,
@@ -146,7 +161,7 @@ GDS_MUST_CHECK gds_status gds_store_audit_verify(gds_store *s, int64_t *rows, in
  * transaction: it commits fully or changes nothing. The core calls a
  * backend from one thread at a time (see "Single-writer" above). */
 #define GDS_STORE_ABI_MAJOR 1u
-#define GDS_STORE_ABI_MINOR 1u /* 1: the audit log */
+#define GDS_STORE_ABI_MINOR 2u /* 1: the audit log; 2: cert_scan */
 
 typedef struct {
     uint32_t abi_major;
@@ -174,6 +189,8 @@ typedef struct {
     /* minor 1 */
     gds_status (*audit_append)(void *ctx, int64_t time, const gds_buf *body, int64_t *seq);
     gds_status (*audit_scan)(void *ctx, int64_t fromSeq, gds_audit_scan_cb cb, void *cbCtx);
+    /* minor 2 */
+    gds_status (*cert_scan)(void *ctx, gds_cert_scan_cb cb, void *cbCtx);
 } gds_store_backend;
 
 /* A store on a plugin backend. The vtable is copied; ctx is taken, and

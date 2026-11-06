@@ -3,6 +3,7 @@
 #include "signer.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -34,6 +35,22 @@ static gds_status sign_from_store(gds_signer *s, const UA_Guid *reqId, gds_ca_is
     return r;
 }
 
+static gds_status journal(gds_signer *s, const UA_Guid *reqId, gds_status r,
+                          gds_ca_issued *issued) {
+    if(!s->journal)
+        return r;
+    if(r != GDS_OK) {
+        if(gds_journal_refused(s->journal, reqId, r) != GDS_OK)
+            fprintf(stderr, "opengds-signer: journal write failed (refusal)\n");
+        return r;
+    }
+    if(gds_journal_issued(s->journal, reqId, issued) == GDS_OK)
+        return GDS_OK;
+    fprintf(stderr, "opengds-signer: journal write failed; certificate dropped\n");
+    gds_ca_issued_clear(issued);
+    return GDS_EIO;
+}
+
 gds_status gds_signer_handle(gds_signer *s, const uint8_t *msg, size_t len, gds_buf *reply) {
     memset(reply, 0, sizeof(*reply));
     gds_sigp_op op = GDS_SIGP_SIGN_CSR;
@@ -46,7 +63,7 @@ gds_status gds_signer_handle(gds_signer *s, const uint8_t *msg, size_t len, gds_
     gds_buf der = {0};
     switch(op) {
     case GDS_SIGP_SIGN_CSR:
-        r = sign_from_store(s, &reqId, &issued);
+        r = journal(s, &reqId, sign_from_store(s, &reqId, &issued), &issued);
         break;
     case GDS_SIGP_GET_CHAIN:
         r = gds_ca_get_ca_cert(s->ca, &der);
