@@ -56,7 +56,7 @@ Sessions run only over SignAndEncrypt. SecurityPolicy None is open only for Find
 
 | `approval` | Approved on arrival | Waits for an administrator |
 |---|---|---|
-| `renewals` (default) | a request from an application that holds a valid certificate in that group and of that type | every other request |
+| `renewals` (default) | a request from an application over a secure channel that uses its newest valid certificate of that group and type (the holder of the prior certificate) | every other request |
 | `manual` | none | every request |
 | `auto` | every request (test benches) | none |
 
