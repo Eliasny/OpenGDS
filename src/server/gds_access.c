@@ -461,9 +461,11 @@ static bool server_configuration_method(UA_UInt32 id) {
     return false;
 }
 
-bool gds_method_executable(const void *sessionContext, const UA_NodeId *methodId) {
-    if(methodId->namespaceIndex != 0)
-        return true;
+bool gds_method_executable(const struct gds_server *s, const void *sessionContext,
+                           const UA_NodeId *methodId) {
+    int d = gds_embed_decide(s, sessionContext, methodId);
+    if(d >= 0)
+        return d == 1;
     if(methodId->identifierType != UA_NODEIDTYPE_NUMERIC)
         return false;
     UA_UInt32 id = methodId->identifier.numeric;
@@ -475,14 +477,14 @@ bool gds_method_executable(const void *sessionContext, const UA_NodeId *methodId
 
 static UA_Boolean executable(UA_Server *server, UA_AccessControl *ac, const UA_NodeId *sid,
                              void *sctx, const UA_NodeId *methodId, void *mctx) {
-    (void)server, (void)ac, (void)sid, (void)mctx;
-    return gds_method_executable(sctx, methodId);
+    (void)ac, (void)sid, (void)mctx;
+    return gds_method_executable(UA_Server_getConfig(server)->context, sctx, methodId);
 }
 static UA_Boolean executable_on(UA_Server *server, UA_AccessControl *ac, const UA_NodeId *sid,
                                 void *sctx, const UA_NodeId *methodId, void *mctx,
                                 const UA_NodeId *objectId, void *octx) {
-    (void)server, (void)ac, (void)sid, (void)mctx, (void)objectId, (void)octx;
-    return gds_method_executable(sctx, methodId);
+    (void)ac, (void)sid, (void)mctx, (void)objectId, (void)octx;
+    return gds_method_executable(UA_Server_getConfig(server)->context, sctx, methodId);
 }
 
 void gds_access_uninstall(void) {

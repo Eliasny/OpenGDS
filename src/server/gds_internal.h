@@ -22,6 +22,9 @@
 /* Anonymous, AuthenticatedUser and every role of gds_role_table */
 #define GDS_MAX_CALLER_ROLES 16
 
+typedef struct gds_binding gds_binding;
+typedef struct gds_job gds_job;
+
 struct gds_server {
     UA_Server *ua;
     UA_UInt16 ns;
@@ -44,9 +47,22 @@ struct gds_server {
     pthread_mutex_t workLock;
     pthread_cond_t workCond;
     bool workPending, workStop;
+    bool plugStop; /* plugin workers stop (plugLock); here for packing */
     /* plugin privilege providers, fixed before the server runs */
     gds_privilege_provider privProviders[GDS_MAX_PRIVILEGE_PROVIDERS];
     size_t nPrivProviders;
+    /* plugin methods (gds_embed.c): bindings fixed before the server
+     * runs; plugLock guards the queue, the done list and plugStop only;
+     * plugInflight is touched on the server thread only */
+    gds_binding *bindings[GDS_MAX_PLUGIN_METHODS];
+    size_t nBindings;
+    pthread_mutex_t plugLock;
+    pthread_cond_t plugCond;
+    pthread_t plugThreads[GDS_PLUGIN_WORKERS];
+    size_t plugWorkers;
+    gds_job *plugQueue, *plugQueueTail, *plugDone;
+    size_t plugQueued;
+    gds_job *plugInflight[GDS_PLUGIN_QUEUE];
 };
 
 /* ---- caller views (gds_caller.c, issue #17) ---- */
@@ -75,6 +91,17 @@ typedef struct {
 GDS_MUST_CHECK gds_status gds_caller_build(gds_server *s, const UA_NodeId *sessionId,
                                            const void *sessionContext, gds_caller_buf *b);
 void gds_caller_buf_clear(gds_caller_buf *b);
+
+/* ---- plugin methods (gds_embed.c, issue #16) ---- */
+/* Async call settings and the cancel callback; c->context becomes s. */
+void gds_embed_configure(UA_ServerConfig *c, gds_server *s);
+/* Joins the workers and completes what finished; before UA_Server_delete. */
+void gds_embed_stop(gds_server *s);
+/* Frees jobs and bindings; after UA_Server_delete. */
+void gds_embed_free(gds_server *s);
+const gds_binding *gds_embed_find(const gds_server *s, const UA_NodeId *methodId);
+/* The session-level part of the access check (Roles, security mode). */
+bool gds_embed_executable(const gds_binding *b, const void *sessionContext);
 
 #define GDS_METHOD(name)                                                                 \
     UA_StatusCode name(UA_Server *server, const UA_NodeId *sessionId, void *sessionContext, \
