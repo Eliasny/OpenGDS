@@ -70,8 +70,19 @@ static void test_server(void) {
     g_assert_null(avm_plan_check(&p));
     s = joined(&p);
     eq_str(s, "/bin/gdsaudit server --events /dev/fd/3 --report /r/report --work /w "
-                           "--url opc.tcp://plc:4840 --user admin --password-file /c/pw "
-                           "--allow-changes --server-cert /c/srv.der");
+                           "--url opc.tcp://plc:4840 --allow-changes --server-cert /c/srv.der "
+                           "--user admin --user-password-file /c/pw");
+    g_free(s);
+    avm_plan_set(&p.adminCert, "/c/a.der");
+    m = avm_plan_check(&p);
+    g_assert_nonnull(m); /* certificate without key */
+    g_free(m);
+    avm_plan_set(&p.adminKey, "/c/a.key");
+    g_assert_null(avm_plan_check(&p));
+    s = joined(&p);
+    eq_str(s, "/bin/gdsaudit server --events /dev/fd/3 --report /r/report --work /w "
+              "--url opc.tcp://plc:4840 --allow-changes --server-cert /c/srv.der "
+              "--admin-cert /c/a.der --admin-key /c/a.key --user admin --user-password-file /c/pw");
     g_free(s);
     avm_plan_set(&p.url, "http://plc");
     m = avm_plan_check(&p);

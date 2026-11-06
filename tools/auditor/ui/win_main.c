@@ -31,6 +31,7 @@ typedef struct {
     GtkLabel *presetDesc;
     GtkWidget *targetBox, *serverBox, *gdsBox, *clientBox;
     GtkEntry *url, *user, *passwordFile, *serverCert, *trust, *crl, *trigger, *clientUser, *work;
+    GtkEntry *adminCert, *adminKey, *adminUser, *adminPasswordFile;
     GtkCheckButton *tofu, *allowChanges;
     GtkSpinButton *port;
     /* run */
@@ -219,7 +220,11 @@ static void sync_plan(Win *w) {
                {&p->crlFile, w->crl},
                {&p->triggerCmd, w->trigger},
                {&p->clientUser, w->clientUser},
-               {&p->workDir, w->work}};
+               {&p->workDir, w->work},
+               {&p->adminCert, w->adminCert},
+               {&p->adminKey, w->adminKey},
+               {&p->adminUser, w->adminUser},
+               {&p->adminPasswordFile, w->adminPasswordFile}};
     for(size_t i = 0; i < G_N_ELEMENTS(map); i++) {
         char *v = g_strstrip(g_strdup(entry_text(map[i].entry)));
         avm_plan_set(map[i].field, v);
@@ -237,7 +242,8 @@ static GtkDropDown *drop_down(GtkWidget *box, const char *label, const char *con
 static void build_target_sections(Win *w, GtkWidget *form) {
     w->targetBox = section();
     w->url = add_entry(w->targetBox, "_Endpoint URL", "opc.tcp://host:4840");
-    w->user = add_entry(w->targetBox, "_User (optional)", "admin");
+    w->user = add_entry(w->targetBox, "_User (optional)",
+                        "server: a user without SecurityAdmin");
     w->passwordFile = add_path(w->targetBox, "_Password file", "file holding the password",
                                PICK_FILE);
     gtk_box_append(GTK_BOX(form), w->targetBox);
@@ -248,6 +254,11 @@ static void build_target_sections(Win *w, GtkWidget *form) {
     w->tofu = GTK_CHECK_BUTTON(
         gtk_check_button_new_with_mnemonic("_Trust on first use (test setups only)"));
     gtk_box_append(GTK_BOX(w->serverBox), GTK_WIDGET(w->tofu));
+    w->adminCert = add_path(w->serverBox, "Admin certificate (optional)",
+                            "default: the Auditor's own admin identity", PICK_FILE);
+    w->adminKey = add_path(w->serverBox, "Admin key", "key of the admin certificate", PICK_FILE);
+    w->adminUser = add_entry(w->serverBox, "Admin user (instead of a certificate)", NULL);
+    w->adminPasswordFile = add_path(w->serverBox, "Admin password file", NULL, PICK_FILE);
     gtk_box_append(GTK_BOX(form), w->serverBox);
 
     w->gdsBox = section();
@@ -322,6 +333,10 @@ static void load_plan_into_form(Win *w) {
     set_entry(w->trigger, p->triggerCmd);
     set_entry(w->clientUser, p->clientUser);
     set_entry(w->work, p->workDir);
+    set_entry(w->adminCert, p->adminCert);
+    set_entry(w->adminKey, p->adminKey);
+    set_entry(w->adminUser, p->adminUser);
+    set_entry(w->adminPasswordFile, p->adminPasswordFile);
     gtk_spin_button_set_value(w->port, p->listenPort);
     gtk_check_button_set_active(w->tofu, p->tofu);
     gtk_check_button_set_active(w->allowChanges, p->allowChanges);

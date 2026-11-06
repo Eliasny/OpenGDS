@@ -36,6 +36,10 @@ typedef struct {
     char *user, *passwordFile;
     /* server */
     char *serverCert; /* pinned target certificate (DER) */
+    /* server: how the Auditor gets SecurityAdmin (default: its own
+     * <work>/admin identity), and user/passwordFile are a plain user */
+    char *adminCert, *adminKey;
+    char *adminUser, *adminPasswordFile;
     gboolean tofu;    /* trust on first use: test setups only */
     /* gds */
     char *trustFiles; /* CA certificates, separated by ';' */

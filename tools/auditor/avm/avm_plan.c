@@ -54,6 +54,10 @@ void avm_plan_init(AvmPlan *p) {
     avm_plan_set(&p->user, "");
     avm_plan_set(&p->passwordFile, "");
     avm_plan_set(&p->serverCert, "");
+    avm_plan_set(&p->adminCert, "");
+    avm_plan_set(&p->adminKey, "");
+    avm_plan_set(&p->adminUser, "");
+    avm_plan_set(&p->adminPasswordFile, "");
     avm_plan_set(&p->trustFiles, "");
     avm_plan_set(&p->crlFile, "");
     p->listenPort = 4850;
@@ -65,7 +69,8 @@ void avm_plan_init(AvmPlan *p) {
 void avm_plan_clear(AvmPlan *p) {
     char **fields[] = {&p->workDir,    &p->url,        &p->user,    &p->passwordFile,
                        &p->serverCert, &p->trustFiles, &p->crlFile, &p->triggerCmd,
-                       &p->clientUser};
+                       &p->clientUser, &p->adminCert, &p->adminKey, &p->adminUser,
+                       &p->adminPasswordFile};
     for(size_t i = 0; i < G_N_ELEMENTS(fields); i++)
         g_clear_pointer(fields[i], g_free);
 }
@@ -89,6 +94,12 @@ static char *check_target(const AvmPlan *p) {
                         "(test setups only).");
     if(p->profile == AVM_PROFILE_SERVER && set(p->serverCert) && p->tofu)
         return g_strdup("Choose either a pinned certificate or trust on first use, not both.");
+    if(p->profile == AVM_PROFILE_SERVER && set(p->adminCert) != set(p->adminKey))
+        return g_strdup("An admin certificate needs its key, and a key its certificate.");
+    if(p->profile == AVM_PROFILE_SERVER && set(p->adminUser) && !set(p->adminPasswordFile))
+        return g_strdup("An admin user needs a password file.");
+    if(p->profile == AVM_PROFILE_SERVER && set(p->adminUser) && set(p->adminCert))
+        return g_strdup("Choose either an admin certificate or an admin user, not both.");
     if(p->profile == AVM_PROFILE_GDS && !set(p->trustFiles))
         return g_strdup("Choose at least one CA certificate the GDS is trusted through.");
     return NULL;
@@ -129,19 +140,35 @@ static void add_opt(GPtrArray *a, const char *flag, const char *value) {
     add(a, value);
 }
 
+static void add_server_args(GPtrArray *a, const AvmPlan *p) {
+    if(p->tofu)
+        add(a, "--tofu");
+    else
+        add_opt(a, "--server-cert", p->serverCert);
+    if(set(p->adminCert)) {
+        add_opt(a, "--admin-cert", p->adminCert);
+        add_opt(a, "--admin-key", p->adminKey);
+    } else if(set(p->adminUser)) {
+        add_opt(a, "--admin-user", p->adminUser);
+        add_opt(a, "--admin-password-file", p->adminPasswordFile);
+    }
+    if(set(p->user)) {
+        add_opt(a, "--user", p->user);
+        add_opt(a, "--user-password-file", p->passwordFile);
+    }
+}
+
 static void add_target_args(GPtrArray *a, const AvmPlan *p) {
     add_opt(a, "--url", p->url);
-    add_opt(a, "--user", p->user);
-    if(set(p->user))
-        add_opt(a, "--password-file", p->passwordFile);
     if(p->allowChanges)
         add(a, "--allow-changes");
     if(p->profile == AVM_PROFILE_SERVER) {
-        if(p->tofu)
-            add(a, "--tofu");
-        else
-            add_opt(a, "--server-cert", p->serverCert);
+        add_server_args(a, p);
         return;
+    }
+    if(set(p->user)) {
+        add_opt(a, "--user", p->user);
+        add_opt(a, "--password-file", p->passwordFile);
     }
     char **trust = g_strsplit(p->trustFiles, ";", -1);
     for(char **t = trust; *t; t++) {
