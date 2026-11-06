@@ -274,7 +274,7 @@ The plugin API (`include/opengds/`) is the seam UASM builds on, so its shape dec
 - Plugin errors fail closed: a policy plugin error refuses the request; an event sink error is logged and counted but never blocks an issuance (audit goes to the store first).
 - The CA slot runs in the signer, so CA plugins (UASM ceremonies, HSM profiles) get the signer's protections; store, policy, events, push and cluster plugins run in `opengdsd`.
 - The cluster slot (`opengds_set_role`) is the only way to change the node role; on a standby the core refuses state-changing methods with `Bad_InvalidState` before any plugin sees them.
-- Plugin API headers compile cleanly under `-std=c11 -Wpedantic -Werror` and C++17, and contain no open62541 types except stable ones (`UA_StatusCode`, `UA_NodeId`, `UA_ByteString`), so a library upgrade does not break the ABI.
+- Plugin API headers compile cleanly under `-std=c11 -Wpedantic -Werror` and C++17, and contain no open62541 types except stable ones (`UA_StatusCode`, `UA_NodeId`, `UA_ByteString`, and for method plugins `UA_Variant` and `UA_Argument`, which carry method arguments in OPC UA's own encoding), so a library upgrade does not break the ABI.
 
 ## The Auditor under these rules
 

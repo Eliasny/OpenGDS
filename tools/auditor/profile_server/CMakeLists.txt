@@ -4,7 +4,9 @@
 add_library(gdsaudit_profile_server STATIC
     srv_target.c
     srv_security.c
+    srv_capabilities.c
     srv_trustlist.c
+    srv_csr.c
     srv_update.c
     srv_transaction.c
     srv_wire.c
@@ -19,4 +21,4 @@ add_test(NAME srv_profile_vs_push_test_server
          COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/run_vs_push.sh"
                  "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/push-run"
                  "${CMAKE_CURRENT_SOURCE_DIR}/expected")
-set_tests_properties(srv_profile_vs_push_test_server PROPERTIES TIMEOUT 600)
+set_tests_properties(srv_profile_vs_push_test_server PROPERTIES TIMEOUT 1500)

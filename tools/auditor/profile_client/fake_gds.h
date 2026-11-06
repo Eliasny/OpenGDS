@@ -11,12 +11,14 @@
 #ifndef GDSAUDIT_FAKE_GDS_H
 #define GDSAUDIT_FAKE_GDS_H
 
+#include <open62541/server.h>
 #include <open62541/types.h>
 
 #include <stdbool.h>
 #include <stddef.h>
 
 #include "common/buf.h"
+#include "test_ca.h"
 
 typedef enum {
     FG_M_FIND = 0,
@@ -50,6 +52,25 @@ typedef struct {
     bool closed;                  /* CloseSession or timeout */
 } fg_session;
 
+/* What FinishRequest issues (CLI-FLT-03..06) */
+typedef enum {
+    FG_ISSUE_GOOD = 0,
+    FG_ISSUE_UNTRUSTED, /* signed by FG_CA_OTHER, which no list holds */
+    FG_ISSUE_WRONG_KEY, /* a certificate for another key pair */
+    FG_ISSUE_WRONG_URI, /* SAN URI of another application */
+    FG_ISSUE_EXPIRED    /* notAfter in the past */
+} fg_issue;
+
+/* Content of the trust list the TrustList file serves (CLI-TL-03..06) */
+typedef enum {
+    FG_TL_MAIN = 0,  /* the GDS CA and its CRL */
+    FG_TL_WITH_X,    /* plus CA X in TrustedCertificates */
+    FG_TL_ISSUER_Y   /* plus CA Y in IssuerCertificates only */
+} fg_tl;
+
+/* The CAs of the fixture (TEST CAs, one directory each below workDir) */
+typedef enum { FG_CA_MAIN = 0, FG_CA_X, FG_CA_Y, FG_CA_OTHER, FG_CA_COUNT } fg_ca_id;
+
 /* One method call as the client made it. Owned by the fake GDS. */
 typedef struct {
     fg_method method;
@@ -66,6 +87,8 @@ typedef struct {
     size_t session;         /* index for fg_session_at, FG_NO_SESSION if unknown */
     UA_NodeId requestId;    /* StartSigningRequest result, FinishRequest argument */
     size_t bytes;           /* TrustList.Read: bytes returned */
+    gds_buf issued;         /* FinishRequest Good: the certificate returned */
+    fg_issue issueMode;     /* how it was made (FG_ISSUE_GOOD: a valid one) */
 } fg_event;
 
 /* How the fake GDS answers. Set per cycle by faults.c. */
@@ -76,6 +99,8 @@ typedef struct {
     UA_StatusCode finishResult; /* not Good: FinishRequest rejects the request for good */
     size_t tlReadMax;           /* not 0: TrustList.Read returns at most this many bytes */
     bool tlChanged;             /* the trust list changes (new LastUpdateTime) for this cycle */
+    fg_issue issue;
+    fg_tl tl;
 } fg_behaviour;
 
 typedef struct {
@@ -90,6 +115,8 @@ typedef struct {
 GDS_MUST_CHECK gds_status fg_start(const fg_config *cfg);
 /* Serve pending network events; returns quickly. */
 void fg_iterate(void);
+/* UA_Server_newWithConfig with stdout muted (shared with the probe server) */
+UA_Server *fg_new_server_quietly(UA_ServerConfig *sc);
 void fg_stop(void);
 
 void fg_set_behaviour(const fg_behaviour *b);
@@ -100,6 +127,9 @@ size_t fg_session_count(void);
 const fg_session *fg_session_at(size_t i);
 /* Size of the encoded TrustListDataType the TrustList file serves */
 size_t fg_trustlist_size(void);
+
+/* A CA of the fixture (for the probe server's identities) */
+const testca_t *fg_ca(fg_ca_id which);
 
 /* Files the trigger hands to the client */
 const char *fg_url(void);

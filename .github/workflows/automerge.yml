@@ -18,6 +18,9 @@ permissions:
   contents: write
   pull-requests: write
   checks: read
+  # GITHUB_TOKEN pushes (the merge) start no workflows, so main's CI is
+  # dispatched explicitly after each merge.
+  actions: write
 
 jobs:
   merge:
@@ -31,8 +34,9 @@ jobs:
       REPO: ${{ github.repository }}
       SHA: ${{ github.event.workflow_run.head_sha }}
       BRANCH: ${{ github.event.workflow_run.head_branch }}
-      # The jobs of ci.yml; a PR never merges without all of them green.
-      REQUIRED: "gcc release|gcc asan-ubsan|clang release|clang asan-ubsan|clang tsan|static analysis"
+      # Every job of every CI workflow. A workflow that is still queued has no
+      # check runs yet, so the gate must name each job, not only count pending ones.
+      REQUIRED: "gcc release|gcc asan-ubsan|clang release|clang asan-ubsan|clang tsan|static analysis|spec tests vs .NET reference GDS"
     steps:
       - name: Merge if every check on the head commit passed
         run: |
@@ -67,6 +71,7 @@ jobs:
           # those end green with a warning annotation instead.
           if out=$(gh pr merge "$pr" --repo "$REPO" --squash --match-head-commit "$SHA" 2>&1); then
             echo "Merged #$pr at $SHA."
+            for wf in ci.yml reference-gds.yml; do gh workflow run "$wf" --repo "$REPO" --ref main || echo "::warning::could not start $wf on main"; done
             exit 0
           fi
           echo "$out"

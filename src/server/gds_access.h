@@ -14,11 +14,39 @@
 #include "common/compiler.h"
 #include "common/limits.h"
 
+/* Roles a users file can grant (OPC 10000-3 well-known Roles, OPC 10000-18
+ * §4.3, OPC 10000-12 §6.2 Table 1 and §7.2, OPC 10000-14 SKS Roles). The
+ * GDS methods use the first three; the rest are for plugins, which see
+ * them as Role NodeIds in their gds_caller (gds_plugin.h). Anonymous and
+ * AuthenticatedUser are never granted by the file: every session has
+ * Anonymous, and every session with user credentials AuthenticatedUser. */
 typedef enum {
     GDS_ROLE_DISCOVERY_ADMIN = 1u << 0,             /* Directory changes */
     GDS_ROLE_CERTIFICATE_AUTHORITY_ADMIN = 1u << 1, /* CertificateManager for any application */
-    GDS_ROLE_SECURITY_ADMIN = 1u << 2               /* write the GDS trust lists */
+    GDS_ROLE_SECURITY_ADMIN = 1u << 2,              /* write the GDS trust lists */
+    GDS_ROLE_OBSERVER = 1u << 3,
+    GDS_ROLE_OPERATOR = 1u << 4,
+    GDS_ROLE_ENGINEER = 1u << 5,
+    GDS_ROLE_SUPERVISOR = 1u << 6,
+    GDS_ROLE_CONFIGURE_ADMIN = 1u << 7,
+    GDS_ROLE_REGISTRATION_AUTHORITY_ADMIN = 1u << 8,
+    GDS_ROLE_KEY_CREDENTIAL_ADMIN = 1u << 9,
+    GDS_ROLE_AUTHORIZATION_SERVICE_ADMIN = 1u << 10,
+    GDS_ROLE_SKS_ADMIN = 1u << 11,  /* SecurityKeyServerAdmin */
+    GDS_ROLE_SKS_PUSH = 1u << 12,   /* SecurityKeyServerPush */
+    GDS_ROLE_SKS_ACCESS = 1u << 13  /* SecurityKeyServerAccess */
 } gds_role;
+
+/* One grantable Role: its users-file name and its NodeId (namespace 0, or
+ * the GDS namespace when gdsNamespace is set). */
+typedef struct {
+    const char *name;
+    unsigned bit;
+    bool gdsNamespace;
+    UA_UInt32 id;
+} gds_role_info;
+/* The table of grantable Roles, in bit order. */
+const gds_role_info *gds_role_table(size_t *n);
 
 #define GDS_PBKDF2_SALT 16
 #define GDS_PBKDF2_HASH 32
@@ -41,7 +69,8 @@ typedef struct {
 
 /* Users file: one user per line, '#' comments:
  *   <name> <Role[,Role...]|-> pbkdf2-sha256:<iterations>:<salt hex>:<hash hex>
- * Roles: DiscoveryAdmin, CertificateAuthorityAdmin, SecurityAdmin. The file
+ * Roles: the names in gds_role_table (DiscoveryAdmin, SecurityAdmin,
+ * SecurityKeyServerAdmin, ...). The file
  * must not be readable by others (mode 0600 or 0640). */
 GDS_MUST_CHECK gds_status gds_users_load(const char *path, gds_users *out);
 /* The users-file credential for a password (gdsadm hash-password). */
@@ -63,6 +92,8 @@ typedef struct {
     char user[GDS_MAX_USER_NAME + 1];
     unsigned roles;
     UA_String clientAppUri; /* SAN URI of the channel's client certificate */
+    UA_MessageSecurityMode securityMode; /* of the session's endpoint */
+    UA_String securityPolicyUri;
     gds_tl_handle tl[GDS_SESSION_TL_HANDLES];
 } gds_session;
 
@@ -86,7 +117,17 @@ static inline bool gds_session_has(const void *sessionContext, unsigned roles) {
  * session's client certificate carries this ApplicationUri. */
 bool gds_session_is_app(const void *sessionContext, const UA_String *applicationUri);
 
-/* getUserExecutable: may this session call this method? (tests) */
-bool gds_method_executable(const void *sessionContext, const UA_NodeId *methodId);
+/* getUserExecutable: may this session call this method? Namespace 0:
+ * the open methods, and the ServerConfiguration methods for SecurityAdmin.
+ * The GDS namespace: yes, its methods check rights themselves. Methods
+ * that an embedder bound (gds_plugin.h): their Roles and security mode.
+ * Any other method: no. */
+struct gds_server;
+bool gds_method_executable(const struct gds_server *s, const void *sessionContext,
+                           const UA_NodeId *methodId);
+/* The embedder part of that answer (gds_embed.c): 1 yes, 0 no, -1 a
+ * namespace 0 method that no embedder bound. */
+int gds_embed_decide(const struct gds_server *s, const void *sessionContext,
+                     const UA_NodeId *methodId);
 
 #endif

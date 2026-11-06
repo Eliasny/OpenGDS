@@ -6,6 +6,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Dispatched by automerge after each merge (GITHUB_TOKEN pushes start no runs).
+  workflow_dispatch:
 
 permissions:
   contents: read

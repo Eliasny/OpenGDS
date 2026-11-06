@@ -36,9 +36,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include <unistd.h>
 
 #include <openssl/crypto.h>
+#include <openssl/x509.h>
 
 #include "common/limits.h"
 #include "common/safeint.h"
@@ -60,7 +62,9 @@ static const char *const mutants[] = {
     "use-newkeypair",     "register-wrong-uri",  "register-wrong-type", "register-every-run",
     "pending-give-up",    "poll-no-backoff",     "pending-new-csr",    "poll-after-reject",
     "keep-session-open",  "ignore-update-required", "renew-always",    "renew-with-password",
-    "read-one-chunk",     "no-close",            "always-download"};
+    "read-one-chunk",     "no-close",            "always-download",    "trustlist-not-installed",
+    "trustlist-merge",    "issuers-trusted",     "install-ignored",    "renew-keep-old",
+    "install-unverified", "install-wrong-key",   "install-wrong-uri",  "install-expired"};
 
 static bool is_mutant(const char *name) {
     return mutant && strcmp(mutant, name) == 0;
@@ -226,7 +230,123 @@ typedef struct {
     UA_UInt16 ns;
     UA_NodeId dir;
     const char *pki;
+    const gds_buf *boot; /* the --trust certificates */
+    size_t bootN;
 } ptc;
+
+/* ---- the PKI directory (Annex F.1 layout) ---------------------------- */
+
+#define MAX_DIR_FILES 32
+
+/* Read up to max regular files of PKI/sub; returns how many. */
+static size_t load_dir(const char *pki, const char *sub, gds_buf *out, size_t max, size_t maxSize) {
+    char d[GDS_MAX_PATH], f[GDS_MAX_PATH];
+    if(gds_path(d, sizeof(d), "%s/%s", pki, sub) != GDS_OK)
+        return 0;
+    DIR *dp = opendir(d);
+    if(!dp)
+        return 0;
+    size_t n = 0;
+    const struct dirent *e;
+    while(n < max && (e = readdir(dp)) != NULL) {
+        if(e->d_name[0] == '.' || gds_path(f, sizeof(f), "%s/%s", d, e->d_name) != GDS_OK)
+            continue;
+        if(gds_file_read(f, maxSize, &out[n]) == GDS_OK)
+            n++;
+    }
+    closedir(dp);
+    return n;
+}
+
+static void free_list(gds_buf *l, size_t n) {
+    for(size_t i = 0; i < n; i++)
+        gds_buf_free(&l[i]);
+}
+
+/* 12 §7.8.2.8: a downloaded list replaces what was there */
+static void wipe_dir(const char *pki, const char *sub) {
+    char d[GDS_MAX_PATH], f[GDS_MAX_PATH];
+    if(gds_path(d, sizeof(d), "%s/%s", pki, sub) != GDS_OK)
+        return;
+    DIR *dp = opendir(d);
+    if(!dp)
+        return;
+    const struct dirent *e;
+    while((e = readdir(dp)) != NULL)
+        if(e->d_name[0] != '.' && gds_path(f, sizeof(f), "%s/%s", d, e->d_name) == GDS_OK)
+            (void)unlink(f);
+    closedir(dp);
+}
+
+/* Connect to the Auditor's probe server with what is installed: our
+ * certificate, and as trust the downloaded TrustedCertificates and CRLs. */
+static int probe_connect(const char *pki, const char *url, const gds_buf *cert, const gds_buf *key,
+                         const gds_buf *boot, size_t bootN) {
+    static gds_buf trust[2 * MAX_DIR_FILES], crls[2 * MAX_DIR_FILES];
+    size_t tn = 0, cn = 0;
+    if(is_mutant("trustlist-not-installed")) {
+        for(size_t i = 0; i < bootN && tn < MAX_DIR_FILES; i++)
+            if(gds_buf_dup(boot[i].data, boot[i].len, &trust[tn]) == GDS_OK)
+                tn++;
+    } else {
+        tn = load_dir(pki, "trusted/certs", trust, MAX_DIR_FILES, GDS_MAX_CERT_SIZE);
+    }
+    cn = load_dir(pki, "trusted/crl", crls, MAX_DIR_FILES, GDS_MAX_CRL_SIZE);
+    if(is_mutant("issuers-trusted")) {
+        tn += load_dir(pki, "issuer/certs", trust + tn, MAX_DIR_FILES, GDS_MAX_CERT_SIZE);
+        cn += load_dir(pki, "issuer/crl", crls + cn, MAX_DIR_FILES, GDS_MAX_CRL_SIZE);
+    }
+    uac_step("Connect to the probe server %s (%zu trusted, %zu CRLs)", url, tn, cn);
+    int rc = 1;
+    UA_Client *c = tn ? uac_new_secure(cert, key, trust, tn, crls, cn, appUri) : NULL;
+    if(c) {
+        UA_StatusCode r = UA_Client_connect(c, url);
+        uac_info("probe connection -> %s", UA_StatusCode_name(r));
+        if(r == UA_STATUSCODE_GOOD) {
+            UA_Client_disconnect(c);
+            rc = 0;
+        }
+        UA_Client_delete(c);
+    }
+    free_list(trust, tn);
+    free_list(crls, cn);
+    return rc;
+}
+
+/* Is the issued certificate one we may install? 12 §7.9.5, 4 §6.1.3 */
+static bool acceptable(const ptc *x, const gds_buf *nc, const gds_buf *reqKey) {
+    if(!is_mutant("install-wrong-key") && !x509_key_matches(nc, reqKey)) {
+        fprintf(stderr, "issued certificate does not match the request's key - refusing it\n");
+        return false;
+    }
+    char uri[GDS_MAX_APPLICATION_URI];
+    if(!is_mutant("install-wrong-uri") &&
+       (x509_san_uri(nc, uri, sizeof(uri)) != GDS_OK || strcmp(uri, appUri) != 0)) {
+        fprintf(stderr, "issued certificate names another ApplicationUri - refusing it\n");
+        return false;
+    }
+    X509 *xc = x509_parse_cert(nc);
+    bool valid = xc && X509_cmp_current_time(X509_get0_notBefore(xc)) < 0 &&
+                 X509_cmp_current_time(X509_get0_notAfter(xc)) > 0;
+    X509_free(xc);
+    if(!is_mutant("install-expired") && !valid) {
+        fprintf(stderr, "issued certificate is not valid now - refusing it\n");
+        return false;
+    }
+    if(is_mutant("install-unverified"))
+        return true;
+    static gds_buf cas[MAX_DIR_FILES];
+    size_t n = load_dir(x->pki, "trusted/certs", cas, MAX_DIR_FILES, GDS_MAX_CERT_SIZE);
+    bool chained = false;
+    for(size_t i = 0; i < n && !chained; i++)
+        chained = x509_signed_by(nc, &cas[i]);
+    for(size_t i = 0; i < x->bootN && !chained; i++)
+        chained = x509_signed_by(nc, &x->boot[i]);
+    free_list(cas, n);
+    if(!chained)
+        fprintf(stderr, "issued certificate is not from a trusted CA - refusing it\n");
+    return chained;
+}
 
 static gds_status pki_file(const char *pki, const char *name, char *out, size_t outLen) {
     return gds_path(out, outLen, "%s/%s", pki, name);
@@ -297,9 +417,22 @@ static fin_outcome install(const ptc *x, const UA_Variant *out, size_t outN, con
         return FIN_ERROR;
     }
     gds_buf nc = {newCert->data, newCert->length};
-    if(!x509_key_matches(&nc, reqKey)) {
-        fprintf(stderr, "issued certificate does not match the request's key - refusing it\n");
+    if(!acceptable(x, &nc, reqKey))
         return FIN_ERROR;
+    if(is_mutant("install-ignored")) {
+        uac_info("MUTANT: the issued certificate is not installed");
+        return FIN_ISSUED;
+    }
+    if(is_mutant("renew-keep-old")) {
+        char cp0[GDS_MAX_PATH];
+        gds_buf cur = {0};
+        bool held = pki_file(x->pki, "own/cert.der", cp0, sizeof(cp0)) == GDS_OK &&
+                    gds_file_read(cp0, GDS_MAX_CERT_SIZE, &cur) == GDS_OK && !x509_is_self_signed(&cur);
+        gds_buf_free(&cur);
+        if(held) {
+            uac_info("MUTANT: the renewed certificate is not installed");
+            return FIN_ISSUED;
+        }
     }
     char d[512], tp[X509_THUMBPRINT_LEN], cp[GDS_MAX_PATH], kp[GDS_MAX_PATH];
     x509_describe(&nc, d, sizeof(d));
@@ -354,9 +487,9 @@ static fin_outcome finish(const ptc *x, const UA_NodeId *appId, const UA_NodeId 
             clear_pending(x->pki);
         o = FIN_REJECTED;
     } else {
+        /* the request is finished on the GDS side, installed or refused */
         o = install(x, out, outN, reqKey);
-        if(o == FIN_ISSUED)
-            clear_pending(x->pki);
+        clear_pending(x->pki);
     }
     freeOut(&out, &outN);
     return o;
@@ -441,11 +574,13 @@ int main(int argc, char **argv) {
     long pollSeconds = 60;
     char password[MAX_PASSWORD] = "";
     const char *discoveryUrl = NULL;
+    bool fromEnv = false;
 
     for(int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if(!strcmp(a, "--from-env")) {
             const char *e;
+            fromEnv = true;
             if((e = getenv("GDSAUDIT_GDS_URL"))) gds = e;
             if((e = getenv("GDSAUDIT_CLIENT_DIR"))) pki = e;
             if((e = getenv("GDSAUDIT_GDS_USER"))) user = e;
@@ -516,6 +651,18 @@ int main(int argc, char **argv) {
         x509_describe(&cert, d, sizeof(d));
         uac_info("own: %s", d);
     }
+    const char *action = fromEnv ? getenv("GDSAUDIT_ACTION") : NULL;
+    if(action && !strcmp(action, "probe")) {
+        const char *url = getenv("GDSAUDIT_PROBE_URL");
+        if(!url || (mutant && !is_loopback(url)))
+            return 2;
+        int rc = probe_connect(pki, url, &cert, &key, trust, trustN);
+        free_list(trust, trustN);
+        free_list(crls, crlN);
+        gds_buf_free(&cert);
+        gds_buf_free_secret(&key);
+        return rc;
+    }
 
     /* Annex G.1: with a certificate from the GDS the client is its own
      * ApplicationSelfAdmin (Anonymous); credentials only for the first one,
@@ -555,7 +702,7 @@ int main(int argc, char **argv) {
     uac_info("GDS namespace index = %u", ns);
     const UA_NodeId dir = UA_NODEID_NUMERIC(ns, UA_GDSID_DIRECTORY);
     const UA_DataType *recType = &UA_TYPES_GDS[UA_TYPES_GDS_APPLICATIONRECORDDATATYPE];
-    ptc x = {client, ns, dir, pki};
+    ptc x = {client, ns, dir, pki, trust, trustN};
 
     size_t outN = 0;
     UA_Variant *out = NULL;
@@ -763,6 +910,12 @@ int main(int argc, char **argv) {
         uac_info("trusted certs=%zu trusted CRLs=%zu issuer certs=%zu issuer CRLs=%zu",
                  tl.trustedCertificatesSize, tl.trustedCrlsSize, tl.issuerCertificatesSize,
                  tl.issuerCrlsSize);
+        if(!is_mutant("trustlist-merge")) {
+            wipe_dir(pki, "trusted/certs");
+            wipe_dir(pki, "trusted/crl");
+            wipe_dir(pki, "issuer/certs");
+            wipe_dir(pki, "issuer/crl");
+        }
         if((gs = saveList(pki, "trusted/certs", "der", tl.trustedCertificates, tl.trustedCertificatesSize)) != GDS_OK ||
            (gs = saveList(pki, "trusted/crl", "crl", tl.trustedCrls, tl.trustedCrlsSize)) != GDS_OK ||
            (gs = saveList(pki, "issuer/certs", "der", tl.issuerCertificates, tl.issuerCertificatesSize)) != GDS_OK ||

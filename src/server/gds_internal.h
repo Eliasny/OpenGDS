@@ -13,10 +13,17 @@
 #include "ca.h"
 #include "common/ua_args.h"
 #include "gds_access.h"
+#include "gds_plugin.h"
 #include "gds_server.h"
 #include "store.h"
 
 #define GDS_NS_URI "http://opcfoundation.org/UA/GDS/"
+#define GDS_MAX_PRIVILEGE_PROVIDERS 8
+/* Anonymous, AuthenticatedUser and every role of gds_role_table */
+#define GDS_MAX_CALLER_ROLES 16
+
+typedef struct gds_binding gds_binding;
+typedef struct gds_job gds_job;
 
 struct gds_server {
     UA_Server *ua;
@@ -40,7 +47,61 @@ struct gds_server {
     pthread_mutex_t workLock;
     pthread_cond_t workCond;
     bool workPending, workStop;
+    bool plugStop; /* plugin workers stop (plugLock); here for packing */
+    /* plugin privilege providers, fixed before the server runs */
+    gds_privilege_provider privProviders[GDS_MAX_PRIVILEGE_PROVIDERS];
+    size_t nPrivProviders;
+    /* plugin methods (gds_embed.c): bindings fixed before the server
+     * runs; plugLock guards the queue, the done list and plugStop only;
+     * plugInflight is touched on the server thread only */
+    gds_binding *bindings[GDS_MAX_PLUGIN_METHODS];
+    size_t nBindings;
+    pthread_mutex_t plugLock;
+    pthread_cond_t plugCond;
+    pthread_t plugThreads[GDS_PLUGIN_WORKERS];
+    size_t plugWorkers;
+    gds_job *plugQueue, *plugQueueTail, *plugDone;
+    size_t plugQueued;
+    gds_job *plugInflight[GDS_PLUGIN_QUEUE];
 };
+
+/* ---- caller views (gds_caller.c, issue #17) ---- */
+struct gds_privilege_set {
+    char *names[GDS_MAX_PRIVILEGES];
+    size_t n;
+};
+
+/* A gds_caller and the memory it points to; one per plugin call. */
+typedef struct {
+    gds_caller view;
+    UA_NodeId sessionId;
+    UA_NodeId roles[GDS_MAX_CALLER_ROLES];
+    size_t nRoles;
+    UA_NodeId applicationId;
+    char user[GDS_MAX_USER_NAME + 1];
+    char *appUri;
+    char *policyUri;
+    gds_privilege_set priv;
+} gds_caller_buf;
+
+/* Builds the view for a session: reads the store (for the ApplicationId)
+ * and runs the privilege providers, so call it on a worker thread without
+ * holding storeLock. GDS_EDENIED without a session or when a provider
+ * fails; *b is then cleared. */
+GDS_MUST_CHECK gds_status gds_caller_build(gds_server *s, const UA_NodeId *sessionId,
+                                           const void *sessionContext, gds_caller_buf *b);
+void gds_caller_buf_clear(gds_caller_buf *b);
+
+/* ---- plugin methods (gds_embed.c, issue #16) ---- */
+/* Async call settings and the cancel callback; c->context becomes s. */
+void gds_embed_configure(UA_ServerConfig *c, gds_server *s);
+/* Joins the workers and completes what finished; before UA_Server_delete. */
+void gds_embed_stop(gds_server *s);
+/* Frees jobs and bindings; after UA_Server_delete. */
+void gds_embed_free(gds_server *s);
+const gds_binding *gds_embed_find(const gds_server *s, const UA_NodeId *methodId);
+/* The session-level part of the access check (Roles, security mode). */
+bool gds_embed_executable(const gds_binding *b, const void *sessionContext);
 
 #define GDS_METHOD(name)                                                                 \
     UA_StatusCode name(UA_Server *server, const UA_NodeId *sessionId, void *sessionContext, \
@@ -61,6 +122,14 @@ static inline void gds_lock(gds_server *s) {
 }
 static inline void gds_unlock(gds_server *s) {
     pthread_mutex_unlock(&s->storeLock);
+}
+
+/* A STANDBY node refuses every state-changing GDS method with
+ * Bad_InvalidState before it touches the store or a plugin
+ * (docs/architecture.md, "Plugin API rules"; issue #15). */
+static inline UA_StatusCode gds_refuse_on_standby(gds_server *s) {
+    return gds_server_role(s) == GDS_NODE_STANDBY ? UA_STATUSCODE_BADINVALIDSTATE
+                                                  : UA_STATUSCODE_GOOD;
 }
 
 /* Inputs: the count first, then each argument's type and shape. */
