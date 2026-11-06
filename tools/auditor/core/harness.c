@@ -47,6 +47,7 @@ static void sanitize(char *s) {
             *s = ' ';
 }
 
+GDS_FORMAT(3, 0)
 static void decide(ga_ctx *ctx, ga_verdict v, const char *fmt, va_list ap) {
     if(ctx->decided)
         return;
