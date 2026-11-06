@@ -28,15 +28,26 @@ case "$ID:$ID_LIKE" in
         # "Build hardening"): build with GCC 13 from gcc-toolset-13, which
         # links against the system's own glibc and libgcc. build-release.sh
         # enables it when present. ninja-build is in CRB.
+        # Mirrors sometimes serve an empty repomd.xml: retry with fresh
+        # metadata before giving up.
+        dnf_retry() {
+            for i in 1 2 3 4 5; do
+                dnf --setopt=retries=10 "$@" && return 0
+                echo "dnf failed (attempt $i), retrying" >&2
+                dnf clean metadata || true
+                sleep $((i * 10))
+            done
+            return 1
+        }
         toolset=
         case "$ID" in
             fedora) ;;
-            *) dnf install -y dnf-plugins-core && dnf config-manager --set-enabled crb
+            *) dnf_retry install -y dnf-plugins-core && dnf config-manager --set-enabled crb
                toolset="gcc-toolset-13-gcc gcc-toolset-13-binutils" ;;
         esac
         # OpenSSL's Configure needs these perl modules; EL ships them split.
         # --allowerasing: the base images carry curl-minimal.
-        dnf install -y --allowerasing --setopt=install_weak_deps=False $toolset \
+        dnf_retry install -y --allowerasing --setopt=install_weak_deps=False $toolset \
             gcc make cmake ninja-build git curl ca-certificates python3 \
             perl-interpreter perl-FindBin perl-IPC-Cmd perl-File-Compare perl-File-Copy \
             perl-Time-Piece perl-lib \
