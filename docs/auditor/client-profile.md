@@ -6,7 +6,7 @@ Spec: OPC 10000-12 v1.05.07 (2026-04-15) unless the clause names another Part. H
 
 ## ConformanceUnits
 
-The reference site lists only the CertificateManager-side ConformanceUnits (GDS Certificate Manager Pull Model). The client-side GDS ConformanceUnits are published on profiles.opcfoundation.org, which needs JavaScript and was not reachable while this catalogue was written. Every row in this profile therefore carries ConformanceUnit `TBD` until [open question Q6](README.md#open-questions) is resolved.
+The reference site lists only the CertificateManager-side ConformanceUnits (GDS Certificate Manager Pull Model). The client-side GDS ConformanceUnits are published on profiles.opcfoundation.org, which needs JavaScript and was not reachable while this catalogue was written. Every row in this profile therefore carries ConformanceUnit `TBD` until Elias reads the names there and they are filled in ([decision D6](README.md#decisions)).
 
 ## Fixtures
 
@@ -118,7 +118,7 @@ In every fault test the Auditor first lets one good cycle finish, so the client 
 | CLI-FLT-03 | 12 §7.9.5; 4 §6.1.3 | O | FinishRequest returns a certificate from `ca2`, which no list holds | Not installed | Fail: installed | `install-unverified` |
 | CLI-FLT-04 | 12 §7.9.5 | O | FinishRequest returns a certificate whose public key is not the CSR's | Not installed | Fail: installed | `install-wrong-key` |
 | CLI-FLT-05 | 12 §7.9.5; 6 §6.2.2 | O | FinishRequest returns a certificate whose SAN URI is not the client's ApplicationUri | Not installed | Fail: installed | `install-wrong-uri` |
-| CLI-FLT-06 | 12 §7.9.5; 4 §6.1.3 | O | FinishRequest returns an expired certificate | Not installed | Warn: installed (validity is suppressible) | `install-expired` |
+| CLI-FLT-06 | 12 §7.9.5; 4 §6.1.3 | O | FinishRequest returns an expired certificate | Not installed | Fail: installed ([decision D2](README.md#decisions)) | `install-expired` |
 | CLI-FLT-07 | 12 §7.6 | O, slow | Stop answering in the middle of a FinishRequest | The client gives up the call and is ready for the next cycle within 5 minutes | Warn: it hangs | `no-call-timeout` |
 | CLI-FLT-08 | 12 §7.8.2.4; OPC 10000-20 (FileType Read) | O | Answer a Read with more bytes than requested, and FinishRequest with a 10 000-element IssuerCertificates array | The client keeps running and keeps its last good state | Fail: it crashes or installs | `no-length-check` |
 | CLI-FLT-09 | 12 §6.3 | O | The fake GDS closes the client's session mid-cycle (a GDS may do so when short of resources) | The client retries in its next cycle, not in a tight loop | Warn: more than 3 reconnects within 10 s | `reconnect-storm` |
