@@ -1,0 +1,1 @@
+{"Applications": [{"ApplicationUri": "urn:j", "ApplicationType": 0, "ApplicationNames": [{"Locale": "en", "Text": "J"}], "DiscoveryUrls": ["opc.tcp://j:4840"], "ServerCapabilities": ["DA"]}]}
