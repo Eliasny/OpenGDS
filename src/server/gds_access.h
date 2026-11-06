@@ -130,7 +130,9 @@ size_t gds_access_sessions_with(unsigned roles, bool anonymous, bool authenticat
                                 UA_NodeId *out, size_t max);
 
 /* getUserExecutable: may this session call this method? Namespace 0:
- * the open methods, and the ServerConfiguration methods for SecurityAdmin.
+ * the open methods, the ServerConfiguration methods for SecurityAdmin, and
+ * DialogConditionType Respond/Respond2 (approvals) for
+ * RegistrationAuthorityAdmin.
  * The GDS namespace: yes, its methods check rights themselves. Methods
  * that an embedder bound (gds_plugin.h): their Roles and security mode.
  * Any other method: no. */

@@ -108,6 +108,11 @@ static GDS_METHOD(unregister_application) {
     UA_StatusCode r = gds_in_guid(s, inputSize, input, 0, &id);
     if(r != UA_STATUSCODE_GOOD)
         return r;
+    /* §6.5.8: its certificates are revoked first; deleting the record
+     * deletes their rows, after which the signer could not check them */
+    r = gds_revoke_app_certs(s, &id);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
     gds_lock(s);
     gds_status st = gds_store_app_delete(s->store, &id);
     gds_unlock(s);
