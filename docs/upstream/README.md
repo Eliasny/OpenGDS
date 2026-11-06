@@ -1,7 +1,7 @@
 # Upstream fixes for open62541
 
-The three open62541 v1.5.10 gaps listed in `00-project-context.md`, each with a
-minimal patch, tests, and draft issue and pull request text. **Elias posts them
+The three open62541 v1.5.10 gaps listed in `00-project-context.md`, plus a
+fourth found by the week 1 approvals spike, each with a minimal patch, tests, and draft issue and pull request text. **Elias posts them
 to open62541 himself** (decided 2026-11-06); nothing has been posted by Claude.
 The first PR needs him to sign the open62541 Contributor License Agreement (the
 CLA bot links it on the PR).
@@ -15,6 +15,7 @@ CLA bot links it on the PR).
 | O3 | Carry the patches on our pinned v1.5.10 now | Yes, in a separate OpenGDS PR that also removes our workarounds |
 | O4 | Upstream commit authorship | Elias only, no co-author line (the patches are already authored that way) |
 | O5 | Who posts upstream | Elias, from his own account |
+| G12 / refresh | Gap 4 (ConditionRefresh EventId): carry it, and when to offer it | Carry it on v1.5.10 now; offer it upstream later, together with the A&C improvements from the approvals spike |
 
 Checked against open62541 master `24fc6b296` (2026-11-06) and our pinned
 v1.5.10 (`93c3bdfc9`), on Ubuntu 24.04, GCC 13, OpenSSL 3.0.13.
@@ -24,6 +25,7 @@ v1.5.10 (`93c3bdfc9`), on Ubuntu 24.04, GCC 13, OpenSSL 3.0.13.
 | [1. No key file after a CSR push that keeps the key](01-filestore-key-kept-csr.md) | Not reported. Open PR [#8681](https://github.com/open62541/open62541/pull/8681) covers the neighbouring case (a key that CreateSigningRequest generated), not this one. | [master](patches/master/0001-filestore-store-key-in-use.patch), [v1.5.10](patches/v1.5.10/0001-filestore-store-key-in-use.patch); API proposal [master 0004](patches/master/0004-filestore-keep-key-in-use-api.patch) | 0001 merges with #8681 after one trivial conflict; tests pass on the merge. 0004 adds `UA_SecurityPolicy_FilestoreWithKey`. |
 | [2. Secure-only config blocks discovery](02-secure-policies-none-discovery.md) | Open issue [#6771](https://github.com/open62541/open62541/issues/6771) since 2024-10-15, no fix. | [master](patches/master/0002-secure-policies-none-discovery.patch), [v1.5.10](patches/v1.5.10/0002-secure-policies-none-discovery.patch) | Changes default behaviour (chosen, O1). The PR text still offers an opt-in if maintainers object. |
 | [3. GDS headers not installed with AUTOLOAD=GDS](03-install-autoload-headers.md) | Not reported. | [master](patches/master/0003-install-autoload-headers.patch), [v1.5.10](patches/v1.5.10/0003-install-autoload-headers.patch) | Six CMake lines plus a CI job. Works for every AUTOLOAD model. |
+| [4. ConditionRefresh gives a new EventId](04-condition-refresh-eventid.md) | Not yet searched upstream (do before posting). Violates OPC 10000-9 §5.5.7. | [master 0005](patches/master/0005-condition-refresh-keep-eventid.patch), [v1.5.10 0004](patches/v1.5.10/0004-condition-refresh-keep-eventid.patch) | Ten lines in `refreshLogic`, no API change. Offer later (G12). |
 
 ## Results
 
@@ -36,6 +38,7 @@ Each new test was run without the library change (it must fail) and with it
 | 1, API (0004) | its test fails with only 0001 | `check_update_certificate` 20/20 | not carried (O3 covers 0001 to 0003) |
 | 2 | discovery test 0/3, config test 2 failures | discovery 3/3, config 16/16 | discovery 3/3 |
 | 3 | no `*gds*` header installed | three headers installed; CI job builds, installs, compiles and runs a consumer | three headers installed |
+| 4 | new test fails | `check_server_alarmsconditions` 74/74, events suites pass | approvals spike: refreshed EventId equals the original |
 
 ## What is in `patches/`
 
@@ -49,14 +52,15 @@ Each new test was run without the library change (it must fail) and with it
 - `patches/v1.5.10/` holds only the library part of each patch (the
   `plugins/` and `CMakeLists.txt` changes). `scripts/build_open62541.sh`
   applies them to our pinned v1.5.10 (O3), so `push_test_server` pairs its
-  certificate and key by file name, `mock_gds` no longer adds #None itself, and
-  the GDS headers are installed by open62541. **Editing these files changes our
+  certificate and key by file name, `mock_gds` no longer adds #None itself,
+  the GDS headers are installed by open62541, and ConditionRefresh keeps
+  EventIds. **Editing these files changes our
   build** (the CI cache key includes them). Drop each one once open62541
   releases the fix and we move the pin.
 
 ## How to post (for Elias)
 
-Everything to paste is in the three gap pages: each has a "Draft issue" and a
+Everything to paste is in the gap pages: each has a "Draft issue" and a
 "Draft pull request" block, and gap 1 also has the "Draft proposal issue" for
 the API change.
 
@@ -77,5 +81,7 @@ the API change.
    branch as a draft PR; their rules want API changes discussed first.
 6. If master has moved and a patch no longer applies, ask a thread to rebase
    it; the drafts and test results then need a refresh too.
-7. Put the issue and PR links into the table above, or tell a thread and it
+7. Gap 4 waits for the later A&C offer (G12): open the drafted issue, then the
+   PR from the 0005 branch.
+8. Put the issue and PR links into the table above, or tell a thread and it
    will.
