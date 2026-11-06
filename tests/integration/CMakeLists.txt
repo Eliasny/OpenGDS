@@ -13,3 +13,9 @@ set_tests_properties(integration_push_flow_clean PROPERTIES FIXTURES_SETUP push_
 add_test(NAME integration_push_flow
          COMMAND test_push_flow "$<TARGET_FILE:push_test_server>" "${PUSH_FLOW_WORK}" 4871)
 set_tests_properties(integration_push_flow PROPERTIES TIMEOUT 120 FIXTURES_REQUIRED push_flow_work)
+
+# T1 pull tracer: gdsaudit and pull_test_client against opengdsd + opengds-signer
+add_subdirectory(pull)
+
+# T2 push tracer: gdsadm push now through opengdsd to push_test_server
+add_subdirectory(push)

@@ -18,6 +18,7 @@
 #include <time.h>
 
 #include "client_profile.h"
+#include "probe.h"
 #include "common/buf.h"
 #include "common/limits.h"
 #include "common/safeint.h"
@@ -92,6 +93,81 @@ bool cli_cycle_for(cli_profile *p, fault_id fault, ga_ctx *ctx, cli_cycle *out) 
     return cycle_usable(out, r, ctx);
 }
 
+/* Have the client connect to the started probe server; record the result */
+static bool probe_run(cli_profile *p, const char *label, ga_ctx *ctx, cli_probe_result *out) {
+    p->trig.action = "probe";
+    p->trig.probeUrl = probe_url();
+    printf("#   probe connection (%s)\n", label);
+    fflush(stdout);
+    gds_status r = trig_run(&p->trig, p->user, &out->run);
+    p->trig.action = NULL;
+    p->trig.probeUrl = NULL;
+    out->connected = probe_connected();
+    const gds_buf *c = probe_client_cert();
+    if(out->connected && c->len && gds_buf_dup(c->data, c->len, &out->cert) != GDS_OK)
+        r = GDS_ENOMEM;
+    probe_stop();
+    if(r != GDS_OK) {
+        ga_not_tested(ctx, "the trigger could not be started for the probe: %s", gds_status_name(r));
+        cli_probe_clear(out);
+        return false;
+    }
+    ga_note(ctx, "probe (%s): %s (trigger exit %d)", label,
+            out->connected ? "connected" : "no session", out->run.exitStatus);
+    return true;
+}
+
+bool cli_probe(cli_profile *p, fg_ca_id issuer, ga_ctx *ctx, cli_probe_result *out) {
+    memset(out, 0, sizeof(*out));
+    gds_status r = probe_start(p->probePort, issuer);
+    if(r != GDS_OK) {
+        ga_not_tested(ctx, "probe server on port %ld: %s", p->probePort, gds_status_name(r));
+        return false;
+    }
+    return probe_run(p,
+                     issuer == FG_CA_MAIN    ? "GDS CA"
+                     : issuer == FG_CA_X     ? "CA X"
+                     : issuer == FG_CA_ROGUE ? "ca-rogue"
+                                             : "CA Y",
+                     ctx, out);
+}
+
+bool cli_probe_identity(cli_profile *p, const gds_buf *cert, const gds_buf *key, const char *label,
+                        ga_ctx *ctx, cli_probe_result *out) {
+    memset(out, 0, sizeof(*out));
+    gds_status r = probe_start_identity(p->probePort, cert, key);
+    if(r != GDS_OK) {
+        ga_not_tested(ctx, "probe server on port %ld: %s", p->probePort, gds_status_name(r));
+        return false;
+    }
+    return probe_run(p, label, ctx, out);
+}
+
+/* Did the trigger end on its own, without a crash? */
+bool cli_survived(const trig_result *r) {
+    return r->exited && r->exitStatus >= 0 && r->exitStatus < 128;
+}
+
+void cli_probe_clear(cli_probe_result *r) {
+    gds_buf_free(&r->cert);
+    memset(r, 0, sizeof(*r));
+}
+
+bool cli_cert_is(const gds_buf *presented, const gds_buf *cert) {
+    return cert->len && presented->len >= cert->len &&
+           memcmp(presented->data, cert->data, cert->len) == 0;
+}
+
+const fg_event *cli_last_issued(void) {
+    for(size_t i = fg_event_count(); i-- > 0;) {
+        const fg_event *ev = fg_event_at(i);
+        if(ev->method == FG_M_FINISH && ev->result == UA_STATUSCODE_GOOD && ev->issued.len &&
+           ev->issueMode == FG_ISSUE_GOOD)
+            return ev;
+    }
+    return NULL;
+}
+
 const fg_event *cli_find(const cli_cycle *c, fg_method m, size_t n) {
     for(size_t i = c->first; i < c->end; i++) {
         const fg_event *ev = fg_event_at(i);
@@ -118,7 +194,10 @@ static size_t collect(ga_test *all) {
                 {cli_register_tests, cli_register_count},
                 {cli_pending_tests, cli_pending_count},
                 {cli_renew_tests, cli_renew_count},
-                {cli_trustlist_tests, cli_trustlist_count}};
+                {cli_trustlist_tests, cli_trustlist_count},
+                {cli_install_tests, cli_install_count},
+                {cli_faults_tests, cli_faults_count},
+                {cli_trust_tests, cli_trust_count}};
     size_t n = 0;
     for(size_t s = 0; s < GDS_ARRAY_SIZE(sets); s++)
         for(size_t i = 0; i < sets[s].n && n < CLI_MAX_TESTS; i++)
@@ -128,7 +207,7 @@ static size_t collect(ga_test *all) {
 
 static int usage(void) {
     fprintf(stderr,
-            "usage: gdsaudit client [--listen PORT] [--listen-any] [--work DIR] [--user NAME]\n"
+            "usage: gdsaudit client [--listen PORT (the probe server uses PORT+1)] [--listen-any] [--work DIR] [--user NAME]\n"
             "       [--only PREFIX] [--expect FILE.csv] [--cycle-timeout S] [--list]\n"
             "       -- TRIGGER [ARG...]\n"
             "TRIGGER runs one pull cycle of the client under test against the fake GDS;\n"
@@ -208,6 +287,7 @@ int gdsaudit_client_main(int argc, char **argv) {
     p.trig.clientDir = clientDir;
     p.trig.timeoutSeconds = a.timeout;
     p.user = a.user;
+    p.probePort = a.port + 1;
     a.opt.operatorAvailable = a.trigger != NULL;
     printf("# fake GDS %s, CA %s, trigger log %s%s\n", fg_url(), fg_ca_path(), logPath,
            a.trigger ? "" : " (no trigger: every test is Not tested)");

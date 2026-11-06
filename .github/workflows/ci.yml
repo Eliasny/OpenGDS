@@ -6,11 +6,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Dispatched by automerge after each merge (GITHUB_TOKEN pushes start no runs).
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
+  # A newer run on the same ref cancels the older one, on main too: only the
+  # latest main commit is tested, which keeps the shared runner queue short
+  # enough for automerge to get a runner.
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 

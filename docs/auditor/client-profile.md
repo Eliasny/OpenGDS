@@ -13,8 +13,8 @@ The reference site lists only the CertificateManager-side ConformanceUnits (GDS 
 | Fixture | What it is |
 | --- | --- |
 | `gds-trusted` | The fake GDS's certificate, issued by the Auditor test CA `ca`. Before the run the operator, or `--setup-cmd`, makes the client trust it (the out-of-band step of Annex G.1) |
-| `gds-rogue` | A self-signed certificate with the same ApplicationUri and host name as `gds-trusted`, never given to the client |
-| `gds-revoked` | Issued by `ca` and listed in the CRL the client already holds |
+| `gds-rogue` | Issued by `ca-rogue` (which the client never got), with the same ApplicationUri and host name as `gds-trusted` |
+| `gds-revoked` | Issued by `ca` and listed in the CRL of `ca` that the Auditor hands the client (`GDSAUDIT_GDS_CRL`, rewritten before the cycle) |
 | `gds-expired` | Issued by `ca`, validity ended yesterday |
 | `gds-wronguri` | Issued by `ca`, SAN URI differs from the ApplicationUri in the fake GDS's endpoints |
 | Rogue CA | `ca-rogue`, the issuer the fake GDS uses when it plays `gds-rogue` |
@@ -44,7 +44,7 @@ RegisterApplication needs the DiscoveryAdmin Role or the ApplicationAdmin Privil
 | CLI-REG-01 | 12 §6.5.5, §6.5.6; 6 §6.2.2 | O | Compare the ApplicationRecord's ApplicationUri with the SAN URI of the certificate on the channel | Equal | Fail: different | `register-wrong-uri` |
 | CLI-REG-02 | 12 §6.5.5 | O | Compare ApplicationType with what the application is (a Client; ClientAndServer if it also serves) | Matches | Warn: different | `register-wrong-type` |
 | CLI-REG-03 | 12 §6.5.5 | O | For a ClientAndServer, call GetEndpoints on every DiscoveryUrl in the record | Each answers with the same ApplicationUri | Fail: another ApplicationUri. Warn: a URL does not answer. Not supported: pure Client | `register-bad-url` |
-| CLI-REG-04 | 12 §6.5.4, §6.5.6 | O | Run a second cycle with the record already present | The client finds its record (FindApplications) or handles Bad_EntryExists and goes on | Warn: the cycle stops on Bad_EntryExists. The spec does not require FindApplications first | `register-every-run` |
+| CLI-REG-04 | 12 §6.5.5, §6.5.6 | O | Run a second cycle with the record already present | The client finds its record (FindApplications) or handles Bad_EntryExists and goes on | Warn: the cycle stops on Bad_EntryExists. The spec does not require FindApplications first | `register-every-run` |
 | CLI-REG-05 | 12 Annex G.1 | O | The operator types UserName credentials at the client's prompt in cycle 1; cycle 2 runs without an operator | Cycle 2 does not use those credentials again | Fail: the prompted credentials were persisted | `persist-prompted-creds` |
 
 ## Signing request (`cli_csr.c`)

@@ -15,6 +15,9 @@ permissions:
   contents: read
 
 concurrency:
+  # A newer run on the same ref cancels the older one, on main too: only the
+  # latest main commit is tested, which keeps the shared runner queue short
+  # enough for automerge to get a runner.
   group: reference-gds-${{ github.ref }}
   cancel-in-progress: true
 

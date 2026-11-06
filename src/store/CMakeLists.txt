@@ -15,7 +15,7 @@ foreach(f ${GDS_MIGRATIONS})
 endforeach()
 file(CONFIGURE OUTPUT "${GDS_MIGRATIONS_H}" CONTENT "${_content}" @ONLY)
 
-add_library(gds_store STATIC store_sqlite.c migrate.c)
+add_library(gds_store STATIC store.c store_sqlite.c audit_hash.c migrate.c)
 target_include_directories(gds_store PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
                                      PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(gds_store PUBLIC gds_common SQLite::SQLite3)

@@ -52,10 +52,11 @@ audit() { # audit <name> [args]: run the profile, TAP into $W/<name>.tap
 }
 
 RC=0
+SLOW_TESTS="SRV-TL-18"
 if [ -z "$ONLY" ] || [ "$ONLY" = good ]; then
     echo "=== good push_test_server"
     start_server good
-    audit good --expect "$E/push_test_server.csv"
+    audit good --slow --expect "$E/push_test_server.csv"
     G=$?
     stop_server
     cat "$W/good.tap"
@@ -66,11 +67,39 @@ if [ -z "$ONLY" ] || [ "$ONLY" = good ]; then
     fi
 fi
 
+# The tests that need SupportedPrivateKeyFormats: push_test_server
+# --accept-keys, each test on its own (SRV-UPD-09 runs only by name)
+KEY_TESTS="SRV-UPD-09 SRV-UPD-10"
+if [ -z "$ONLY" ] || [ "$ONLY" = good ]; then
+    for test in $KEY_TESTS; do
+        echo "=== good push_test_server --accept-keys, $test"
+        start_server "keys-$test" --accept-keys
+        audit "keys-$test" --only "$test" --expect "$E/push_test_server_keys.csv"
+        G=$?
+        stop_server
+        cat "$W/keys-$test.tap"
+        if [ $G -ne 0 ]; then
+            echo "FAILED: $test against push_test_server --accept-keys differs from push_test_server_keys.csv"
+            tail -40 "$W/server-keys-$test.log"
+            RC=1
+        fi
+    done
+fi
+
 while IFS=, read -r mutant test want; do
     case "$mutant" in ''|\#*) continue ;; esac
     [ -n "$ONLY" ] && [ "$ONLY" != "$mutant" ] && continue
-    start_server "$mutant" --break "$mutant"
-    audit "$mutant"
+    case " $KEY_TESTS " in
+    *" $test "*)
+        start_server "$mutant" --break "$mutant" --accept-keys
+        audit "$mutant" --only "$test"
+        ;;
+    *)
+        start_server "$mutant" --break "$mutant"
+        # tests flagged slow in the catalogue run only for their own mutant
+        case " $SLOW_TESTS " in *" $test "*) audit "$mutant" --slow ;; *) audit "$mutant" ;; esac
+        ;;
+    esac
     stop_server
     got=$(grep -A1 -E "^(not )?ok [0-9]+ - $test " "$W/$mutant.tap" | sed -n 's/^#   verdict: \([a-z_]*\).*/\1/p')
     if [ "$got" = "$want" ]; then

@@ -1,0 +1,19 @@
+# The only way to reach the CA key: a SOCK_SEQPACKET socket that only the
+# opengds (daemon) and opengds-ca (signer) users can open
+# (docs/architecture.md, "Split by privilege"). One connection starts one
+# opengds-signer@ instance.
+# SPDX-License-Identifier: MPL-2.0
+[Unit]
+Description=OpenGDS signer socket
+
+[Socket]
+ListenSequentialPacket=/run/opengds/signer.sock
+Accept=yes
+SocketUser=opengds-ca
+SocketGroup=opengds
+SocketMode=0660
+DirectoryMode=0750
+MaxConnections=4
+
+[Install]
+WantedBy=sockets.target

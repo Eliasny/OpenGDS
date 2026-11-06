@@ -11,12 +11,14 @@
 #ifndef GDSAUDIT_FAKE_GDS_H
 #define GDSAUDIT_FAKE_GDS_H
 
+#include <open62541/server.h>
 #include <open62541/types.h>
 
 #include <stdbool.h>
 #include <stddef.h>
 
 #include "common/buf.h"
+#include "test_ca.h"
 
 typedef enum {
     FG_M_FIND = 0,
@@ -44,11 +46,45 @@ typedef enum { FG_TOKEN_ANONYMOUS = 0, FG_TOKEN_USERNAME, FG_TOKEN_X509, FG_TOKE
 typedef struct {
     UA_NodeId id;
     UA_MessageSecurityMode mode;  /* of the SecureChannel it runs on */
+    char policy[128];             /* SecurityPolicy URI of that channel */
     fg_token token;
     char certUri[FG_MAX_URI];     /* SAN URI of the channel's client certificate */
     double tOpen, tClose;         /* monotonic ms */
     bool closed;                  /* CloseSession or timeout */
+    bool killed;                  /* closed by the fake GDS (CLI-FLT-09) */
 } fg_session;
+
+/* What FinishRequest issues (CLI-FLT-03..06) */
+typedef enum {
+    FG_ISSUE_GOOD = 0,
+    FG_ISSUE_UNTRUSTED, /* signed by FG_CA_OTHER, which no list holds */
+    FG_ISSUE_WRONG_KEY, /* a certificate for another key pair */
+    FG_ISSUE_WRONG_URI, /* SAN URI of another application */
+    FG_ISSUE_EXPIRED,   /* notAfter in the past */
+    FG_ISSUE_ROGUE,     /* signed by FG_CA_ROGUE (the rogue GDS hands it out) */
+    FG_ISSUE_BAD_CHAIN  /* recorded only: a good certificate in an over-long answer */
+} fg_issue;
+
+/* Content of the trust list the TrustList file serves (CLI-TL-03..06) */
+typedef enum {
+    FG_TL_MAIN = 0,  /* the GDS CA and its CRL */
+    FG_TL_WITH_X,    /* plus CA X in TrustedCertificates */
+    FG_TL_ISSUER_Y,  /* plus CA Y in IssuerCertificates only */
+    FG_TL_ROGUE      /* only the rogue CA (what a rogue GDS would serve) */
+} fg_tl;
+
+/* The CAs of the fixture (TEST CAs, one directory each below workDir) */
+typedef enum { FG_CA_MAIN = 0, FG_CA_X, FG_CA_Y, FG_CA_OTHER, FG_CA_ROGUE, FG_CA_COUNT } fg_ca_id;
+
+/* The certificate the fake GDS presents (CLI-TRU-*) */
+typedef enum {
+    FG_ID_MAIN = 0, /* from the GDS CA the client was told to trust */
+    FG_ID_ROGUE,    /* from FG_CA_ROGUE, which the client does not trust */
+    FG_ID_REVOKED,  /* from the GDS CA, revoked in the CRL handed to the client */
+    FG_ID_EXPIRED,  /* from the GDS CA, expired */
+    FG_ID_WRONGURI, /* from the GDS CA, SAN URI not the GDS ApplicationUri */
+    FG_ID_COUNT
+} fg_identity;
 
 /* One method call as the client made it. Owned by the fake GDS. */
 typedef struct {
@@ -66,6 +102,8 @@ typedef struct {
     size_t session;         /* index for fg_session_at, FG_NO_SESSION if unknown */
     UA_NodeId requestId;    /* StartSigningRequest result, FinishRequest argument */
     size_t bytes;           /* TrustList.Read: bytes returned */
+    gds_buf issued;         /* FinishRequest Good: the certificate returned */
+    fg_issue issueMode;     /* how it was made (FG_ISSUE_GOOD: a valid one) */
 } fg_event;
 
 /* How the fake GDS answers. Set per cycle by faults.c. */
@@ -76,6 +114,14 @@ typedef struct {
     UA_StatusCode finishResult; /* not Good: FinishRequest rejects the request for good */
     size_t tlReadMax;           /* not 0: TrustList.Read returns at most this many bytes */
     bool tlChanged;             /* the trust list changes (new LastUpdateTime) for this cycle */
+    fg_issue issue;
+    fg_tl tl;
+    fg_identity identity;       /* not MAIN: the server restarts with that certificate */
+    bool tlRevokes;             /* the GDS CA's CRL in the list revokes fg_set_revoked_cert's */
+    bool tlGarbage;             /* the trust list file is truncated, an array length too big */
+    bool tlOverRead;            /* Read returns more than Length: another (rogue) list */
+    size_t hugeIssuers;         /* not 0: FinishRequest IssuerCertificates has this many entries */
+    bool closeSessions;         /* each session is closed by the GDS after its first call */
 } fg_behaviour;
 
 typedef struct {
@@ -90,9 +136,13 @@ typedef struct {
 GDS_MUST_CHECK gds_status fg_start(const fg_config *cfg);
 /* Serve pending network events; returns quickly. */
 void fg_iterate(void);
+/* UA_Server_newWithConfig with stdout muted (shared with the probe server) */
+UA_Server *fg_new_server_quietly(UA_ServerConfig *sc);
 void fg_stop(void);
 
 void fg_set_behaviour(const fg_behaviour *b);
+/* The certificate the GDS CA's CRL revokes when behaviour.tlRevokes */
+GDS_MUST_CHECK gds_status fg_set_revoked_cert(const gds_buf *cert);
 /* Events recorded so far. Indices stay valid until fg_stop. */
 size_t fg_event_count(void);
 const fg_event *fg_event_at(size_t i);
@@ -100,6 +150,9 @@ size_t fg_session_count(void);
 const fg_session *fg_session_at(size_t i);
 /* Size of the encoded TrustListDataType the TrustList file serves */
 size_t fg_trustlist_size(void);
+
+/* A CA of the fixture (for the probe server's identities) */
+const testca_t *fg_ca(fg_ca_id which);
 
 /* Files the trigger hands to the client */
 const char *fg_url(void);

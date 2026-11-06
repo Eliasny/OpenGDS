@@ -17,9 +17,11 @@
 
 #include "common/limits.h"
 #include "migrate.h"
+#include "store_backend.h"
 #include "common/banned.h"
 
-struct gds_store {
+typedef struct sq_store sq_store;
+struct sq_store {
     sqlite3 *db;
     int version;
 };
@@ -28,11 +30,13 @@ static const UA_DataType *rec_type(void) {
     return &UA_TYPES_GDS[UA_TYPES_GDS_APPLICATIONRECORDDATATYPE];
 }
 
+static void sq_close(void *ctx_);
+
 static int64_t now_s(void) {
     return (int64_t)time(NULL);
 }
 
-static gds_status db_err(gds_store *s, const char *what, int rc) {
+static gds_status db_err(sq_store *s, const char *what, int rc) {
     fprintf(stderr, "store: %s: %s (%d)\n", what, sqlite3_errmsg(s->db), rc);
     if(rc == SQLITE_CONSTRAINT)
         return GDS_EEXISTS;
@@ -43,31 +47,34 @@ static gds_status db_err(gds_store *s, const char *what, int rc) {
     return GDS_EIO;
 }
 
-/* Create the file with 0600 before SQLite opens it (no umask surprises). */
-static gds_status create_private(const char *path) {
-    int fd = open(path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+/* Create the file with 0640 before SQLite opens it, and enforce the mode on
+ * every open (no umask surprises). Group read is for opengds-signer, which
+ * runs as its own user in the daemon's group and reads the store to check
+ * each request it signs (decision G1). SQLite gives the -wal and -shm files
+ * the database file's mode. The store holds no private keys: should one
+ * ever be stored (StartNewKeyPairRequest), it must be encrypted first. */
+#define STORE_MODE 0640
+static gds_status create_store_file(const char *path) {
+    int fd = open(path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, STORE_MODE);
     if(fd < 0)
         return GDS_EIO;
-    gds_status r = fchmod(fd, 0600) == 0 ? GDS_OK : GDS_EIO;
+    gds_status r = fchmod(fd, STORE_MODE) == 0 ? GDS_OK : GDS_EIO;
     close(fd);
     return r;
 }
 
-gds_status gds_store_open(const char *path, gds_store **out) {
+/* Open the connection with the defensive settings shared by both modes. */
+static gds_status open_db(const char *path, int flags, sq_store **out) {
     *out = NULL;
-    gds_status r = create_private(path);
-    if(r != GDS_OK)
-        return r;
-    gds_store *s = calloc(1, sizeof(*s));
+    sq_store *s = calloc(1, sizeof(*s));
     if(!s)
         return GDS_ENOMEM;
-    int rc = sqlite3_open_v2(path, &s->db,
-                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX |
-                                 SQLITE_OPEN_NOFOLLOW,
+    int rc = sqlite3_open_v2(path, &s->db, flags | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW,
                              NULL);
     if(rc != SQLITE_OK) {
-        r = s->db ? db_err(s, "open", rc) : GDS_ENOMEM;
-        goto fail;
+        gds_status r = s->db ? db_err(s, "open", rc) : GDS_ENOMEM;
+        sq_close(s);
+        return r;
     }
     /* Defensive settings: no schema tricks from a tampered file, bounded rows */
     sqlite3_db_config(s->db, SQLITE_DBCONFIG_DEFENSIVE, 1, NULL);
@@ -76,6 +83,44 @@ gds_status gds_store_open(const char *path, gds_store **out) {
     sqlite3_limit(s->db, SQLITE_LIMIT_LENGTH, (int)GDS_MAX_TRUSTLIST_SIZE);
     sqlite3_extended_result_codes(s->db, 0);
     sqlite3_busy_timeout(s->db, 5000);
+    *out = s;
+    return GDS_OK;
+}
+
+static gds_status sq_open_readonly(const char *path, sq_store **out) {
+    *out = NULL;
+    sq_store *s = NULL;
+    gds_status r = open_db(path, SQLITE_OPEN_READONLY, &s);
+    if(r != GDS_OK)
+        return r;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db, "PRAGMA user_version", -1, &st, NULL);
+    if(rc == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW)
+        s->version = sqlite3_column_int(st, 0);
+    else
+        r = db_err(s, "user_version", rc);
+    sqlite3_finalize(st);
+    /* a reader never migrates: the writer must have brought the schema up */
+    if(r == GDS_OK && s->version != gds_migrate_latest())
+        r = GDS_ESTATE;
+    if(r != GDS_OK) {
+        sq_close(s);
+        return r;
+    }
+    *out = s;
+    return GDS_OK;
+}
+
+static gds_status sq_open(const char *path, sq_store **out) {
+    *out = NULL;
+    gds_status r = create_store_file(path);
+    if(r != GDS_OK)
+        return r;
+    sq_store *s = NULL;
+    r = open_db(path, SQLITE_OPEN_READWRITE, &s);
+    if(r != GDS_OK)
+        return r;
+    int rc;
     char *err = NULL;
     rc = sqlite3_exec(s->db,
                       "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; "
@@ -92,18 +137,20 @@ gds_status gds_store_open(const char *path, gds_store **out) {
     *out = s;
     return GDS_OK;
 fail:
-    gds_store_close(s);
+    sq_close(s);
     return r;
 }
 
-void gds_store_close(gds_store *s) {
+static void sq_close(void *ctx_) {
+    sq_store *s = ctx_;
     if(!s)
         return;
     sqlite3_close_v2(s->db);
     free(s);
 }
 
-int gds_store_schema_version(gds_store *s) {
+static int sq_schema_version(void *ctx_) {
+    sq_store *s = ctx_;
     return s->version;
 }
 
@@ -159,16 +206,47 @@ static gds_status decode_record(sqlite3_stmt *st, int col, UA_ApplicationRecordD
 
 /* --- applications ----------------------------------------------------- */
 
-gds_status gds_store_app_insert(gds_store *s, const UA_Guid *id,
-                                const UA_ApplicationRecordDataType *rec) {
+/* The searchable names of an application, inside the caller's transaction. */
+static int insert_names(sq_store *s, const UA_Guid *id, const UA_ApplicationRecordDataType *rec) {
+    sqlite3_stmt *name = NULL;
+    int rc = sqlite3_prepare_v2(s->db, "INSERT INTO app_names(app_id, locale, text) VALUES(?1, ?2, ?3)",
+                                -1, &name, NULL);
+    for(size_t i = 0; rc == SQLITE_OK && i < rec->applicationNamesSize; i++) {
+        sqlite3_reset(name);
+        rc = bind_guid(name, 1, id);
+        if(rc == SQLITE_OK)
+            rc = bind_text(name, 2, &rec->applicationNames[i].locale);
+        if(rc == SQLITE_OK)
+            rc = bind_text(name, 3, &rec->applicationNames[i].text);
+        if(rc == SQLITE_OK && (rc = sqlite3_step(name)) == SQLITE_DONE)
+            rc = SQLITE_OK;
+    }
+    sqlite3_finalize(name);
+    return rc;
+}
+
+static gds_status encode_record(const UA_ApplicationRecordDataType *rec, UA_ByteString *enc) {
     /* The record is stored without its id; the id column is the truth */
     UA_ApplicationRecordDataType copy = *rec;
     UA_NodeId_init(&copy.applicationId);
-    UA_ByteString enc = UA_BYTESTRING_NULL;
-    if(UA_encodeBinary(&copy, rec_type(), &enc, NULL) != UA_STATUSCODE_GOOD)
+    *enc = UA_BYTESTRING_NULL;
+    if(UA_encodeBinary(&copy, rec_type(), enc, NULL) != UA_STATUSCODE_GOOD)
         return GDS_ENOMEM;
-    gds_status r = GDS_OK;
-    sqlite3_stmt *ins = NULL, *name = NULL;
+    if(enc->length > GDS_MAX_RECORD_SIZE) {
+        UA_ByteString_clear(enc);
+        return GDS_ETOOBIG;
+    }
+    return GDS_OK;
+}
+
+static gds_status sq_app_insert(void *ctx_, const UA_Guid *id,
+                                const UA_ApplicationRecordDataType *rec) {
+    sq_store *s = ctx_;
+    UA_ByteString enc;
+    gds_status r = encode_record(rec, &enc);
+    if(r != GDS_OK)
+        return r;
+    sqlite3_stmt *ins = NULL;
     int64_t t = now_s();
     int rc = sqlite3_exec(s->db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
     if(rc != SQLITE_OK) {
@@ -192,18 +270,7 @@ gds_status gds_store_app_insert(gds_store *s, const UA_Guid *id,
     if(rc == SQLITE_OK && (rc = sqlite3_step(ins)) == SQLITE_DONE)
         rc = SQLITE_OK;
     if(rc == SQLITE_OK)
-        rc = sqlite3_prepare_v2(s->db, "INSERT INTO app_names(app_id, locale, text) VALUES(?1, ?2, ?3)",
-                                -1, &name, NULL);
-    for(size_t i = 0; rc == SQLITE_OK && i < rec->applicationNamesSize; i++) {
-        sqlite3_reset(name);
-        rc = bind_guid(name, 1, id);
-        if(rc == SQLITE_OK)
-            rc = bind_text(name, 2, &rec->applicationNames[i].locale);
-        if(rc == SQLITE_OK)
-            rc = bind_text(name, 3, &rec->applicationNames[i].text);
-        if(rc == SQLITE_OK && (rc = sqlite3_step(name)) == SQLITE_DONE)
-            rc = SQLITE_OK;
-    }
+        rc = insert_names(s, id, rec);
     if(rc == SQLITE_OK)
         rc = sqlite3_exec(s->db, "COMMIT", NULL, NULL, NULL);
     if(rc != SQLITE_OK) {
@@ -212,12 +279,12 @@ gds_status gds_store_app_insert(gds_store *s, const UA_Guid *id,
     }
 cleanup:
     sqlite3_finalize(ins);
-    sqlite3_finalize(name);
     UA_ByteString_clear(&enc);
     return r;
 }
 
-gds_status gds_store_app_get(gds_store *s, const UA_Guid *id, UA_ApplicationRecordDataType *out) {
+static gds_status sq_app_get(void *ctx_, const UA_Guid *id, UA_ApplicationRecordDataType *out) {
+    sq_store *s = ctx_;
     UA_ApplicationRecordDataType_init(out);
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(s->db, "SELECT record FROM applications WHERE id = ?1", -1, &st,
@@ -235,8 +302,9 @@ gds_status gds_store_app_get(gds_store *s, const UA_Guid *id, UA_ApplicationReco
     return r;
 }
 
-gds_status gds_store_app_find_uri(gds_store *s, const UA_String *uri, size_t max,
+static gds_status sq_app_find_uri(void *ctx_, const UA_String *uri, size_t max,
                                   UA_ApplicationRecordDataType **out, size_t *n) {
+    sq_store *s = ctx_;
     *out = NULL;
     *n = 0;
     sqlite3_stmt *st = NULL;
@@ -299,7 +367,8 @@ void gds_request_clear(gds_request *r) {
     memset(r, 0, sizeof(*r));
 }
 
-gds_status gds_store_req_insert(gds_store *s, const gds_request *q) {
+static gds_status sq_req_insert(void *ctx_, const gds_request *q) {
+    sq_store *s = ctx_;
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(s->db,
                                 "INSERT INTO requests(id, app_id, group_id, cert_type, state, csr, "
@@ -340,7 +409,7 @@ static gds_status read_request(sqlite3_stmt *st, gds_request *out) {
     sqlite3_int64 g = sqlite3_column_int64(st, 2), t = sqlite3_column_int64(st, 3);
     int state = sqlite3_column_int(st, 4);
     if(g < 0 || g > UINT32_MAX || t < 0 || t > UINT32_MAX || state < GDS_REQ_RECEIVED ||
-       state > GDS_REQ_FAILED)
+       state > GDS_REQ_PENDING)
         return GDS_EINVAL;
     out->groupId = (uint32_t)g;
     out->certType = (uint32_t)t;
@@ -354,7 +423,7 @@ static gds_status read_request(sqlite3_stmt *st, gds_request *out) {
     return r;
 }
 
-static gds_status one_request(gds_store *s, sqlite3_stmt *st, int rc, gds_request *out) {
+static gds_status one_request(sq_store *s, sqlite3_stmt *st, int rc, gds_request *out) {
     gds_status r;
     if(rc != SQLITE_OK)
         r = db_err(s, "request", rc);
@@ -366,7 +435,8 @@ static gds_status one_request(gds_store *s, sqlite3_stmt *st, int rc, gds_reques
     return r;
 }
 
-gds_status gds_store_req_get(gds_store *s, const UA_Guid *id, gds_request *out) {
+static gds_status sq_req_get(void *ctx_, const UA_Guid *id, gds_request *out) {
+    sq_store *s = ctx_;
     memset(out, 0, sizeof(*out));
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(s->db, "SELECT " REQ_COLUMNS " FROM requests WHERE id = ?1", -1,
@@ -376,7 +446,8 @@ gds_status gds_store_req_get(gds_store *s, const UA_Guid *id, gds_request *out) 
     return one_request(s, st, rc, out);
 }
 
-gds_status gds_store_req_next_received(gds_store *s, gds_request *out) {
+static gds_status sq_req_next_received(void *ctx_, gds_request *out) {
+    sq_store *s = ctx_;
     memset(out, 0, sizeof(*out));
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(s->db,
@@ -386,8 +457,36 @@ gds_status gds_store_req_next_received(gds_store *s, gds_request *out) {
     return one_request(s, st, rc, out);
 }
 
-gds_status gds_store_req_set_state(gds_store *s, const UA_Guid *id, gds_req_state state,
+static gds_status sq_req_scan(void *ctx_, gds_req_state state, gds_store_req_cb cb,
+                              void *cbCtx) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "SELECT " REQ_COLUMNS " FROM requests WHERE state = ?1 "
+                                "ORDER BY created, rowid",
+                                -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int(st, 1, (int)state);
+    gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "request scan", rc);
+    while(r == GDS_OK && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+        gds_request q;
+        r = read_request(st, &q);
+        if(r != GDS_OK)
+            break;
+        bool more = cb(cbCtx, &q);
+        gds_request_clear(&q);
+        if(!more)
+            break;
+    }
+    if(r == GDS_OK && rc != SQLITE_ROW && rc != SQLITE_DONE)
+        r = db_err(s, "request scan", rc);
+    sqlite3_finalize(st);
+    return r;
+}
+
+static gds_status sq_req_set_state(void *ctx_, const UA_Guid *id, gds_req_state state,
                                    const gds_buf *cert, UA_StatusCode error) {
+    sq_store *s = ctx_;
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(s->db,
                                 "UPDATE requests SET state = ?2, cert = COALESCE(?3, cert), "
@@ -414,9 +513,10 @@ gds_status gds_store_req_set_state(gds_store *s, const UA_Guid *id, gds_req_stat
 
 /* --- certificates ----------------------------------------------------- */
 
-gds_status gds_store_cert_add(gds_store *s, const UA_Guid *appId, uint32_t groupId,
+static gds_status sq_cert_add(void *ctx_, const UA_Guid *appId, uint32_t groupId,
                               uint32_t certType, const gds_buf *serial, const gds_buf *der,
                               int64_t notBefore, int64_t notAfter) {
+    sq_store *s = ctx_;
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(s->db,
                                 "INSERT INTO certificates(serial, app_id, group_id, cert_type, der, "
@@ -443,8 +543,9 @@ gds_status gds_store_cert_add(gds_store *s, const UA_Guid *appId, uint32_t group
     return r;
 }
 
-gds_status gds_store_cert_latest(gds_store *s, const UA_Guid *appId, uint32_t groupId,
+static gds_status sq_cert_latest(void *ctx_, const UA_Guid *appId, uint32_t groupId,
                                  uint32_t certType, gds_buf *der, int64_t *notAfter) {
+    sq_store *s = ctx_;
     der->data = NULL;
     der->len = 0;
     *notAfter = 0;
@@ -470,5 +571,338 @@ gds_status gds_store_cert_latest(gds_store *s, const UA_Guid *appId, uint32_t gr
         r = rc == SQLITE_DONE ? GDS_ENOTFOUND : db_err(s, "latest certificate", rc);
     }
     sqlite3_finalize(st);
+    return r;
+}
+
+/* One UPDATE binding the application id as ?1 and optionally der as ?2. */
+static gds_status mark_revoked(sq_store *s, const char *sql, const UA_Guid *appId,
+                               const gds_buf *der, int *changed) {
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db, sql, -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(st, 1, appId);
+    if(rc == SQLITE_OK && der)
+        rc = bind_buf(st, 2, der);
+    if(rc == SQLITE_OK && (rc = sqlite3_step(st)) == SQLITE_DONE)
+        rc = SQLITE_OK;
+    *changed = rc == SQLITE_OK ? sqlite3_changes(s->db) : 0;
+    gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "revoke certificate", rc);
+    sqlite3_finalize(st);
+    return r;
+}
+
+static gds_status sq_cert_revoke(void *ctx_, const UA_Guid *appId, const gds_buf *der,
+                                 gds_buf *serial) {
+    sq_store *s = ctx_;
+    int changed = 0;
+    gds_status r = mark_revoked(s,
+                                "UPDATE certificates SET revoked = 1 WHERE app_id = ?1 AND "
+                                "der = ?2",
+                                appId, der, &changed);
+    if(r != GDS_OK)
+        return r;
+    if(changed == 0)
+        return GDS_ENOTFOUND;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "SELECT serial FROM certificates WHERE app_id = ?1 AND der = ?2 "
+                                "ORDER BY rowid LIMIT 1",
+                                -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(st, 1, appId);
+    if(rc == SQLITE_OK)
+        rc = bind_buf(st, 2, der);
+    if(rc != SQLITE_OK)
+        r = db_err(s, "revoke certificate", rc);
+    else if((rc = sqlite3_step(st)) == SQLITE_ROW)
+        r = column_buf(st, 0, GDS_MAX_SERIAL_SIZE, serial);
+    else
+        r = rc == SQLITE_DONE ? GDS_ENOTFOUND : db_err(s, "revoke certificate", rc);
+    if(r == GDS_OK && serial->len == 0)
+        r = GDS_EINVAL;
+    sqlite3_finalize(st);
+    return r;
+}
+
+static gds_status sq_cert_revoke_app(void *ctx_, const UA_Guid *appId, gds_store_serial_cb cb,
+                                     void *cbCtx) {
+    sq_store *s = ctx_;
+    int changed = 0;
+    gds_status r = mark_revoked(s, "UPDATE certificates SET revoked = 1 WHERE app_id = ?1",
+                                appId, NULL, &changed);
+    if(r != GDS_OK)
+        return r;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "SELECT serial FROM certificates WHERE app_id = ?1 AND "
+                                "revoked = 1 ORDER BY rowid",
+                                -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(st, 1, appId);
+    r = rc == SQLITE_OK ? GDS_OK : db_err(s, "revoke certificates", rc);
+    while(r == GDS_OK && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+        gds_buf serial = {0};
+        r = column_buf(st, 0, GDS_MAX_SERIAL_SIZE, &serial);
+        if(r != GDS_OK)
+            break;
+        bool more = serial.len == 0 || cb(cbCtx, &serial);
+        gds_buf_free(&serial);
+        if(!more)
+            break;
+    }
+    if(r == GDS_OK && rc != SQLITE_ROW && rc != SQLITE_DONE)
+        r = db_err(s, "revoke certificates", rc);
+    sqlite3_finalize(st);
+    return r;
+}
+
+static gds_status sq_cert_is_revoked(void *ctx_, const gds_buf *serial, bool *revoked) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db, "SELECT revoked FROM certificates WHERE serial = ?1", -1,
+                                &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_buf(st, 1, serial);
+    if(rc == SQLITE_OK && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+        *revoked = sqlite3_column_int64(st, 0) != 0;
+        rc = SQLITE_DONE;
+    }
+    gds_status r = rc == SQLITE_DONE ? GDS_OK : db_err(s, "certificate state", rc);
+    sqlite3_finalize(st);
+    return r;
+}
+
+static gds_status sq_app_update(void *ctx_, const UA_Guid *id,
+                                const UA_ApplicationRecordDataType *rec) {
+    sq_store *s = ctx_;
+    UA_ByteString enc;
+    gds_status r = encode_record(rec, &enc);
+    if(r != GDS_OK)
+        return r;
+    sqlite3_stmt *up = NULL, *del = NULL;
+    int rc = sqlite3_exec(s->db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_prepare_v2(s->db,
+                                "UPDATE applications SET uri = ?2, type = ?3, record = ?4, "
+                                "updated = ?5 WHERE id = ?1",
+                                -1, &up, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(up, 1, id);
+    if(rc == SQLITE_OK)
+        rc = bind_text(up, 2, &rec->applicationUri);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int(up, 3, (int)rec->applicationType);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_blob(up, 4, enc.data, (int)enc.length, SQLITE_STATIC);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(up, 5, now_s());
+    if(rc == SQLITE_OK && (rc = sqlite3_step(up)) == SQLITE_DONE)
+        rc = SQLITE_OK;
+    bool found = rc == SQLITE_OK && sqlite3_changes(s->db) == 1;
+    if(rc == SQLITE_OK && found)
+        rc = sqlite3_prepare_v2(s->db, "DELETE FROM app_names WHERE app_id = ?1", -1, &del, NULL);
+    if(rc == SQLITE_OK && found)
+        rc = bind_guid(del, 1, id);
+    if(rc == SQLITE_OK && found && (rc = sqlite3_step(del)) == SQLITE_DONE)
+        rc = SQLITE_OK;
+    if(rc == SQLITE_OK && found)
+        rc = insert_names(s, id, rec);
+    if(rc == SQLITE_OK && found)
+        rc = sqlite3_exec(s->db, "COMMIT", NULL, NULL, NULL);
+    if(rc != SQLITE_OK || !found) {
+        r = rc != SQLITE_OK ? db_err(s, "update application", rc) : GDS_ENOTFOUND;
+        (void)sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL);
+    }
+    sqlite3_finalize(up);
+    sqlite3_finalize(del);
+    UA_ByteString_clear(&enc);
+    return r;
+}
+
+static gds_status sq_app_delete(void *ctx_, const UA_Guid *id) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db, "DELETE FROM applications WHERE id = ?1", -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(st, 1, id);
+    if(rc == SQLITE_OK && (rc = sqlite3_step(st)) == SQLITE_DONE)
+        rc = SQLITE_OK;
+    gds_status r = GDS_OK;
+    if(rc != SQLITE_OK)
+        r = db_err(s, "delete application", rc);
+    else if(sqlite3_changes(s->db) != 1)
+        r = GDS_ENOTFOUND;
+    sqlite3_finalize(st);
+    return r;
+}
+
+static gds_status sq_app_scan(void *ctx_, int64_t fromRecordId, gds_store_scan_cb cb,
+                              void *ctx) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "SELECT rowid, id, record FROM applications WHERE rowid >= ?1 "
+                                "ORDER BY rowid",
+                                -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(st, 1, fromRecordId);
+    gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "scan applications", rc);
+    while(r == GDS_OK && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+        if(sqlite3_column_bytes(st, 1) != (int)sizeof(UA_Guid)) {
+            r = GDS_EINVAL;
+            break;
+        }
+        UA_Guid g;
+        memcpy(&g, sqlite3_column_blob(st, 1), sizeof(g));
+        UA_ApplicationRecordDataType rec;
+        r = decode_record(st, 2, &rec);
+        if(r != GDS_OK)
+            break;
+        rec.applicationId = UA_NODEID_GUID(0, g);
+        bool more = cb(ctx, sqlite3_column_int64(st, 0), &rec);
+        UA_ApplicationRecordDataType_clear(&rec);
+        if(!more)
+            break;
+    }
+    if(r == GDS_OK && rc != SQLITE_ROW && rc != SQLITE_DONE)
+        r = db_err(s, "scan applications", rc);
+    sqlite3_finalize(st);
+    return r;
+}
+
+/* --- audit log (issue #18) ---------------------------------------------- */
+
+static gds_status last_audit(sq_store *s, int64_t *seq, uint8_t hash[GDS_AUDIT_HASH]) {
+    *seq = 0;
+    memset(hash, 0, GDS_AUDIT_HASH);
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db, "SELECT seq, hash FROM audit ORDER BY seq DESC LIMIT 1",
+                                -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_step(st);
+    gds_status r = GDS_OK;
+    if(rc == SQLITE_ROW) {
+        *seq = sqlite3_column_int64(st, 0);
+        if(sqlite3_column_bytes(st, 1) == GDS_AUDIT_HASH)
+            memcpy(hash, sqlite3_column_blob(st, 1), GDS_AUDIT_HASH);
+        else
+            r = GDS_ESTATE;
+    } else if(rc != SQLITE_DONE) {
+        r = db_err(s, "audit tail", rc);
+    }
+    sqlite3_finalize(st);
+    return r;
+}
+
+static gds_status sq_audit_append(void *ctx_, int64_t time, const gds_buf *body, int64_t *seq) {
+    sq_store *s = ctx_;
+    int rc = sqlite3_exec(s->db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+    if(rc != SQLITE_OK)
+        return db_err(s, "begin", rc);
+    int64_t last = 0;
+    uint8_t prev[GDS_AUDIT_HASH], hash[GDS_AUDIT_HASH];
+    gds_status r = last_audit(s, &last, prev);
+    if(r == GDS_OK)
+        r = gds_audit_hash(prev, last + 1, time, body, hash);
+    sqlite3_stmt *st = NULL;
+    if(r == GDS_OK) {
+        rc = sqlite3_prepare_v2(s->db,
+                                "INSERT INTO audit(seq, time, body, prev_hash, hash) "
+                                "VALUES(?1, ?2, ?3, ?4, ?5)",
+                                -1, &st, NULL);
+        if(rc == SQLITE_OK)
+            rc = sqlite3_bind_int64(st, 1, last + 1);
+        if(rc == SQLITE_OK)
+            rc = sqlite3_bind_int64(st, 2, time);
+        if(rc == SQLITE_OK)
+            rc = bind_buf(st, 3, body);
+        if(rc == SQLITE_OK)
+            rc = sqlite3_bind_blob(st, 4, prev, GDS_AUDIT_HASH, SQLITE_STATIC);
+        if(rc == SQLITE_OK)
+            rc = sqlite3_bind_blob(st, 5, hash, GDS_AUDIT_HASH, SQLITE_STATIC);
+        if(rc == SQLITE_OK && (rc = sqlite3_step(st)) == SQLITE_DONE)
+            rc = SQLITE_OK;
+        if(rc != SQLITE_OK)
+            r = db_err(s, "append audit", rc);
+        sqlite3_finalize(st);
+    }
+    if(r == GDS_OK && (rc = sqlite3_exec(s->db, "COMMIT", NULL, NULL, NULL)) != SQLITE_OK)
+        r = db_err(s, "commit", rc);
+    if(r != GDS_OK) {
+        (void)sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL);
+        return r;
+    }
+    *seq = last + 1;
+    return GDS_OK;
+}
+
+static gds_status sq_audit_scan(void *ctx_, int64_t fromSeq, gds_audit_scan_cb cb, void *cbCtx) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "SELECT seq, time, body, prev_hash, hash FROM audit "
+                                "WHERE seq >= ?1 ORDER BY seq",
+                                -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(st, 1, fromSeq);
+    gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "scan audit", rc);
+    while(r == GDS_OK && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+        gds_audit_row row;
+        memset(&row, 0, sizeof(row));
+        row.seq = sqlite3_column_int64(st, 0);
+        row.time = sqlite3_column_int64(st, 1);
+        int n = sqlite3_column_bytes(st, 2);
+        row.body.data = (uint8_t *)(uintptr_t)sqlite3_column_blob(st, 2);
+        row.body.len = n > 0 ? (size_t)n : 0;
+        if(sqlite3_column_bytes(st, 3) != GDS_AUDIT_HASH ||
+           sqlite3_column_bytes(st, 4) != GDS_AUDIT_HASH) {
+            r = GDS_ESTATE;
+            break;
+        }
+        memcpy(row.prevHash, sqlite3_column_blob(st, 3), GDS_AUDIT_HASH);
+        memcpy(row.hash, sqlite3_column_blob(st, 4), GDS_AUDIT_HASH);
+        if(!cb(cbCtx, &row)) {
+            rc = SQLITE_DONE;
+            break;
+        }
+    }
+    if(r == GDS_OK && rc != SQLITE_DONE)
+        r = db_err(s, "scan audit", rc);
+    sqlite3_finalize(st);
+    return r;
+}
+
+/* --- the built-in backend ---------------------------------------------- */
+
+const gds_store_backend gds_store_sqlite_backend = {
+    .abi_major = GDS_STORE_ABI_MAJOR,
+    .abi_minor = GDS_STORE_ABI_MINOR,
+    .struct_size = sizeof(gds_store_backend),
+    .close = sq_close,
+    .schema_version = sq_schema_version,
+    .app_insert = sq_app_insert,
+    .app_get = sq_app_get,
+    .app_find_uri = sq_app_find_uri,
+    .app_update = sq_app_update,
+    .app_delete = sq_app_delete,
+    .app_scan = sq_app_scan,
+    .req_insert = sq_req_insert,
+    .req_get = sq_req_get,
+    .req_next_received = sq_req_next_received,
+    .req_scan = sq_req_scan,
+    .req_set_state = sq_req_set_state,
+    .cert_add = sq_cert_add,
+    .cert_latest = sq_cert_latest,
+    .audit_append = sq_audit_append,
+    .audit_scan = sq_audit_scan,
+    .cert_revoke = sq_cert_revoke,
+    .cert_revoke_app = sq_cert_revoke_app,
+    .cert_is_revoked = sq_cert_is_revoked,
+};
+
+gds_status gds_store_sqlite_open(const char *path, bool readonly, void **ctx) {
+    sq_store *s = NULL;
+    gds_status r = readonly ? sq_open_readonly(path, &s) : sq_open(path, &s);
+    *ctx = s;
     return r;
 }

@@ -18,7 +18,7 @@ Each group is one source file of the profile (named in the heading) and starts w
 | --- | --- |
 | ID | Stable test ID, `SRV-<group>-NN` or `CLI-<group>-NN`. It is the test's name in every report format and in `--only`/`--skip`. IDs are never reused; a dropped test leaves a gap |
 | Clause | The clause the test checks. `12 §7.10.5` is OPC 10000-12 §7.10.5; `4 §6.1.3` is OPC 10000-4; `6 §6.2.2` is OPC 10000-6 |
-| Flags | `W` needs write access (`--allow-changes`); `O` needs an outside step (operator prompt, `--trigger-cmd`, `--restart-cmd` or `--setup-cmd`); `slow` takes more than a minute. `—` means none |
+| Flags | `W` needs write access (`--allow-changes`); `O` needs an outside step (operator prompt, `--trigger-cmd`, `--restart-cmd` or `--setup-cmd`); `slow` takes more than a minute and runs only with `--slow` (Not tested otherwise). `—` means none |
 | Check | What the Auditor does |
 | Pass when | The behaviour the clause states |
 | Fail / Warn / Not supported | The rules for every other verdict. A rule not listed cannot happen for that test |
@@ -53,7 +53,7 @@ Each test ships with exactly one mutant in its self-test target, named in the Mu
 
 ## Safety, snapshot and restore
 
-Server profile: before the first `W` test the Auditor reads and saves every CertificateGroup's TrustList and certificates (GetCertificates when present, otherwise the endpoint certificates). Tests that open a transaction end it themselves (ApplyChanges or CancelChanges). After the last test, on error and on Ctrl-C, the saved state is pushed back and applied, and the restore is a line in the report with its own verdict. The Push setup group and SRV-SET-06 (ResetToServerDefaults) change state that the snapshot cannot restore, so they run only when selected by name, and SRV-SET-06 also needs `--allow-reset`.
+Server profile: before the first `W` test the Auditor reads and saves every CertificateGroup's TrustList and certificates (GetCertificates when present, otherwise the endpoint certificates). Tests that open a transaction end it themselves (ApplyChanges or CancelChanges). After the last test, on error and on Ctrl-C, the saved state is pushed back and applied, and the restore is a line in the report with its own verdict. The Push setup group, SRV-UPD-09 (a pushed private key replaces the target's own) and SRV-SET-06 (ResetToServerDefaults) change state that the snapshot cannot restore, so they run only when selected by name, and SRV-SET-06 also needs `--allow-reset`.
 
 Client profile: nothing on the client is written by the Auditor except through the client's own pull cycle. The fake GDS listens only on localhost unless `--listen-any` is given, and every certificate it issues carries "OpenGDS Auditor TEST" in its subject.
 
