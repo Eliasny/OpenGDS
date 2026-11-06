@@ -48,7 +48,7 @@ static int usage(const char *argv0) {
             "   or: %s server --url URL (--server-cert SRV.der | --tofu)\n"
             "       [--admin-cert C --admin-key K | --admin-user U --admin-password-file F]\n"
             "       [--user U --user-password-file F] [--work DIR] [--allow-changes] [--only PREFIX]\n"
-            "       [--expect FILE.csv] [--list] [--init-only] [--slow]\n"
+            "       [--expect FILE.csv] [--list] [--init-only] [--slow] [--stop-after ID]\n"
             "       %s client --help\n",
             argv0, argv0, argv0);
     return 2;
@@ -285,7 +285,14 @@ static int server_main(int argc, char **argv) {
         else if(!strcmp(a, "--work")) work = v;
         else if(!strcmp(a, "--only")) opt.only = t.only = v;
         else if(!strcmp(a, "--expect")) opt.expectCsv = v;
-        else return usage(argv[0]);
+        else if(!strcmp(a, "--stop-after")) { /* the self-test's mutant runs */
+            size_t k = 0;
+            while(k < nTests && strcmp(all[k].id, v) != 0)
+                k++;
+            if(k == nTests)
+                return usage(argv[0]);
+            nTests = k + 1;
+        } else return usage(argv[0]);
     }
     if(!initOnly && (!t.url || (!serverCert == !tofu))) {
         fprintf(stderr, "--url and one of --server-cert or --tofu (test setups only) are needed\n");

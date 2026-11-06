@@ -17,8 +17,14 @@ target_link_libraries(gdsaudit_profile_server PUBLIC gdsaudit_core)
 # The server profile against push_test_server: every test against the good
 # target with pinned verdicts, then each --break mutant must be caught by
 # the test it was written for (expected/mutants.csv).
-add_test(NAME srv_profile_vs_push_test_server
-         COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/run_vs_push.sh"
-                 "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/push-run"
-                 "${CMAKE_CURRENT_SOURCE_DIR}/expected")
-set_tests_properties(srv_profile_vs_push_test_server PROPERTIES TIMEOUT 1500)
+# Four shards, each under its own timeout (sanitizer builds are slow); the
+# good-target runs are in the first.
+foreach(k RANGE 1 4)
+  math(EXPR port "4861 + 200 * ${k}")
+  add_test(NAME srv_profile_vs_push_test_server_${k}
+           COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/run_vs_push.sh"
+                   "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/push-run-${k}"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/expected")
+  set_tests_properties(srv_profile_vs_push_test_server_${k} PROPERTIES
+                       TIMEOUT 1500 ENVIRONMENT "SHARD=${k}/4;PUSH_PORT=${port}")
+endforeach()
