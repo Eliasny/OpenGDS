@@ -249,6 +249,20 @@ bool gds_caller_permitted(struct gds_server *s, const gds_caller *caller,
  * RolePermissions. Namespace 0 and the GDS namespace: GDS_EDENIED. */
 GDS_MUST_CHECK gds_status gds_server_remove_node(struct gds_server *s, const UA_NodeId *nodeId);
 
+/* A Boolean variable whose value depends on who reads it (UASM ask A17):
+ * TRUE for a session that holds any of these Roles, FALSE for any other
+ * session, as OpenGDS decides UserExecutable. For example the
+ * UserWritable Property of an OPC 10000-20 FileType (§4.2.1) that only
+ * RegistrarAdmin may write (OPC 10000-21 §9.2.10). Roles are as for
+ * gds_method_def.roles; Anonymous makes it TRUE for every session and
+ * AuthenticatedUser for every session with user credentials. The node
+ * must be an existing Boolean variable outside namespace 0 and the GDS
+ * namespace (GDS_EDENIED); its value is computed from now on and writes
+ * are refused. Calling again replaces the Roles. Thread safe. */
+GDS_MUST_CHECK gds_status gds_server_set_role_boolean(struct gds_server *s,
+                                                      const UA_NodeId *nodeId,
+                                                      const UA_NodeId *roles, size_t n);
+
 /* ---- embedder Roles (UASM ask A10, issue #63) ----
  * Roles that OpenGDS does not define, such as the OPC 10000-21
  * RegistrarAdmin (§9.2.10, §9.2.12) and SoftwareUpdateAdmin (§9.2.5).

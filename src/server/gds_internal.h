@@ -25,6 +25,7 @@
 typedef struct gds_binding gds_binding;
 typedef struct gds_job gds_job;
 typedef struct gds_node_perms gds_node_perms;
+typedef struct gds_role_bool gds_role_bool;
 
 struct gds_server {
     UA_Server *ua;
@@ -63,6 +64,8 @@ struct gds_server {
     size_t nBindings;
     gds_node_perms *perms;
     size_t nPerms, capPerms;
+    gds_role_bool *roleBools; /* A17, also under bindLock */
+    size_t nRoleBools, capRoleBools;
     pthread_mutex_t plugLock;
     pthread_cond_t plugCond;
     pthread_t plugThreads[GDS_PLUGIN_WORKERS];
