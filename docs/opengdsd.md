@@ -14,6 +14,7 @@ CertificateManager and the DefaultApplicationGroup trust list
 There are two ways to run the signer:
 
 - **Production, `signer_socket`:** systemd runs the signer as its own unit under the `opengds-ca` user (`packaging/systemd/opengds-signer.socket` and `opengds-signer@.service`). `opengdsd` connects to `/run/opengds/signer.sock`, which only `opengds-ca` and the `opengds` group can open. The signer holds the CA passphrase through `LoadCredentialEncrypted=`, so `opengdsd` never sees it. The signer reads the store read-only through its membership in the `opengds` group, so `opengdsd` keeps the store group-readable (umask 027).
+- **Without systemd (containers), `signer_socket` with `opengds-signer --listen PATH`:** the signer creates a SOCK_SEQPACKET socket at PATH with mode 0660 and serves one `opengdsd` connection at a time, each until it closes. Put the socket in a directory that only the signer and `opengdsd` users can reach, such as a volume shared by the two containers. The signer reads its passphrase from `--passphrase-file`.
 - **`signer`:** `opengdsd` starts the signer itself over a socketpair. This is simpler, but both processes run as the same user. A signing request carries only the request id. The signer reads the record and the CSR from the store itself, so it signs only what the store holds.
 
 Without `signer`, the CA runs inside `opengdsd`. That mode is for development only, and the daemon warns about it at startup.

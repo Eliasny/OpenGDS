@@ -8,6 +8,8 @@
 #   5. the production split: opengds-signer socket-activated in its own
 #      process tree (systemd-socket-activate, as opengds-signer.socket does),
 #      opengdsd connecting through signer_socket
+#   6. opengds-signer --listen (hosts without systemd, e.g. containers):
+#      one signer serves successive opengdsd connections
 # Usage: run_pull_vs_opengdsd.sh <build-dir> <work-dir> <expected.csv>
 # SPDX-License-Identifier: MPL-2.0
 set -u
@@ -132,4 +134,32 @@ if command -v systemd-socket-activate > /dev/null 2>&1; then
 else
     echo "SKIPPED: systemd-socket-activate not installed"
 fi
+echo "=============== 6. listening signer (--listen) ==============="
+LDIR=$(mktemp -d /tmp/ogs-listen.XXXXXX)
+LSOCK="$LDIR/signer.sock"
+"$SIGNER" --listen "$LSOCK" --store "$W/data/opengds.db" --ca-dir "$W/ca" \
+    --passphrase-file "$W/ca.pw" > "$W/listen.log" 2>&1 &
+LST=$!
+trap 'cleanup; kill "$LST" 2>/dev/null; rm -rf "$LDIR"; true' EXIT INT TERM
+i=0
+until [ -S "$LSOCK" ]; do
+    i=$((i + 1)); kill -0 "$LST" 2>/dev/null || { cat "$W/listen.log"; fail "signer --listen exited"; }
+    [ $i -gt 100 ] && fail "signer --listen did not listen"; sleep 0.1
+done
+[ "$(stat -c %a "$LSOCK")" = "660" ] || fail "--listen socket mode is $(stat -c %a "$LSOCK"), not 660"
+sed -e '/^signer = /d' -e '/^signer_socket = /d' -e '/^ca_passphrase_file = /d' \
+    "$W/opengds.conf" > "$W/listen.conf"
+echo "signer_socket = $LSOCK" >> "$W/listen.conf"
+cp "$W/listen.conf" "$W/opengds.conf"
+for n in 1 2; do # the second start is a second connection to the same signer
+    start_gds "$W/gds-listen$n.log"
+    "$PULL" --gds "opc.tcp://127.0.0.1:$PORT" --pki "$W/pki-listen$n" --trust "$W/ca/ca.der" \
+        --crl "$W/ca/ca.crl" --user registrar --password-file "$W/registrar.pw" \
+        --app-uri "urn:opengds:pull-tracer:listen$n" > "$W/pull-listen$n.log" 2>&1 \
+        || { cat "$W/pull-listen$n.log" "$W/listen.log"; fail "pull through signer --listen ($n)"; }
+    expect "PULL WORKFLOW COMPLETE" "$W/pull-listen$n.log"
+    stop_gds
+done
+kill -0 "$LST" 2>/dev/null || { cat "$W/listen.log"; fail "signer --listen exited after a connection"; }
+kill "$LST" 2>/dev/null
 echo "PULL TRACER PASSED"
