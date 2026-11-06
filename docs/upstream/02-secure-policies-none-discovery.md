@@ -42,7 +42,7 @@ The header comment, the `server_encryption` example (its #None block is no
 longer needed, and `--allowDiscovery` is still accepted as a no-op) and
 `CHANGES.md` are updated.
 
-**This changes default behaviour**, which is why it carries a CHANGES.md entry.
+**This changes default behaviour**, which is why it carries a CHANGES.md entry. Elias chose this over an opt-in (O1, 2026-11-06).
 If the maintainers want to keep "no #None at all" as the default, the fallback
 is an opt-in: keep the helper as it is and document the two lines (or add a
 small `UA_ServerConfig_addSecurityPolicyNoneDiscoveryOnly()` helper). The draft

@@ -5,6 +5,8 @@
  *                [--work DIR] [--allow-changes] [--only PREFIX]
  *                [--expect FILE.csv] [--poll-seconds N] [--list]
  *
+ *   gdsaudit client [options] -- TRIGGER ARGV...   (profile_client/client_main.c)
+ *
  *   gdsaudit server --url opc.tcp://host:4840 (--server-cert srv.der | --tofu)
  *                [--user admin --password-file FILE] [--work DIR]
  *                [--allow-changes] [--only PREFIX] [--expect FILE.csv] [--list]
@@ -26,6 +28,7 @@
 
 #include "common/limits.h"
 #include "common/safeint.h"
+#include "client_profile.h"
 #include "gds_target.h"
 #include "spec_tests.h"
 #include "srv_target.h"
@@ -43,8 +46,9 @@ static int usage(const char *argv0) {
             "       [--expect FILE.csv] [--poll-seconds N] [--list]\n"
             "   or: %s server --url URL (--server-cert SRV.der | --tofu) [--user U\n"
             "       --password-file F] [--work DIR] [--allow-changes] [--only PREFIX]\n"
-            "       [--expect FILE.csv] [--list] [--init-only]\n",
-            argv0, argv0);
+            "       [--expect FILE.csv] [--list] [--init-only]\n"
+            "       %s client --help\n",
+            argv0, argv0, argv0);
     return 2;
 }
 
@@ -134,7 +138,7 @@ static int gds_main(int argc, char **argv) {
     t.appUri = APP_URI;
     t.pollSeconds = 30;
     const char *work = "./gdsaudit-work", *passwordFile = NULL;
-    ga_run_options opt = {NULL, false, NULL};
+    ga_run_options opt = {NULL, false, NULL, false};
     int rc = 2;
     for(int i = 2; i < argc; i++) {
         const char *a = argv[i];
@@ -235,7 +239,7 @@ static int server_main(int argc, char **argv) {
     t.appUri = APP_URI;
     const char *work = "./gdsaudit-work", *passwordFile = NULL, *serverCert = NULL;
     bool tofu = false, initOnly = false;
-    ga_run_options opt = {NULL, false, NULL};
+    ga_run_options opt = {NULL, false, NULL, false};
     int rc = 2;
     for(int i = 2; i < argc; i++) {
         const char *a = argv[i];
@@ -323,6 +327,8 @@ cleanup:
 }
 
 int main(int argc, char **argv) {
+    if(argc >= 2 && strcmp(argv[1], "client") == 0)
+        return gdsaudit_client_main(argc - 1, argv + 1);
     if(argc >= 2 && strcmp(argv[1], "gds") == 0)
         return gds_main(argc, argv);
     if(argc >= 2 && strcmp(argv[1], "server") == 0)

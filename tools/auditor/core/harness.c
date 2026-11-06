@@ -155,7 +155,7 @@ static ga_verdict run_one(const ga_test *t, size_t k, void *profile, const ga_ru
     double t0 = now_ms();
     if(t->needsWrite && !opt->allowChanges)
         ga_not_tested(&ctx, "changes the target; run with --allow-changes");
-    else if(t->needsOperator)
+    else if(t->needsOperator && !opt->operatorAvailable)
         ga_not_tested(&ctx, "needs an operator or hook (not available in this run)");
     else
         t->fn(&ctx, profile);

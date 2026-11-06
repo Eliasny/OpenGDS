@@ -28,6 +28,7 @@ add_test(NAME selftest_demo_flow
                  "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/demo-run")
 set_tests_properties(selftest_demo_flow PROPERTIES TIMEOUT 180)
 
+add_subdirectory(profile_client)
 add_subdirectory(profile_gds)
 add_subdirectory(profile_server)
 target_link_libraries(gdsaudit PRIVATE gdsaudit_profile_server)

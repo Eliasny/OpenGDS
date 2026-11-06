@@ -25,6 +25,18 @@ if [ "$GOT" != "$COMMIT" ]; then
     exit 1
 fi
 
+# Carry our fixes for the open62541 v1.5.10 gaps until upstream releases them
+# (docs/upstream/README.md): key file after a key-kept CSR push, #None for
+# discovery in the secure-only config, GDS headers installed with AUTOLOAD.
+# A cached source tree may already have them; apply each patch only once.
+PATCHES="$(cd "$(dirname "$0")/.." && pwd)/docs/upstream/patches/v1.5.10"
+for p in "$PATCHES"/*.patch; do
+    if git -C "$SRC" apply --reverse --check "$p" 2>/dev/null; then
+        continue
+    fi
+    git -C "$SRC" apply "$p"
+done
+
 # Hardening flags for the library itself (warnings are left to upstream).
 HARDEN="-O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -fstack-protector-strong \
 -fstack-clash-protection -fno-delete-null-pointer-checks -fno-strict-overflow \
@@ -74,9 +86,14 @@ cmake -S "$SRC" -B "$BUILD" -G "${CMAKE_GENERATOR:-Ninja}" \
 cmake --build "$BUILD"
 cmake --install "$BUILD"
 
-# open62541 gap 3 (00-project-context.md): the generated GDS headers are not
-# installed with UA_INFORMATION_MODEL_AUTOLOAD=GDS.
-cp "$BUILD/src_generated/open62541/types_gds_generated.h" \
-   "$BUILD/src_generated/open62541/nodeids_gds.h" \
-   "$PREFIX/include/open62541/"
+for h in types_gds_generated.h nodeids_gds.h; do
+    [ -f "$PREFIX/include/open62541/$h" ] || { echo "missing installed $h" >&2; exit 1; }
+done
+# The patched tree reports itself as v1.5.10-dirty. Record which patches
+# were applied so cmake/open62541.cmake can check them against the repository.
+mkdir -p "$PREFIX/share/opengds"
+: > "$PREFIX/share/opengds/open62541-patches.sha256"
+for p in "$PATCHES"/*.patch; do
+    sha256sum "$p" | cut -d' ' -f1 >> "$PREFIX/share/opengds/open62541-patches.sha256"
+done
 echo "open62541 $TAG ($COMMIT) installed in $PREFIX"
