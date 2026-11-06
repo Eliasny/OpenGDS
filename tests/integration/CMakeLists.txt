@@ -16,3 +16,6 @@ set_tests_properties(integration_push_flow PROPERTIES TIMEOUT 120 FIXTURES_REQUI
 
 # T1 pull tracer: gdsaudit and pull_test_client against opengdsd + opengds-signer
 add_subdirectory(pull)
+
+# T2 push tracer: gdsadm push now through opengdsd to push_test_server
+add_subdirectory(push)
