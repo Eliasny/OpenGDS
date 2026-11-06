@@ -19,6 +19,8 @@ typedef struct {
 /* Load <dir>/ca.der + <dir>/ca.key.der, or create a new CA there (0700/0600). */
 GDS_MUST_CHECK gds_status testca_load_or_create(testca_t *ca, const char *dir, const char *cn);
 void testca_free(testca_t *ca);
+/* An intermediate CA issued by `parent`, in memory only */
+GDS_MUST_CHECK gds_status testca_create_sub(testca_t *ca, const testca_t *parent, const char *cn);
 GDS_MUST_CHECK gds_status testca_cert_der(const testca_t *ca, gds_buf *out);
 /* Empty CRL signed by the CA (OPC UA trust lists expect one per CA). */
 GDS_MUST_CHECK gds_status testca_crl_der(const testca_t *ca, gds_buf *out);

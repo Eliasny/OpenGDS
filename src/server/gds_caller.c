@@ -76,9 +76,10 @@ static gds_status cstr(const UA_String *in, char **out) {
     return GDS_OK;
 }
 
-static void add_role(gds_caller_buf *b, UA_UInt16 ns, UA_UInt32 id) {
+/* Shallow: embedder Role NodeIds live as long as the server. */
+static void add_role(gds_caller_buf *b, UA_NodeId id) {
     if(b->nRoles < GDS_MAX_CALLER_ROLES)
-        b->roles[b->nRoles++] = UA_NODEID_NUMERIC(ns, id);
+        b->roles[b->nRoles++] = id;
 }
 
 /* The registered ApplicationId for the channel's ApplicationUri. */
@@ -107,17 +108,20 @@ gds_status gds_caller_build(gds_server *s, const UA_NodeId *sessionId, const voi
         st = GDS_ENOMEM;
     /* OPC 10000-18 §4.3: Anonymous for every session, AuthenticatedUser
      * for every session with user credentials. */
-    add_role(b, 0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
-    if(!ss->anonymous) {
-        add_role(b, 0, UA_NS0ID_WELLKNOWNROLE_AUTHENTICATEDUSER);
+    add_role(b, UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS));
+    if(!gds_session_anonymous(ss)) {
+        add_role(b, UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_AUTHENTICATEDUSER));
         memcpy(b->user, ss->user, sizeof(b->user));
         b->user[sizeof(b->user) - 1] = '\0';
     }
-    size_t nt = 0;
-    const gds_role_info *t = gds_role_table(&nt);
-    for(size_t i = 0; i < nt; i++)
-        if(ss->roles & t[i].bit)
-            add_role(b, t[i].gdsNamespace ? s->ns : 0, t[i].id);
+    for(size_t i = 0; i < gds_role_count(); i++) {
+        UA_NodeId id;
+        unsigned bit = 0;
+        const char *name = NULL;
+        gds_role_at(i, s->ns, &id, &bit, &name);
+        if(gds_session_roles(ss) & bit)
+            add_role(b, id);
+    }
 
     if(st == GDS_OK)
         st = cstr(&ss->clientAppUri, &b->appUri);
@@ -135,7 +139,7 @@ gds_status gds_caller_build(gds_server *s, const UA_NodeId *sessionId, const voi
     c->abi_minor = GDS_PLUGIN_ABI_MINOR;
     c->struct_size = sizeof(*c);
     c->sessionId = &b->sessionId;
-    c->userName = ss->anonymous ? NULL : b->user;
+    c->userName = gds_session_anonymous(ss) ? NULL : b->user;
     c->roles = b->roles;
     c->rolesSize = b->nRoles;
     c->applicationUri = b->appUri;

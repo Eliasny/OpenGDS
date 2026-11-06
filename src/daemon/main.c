@@ -5,7 +5,8 @@
  * Starts opengds-signer (when `signer` is configured) over a socketpair so
  * the CA key never enters this process (decision G1), issues the GDS's
  * own certificate through it on first start, and serves until SIGINT or
- * SIGTERM. Configuration: src/daemon/config.h.
+ * SIGTERM. Once started it sandboxes itself (common/sandbox.h: Landlock,
+ * seccomp; docs/opengdsd.md). Configuration: src/daemon/config.h.
  * SPDX-License-Identifier: MPL-2.0 */
 #include <fcntl.h>
 #include <signal.h>
@@ -24,6 +25,7 @@
 #include "gds_server.h"
 #include "own_cert.h"
 #include "store.h"
+#include "common/sandbox.h"
 #include "common/banned.h"
 
 #define SIGNER_TIMEOUT_MS 30000
@@ -249,6 +251,41 @@ static void stop(daemon_state *d) {
     gds_buf_free_secret(&d->key);
 }
 
+/* System files the server still reads after start-up: name resolution for
+ * its endpoint host, and the time zone for log lines. */
+static const char *const systemFiles[] = {
+    "/etc/hosts", "/etc/resolv.conf", "/etc/nsswitch.conf", "/etc/host.conf",
+    "/etc/gai.conf", "/etc/localtime",
+};
+
+#define MAX_SB_PATHS 10
+
+/* After start-up: the data directory, the CA directory (in-process CA
+ * only), the configuration and users files, and the system files above.
+ * TCP: bind on the configured port only. */
+static gds_status sandbox(const daemon_state *d, const char *configPath) {
+    gds_sb_path paths[MAX_SB_PATHS];
+    size_t n = 0;
+    paths[n++] = (gds_sb_path){d->cfg.dataDir, GDS_SB_CREATE};
+    if(!d->cfg.signer[0] && !d->cfg.signerSocket[0])
+        paths[n++] = (gds_sb_path){d->cfg.caDir, GDS_SB_CREATE};
+    paths[n++] = (gds_sb_path){configPath, GDS_SB_READ};
+    paths[n++] = (gds_sb_path){d->cfg.usersFile, GDS_SB_READ};
+    for(size_t i = 0; i < sizeof(systemFiles) / sizeof(systemFiles[0]) && n < MAX_SB_PATHS; i++)
+        if(access(systemFiles[i], F_OK) == 0)
+            paths[n++] = (gds_sb_path){systemFiles[i], GDS_SB_READ};
+    gds_sandbox sb = {.profile = GDS_SB_DAEMON, .paths = paths, .nPaths = n,
+                      .tcpBindPort = d->cfg.port};
+    gds_sandbox_report rep;
+    gds_status r = gds_sandbox_apply(&sb, &rep);
+    if(r != GDS_OK)
+        fprintf(stderr, "opengdsd: sandbox: %s\n", gds_status_name(r));
+    else if(!rep.skipped)
+        fprintf(stderr, "opengdsd: sandbox: Landlock ABI %d, seccomp %s\n", rep.landlockAbi,
+                rep.seccomp ? "on" : "not built in");
+    return r;
+}
+
 int main(int argc, char **argv) {
     if(argc != 3 || strcmp(argv[1], "--config") != 0)
         return usage();
@@ -269,6 +306,8 @@ int main(int argc, char **argv) {
         return 2;
     }
     r = start(&d);
+    if(r == GDS_OK)
+        r = sandbox(&d, argv[2]);
     if(r == GDS_OK)
         r = gds_server_run(d.server, &running);
     stop(&d);
