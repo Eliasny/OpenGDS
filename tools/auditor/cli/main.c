@@ -5,6 +5,8 @@
  *                [--work DIR] [--allow-changes] [--only PREFIX]
  *                [--expect FILE.csv] [--poll-seconds N] [--list]
  *
+ *   gdsaudit client [options] -- TRIGGER ARGV...   (profile_client/client_main.c)
+ *
  * Runs the GDS profile (the T0 spec tests) against a GDS and prints TAP.
  * Exit codes: 0 all passed, 1 a test failed (or, with --expect, a verdict
  * differs from the file), 2 the run could not be done, 3 some Not tested.
@@ -20,6 +22,7 @@
 
 #include "common/limits.h"
 #include "common/safeint.h"
+#include "client_profile.h"
 #include "gds_target.h"
 #include "spec_tests.h"
 #include "common/banned.h"
@@ -31,8 +34,9 @@ static int usage(const char *argv0) {
     fprintf(stderr,
             "usage: %s gds --url URL --trust CA.der [--trust ...] [--crl CRL] [--user U\n"
             "       --password-file F] [--work DIR] [--allow-changes] [--only PREFIX]\n"
-            "       [--expect FILE.csv] [--poll-seconds N] [--list]\n",
-            argv0);
+            "       [--expect FILE.csv] [--poll-seconds N] [--list]\n"
+            "       %s client --help\n",
+            argv0, argv0);
     return 2;
 }
 
@@ -116,6 +120,8 @@ static gds_status load_file(const char *path, size_t max, gds_buf *list, size_t 
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity): flat option parsing
 int main(int argc, char **argv) {
+    if(argc >= 2 && strcmp(argv[1], "client") == 0)
+        return gdsaudit_client_main(argc - 1, argv + 1);
     if(argc < 2 || strcmp(argv[1], "gds") != 0)
         return usage(argv[0]);
     static ga_test all[MAX_TESTS];
@@ -124,7 +130,7 @@ int main(int argc, char **argv) {
     t.appUri = APP_URI;
     t.pollSeconds = 30;
     const char *work = "./gdsaudit-work", *passwordFile = NULL;
-    ga_run_options opt = {NULL, false, NULL};
+    ga_run_options opt = {NULL, false, NULL, false};
     int rc = 2;
     for(int i = 2; i < argc; i++) {
         const char *a = argv[i];
