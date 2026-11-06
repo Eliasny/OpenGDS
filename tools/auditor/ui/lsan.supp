@@ -1,0 +1,16 @@
+# LeakSanitizer suppressions for the gui_smoke test only: allocations that
+# GTK 4 and the graphics stack keep until exit. A leak whose stack has none
+# of these libraries (the Auditor's own code and the view-model) still fails.
+leak:libgtk-4.so
+leak:libfontconfig.so
+leak:libpango-1.0.so
+leak:libpangoft2-1.0.so
+leak:libcairo.so
+leak:libEGL
+leak:libGLX
+leak:libgallium
+leak:libdrm
+leak:libX11.so
+leak:libharfbuzz.so
+leak:libgdk_pixbuf
+leak:libgraphene
