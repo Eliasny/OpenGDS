@@ -72,7 +72,8 @@ mkdir etc
 # etc/opengds.conf from packaging/opengds.conf.example, with
 #   signer_socket = /run/opengds/signer.sock   (and no `signer =` line)
 # etc/users as above
-printf '%s' 'the CA key passphrase' > ca-passphrase && chmod 0400 ca-passphrase
+printf '%s' 'the CA key passphrase' > ca-passphrase
+sudo chown 10002:10001 ca-passphrase && sudo chmod 0400 ca-passphrase   # only the signer reads it
 sudo chown 10001:10001 etc/* && sudo chmod 0640 etc/*
 docker compose -f packaging/docker/compose.yaml up -d
 ```

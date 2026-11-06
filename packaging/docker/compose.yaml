@@ -2,7 +2,8 @@
 # "Containers"; docs/packaging.md, "Container").
 #
 #   mkdir -p etc && cp opengds.conf users etc/      # see docs/packaging.md
-#   printf '%s' 'the CA key passphrase' > ca-passphrase && chmod 0400 ca-passphrase
+#   printf '%s' 'the CA key passphrase' > ca-passphrase
+#   sudo chown 10002:10001 ca-passphrase && sudo chmod 0400 ca-passphrase
 #   docker compose -f packaging/docker/compose.yaml up -d
 #
 # Only the signer container gets the passphrase and the CA volume. The two
@@ -33,11 +34,9 @@ services:
       - /var/lib/opengds-signer/ca
       - --passphrase-file
       - /run/secrets/ca-passphrase
-    secrets:
-      - source: ca-passphrase
-        uid: "10002"
-        gid: "10001"
-        mode: 0400
+    # A file secret is bind-mounted as it is (compose without swarm ignores
+    # uid and mode): the file must be owned by 10002 with mode 0400.
+    secrets: [ca-passphrase]
     volumes:
       - signer-state:/var/lib/opengds-signer
       - gds-state:/var/lib/opengds:ro
