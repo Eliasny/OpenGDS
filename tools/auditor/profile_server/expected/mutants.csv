@@ -73,3 +73,6 @@ apply-partial,SRV-TXN-11,fail
 diag-stale,SRV-TXN-12,fail
 diag-cancel-good,SRV-TXN-13,fail
 wire-old-cert,SRV-WIRE-01,fail
+wire-trustlist-not-loaded,SRV-WIRE-04,fail
+wire-ignore-crl,SRV-WIRE-05,fail
+wire-trust-all,SRV-WIRE-06,fail

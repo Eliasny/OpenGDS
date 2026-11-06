@@ -8,6 +8,7 @@
 #include "push_mgmt.h"
 
 #include <open62541/plugin/certificategroup.h>
+#include <open62541/plugin/certificategroup_default.h>
 #include <open62541/plugin/log_stdout.h>
 
 #include <openssl/crypto.h>
@@ -78,6 +79,10 @@ static const struct {
     {"accept-invalid-cert", "SRV-TL-07", "CloseAndUpdate does not check certificate signatures"},
     {"accept-expired-ca", "SRV-TL-08", "CloseAndUpdate does not check certificate validity times"},
     {"lastupdate-frozen", "SRV-TL-17", "ApplyChanges does not move LastUpdateTime"},
+    {"wire-trustlist-not-loaded", "SRV-WIRE-04",
+     "client certificates are checked against the trust list of the start, not the applied one"},
+    {"wire-ignore-crl", "SRV-WIRE-05", "a revoked client certificate is accepted"},
+    {"wire-trust-all", "SRV-WIRE-06", "every client certificate is accepted"},
     {"diag-stale", "SRV-TXN-12", "ApplyChanges leaves TransactionDiagnostics as it was"},
     {"diag-cancel-good", "SRV-TXN-13", "after CancelChanges the diagnostics Result is Good"},
     {"size-readable", "SRV-TL-19", "the TrustList Size Property returns a value"},
@@ -184,6 +189,8 @@ static struct {
 } P;
 
 static bool acceptKeys; /* set before pm_install */
+static UA_CertificateGroup startupPki; /* wire-trustlist-not-loaded */
+static bool hasStartupPki;
 
 void pm_accept_keys(bool on) {
     acceptKeys = on;
@@ -324,6 +331,10 @@ void pm_session_closed(const UA_NodeId *sessionId) {
 }
 
 void pm_clear(void) {
+    if(hasStartupPki) {
+        startupPki.clear(&startupPki);
+        hasStartupPki = false;
+    }
     secret_clear(&P.ownKey);
     secret_clear(&P.newKey);
     secret_clear(&P.prevKey);
@@ -1717,6 +1728,43 @@ static UA_StatusCode diagnostics(UA_Server *server) {
 #undef DAG_TL_ID
 #undef DIAG
 
+/* ---------------- Client certificate checks (SRV-WIRE-04 to -06) ----------------
+ * The library verifies a client's certificate with the secureChannelPKI
+ * group; the wire mutants wrap that call. */
+static UA_StatusCode (*libVerify)(UA_CertificateGroup *, const UA_ByteString *);
+
+static UA_StatusCode verify_client(UA_CertificateGroup *g, const UA_ByteString *cert) {
+    if(breaking("wire-trust-all"))
+        return UA_STATUSCODE_GOOD;
+    if(breaking("wire-trustlist-not-loaded") && hasStartupPki)
+        return startupPki.verifyCertificate(&startupPki, cert);
+    UA_StatusCode r = libVerify(g, cert);
+    if(breaking("wire-ignore-crl") && r == UA_STATUSCODE_BADCERTIFICATEREVOKED)
+        return UA_STATUSCODE_GOOD;
+    return r;
+}
+
+static UA_StatusCode verify_mutants(void) {
+    if(!breaking("wire-trust-all") && !breaking("wire-trustlist-not-loaded") &&
+       !breaking("wire-ignore-crl"))
+        return UA_STATUSCODE_GOOD;
+    UA_CertificateGroup *g = pki();
+    if(breaking("wire-trustlist-not-loaded")) {
+        UA_TrustListDataType l;
+        UA_NodeId id = g->certificateGroupId;
+        UA_StatusCode r = current_list(&l);
+        if(r == UA_STATUSCODE_GOOD)
+            r = UA_CertificateGroup_Memorystore(&startupPki, &id, &l, UA_Log_Stdout, NULL);
+        UA_TrustListDataType_clear(&l);
+        if(r != UA_STATUSCODE_GOOD)
+            return r;
+        hasStartupPki = true;
+    }
+    libVerify = g->verifyCertificate;
+    g->verifyCertificate = verify_client;
+    return UA_STATUSCODE_GOOD;
+}
+
 /* The mutants that remove a node or a reference (SRV-CAP-01, -02, -08). */
 static UA_StatusCode structure_mutants(UA_Server *server) {
     if(breaking("no-rejected-list-method"))
@@ -1772,7 +1820,8 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
         UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "no CancelChanges node");
     if(advertise(server) != UA_STATUSCODE_GOOD || optional_methods(server) != UA_STATUSCODE_GOOD ||
        structure_mutants(server) != UA_STATUSCODE_GOOD ||
-       trustlist_props(server) != UA_STATUSCODE_GOOD || diagnostics(server) != UA_STATUSCODE_GOOD)
+       trustlist_props(server) != UA_STATUSCODE_GOOD || diagnostics(server) != UA_STATUSCODE_GOOD ||
+       verify_mutants() != UA_STATUSCODE_GOOD)
         return UA_STATUSCODE_BADINTERNALERROR;
     return UA_STATUSCODE_GOOD;
 }

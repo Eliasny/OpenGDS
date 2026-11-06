@@ -73,4 +73,7 @@ SRV-TXN-11,pass
 SRV-TXN-12,pass
 SRV-TXN-13,pass
 SRV-WIRE-01,pass
+SRV-WIRE-04,pass
+SRV-WIRE-05,pass
+SRV-WIRE-06,pass
 SRV-RESTORE,pass
