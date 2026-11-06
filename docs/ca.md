@@ -10,7 +10,7 @@ The built-in CA backend (`src/ca/ca_openssl.c`) issues application instance cert
 | Serial number | 20 random bytes, positive, non-zero | RFC 5280 §4.1.2.2 |
 | Signature | sha256WithRSAEncryption | RsaSha256ApplicationCertificateType |
 | Subject | `CN` = first ApplicationName of the record, cut to 64 bytes at a UTF-8 boundary; `O` = configured organization | record, config |
-| Validity | from now minus 5 minutes (clock skew) to now plus `leafLifetimeDays` (default 365), never past the CA's notAfter | config |
+| Validity | from now minus 5 minutes (clock skew) to now plus `leafLifetimeDays` (default 365, G6), never past the CA's notAfter | config |
 | basicConstraints | cA FALSE, critical | OPC 10000-6 §6.2.2 |
 | keyUsage | digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment, critical | OPC 10000-6 §6.2.2 (RSA) |
 | extendedKeyUsage | servers: serverAuth and clientAuth; clients: clientAuth | OPC 10000-6 §6.2.2 |
@@ -28,9 +28,9 @@ The CSR's subject, its SAN (including any ApplicationUri it names) and its reque
 
 ## The CA itself
 
-- **Key:** created on first start, RSA `caKeyBits` (default 3072, within the RsaSha256 range of 2048 to 4096).
-  - Stored as PKCS#8 PEM in `ca.key.pem` with mode 0600.
-  - Encrypted with AES-256 when a passphrase is configured.
+- **Key:** created on first start, RSA `caKeyBits` (default 3072, decision G6; within the RsaSha256 range of 2048 to 4096).
+  - Always stored as encrypted PKCS#8 (G6) in `ca.key.pem` with mode 0600: PBES2, PBKDF2-HMAC-SHA256 with 600,000 iterations, and AES-256-CBC.
+  - The passphrase is required. It comes from systemd credentials, never from argv or the environment.
   - Written atomically through a secure-heap buffer.
 - **Certificate:** `ca.der`, self-signed.
   - Validity is `caLifetimeDays`, default 10 years.
@@ -43,7 +43,7 @@ The CSR's subject, its SAN (including any ApplicationUri it names) and its reque
   - A key without a certificate (a crash between the two writes) gets a new certificate.
   - A certificate without its key is refused (`GDS_ESTATE`), never replaced by a new CA.
 
-The lifetimes are configuration defaults chosen for OpenGDS. They are not values the specification requires.
+The defaults are Elias's decision G6: CA RSA 3072 with SHA-256 for 10 years, application certificates for 1 year, all configurable. They are not values the specification requires.
 
 ## Plugin hooks (UASM asks)
 

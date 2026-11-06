@@ -252,6 +252,12 @@ static void test_reopen(const gds_ca_config *cfg, const gds_buf *firstCa) {
           memcmp(again.data, firstCa->data, again.len) == 0);
     gds_buf_free(&again);
     gds_ca_close(ca);
+    /* the key file is encrypted: a wrong passphrase cannot load it */
+    gds_ca_config wrong = *cfg;
+    uint8_t bad[] = "wrong";
+    gds_buf badPass = {bad, sizeof(bad) - 1};
+    wrong.keyPassphrase = &badPass;
+    CHECK(gds_ca_openssl_open(&wrong, &ca) == GDS_ECRYPTO && ca == NULL);
     /* a certificate without its key is refused, never replaced */
     char key[1024];
     CHECK(gds_path(key, sizeof(key), "%s/ca.key.pem", cfg->dir) == GDS_OK);
@@ -280,6 +286,10 @@ int main(int argc, char **argv) {
     cfg.organization = "OpenGDS Test";
     cfg.caKeyBits = 2048; /* fast test; the default is 3072 */
     gds_ca *ca = NULL;
+    CHECK(gds_ca_openssl_open(&cfg, &ca) == GDS_EINVAL && ca == NULL); /* no passphrase */
+    uint8_t pw[] = "unit-test-passphrase";
+    gds_buf pass = {pw, sizeof(pw) - 1};
+    cfg.keyPassphrase = &pass;
     if(!CHECK(gds_ca_openssl_open(&cfg, &ca) == GDS_OK) || !ca)
         return CHECK_DONE();
 

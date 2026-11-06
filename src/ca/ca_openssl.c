@@ -11,6 +11,7 @@
 #include <open62541/nodeids.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/pkcs12.h>
 #include <openssl/x509v3.h>
 
 #include <stdlib.h>
@@ -61,22 +62,27 @@ static gds_status load_key(const char *path, const gds_buf *pass, EVP_PKEY **out
     return *out ? GDS_OK : GDS_ECRYPTO;
 }
 
+/* Encrypted PKCS#8 (decision G6): PBES2, PBKDF2-HMAC-SHA256 with
+ * KEY_PBKDF2_ITER iterations, AES-256-CBC. */
+#define KEY_PBKDF2_ITER 600000
+
 static gds_status save_key(const char *path, EVP_PKEY *key, const gds_buf *pass) {
-    BIO *bio = BIO_new(BIO_s_secmem());
-    if(!bio)
-        return GDS_ENOMEM;
-    int ok;
-    if(pass && pass->len > 0)
-        ok = PEM_write_bio_PKCS8PrivateKey(bio, key, EVP_aes_256_cbc(), (const char *)pass->data,
-                                           (int)pass->len, NULL, NULL);
-    else
-        ok = PEM_write_bio_PKCS8PrivateKey(bio, key, NULL, NULL, 0, NULL, NULL);
-    char *data = NULL;
-    long len = BIO_get_mem_data(bio, &data);
+    PKCS8_PRIV_KEY_INFO *p8inf = EVP_PKEY2PKCS8(key);
+    X509_SIG *p8 = p8inf ? PKCS8_encrypt_ex(-1, EVP_aes_256_cbc(), (const char *)pass->data,
+                                            (int)pass->len, NULL, 0, KEY_PBKDF2_ITER, p8inf,
+                                            NULL, NULL)
+                         : NULL;
+    PKCS8_PRIV_KEY_INFO_free(p8inf);
+    BIO *bio = p8 ? BIO_new(BIO_s_secmem()) : NULL;
     gds_status r = GDS_ECRYPTO;
-    if(ok == 1 && len > 0)
-        r = gds_file_write_atomic(path, data, (size_t)len, 0600);
+    if(bio && PEM_write_bio_PKCS8(bio, p8) == 1) {
+        char *data = NULL;
+        long len = BIO_get_mem_data(bio, &data);
+        if(len > 0)
+            r = gds_file_write_atomic(path, data, (size_t)len, 0600);
+    }
     BIO_free(bio); /* secure-heap BIO: cleared on free */
+    X509_SIG_free(p8);
     return r;
 }
 
@@ -335,7 +341,8 @@ static const gds_ca_backend ossl_backend = {
 gds_status gds_ca_openssl_open(const gds_ca_config *cfg, gds_ca **out) {
     *out = NULL;
     if(!cfg || !cfg->dir || !cfg->caSubjectCN || cfg->leafLifetimeDays == 0 ||
-       cfg->caLifetimeDays == 0 || cfg->crlLifetimeDays == 0)
+       cfg->caLifetimeDays == 0 || cfg->crlLifetimeDays == 0 || !cfg->keyPassphrase ||
+       !cfg->keyPassphrase->data || cfg->keyPassphrase->len == 0)
         return GDS_EINVAL;
     gds_status r = gds_mkdirs(cfg->dir, 0700);
     if(r != GDS_OK)

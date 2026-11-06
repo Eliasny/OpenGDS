@@ -78,8 +78,8 @@ typedef struct {
     unsigned caLifetimeDays;
     unsigned leafLifetimeDays;
     unsigned crlLifetimeDays;
-    /* Optional passphrase for the CA key file (PKCS#8, AES-256). NULL = the
-     * key file is protected by its mode and the signer's user only. */
+    /* Required: passphrase of the CA key file, which is always encrypted
+     * PKCS#8 (decision G6). From systemd credentials, never argv or env. */
     const gds_buf *keyPassphrase;
     /* Optional pre-connected socket for a CA plugin (issue #12), -1 = none.
      * The signer passes it through and never reads from it. */
