@@ -113,6 +113,13 @@ gds_status gds_store_req_next_received(gds_store *s, gds_request *out) {
     return s->be.req_next_received(s->ctx, out);
 }
 
+gds_status gds_store_req_scan(gds_store *s, gds_req_state state, gds_store_req_cb cb,
+                              void *ctx) {
+    if(!s->be.req_scan)
+        return GDS_EUNSUPPORTED; /* a backend before minor 2 */
+    return s->be.req_scan(s->ctx, state, cb, ctx);
+}
+
 gds_status gds_store_req_set_state(gds_store *s, const UA_Guid *id, gds_req_state state,
                                    const gds_buf *cert, UA_StatusCode error) {
     return s->be.req_set_state(s->ctx, id, state, cert, error);
@@ -184,4 +191,31 @@ gds_status gds_store_audit_verify(gds_store *s, int64_t *rows, int64_t *badSeq) 
         return GDS_ESTATE;
     }
     return GDS_OK;
+}
+
+gds_status gds_store_cert_revoke(gds_store *s, const UA_Guid *appId, const gds_buf *der,
+                                 gds_buf *serial) {
+    serial->data = NULL;
+    serial->len = 0;
+    if(!der || !der->data || der->len == 0)
+        return GDS_EINVAL;
+    if(!s->be.cert_revoke)
+        return GDS_EUNSUPPORTED; /* a backend before minor 3 */
+    return s->be.cert_revoke(s->ctx, appId, der, serial);
+}
+
+gds_status gds_store_cert_revoke_app(gds_store *s, const UA_Guid *appId, gds_store_serial_cb cb,
+                                     void *ctx) {
+    if(!s->be.cert_revoke_app)
+        return GDS_EUNSUPPORTED;
+    return s->be.cert_revoke_app(s->ctx, appId, cb, ctx);
+}
+
+gds_status gds_store_cert_is_revoked(gds_store *s, const gds_buf *serial, bool *revoked) {
+    *revoked = false;
+    if(!serial || !serial->data || serial->len == 0)
+        return GDS_EINVAL;
+    if(!s->be.cert_is_revoked)
+        return GDS_EUNSUPPORTED;
+    return s->be.cert_is_revoked(s->ctx, serial, revoked);
 }

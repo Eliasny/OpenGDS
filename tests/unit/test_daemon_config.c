@@ -21,24 +21,34 @@ static void test_ok(void) {
     gdsd_config c;
     unsigned line = 9;
     CHECK(parse("# comment\n\n" BASE "  port =  4840 \r\nloopback_only=true\n"
-                "signer = /usr/libexec/opengds-signer\nauto_approve = false",
+                "signer = /usr/libexec/opengds-signer\napproval = manual",
                 &c, &line) == GDS_OK);
     CHECK_EQ_INT(line, 0);
     CHECK(strcmp(c.applicationUri, "urn:test:gds") == 0);
     CHECK(strcmp(c.signer, "/usr/libexec/opengds-signer") == 0);
     CHECK_EQ_INT(c.port, 4840);
-    CHECK(c.loopbackOnly && !c.autoApprove);
+    CHECK(c.loopbackOnly && c.approval == GDSD_APPROVE_MANUAL);
     CHECK(strcmp(c.applicationName, "OpenGDS") == 0); /* default */
-    CHECK(parse(BASE, &c, &line) == GDS_OK && c.port == 58810 && c.autoApprove);
+    CHECK(parse(BASE, &c, &line) == GDS_OK && c.port == 58810 &&
+          c.approval == GDSD_APPROVE_RENEWALS); /* default */
+    CHECK(parse(BASE "approval = auto\n", &c, &line) == GDS_OK && c.approval == GDSD_APPROVE_AUTO);
+}
+
+/* Values a key does not accept. */
+static void test_bad_values(void) {
+    gdsd_config c;
+    unsigned line = 0;
+    CHECK(parse(BASE "colour = blue\n", &c, &line) == GDS_EINVAL && line == 5);
+    CHECK(parse(BASE "port = 70000\n", &c, &line) == GDS_EINVAL && line == 5);
+    CHECK(parse(BASE "approval = sometimes\n", &c, &line) == GDS_EINVAL && line == 5);
+    CHECK(parse(BASE "auto_approve = true\n", &c, &line) == GDS_EINVAL); /* the T1 key is gone */
+    CHECK(parse(BASE "port = 12x\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "loopback_only = yes\n", &c, &line) == GDS_EINVAL);
 }
 
 static void test_refused(void) {
     gdsd_config c;
     unsigned line = 0;
-    CHECK(parse(BASE "colour = blue\n", &c, &line) == GDS_EINVAL && line == 5);
-    CHECK(parse(BASE "port = 70000\n", &c, &line) == GDS_EINVAL && line == 5);
-    CHECK(parse(BASE "port = 12x\n", &c, &line) == GDS_EINVAL);
-    CHECK(parse(BASE "loopback_only = yes\n", &c, &line) == GDS_EINVAL);
     CHECK(parse(BASE "signer = relative/path\n", &c, &line) == GDS_EINVAL);
     CHECK(parse(BASE "data_dir = /again\n", &c, &line) == GDS_EINVAL && line == 5);
     CHECK(parse(BASE "hostname =\n", &c, &line) == GDS_EINVAL);
@@ -62,6 +72,7 @@ static void test_refused(void) {
 
 int main(void) {
     test_ok();
+    test_bad_values();
     test_refused();
     return CHECK_DONE();
 }

@@ -2,7 +2,7 @@
  * privilege"). opengdsd fills it with ca_ipc (forwarding to opengds-signer);
  * the signer fills it with ca_openssl or a plugin (UASM ceremony CA, HSM).
  *
- * Rules every backend keeps (decision G5, OPC 10000-12 §7.9.4):
+ * Rules every backend keeps (decision G5, OPC 10000-12 §7.9.3):
  * - every certificate field comes from the registered record; the CSR gives
  *   only its public key, after its signature (proof of possession) checks;
  * - the CA private key never leaves the backend.
@@ -21,7 +21,7 @@
 #include "common/buf.h"
 #include "common/compiler.h"
 
-#define GDS_CA_ABI_VERSION 1u
+#define GDS_CA_ABI_VERSION 2u /* 2: revoke */
 
 typedef enum {
     GDS_CA_OP_SIGN_CSR = 1,
@@ -52,7 +52,8 @@ void gds_ca_issued_clear(gds_ca_issued *c);
 
 typedef struct gds_ca gds_ca;
 
-/* A CA backend. Every function pointer except pre_sign is required. */
+/* A CA backend. Every function pointer except pre_sign and revoke is
+ * required. */
 typedef struct {
     uint32_t abiVersion; /* GDS_CA_ABI_VERSION */
     /* Optional (NULL = allow). Called immediately before every signature.
@@ -66,6 +67,10 @@ typedef struct {
     /* The current CRL (DER). */
     gds_status (*get_crl)(void *ctx, gds_buf *out);
     void (*destroy)(void *ctx);
+    /* Optional (NULL = GDS_EUNSUPPORTED). Put serial (big-endian, positive)
+     * on the CRL and issue a new CRL; revoking a serial again changes
+     * nothing and succeeds. */
+    gds_status (*revoke)(void *ctx, const gds_buf *serial);
 } gds_ca_backend;
 
 /* Settings for the built-in OpenSSL backend (ca_openssl.c). Defaults are set
@@ -100,5 +105,8 @@ GDS_MUST_CHECK gds_status gds_ca_sign_csr(gds_ca *ca, const gds_ca_subject *subj
                                           const gds_buf *csrDer, gds_ca_issued *out);
 GDS_MUST_CHECK gds_status gds_ca_get_ca_cert(gds_ca *ca, gds_buf *out);
 GDS_MUST_CHECK gds_status gds_ca_get_crl(gds_ca *ca, gds_buf *out);
+/* Revoke the certificate with this serial (OPC 10000-12 §7.9.6). The caller
+ * has checked that this CA issued it. */
+GDS_MUST_CHECK gds_status gds_ca_revoke(gds_ca *ca, const gds_buf *serial);
 
 #endif

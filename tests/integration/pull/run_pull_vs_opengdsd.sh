@@ -11,6 +11,8 @@
 #   6. opengds-signer --listen (hosts without systemd, e.g. containers):
 #      started before opengdsd has created the store (a first start), then
 #      one signer serves successive opengdsd connections
+#   7. approval = manual: the request waits until `gdsadm approvals approve`
+#      answers its dialog as a RegistrationAuthorityAdmin
 # Usage: run_pull_vs_opengdsd.sh <build-dir> <work-dir> <expected.csv>
 # SPDX-License-Identifier: MPL-2.0
 set -u
@@ -61,6 +63,7 @@ printf 'pull-tracer-ca-passphrase\n' > "$W/ca.pw"
 chmod 600 "$W/registrar.pw" "$W/ca.pw"
 CRED=$("$GDSADM" hash-password < "$W/registrar.pw") || fail "gdsadm hash-password"
 echo "registrar DiscoveryAdmin,CertificateAuthorityAdmin,SecurityAdmin $CRED" > "$W/users"
+echo "approver RegistrationAuthorityAdmin $CRED" >> "$W/users"
 chmod 600 "$W/users"
 cat > "$W/opengds.conf" <<CONF
 application_uri = urn:opengds:pull-tracer:gds
@@ -72,7 +75,10 @@ ca_dir = $W/ca
 signer = $SIGNER
 ca_passphrase_file = $W/ca.pw
 organization = OpenGDS pull tracer
+approval = auto
 CONF
+
+cp "$W/opengds.conf" "$W/base.conf"
 
 echo "=============== 1. gdsaudit gds -> opengdsd ==============="
 start_gds "$W/gds1.log"
@@ -191,4 +197,32 @@ done
 [ "$SEP" = 1 ] && echo "signer ran as uid 65534 on a read-only store mount"
 kill -0 "$LST" 2>/dev/null || { cat "$W/listen.log"; fail "signer --listen exited after a connection"; }
 kill "$LST" 2>/dev/null
+echo "=============== 7. manual approval (gdsadm approvals) ==============="
+sed -e 's/^approval = .*/approval = manual/' "$W/base.conf" > "$W/opengds.conf"
+start_gds "$W/gds-manual.log"
+"$PULL" --gds "opc.tcp://127.0.0.1:$PORT" --pki "$W/pki-manual" --trust "$W/ca/ca.der" \
+    --crl "$W/ca/ca.crl" --user registrar --password-file "$W/registrar.pw" \
+    --app-uri "urn:opengds:pull-tracer:manual" --poll-seconds 60 > "$W/pull-manual.log" 2>&1 &
+PC=$!
+RID=""
+i=0
+until [ -n "$RID" ]; do
+    i=$((i + 1)); [ $i -gt 300 ] && { cat "$W/pull-manual.log"; fail "no request waits for approval"; }
+    sleep 0.1
+    RID=$("$GDSADM" approvals list --store "$W/data/opengds.db" | grep "urn:opengds:pull-tracer:manual" | cut -f1)
+done
+echo "waiting: $RID"
+ADM="--url opc.tcp://127.0.0.1:$PORT --password-file $W/registrar.pw --trust $W/ca/ca.der --crl $W/ca/ca.crl"
+# shellcheck disable=SC2086 # ADM is a list of words
+"$GDSADM" approvals approve $ADM --user registrar "$RID" > "$W/approve-denied.log" 2>&1 \
+    && fail "a CertificateAuthorityAdmin without RegistrationAuthorityAdmin approved"
+expect "BadUserAccessDenied" "$W/approve-denied.log"
+# shellcheck disable=SC2086
+"$GDSADM" approvals approve $ADM --user approver --comment "pull tracer" "$RID" \
+    > "$W/approve.log" 2>&1 || { cat "$W/approve.log"; fail "gdsadm approvals approve"; }
+wait "$PC" || { cat "$W/pull-manual.log"; fail "pull after approval"; }
+expect "PULL WORKFLOW COMPLETE" "$W/pull-manual.log"
+"$GDSADM" approvals list --store "$W/data/opengds.db" > "$W/pending.txt"
+[ -s "$W/pending.txt" ] && { cat "$W/pending.txt"; fail "requests still wait after approval"; }
+stop_gds
 echo "PULL TRACER PASSED"

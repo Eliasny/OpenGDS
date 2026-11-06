@@ -4,6 +4,7 @@
  * and CLI-TL-08 (slow) follow.
  * SPDX-License-Identifier: MPL-2.0 */
 #include "client_profile.h"
+#include "test_ca.h"
 #include "common/banned.h"
 
 /* One cycle with a changed trust list served in Reads of 256 bytes */
@@ -154,10 +155,51 @@ static void t_tl_issuers(ga_ctx *ctx, void *profile) {
     cli_probe_clear(&pr);
 }
 
+/* CLI-TL-04: a CRL in the trust list revokes the probe's certificate */
+static void t_tl_crl(ga_ctx *ctx, void *profile) {
+    cli_profile *p = profile;
+    if(!cli_base_cycle(p, ctx))
+        return;
+    cli_probe_result pr;
+    if(!cli_probe(p, FG_CA_MAIN, ctx, &pr))
+        return;
+    bool worked = pr.connected;
+    cli_probe_clear(&pr);
+    if(!worked) {
+        ga_not_tested(ctx, "the client does not connect to a probe from the GDS CA at all");
+        return;
+    }
+    gds_buf cert = {0}, key = {0};
+    if(testca_issue(fg_ca(FG_CA_MAIN), "OpenGDS Auditor TEST revoked probe", "urn:opengds:auditor:probe",
+                    "localhost", 1, &cert, &key) != GDS_OK ||
+       fg_set_revoked_cert(&cert) != GDS_OK) {
+        ga_not_tested(ctx, "cannot make the revoked probe identity");
+        gds_buf_free(&cert);
+        gds_buf_free_secret(&key);
+        return;
+    }
+    cli_cycle c;
+    if(cli_cycle_for(p, FAULT_TL_REVOKING, ctx, &c)) {
+        if(!cli_count(&c, FG_M_TL_READ))
+            ga_not_tested(ctx, "the client did not download the changed trust list");
+        else if(cli_probe_identity(p, &cert, &key, "revoked by the list's CRL", ctx, &pr)) {
+            if(pr.connected)
+                ga_fail(ctx, "the client connected to a server whose certificate the trust "
+                             "list's CRL revokes");
+            else
+                ga_pass(ctx, "the client refused the probe revoked by the CRL in the trust list");
+            cli_probe_clear(&pr);
+        }
+    }
+    gds_buf_free(&cert);
+    gds_buf_free_secret(&key);
+}
+
 const ga_test cli_trustlist_tests[] = {
     {"CLI-TL-01", "12 §7.9.9, §7.8.2.4", "Reads the trust list to the end of the file", false, true, t_tl_read_all},
     {"CLI-TL-02", "12 §7.8.2.4", "Closes the file after reading", false, true, t_tl_close},
     {"CLI-TL-03", "12 §7.9.9; 4 §6.1.3", "A CA added to the trust list is trusted", false, true, t_tl_trusted},
+    {"CLI-TL-04", "12 §7.9.9; 4 §6.1.3", "A certificate revoked by a CRL in the list is refused", false, true, t_tl_crl},
     {"CLI-TL-05", "12 §7.8.2.8; 4 §6.1.3", "A new trust list replaces the old one", false, true, t_tl_replace},
     {"CLI-TL-06", "12 §7.8.2.8; 4 §6.1.3", "Issuer-only CAs are not trusted", false, true, t_tl_issuers},
     {"CLI-TL-07", "12 §7.6", "Skips the download when the list is unchanged", false, true, t_tl_skip_unchanged},

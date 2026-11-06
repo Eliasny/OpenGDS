@@ -497,6 +497,7 @@ static void session_free(gds_session *s) {
     if(!s)
         return;
     UA_String_clear(&s->clientAppUri);
+    UA_ByteString_clear(&s->clientCert);
     UA_String_clear(&s->securityPolicyUri);
     for(size_t i = 0; i < GDS_SESSION_TL_HANDLES; i++)
         UA_ByteString_clear(&s->tl[i].file);
@@ -548,6 +549,12 @@ static UA_String cert_app_uri(const UA_ByteString *der) {
 bool gds_session_is_app(const void *sessionContext, const UA_String *applicationUri) {
     const gds_session *s = sessionContext;
     return s && s->clientAppUri.length > 0 && UA_String_equal(&s->clientAppUri, applicationUri);
+}
+
+bool gds_session_holds_cert(const void *sessionContext, const gds_buf *der) {
+    const gds_session *s = sessionContext;
+    return s && der && s->clientAppUri.length > 0 && s->clientCert.length > 0 &&
+           s->clientCert.length == der->len && memcmp(s->clientCert.data, der->data, der->len) == 0;
 }
 
 static UA_StatusCode login_cb(const UA_String *userName, const UA_ByteString *password,
@@ -637,8 +644,12 @@ static UA_StatusCode activate(UA_Server *server, UA_AccessControl *ac,
     gds_session *s = *sessionContext;
     if(s != old)
         session_free(old); /* re-activation with a new identity */
-    if(s && s->clientAppUri.length == 0)
+    if(s && s->clientAppUri.length == 0) {
         s->clientAppUri = cert_app_uri(cert);
+        if(s->clientAppUri.length > 0 &&
+           UA_ByteString_copy(cert, &s->clientCert) != UA_STATUSCODE_GOOD)
+            UA_String_clear(&s->clientAppUri); /* no rights rather than half of them */
+    }
     if(s && ep) {
         s->securityMode = ep->securityMode;
         UA_String_clear(&s->securityPolicyUri);
@@ -748,6 +759,9 @@ bool gds_method_executable(const struct gds_server *s, const void *sessionContex
     UA_UInt32 id = methodId->identifier.numeric;
     if(ns0_method_open(id))
         return true;
+    /* answering approval dialogs (gds_approvals.c) */
+    if(id == UA_NS0ID_DIALOGCONDITIONTYPE_RESPOND || id == UA_NS0ID_DIALOGCONDITIONTYPE_RESPOND2)
+        return gds_session_has(sessionContext, GDS_ROLE_REGISTRATION_AUTHORITY_ADMIN);
     return gds_session_has(sessionContext, GDS_ROLE_SECURITY_ADMIN) &&
            server_configuration_method(id);
 }

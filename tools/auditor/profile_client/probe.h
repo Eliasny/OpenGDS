@@ -18,6 +18,8 @@
 
 /* Start the probe with a fresh identity issued by `issuer`. */
 GDS_MUST_CHECK gds_status probe_start(long port, fg_ca_id issuer);
+/* The same with a given identity (e.g. one a CRL revokes) */
+GDS_MUST_CHECK gds_status probe_start_identity(long port, const gds_buf *cert, const gds_buf *key);
 /* Serve pending network events (no-op when stopped). */
 void probe_iterate(void);
 void probe_stop(void);

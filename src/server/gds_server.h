@@ -15,6 +15,16 @@
 #include "gds_plugin.h"
 #include "store.h"
 
+/* GDS_APPROVE_RENEWALS: a request from an application that holds a valid
+ * certificate in that group and of that type is approved on arrival;
+ * other requests wait. Zero is not a policy, so a config that forgets it
+ * is refused. */
+typedef enum {
+    GDS_APPROVE_ALL = 1,
+    GDS_APPROVE_RENEWALS = 2,
+    GDS_APPROVE_MANUAL = 3
+} gds_approval_policy;
+
 typedef struct {
     UA_UInt16 port;
     /* Host name in the endpoint URLs; NULL lets open62541 choose. When
@@ -36,8 +46,9 @@ typedef struct {
     gds_store *store; /* borrowed, read-write */
     gds_ca *ca;       /* borrowed: ca_ipc (signer) or in-process */
     const gds_users *users;
-    /* T1: requests are approved on arrival (decision G7). */
-    bool autoApprove;
+    /* Which certificate requests are approved on arrival; the others wait
+     * for a RegistrationAuthorityAdmin (gds_approvals.c). */
+    gds_approval_policy approval;
 } gds_server_config;
 
 typedef struct gds_server gds_server;

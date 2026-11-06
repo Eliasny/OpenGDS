@@ -18,7 +18,11 @@
  *                                                    opengds-signer.socket; production)
  *   (neither: the CA runs in opengdsd, development only)
  *   ca_passphrase_file = /etc/opengds/ca-passphrase (default: $CREDENTIALS_DIRECTORY/ca-passphrase)
- *   auto_approve     = true                         (T1 default, decision G7)
+ *   approval         = renewals                     (default) which certificate requests
+ *                      are approved on arrival: auto (all), renewals (an
+ *                      application with a valid certificate in that group),
+ *                      manual (none); the others wait for a
+ *                      RegistrationAuthorityAdmin (Respond2 on their dialog)
  *
  * With `signer` or `signer_socket` the CA key never enters opengdsd
  * (decision G1). With `signer` the passphrase file path (not its content)
@@ -51,8 +55,13 @@ typedef struct {
     char caPassphraseFile[GDS_MAX_PATH];
     uint16_t port;
     bool loopbackOnly;
-    bool autoApprove;
+    uint8_t approval; /* GDSD_APPROVE_* */
 } gdsd_config;
+
+/* The values of gds_approval_policy (gds_server.h). */
+#define GDSD_APPROVE_AUTO 1
+#define GDSD_APPROVE_RENEWALS 2
+#define GDSD_APPROVE_MANUAL 3
 
 /* Parse a configuration text (len bytes, need not be NUL-terminated). On
  * error, *errLine is the 1-based line at fault. */

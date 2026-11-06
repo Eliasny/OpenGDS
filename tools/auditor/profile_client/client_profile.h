@@ -55,7 +55,12 @@ GDS_MUST_CHECK bool cli_cycle_for(cli_profile *p, fault_id fault, ga_ctx *ctx, c
 /* Start the probe with an identity from `issuer`, have the client connect
  * to it, record what it presented. false (Not tested decided) on failure. */
 GDS_MUST_CHECK bool cli_probe(cli_profile *p, fg_ca_id issuer, ga_ctx *ctx, cli_probe_result *out);
+/* The same with a given probe identity */
+GDS_MUST_CHECK bool cli_probe_identity(cli_profile *p, const gds_buf *cert, const gds_buf *key,
+                                       const char *label, ga_ctx *ctx, cli_probe_result *out);
 void cli_probe_clear(cli_probe_result *r);
+/* The trigger ended by itself and did not crash */
+bool cli_survived(const trig_result *r);
 /* true if `presented` (a chain as sent) begins with exactly `cert` */
 bool cli_cert_is(const gds_buf *presented, const gds_buf *cert);
 /* The last valid certificate the fake GDS issued (FinishRequest Good), or NULL */
@@ -68,6 +73,8 @@ size_t cli_count(const cli_cycle *c, fg_method m);
 void cli_sessions(const cli_cycle *c, size_t *first, size_t *end);
 
 /* Test groups (one file each, docs/auditor/client-profile.md) */
+extern const ga_test cli_trust_tests[];
+extern const size_t cli_trust_count;
 extern const ga_test cli_csr_tests[];
 extern const size_t cli_csr_count;
 extern const ga_test cli_register_tests[];

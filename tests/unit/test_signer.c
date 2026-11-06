@@ -25,6 +25,12 @@
 
 #define STORED_URI "urn:opengds:test:stored"
 
+/* Entries on a CRL (an empty CRL has no list at all). */
+static int crl_count(X509_CRL *crl) {
+    STACK_OF(X509_REVOKED) *l = X509_CRL_get_REVOKED(crl);
+    return l ? sk_X509_REVOKED_num(l) : 0;
+}
+
 static gds_status make_csr(gds_buf *out) {
     EVP_PKEY *key = EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)2048);
     X509_REQ *req = X509_REQ_new();
@@ -94,7 +100,8 @@ static void *serve_thread(void *p) {
 
 /* opengdsd's view: it passes a different record and junk instead of a CSR;
  * the signer must use the stored ones. */
-static void test_ipc_sign(gds_ca *ipc, gds_store *w, const UA_Guid *reqId) {
+static void test_ipc_sign(gds_ca *ipc, gds_store *w, const UA_Guid *reqId,
+                          gds_ca_issued *kept) {
     UA_ApplicationRecordDataType lie;
     UA_ApplicationRecordDataType_init(&lie);
     lie.applicationUri = UA_STRING("urn:evil:daemon");
@@ -109,7 +116,8 @@ static void test_ipc_sign(gds_ca *ipc, gds_store *w, const UA_Guid *reqId) {
     /* once issued, never signed again */
     CHECK(gds_store_req_set_state(w, reqId, GDS_REQ_ISSUED, &out.der, UA_STATUSCODE_GOOD) ==
           GDS_OK);
-    gds_ca_issued_clear(&out);
+    *kept = out; /* for test_ipc_revoke */
+    memset(&out, 0, sizeof(out));
     CHECK(gds_ca_sign_csr(ipc, &subj, &junkCsr, &out) == GDS_ESTATE);
     UA_Guid unknown;
     CHECK(gds_guid_random(&unknown) == GDS_OK);
@@ -143,6 +151,64 @@ static void test_journal(const char *path, const UA_Guid *reqId) {
     CHECK(!js.e[1].issued && js.e[1].status == (int)GDS_ESTATE);
     CHECK(UA_Guid_equal(&js.e[1].requestId, reqId));
     CHECK(!js.e[2].issued && js.e[2].status == (int)GDS_ENOTFOUND);
+}
+
+static int crl_entries(gds_ca *ca) {
+    gds_buf der = {0};
+    CHECK(gds_ca_get_crl(ca, &der) == GDS_OK);
+    const unsigned char *p = der.data;
+    X509_CRL *crl = der.data ? d2i_X509_CRL(NULL, &p, (long)der.len) : NULL;
+    int n = crl ? crl_count(crl) : -1;
+    X509_CRL_free(crl);
+    gds_buf_free(&der);
+    return n;
+}
+
+/* REVOKE: the signer puts a serial on the CRL only once the store marks
+ * that certificate revoked, so opengdsd cannot revoke at will. */
+static void test_ipc_revoke(gds_ca *ipc, gds_store *w, const UA_Guid *appId,
+                            const gds_ca_issued *issued) {
+    CHECK(gds_store_cert_add(w, appId, 615, UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE,
+                             &issued->serial, &issued->der, issued->notBefore,
+                             issued->notAfter) == GDS_OK);
+    int before = crl_entries(ipc); /* the CA directory outlives a run */
+    CHECK(gds_ca_revoke(ipc, &issued->serial) == GDS_EDENIED); /* not marked */
+    CHECK_EQ_INT(crl_entries(ipc), before);
+    uint8_t unknown[] = {0x42, 0x42};
+    gds_buf unk = {unknown, sizeof(unknown)};
+    CHECK(gds_ca_revoke(ipc, &unk) == GDS_EDENIED); /* not in the store */
+    gds_buf serial = {0};
+    CHECK(gds_store_cert_revoke(w, appId, &issued->der, &serial) == GDS_OK);
+    gds_buf_free(&serial);
+    CHECK(gds_ca_revoke(ipc, &issued->serial) == GDS_OK);
+    CHECK_EQ_INT(crl_entries(ipc), before + 1);
+    CHECK(gds_ca_revoke(ipc, &issued->serial) == GDS_OK); /* the retry after a failure */
+    CHECK_EQ_INT(crl_entries(ipc), before + 1);
+}
+
+/* REVOKE framing: exact body, bounded serial. */
+static void test_revoke_proto(void) {
+    uint8_t ser[GDS_SIGP_MAX_SERIAL + 1];
+    memset(ser, 0x11, sizeof(ser));
+    gds_buf big = {ser, sizeof(ser)}, ok = {ser, 20}, msg = {0}, got = {0};
+    CHECK(gds_sigp_encode_revoke(&big, &msg) == GDS_EINVAL && !msg.data);
+    CHECK(gds_sigp_encode_request(GDS_SIGP_REVOKE, NULL, &msg) == GDS_EINVAL && !msg.data);
+    CHECK(gds_sigp_encode_revoke(&ok, &msg) == GDS_OK);
+    gds_sigp_op op = GDS_SIGP_SIGN_CSR;
+    UA_Guid id;
+    CHECK(gds_sigp_decode_request_ex(msg.data, msg.len, &op, &id, &got) == GDS_OK);
+    CHECK(op == GDS_SIGP_REVOKE && got.len == 20 && memcmp(got.data, ser, 20) == 0);
+    gds_buf_free(&got);
+    CHECK(gds_sigp_decode_request(msg.data, msg.len, &op, &id) == GDS_OK);
+    /* a serial length that does not match the body */
+    if(CHECK(msg.len > GDS_SIGP_HEADER + 2)) {
+        msg.data[GDS_SIGP_HEADER + 1]++;
+        CHECK(gds_sigp_decode_request_ex(msg.data, msg.len, &op, &id, &got) == GDS_EINVAL &&
+              !got.data);
+        msg.data[GDS_SIGP_HEADER + 1] = 0;
+        CHECK(gds_sigp_decode_request_ex(msg.data, msg.len, &op, &id, &got) == GDS_EINVAL);
+    }
+    gds_buf_free(&msg);
 }
 
 static void test_ipc_get(gds_ca *ipc, gds_ca *direct) {
@@ -242,8 +308,13 @@ int main(int argc, char **argv) {
     gds_ca *ipc = NULL;
     CHECK(gds_ca_ipc_open(sv[0], 10000, &ipc) == GDS_OK);
     if(ipc) {
-        test_ipc_sign(ipc, w, &reqId);
+        gds_ca_issued issued;
+        memset(&issued, 0, sizeof(issued));
+        test_ipc_sign(ipc, w, &reqId, &issued);
         test_ipc_get(ipc, s.ca);
+        if(issued.der.data)
+            test_ipc_revoke(ipc, w, &appId, &issued);
+        gds_ca_issued_clear(&issued);
     }
     gds_ca_close(ipc); /* closes sv[0]: the signer sees EOF */
     CHECK(pthread_join(th, NULL) == 0);
@@ -252,6 +323,7 @@ int main(int argc, char **argv) {
 
     test_journal(jpath, &reqId);
     test_malformed(&s, &reqId);
+    test_revoke_proto();
     gds_journal_close(s.journal);
     gds_ca_close(s.ca);
     gds_store_close(s.store);

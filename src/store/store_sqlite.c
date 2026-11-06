@@ -409,7 +409,7 @@ static gds_status read_request(sqlite3_stmt *st, gds_request *out) {
     sqlite3_int64 g = sqlite3_column_int64(st, 2), t = sqlite3_column_int64(st, 3);
     int state = sqlite3_column_int(st, 4);
     if(g < 0 || g > UINT32_MAX || t < 0 || t > UINT32_MAX || state < GDS_REQ_RECEIVED ||
-       state > GDS_REQ_FAILED)
+       state > GDS_REQ_PENDING)
         return GDS_EINVAL;
     out->groupId = (uint32_t)g;
     out->certType = (uint32_t)t;
@@ -455,6 +455,33 @@ static gds_status sq_req_next_received(void *ctx_, gds_request *out) {
                                 "ORDER BY created, rowid LIMIT 1",
                                 -1, &st, NULL);
     return one_request(s, st, rc, out);
+}
+
+static gds_status sq_req_scan(void *ctx_, gds_req_state state, gds_store_req_cb cb,
+                              void *cbCtx) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "SELECT " REQ_COLUMNS " FROM requests WHERE state = ?1 "
+                                "ORDER BY created, rowid",
+                                -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int(st, 1, (int)state);
+    gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "request scan", rc);
+    while(r == GDS_OK && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+        gds_request q;
+        r = read_request(st, &q);
+        if(r != GDS_OK)
+            break;
+        bool more = cb(cbCtx, &q);
+        gds_request_clear(&q);
+        if(!more)
+            break;
+    }
+    if(r == GDS_OK && rc != SQLITE_ROW && rc != SQLITE_DONE)
+        r = db_err(s, "request scan", rc);
+    sqlite3_finalize(st);
+    return r;
 }
 
 static gds_status sq_req_set_state(void *ctx_, const UA_Guid *id, gds_req_state state,
@@ -579,6 +606,104 @@ static gds_status sq_cert_scan(void *ctx_, gds_cert_scan_cb cb, void *cbCtx) {
     }
     if(r == GDS_OK && rc != SQLITE_DONE)
         r = db_err(s, "scan certificates", rc);
+    sqlite3_finalize(st);
+    return r;
+}
+
+/* One UPDATE binding the application id as ?1 and optionally der as ?2. */
+static gds_status mark_revoked(sq_store *s, const char *sql, const UA_Guid *appId,
+                               const gds_buf *der, int *changed) {
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db, sql, -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(st, 1, appId);
+    if(rc == SQLITE_OK && der)
+        rc = bind_buf(st, 2, der);
+    if(rc == SQLITE_OK && (rc = sqlite3_step(st)) == SQLITE_DONE)
+        rc = SQLITE_OK;
+    *changed = rc == SQLITE_OK ? sqlite3_changes(s->db) : 0;
+    gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "revoke certificate", rc);
+    sqlite3_finalize(st);
+    return r;
+}
+
+static gds_status sq_cert_revoke(void *ctx_, const UA_Guid *appId, const gds_buf *der,
+                                 gds_buf *serial) {
+    sq_store *s = ctx_;
+    int changed = 0;
+    gds_status r = mark_revoked(s,
+                                "UPDATE certificates SET revoked = 1 WHERE app_id = ?1 AND "
+                                "der = ?2",
+                                appId, der, &changed);
+    if(r != GDS_OK)
+        return r;
+    if(changed == 0)
+        return GDS_ENOTFOUND;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "SELECT serial FROM certificates WHERE app_id = ?1 AND der = ?2 "
+                                "ORDER BY rowid LIMIT 1",
+                                -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(st, 1, appId);
+    if(rc == SQLITE_OK)
+        rc = bind_buf(st, 2, der);
+    if(rc != SQLITE_OK)
+        r = db_err(s, "revoke certificate", rc);
+    else if((rc = sqlite3_step(st)) == SQLITE_ROW)
+        r = column_buf(st, 0, GDS_MAX_SERIAL_SIZE, serial);
+    else
+        r = rc == SQLITE_DONE ? GDS_ENOTFOUND : db_err(s, "revoke certificate", rc);
+    if(r == GDS_OK && serial->len == 0)
+        r = GDS_EINVAL;
+    sqlite3_finalize(st);
+    return r;
+}
+
+static gds_status sq_cert_revoke_app(void *ctx_, const UA_Guid *appId, gds_store_serial_cb cb,
+                                     void *cbCtx) {
+    sq_store *s = ctx_;
+    int changed = 0;
+    gds_status r = mark_revoked(s, "UPDATE certificates SET revoked = 1 WHERE app_id = ?1",
+                                appId, NULL, &changed);
+    if(r != GDS_OK)
+        return r;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "SELECT serial FROM certificates WHERE app_id = ?1 AND "
+                                "revoked = 1 ORDER BY rowid",
+                                -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(st, 1, appId);
+    r = rc == SQLITE_OK ? GDS_OK : db_err(s, "revoke certificates", rc);
+    while(r == GDS_OK && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+        gds_buf serial = {0};
+        r = column_buf(st, 0, GDS_MAX_SERIAL_SIZE, &serial);
+        if(r != GDS_OK)
+            break;
+        bool more = serial.len == 0 || cb(cbCtx, &serial);
+        gds_buf_free(&serial);
+        if(!more)
+            break;
+    }
+    if(r == GDS_OK && rc != SQLITE_ROW && rc != SQLITE_DONE)
+        r = db_err(s, "revoke certificates", rc);
+    sqlite3_finalize(st);
+    return r;
+}
+
+static gds_status sq_cert_is_revoked(void *ctx_, const gds_buf *serial, bool *revoked) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db, "SELECT revoked FROM certificates WHERE serial = ?1", -1,
+                                &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_buf(st, 1, serial);
+    if(rc == SQLITE_OK && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+        *revoked = sqlite3_column_int64(st, 0) != 0;
+        rc = SQLITE_DONE;
+    }
+    gds_status r = rc == SQLITE_DONE ? GDS_OK : db_err(s, "certificate state", rc);
     sqlite3_finalize(st);
     return r;
 }
@@ -800,11 +925,15 @@ const gds_store_backend gds_store_sqlite_backend = {
     .req_insert = sq_req_insert,
     .req_get = sq_req_get,
     .req_next_received = sq_req_next_received,
+    .req_scan = sq_req_scan,
     .req_set_state = sq_req_set_state,
     .cert_add = sq_cert_add,
     .cert_latest = sq_cert_latest,
     .audit_append = sq_audit_append,
     .audit_scan = sq_audit_scan,
+    .cert_revoke = sq_cert_revoke,
+    .cert_revoke_app = sq_cert_revoke_app,
+    .cert_is_revoked = sq_cert_is_revoked,
     .cert_scan = sq_cert_scan,
 };
 

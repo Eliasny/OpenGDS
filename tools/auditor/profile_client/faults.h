@@ -21,6 +21,15 @@ typedef enum {
     FAULT_ISSUE_WRONG_KEY, /* a new request; the certificate is for another key */
     FAULT_ISSUE_WRONG_URI, /* a new request; the certificate names another ApplicationUri */
     FAULT_ISSUE_EXPIRED,  /* a new request; the certificate has expired */
+    FAULT_GDS_ROGUE,      /* gds-rogue: a GDS cert from ca-rogue, which also issues and lists ca-rogue */
+    FAULT_GDS_REVOKED,    /* gds-revoked: the GDS cert is on the GDS CA's CRL */
+    FAULT_GDS_EXPIRED,    /* gds-expired: the GDS cert has expired */
+    FAULT_GDS_WRONG_URI,  /* gds-wronguri: the GDS cert names another ApplicationUri */
+    FAULT_TL_REVOKING,    /* the trust list changed: the CA's CRL revokes the probe's certificate */
+    FAULT_TL_GARBAGE,     /* the trust list changed: a truncated, malformed TrustListDataType */
+    FAULT_HUGE_ISSUERS,   /* a new request; FinishRequest returns 10 000 IssuerCertificates */
+    FAULT_TL_OVER_READ,   /* the trust list changed; Read returns more than Length (a rogue list) */
+    FAULT_CLOSE_SESSIONS, /* the GDS closes each session after its first call */
     FAULT_COUNT
 } fault_id;
 

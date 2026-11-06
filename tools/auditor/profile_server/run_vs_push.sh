@@ -5,6 +5,7 @@
 # Usage: run_vs_push.sh <bindir> <workdir> <expected-dir>
 #   PUSH_PORT  first port (default 4861; each run uses the next one)
 #   ONLY       run only this mutant (or "good")
+#   SHARD      k/n: run every n-th mutant from the k-th (the good runs are in 1/n)
 # SPDX-License-Identifier: MPL-2.0
 set -u
 B=$(cd "$1" && pwd)
@@ -15,6 +16,11 @@ W=$(cd "$2" && pwd)
 E=$(cd "$3" && pwd)
 PORT=${PUSH_PORT:-4861}
 ONLY=${ONLY:-}
+SHARD=${SHARD:-1/1}
+SK=${SHARD%/*}
+SN=${SHARD#*/}
+FIRST=false
+[ "$SK" = 1 ] && FIRST=true
 SRV=""
 trap '[ -n "$SRV" ] && kill "$SRV" 2>/dev/null; true' EXIT INT TERM
 
@@ -53,7 +59,7 @@ audit() { # audit <name> [args]: run the profile, TAP into $W/<name>.tap
 
 RC=0
 SLOW_TESTS="SRV-TL-18"
-if [ -z "$ONLY" ] || [ "$ONLY" = good ]; then
+if { [ -z "$ONLY" ] && $FIRST; } || [ "$ONLY" = good ]; then
     echo "=== good push_test_server"
     start_server good
     audit good --slow --expect "$E/push_test_server.csv"
@@ -67,12 +73,46 @@ if [ -z "$ONLY" ] || [ "$ONLY" = good ]; then
     fi
 fi
 
+# The tests that need SupportedPrivateKeyFormats: push_test_server
+# --accept-keys, each test on its own (SRV-UPD-09 runs only by name)
+KEY_TESTS="SRV-UPD-09 SRV-UPD-10"
+if { [ -z "$ONLY" ] && $FIRST; } || [ "$ONLY" = good ]; then
+    for test in $KEY_TESTS; do
+        echo "=== good push_test_server --accept-keys, $test"
+        start_server "keys-$test" --accept-keys
+        audit "keys-$test" --only "$test" --expect "$E/push_test_server_keys.csv"
+        G=$?
+        stop_server
+        cat "$W/keys-$test.tap"
+        if [ $G -ne 0 ]; then
+            echo "FAILED: $test against push_test_server --accept-keys differs from push_test_server_keys.csv"
+            tail -40 "$W/server-keys-$test.log"
+            RC=1
+        fi
+    done
+fi
+
+IDX=0
 while IFS=, read -r mutant test want; do
     case "$mutant" in ''|\#*) continue ;; esac
+    IDX=$((IDX + 1))
     [ -n "$ONLY" ] && [ "$ONLY" != "$mutant" ] && continue
-    start_server "$mutant" --break "$mutant"
-    # tests flagged slow in the catalogue run only for their own mutant
-    case " $SLOW_TESTS " in *" $test "*) audit "$mutant" --slow ;; *) audit "$mutant" ;; esac
+    [ -z "$ONLY" ] && [ $(( (IDX - 1) % SN + 1 )) -ne "$SK" ] && continue
+    case " $KEY_TESTS " in
+    *" $test "*)
+        start_server "$mutant" --break "$mutant" --accept-keys
+        audit "$mutant" --only "$test"
+        ;;
+    *)
+        start_server "$mutant" --break "$mutant"
+        # tests flagged slow in the catalogue run only for their own mutant;
+        # the tests after the one that must catch the mutant are not run
+        case " $SLOW_TESTS " in
+        *" $test "*) audit "$mutant" --slow --stop-after "$test" ;;
+        *) audit "$mutant" --stop-after "$test" ;;
+        esac
+        ;;
+    esac
     stop_server
     got=$(grep -A1 -E "^(not )?ok [0-9]+ - $test " "$W/$mutant.tap" | sed -n 's/^#   verdict: \([a-z_]*\).*/\1/p')
     if [ "$got" = "$want" ]; then

@@ -108,6 +108,27 @@ static const struct {
     {"update-type-mismatch", "SRV-UPD-07",
      "UpdateCertificate takes an ECC certificate into the RSA slot unchecked"},
     {"update-accept-expired", "SRV-UPD-08", "UpdateCertificate accepts an expired certificate"},
+    {"getcerts-mismatched", "SRV-UPD-11",
+     "GetCertificates returns two CertificateTypeIds for one Certificate"},
+    {"selfsigned-overwrite", "SRV-UPD-12",
+     "CreateSelfSignedCertificate returns Good on the occupied slot"},
+    {"delete-in-use", "SRV-UPD-13", "DeleteCertificate returns Good on the certificate in use"},
+    {"apply-required-false", "SRV-TXN-01", "CloseAndUpdate returns ApplyChangesRequired FALSE"},
+    {"apply-early", "SRV-TXN-02", "CloseAndUpdate puts the trust list in use before ApplyChanges"},
+    {"cancel-keeps-trustlist", "SRV-TXN-04", "CancelChanges puts the queued trust list in use"},
+    {"txn-survives-session", "SRV-TXN-05",
+     "a transaction outlives its Session and the next Session may apply it"},
+    {"txn-interleave", "SRV-TXN-06", "another Session may join a transaction in progress"},
+    {"apply-any-session", "SRV-TXN-07", "any Session may apply or cancel a transaction"},
+    {"apply-while-open", "SRV-TXN-08", "ApplyChanges ignores a TrustList open for writing"},
+    {"apply-nothing-good", "SRV-TXN-09", "ApplyChanges with no transaction returns Good"},
+    {"fail-aborts-txn", "SRV-TXN-10", "a failed UpdateCertificate discards the transaction"},
+    {"apply-partial", "SRV-TXN-11",
+     "ApplyChanges puts the trust list in use and then fails on the certificate"},
+    {"update-ignore-key", "SRV-UPD-09",
+     "with --accept-keys: UpdateCertificate accepts a private key and keeps the old one"},
+    {"update-accept-bad-key", "SRV-UPD-10",
+     "with --accept-keys: UpdateCertificate accepts a private key of another certificate"},
 };
 
 bool pm_mutant_known(const char *name) {
@@ -157,7 +178,14 @@ static struct {
     UA_NodeId newKeySession; /* only for csr-key-per-session */
     pm_mode_fn modeOf;
     UA_MethodCallback libRejected;
+    bool acceptKeys; /* --accept-keys: SupportedPrivateKeyFormats ["PEM"] */
 } P;
+
+static bool acceptKeys; /* set before pm_install */
+
+void pm_accept_keys(bool on) {
+    acceptKeys = on;
+}
 
 bool pm_breaking(const char *name) {
     return P.brk && strcmp(P.brk, name) == 0;
@@ -204,9 +232,12 @@ static void txn_clear(void) {
 /* Join or start the caller's transaction; Bad_TransactionPending if another
  * Session holds one (§7.8.2.2, §7.10.5). */
 static UA_StatusCode txn_join(const UA_NodeId *session) {
+    if(P.txn && UA_NodeId_isNull(&P.owner)) /* txn-survives-session: adopted */
+        return UA_NodeId_copy(session, &P.owner);
     if(P.txn)
-        return UA_NodeId_equal(&P.owner, session) ? UA_STATUSCODE_GOOD
-                                                  : UA_STATUSCODE_BADTRANSACTIONPENDING;
+        return UA_NodeId_equal(&P.owner, session) || breaking("txn-interleave")
+                   ? UA_STATUSCODE_GOOD
+                   : UA_STATUSCODE_BADTRANSACTIONPENDING;
     UA_StatusCode r = UA_NodeId_copy(session, &P.owner);
     if(r == UA_STATUSCODE_GOOD)
         P.txn = true;
@@ -254,6 +285,10 @@ void pm_session_closed(const UA_NodeId *sessionId) {
         if(P.files[i].used && UA_NodeId_equal(&P.files[i].session, sessionId))
             file_free(&P.files[i]);
     if(P.txn && UA_NodeId_equal(&P.owner, sessionId)) {
+        if(breaking("txn-survives-session")) { /* kept for whoever comes next */
+            UA_NodeId_clear(&P.owner);
+            return;
+        }
         UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND,
                     "Session with a transaction ended: transaction discarded");
         txn_clear();
@@ -363,6 +398,8 @@ static UA_StatusCode replace(UA_ByteString **dst, size_t *dstN, const UA_ByteStr
 
 /* The queued list = (queued or current) with the masked lists replaced
  * (§7.8.2.5, §7.8.2.9). */
+static UA_StatusCode install_list(const UA_TrustListDataType *l);
+
 static UA_StatusCode queue_list(const UA_TrustListDataType *in) {
     UA_TrustListDataType base;
     UA_StatusCode r = P.hasList ? UA_TrustListDataType_copy(&P.list, &base) : current_list(&base);
@@ -463,7 +500,8 @@ static UA_StatusCode tlOpen(METHOD_ARGS) {
         mode = PM_MODE_WRITE_ERASE;
     if(mode != PM_MODE_WRITE_ERASE)
         return UA_STATUSCODE_BADNOTSUPPORTED; /* §7.8.2.2 */
-    if(P.txn && !UA_NodeId_equal(&P.owner, sessionId))
+    if(P.txn && !UA_NodeId_isNull(&P.owner) && !UA_NodeId_equal(&P.owner, sessionId) &&
+       !breaking("txn-interleave"))
         return UA_STATUSCODE_BADTRANSACTIONPENDING;
     if(write_open())
         return UA_STATUSCODE_BADNOTWRITABLE;
@@ -562,6 +600,8 @@ static UA_StatusCode close_and_update(const UA_NodeId *sessionId, pm_file *f) {
         r = txn_join(sessionId);
     if(r == UA_STATUSCODE_GOOD)
         r = queue_list(&in);
+    if(r == UA_STATUSCODE_GOOD && breaking("apply-early"))
+        r = install_list(&P.list); /* in use before ApplyChanges */
     UA_TrustListDataType_clear(&in);
     return r;
 }
@@ -599,7 +639,7 @@ static UA_StatusCode tlCloseAndUpdate(METHOD_ARGS) {
     UA_StatusCode r = close_and_update(sessionId, f);
     if(r != UA_STATUSCODE_GOOD)
         return r;
-    UA_Boolean applyRequired = true;
+    UA_Boolean applyRequired = !breaking("apply-required-false");
     return UA_Variant_setScalarCopy(&output[0], &applyRequired, &UA_TYPES[UA_TYPES_BOOLEAN]);
 }
 
@@ -763,7 +803,9 @@ static UA_StatusCode key_for(const UA_ByteString *cert, const UA_NodeId *session
 /* ---------------- ServerConfiguration methods (12 §7.10) ---------------- */
 
 static UA_StatusCode update_checks(X509 *x, const UA_Variant *issuers, const UA_NodeId *session,
-                                   UA_ByteString *key);
+                                   UA_ByteString *key, bool keyGiven);
+static UA_StatusCode pushed_key(X509 *x, const UA_String *format, const UA_ByteString *in,
+                                UA_ByteString *out);
 
 static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
     UNUSED_ARGS;
@@ -785,7 +827,7 @@ static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
     const UA_NodeId rsa = ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
     if(!UA_NodeId_equal(group, &dag) || (!UA_NodeId_equal(type, &rsa) && !breaking("update-any-type")))
         return UA_STATUSCODE_BADINVALIDARGUMENT; /* §7.10.5: not in the group's CertificateTypes */
-    if(key->length > 0 && !breaking("accept-key-unadvertised"))
+    if(key->length > 0 && !P.acceptKeys && !breaking("accept-key-unadvertised"))
         return UA_STATUSCODE_BADNOTSUPPORTED; /* SupportedPrivateKeyFormats is empty */
     if(cert->length == 0 || cert->length > GDS_MAX_CERT_SIZE)
         return UA_STATUSCODE_BADCERTIFICATEINVALID;
@@ -794,10 +836,20 @@ static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
     if(!x)
         return UA_STATUSCODE_BADCERTIFICATEINVALID;
     UA_ByteString ck = UA_BYTESTRING_NULL;
-    /* a pushed key gets here only with accept-key-unadvertised, which ignores it */
-    UA_StatusCode r =
-        key->length > 0 ? UA_STATUSCODE_GOOD : update_checks(x, &input[3], sessionId, &ck);
+    UA_StatusCode r = UA_STATUSCODE_GOOD;
+    if(key->length == 0)
+        r = update_checks(x, &input[3], sessionId, &ck, false);
+    else if(P.acceptKeys) { /* §7.10.5: a key in an advertised format, for this certificate */
+        r = pushed_key(x, input[4].data, key, &ck);
+        if(r == UA_STATUSCODE_GOOD)
+            r = update_checks(x, &input[3], sessionId, &ck, true);
+        if(r == UA_STATUSCODE_GOOD && breaking("update-ignore-key"))
+            secret_clear(&ck);
+    } /* else accept-key-unadvertised: the key is ignored */
     X509_free(x);
+    if(r != UA_STATUSCODE_GOOD && breaking("fail-aborts-txn") && P.txn && P.hasList &&
+       UA_NodeId_equal(&P.owner, sessionId))
+        txn_clear(); /* §7.10.2: a failed call must leave the transaction as it was */
     if(r != UA_STATUSCODE_GOOD)
         return r;
     if((r = txn_join(sessionId)) != UA_STATUSCODE_GOOD) {
@@ -820,8 +872,10 @@ static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
 
 static UA_StatusCode txn_owner_check(const UA_NodeId *sessionId) {
     if(!P.txn)
-        return UA_STATUSCODE_BADNOTHINGTODO;
-    if(!UA_NodeId_equal(&P.owner, sessionId))
+        return breaking("apply-nothing-good") ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNOTHINGTODO;
+    if(UA_NodeId_isNull(&P.owner)) /* txn-survives-session */
+        return UA_NodeId_copy(sessionId, &P.owner);
+    if(!UA_NodeId_equal(&P.owner, sessionId) && !breaking("apply-any-session"))
         return UA_STATUSCODE_BADSESSIONIDINVALID; /* §7.10.9, decision D5 */
     return UA_STATUSCODE_GOOD;
 }
@@ -854,6 +908,21 @@ static UA_StatusCode install_list(const UA_TrustListDataType *l) {
     return r;
 }
 
+static bool issuer_among(X509 *x, const UA_ByteString *l, size_t n, bool *sigOk);
+
+/* apply-partial: does the queued certificate chain to the queued list? */
+static bool chains_to_queued(void) {
+    gds_buf b = {P.cert.data, P.cert.length};
+    X509 *x = x509_parse_cert(&b);
+    bool sig = false;
+    bool found = x && (X509_check_issued(x, x) == X509_V_OK ||
+                       issuer_among(x, P.list.trustedCertificates, P.list.trustedCertificatesSize, &sig) ||
+                       issuer_among(x, P.list.issuerCertificates, P.list.issuerCertificatesSize, &sig));
+    X509_free(x);
+    ERR_clear_error();
+    return found;
+}
+
 static UA_StatusCode apply(void) {
     UA_StatusCode r = UA_STATUSCODE_GOOD;
     if(P.hasList) {
@@ -861,6 +930,8 @@ static UA_StatusCode apply(void) {
         if(r != UA_STATUSCODE_GOOD)
             return r;
     }
+    if(P.hasCert && P.hasList && breaking("apply-partial") && !chains_to_queued())
+        return UA_STATUSCODE_BADCERTIFICATEINVALID; /* the list is already in use */
     if(P.hasCert) {
         UA_SecurityPolicy *sp = breaking("wire-old-cert") ? stale_policy() : NULL;
         UA_ByteString old = UA_BYTESTRING_NULL;
@@ -895,7 +966,7 @@ static UA_StatusCode scApplyChanges(METHOD_ARGS) {
     UA_StatusCode r = txn_owner_check(sessionId);
     if(r != UA_STATUSCODE_GOOD)
         return r;
-    for(size_t i = 0; i < PM_MAX_FILES; i++)
+    for(size_t i = 0; i < PM_MAX_FILES && !breaking("apply-while-open"); i++)
         if(P.files[i].used && P.files[i].mode == PM_MODE_WRITE_ERASE &&
            UA_NodeId_equal(&P.files[i].session, sessionId))
             return UA_STATUSCODE_BADINVALIDSTATE; /* §7.10.9: a TrustList is still open */
@@ -917,8 +988,118 @@ static UA_StatusCode scCancelChanges(METHOD_ARGS) {
     (void)output;
     (void)outputSize;
     UA_StatusCode r = txn_owner_check(sessionId);
+    if(r == UA_STATUSCODE_GOOD && breaking("cancel-keeps-trustlist") && P.hasList)
+        r = install_list(&P.list);
     if(r == UA_STATUSCODE_GOOD)
         txn_clear();
+    return r;
+}
+
+/* ---------------- GetCertificates, CreateSelfSignedCertificate, DeleteCertificate ----------------
+ * Optional ServerConfiguration Methods (12 §7.10.6 - §7.10.8), which
+ * open62541's ns0 does not instantiate. This target has one slot
+ * (DefaultApplicationGroup, RsaSha256) and it is always occupied and in use. */
+
+static bool slot_args(size_t inputSize, const UA_Variant *input, size_t need) {
+    if(inputSize != need || !scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_NODEID]))
+        return false;
+    const UA_NodeId dag = ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
+    return UA_NodeId_equal(input[0].data, &dag);
+}
+
+static bool rsa_type(size_t inputSize, const UA_Variant *input) {
+    const UA_NodeId rsa = ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
+    return scalar(input, inputSize, 1, &UA_TYPES[UA_TYPES_NODEID]) &&
+           UA_NodeId_equal(input[1].data, &rsa);
+}
+
+static UA_StatusCode scGetCertificates(METHOD_ARGS) {
+    UNUSED_ARGS;
+    UA_StatusCode r = need_channel(sessionId, false);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    if(outputSize < 2)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    if(!slot_args(inputSize, input, 1))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    const UA_ByteString *cur = current_cert();
+    if(!cur)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    UA_NodeId types[2] = {ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE),
+                          ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE)};
+    size_t nTypes = breaking("getcerts-mismatched") ? 2 : 1;
+    r = UA_Variant_setArrayCopy(&output[0], types, nTypes, &UA_TYPES[UA_TYPES_NODEID]);
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Variant_setArrayCopy(&output[1], cur, 1, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    return r;
+}
+
+static UA_StatusCode scCreateSelfSigned(METHOD_ARGS) {
+    UNUSED_ARGS;
+    UA_StatusCode r = need_channel(sessionId, true);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    if(outputSize < 1)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    if(!slot_args(inputSize, input, 6) || !rsa_type(inputSize, input))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(!breaking("selfsigned-overwrite"))
+        return UA_STATUSCODE_BADINVALIDSTATE; /* §7.10.6: the slot holds a certificate */
+    const UA_ByteString *cur = current_cert(); /* the mutant answers Good and changes nothing */
+    return cur ? UA_Variant_setScalarCopy(&output[0], cur, &UA_TYPES[UA_TYPES_BYTESTRING])
+               : UA_STATUSCODE_BADINTERNALERROR;
+}
+
+static UA_StatusCode scDeleteCertificate(METHOD_ARGS) {
+    UNUSED_ARGS;
+    (void)output;
+    (void)outputSize;
+    UA_StatusCode r = need_channel(sessionId, true);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    if(!slot_args(inputSize, input, 2) || !rsa_type(inputSize, input))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    /* §7.10.7: the endpoints use this certificate (the mutant: Good, no change) */
+    return breaking("delete-in-use") ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADINVALIDSTATE;
+}
+
+static void arg(UA_Argument *a, const char *name, UA_UInt32 type, bool array) {
+    UA_Argument_init(a);
+    a->name = UA_STRING((char *)(uintptr_t)name);
+    a->dataType = ns0(type);
+    a->valueRank = array ? UA_VALUERANK_ONE_DIMENSION : UA_VALUERANK_SCALAR;
+}
+
+static UA_StatusCode add_method(UA_Server *server, UA_UInt32 id, const char *name,
+                                UA_MethodCallback cb, size_t inN, const UA_Argument *in,
+                                size_t outN, const UA_Argument *out) {
+    UA_MethodAttributes ma = UA_MethodAttributes_default;
+    ma.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)name);
+    ma.executable = true;
+    ma.userExecutable = true;
+    return UA_Server_addMethodNode(server, ns0(id), ns0(UA_NS0ID_SERVERCONFIGURATION),
+                                   ns0(UA_NS0ID_HASCOMPONENT),
+                                   UA_QUALIFIEDNAME(0, (char *)(uintptr_t)name), ma, cb, inN, in,
+                                   outN, out, NULL, NULL);
+}
+
+static UA_StatusCode optional_methods(UA_Server *server) {
+    UA_Argument in[6], out[2];
+    arg(&in[0], "CertificateGroupId", UA_NS0ID_NODEID, false);
+    arg(&out[0], "CertificateTypeIds", UA_NS0ID_NODEID, true);
+    arg(&out[1], "Certificates", UA_NS0ID_BYTESTRING, true);
+    UA_StatusCode r = add_method(server, UA_NS0ID_SERVERCONFIGURATION_GETCERTIFICATES,
+                                 "GetCertificates", scGetCertificates, 1, in, 2, out);
+    arg(&in[1], "CertificateTypeId", UA_NS0ID_NODEID, false);
+    arg(&in[2], "SubjectName", UA_NS0ID_STRING, false);
+    arg(&in[3], "DnsNames", UA_NS0ID_STRING, true);
+    arg(&in[4], "LifetimeInDays", UA_NS0ID_UINT16, false);
+    arg(&in[5], "KeySizeInBits", UA_NS0ID_UINT16, false);
+    arg(&out[0], "Certificate", UA_NS0ID_BYTESTRING, false);
+    r |= add_method(server, UA_NS0ID_SERVERCONFIGURATION_CREATESELFSIGNEDCERTIFICATE,
+                    "CreateSelfSignedCertificate", scCreateSelfSigned, 6, in, 1, out);
+    r |= add_method(server, UA_NS0ID_SERVERCONFIGURATION_DELETECERTIFICATE, "DeleteCertificate",
+                    scDeleteCertificate, 2, in, 0, NULL);
     return r;
 }
 
@@ -938,7 +1119,8 @@ static UA_StatusCode scGetRejectedList(METHOD_ARGS) {
 static UA_StatusCode list_change_allowed(void) {
     if(write_open())
         return UA_STATUSCODE_BADINVALIDSTATE;
-    return P.txn ? UA_STATUSCODE_BADTRANSACTIONPENDING : UA_STATUSCODE_GOOD;
+    return P.txn && !breaking("txn-interleave") ? UA_STATUSCODE_BADTRANSACTIONPENDING
+                                                : UA_STATUSCODE_GOOD;
 }
 
 /* The CA in `l` (trusted or issuer) whose signature verifies x. */
@@ -990,8 +1172,12 @@ static UA_StatusCode chain_check(X509 *x, const UA_Variant *issuers) {
         sigOk = pk && X509_verify(x, pk) == 1;
         ERR_clear_error();
     } else {
+        /* the trust list it will be validated with: a queued one if any
+         * (§7.10.2 applies both together; SRV-TXN-11) */
         UA_TrustListDataType cur;
-        UA_StatusCode r = current_list(&cur);
+        UA_StatusCode r = P.hasList && !breaking("apply-partial")
+                              ? UA_TrustListDataType_copy(&P.list, &cur)
+                              : current_list(&cur);
         if(r != UA_STATUSCODE_GOOD)
             return r;
         found = issuer_among(x, cur.trustedCertificates, cur.trustedCertificatesSize, &sigOk);
@@ -1021,9 +1207,38 @@ static UA_StatusCode uri_check(X509 *x) {
     return ok ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADCERTIFICATEURIINVALID;
 }
 
+/* PrivateKey in PEM (the one advertised format): it must belong to the
+ * certificate, else Bad_NotSupported (§7.10.5). Kept as DER. */
+static UA_StatusCode pushed_key(X509 *x, const UA_String *format, const UA_ByteString *in,
+                                UA_ByteString *out) {
+    UA_ByteString_init(out);
+    const UA_String pem = UA_STRING_STATIC("PEM");
+    if(!UA_String_equal(format, &pem) || in->length > GDS_MAX_CERT_SIZE)
+        return UA_STATUSCODE_BADNOTSUPPORTED;
+    gds_buf kb = {in->data, in->length};
+    EVP_PKEY *k = x509_parse_key(&kb);
+    EVP_PKEY *pub = X509_get0_pubkey(x);
+    bool match = k && pub && EVP_PKEY_eq(k, pub) == 1;
+    gds_buf der = {0};
+    UA_StatusCode r = UA_STATUSCODE_GOOD;
+    if(!k || (!match && !breaking("update-accept-bad-key")))
+        r = UA_STATUSCODE_BADNOTSUPPORTED;
+    else if(x509_key_to_der(k, &der) != GDS_OK)
+        r = UA_STATUSCODE_BADINTERNALERROR;
+    else {
+        UA_ByteString b = {der.len, der.data};
+        r = UA_ByteString_copy(&b, out);
+    }
+    gds_buf_free_secret(&der);
+    EVP_PKEY_free(k);
+    ERR_clear_error();
+    return r;
+}
+
 static UA_StatusCode update_checks(X509 *x, const UA_Variant *issuers, const UA_NodeId *session,
-                                   UA_ByteString *key) {
-    UA_ByteString_init(key);
+                                   UA_ByteString *key, bool keyGiven) {
+    if(!keyGiven)
+        UA_ByteString_init(key);
     EVP_PKEY *pk = X509_get0_pubkey(x);
     if(!pk || EVP_PKEY_get_base_id(pk) != EVP_PKEY_RSA) { /* the slot is RsaSha256 */
         ERR_clear_error();
@@ -1034,7 +1249,7 @@ static UA_StatusCode update_checks(X509 *x, const UA_Variant *issuers, const UA_
     int len = i2d_X509(x, &der);
     UA_ByteString c = {len > 0 ? (size_t)len : 0, der};
     UA_StatusCode r = len > 0 ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADCERTIFICATEINVALID;
-    if(r == UA_STATUSCODE_GOOD && !breaking("update-no-key-check"))
+    if(r == UA_STATUSCODE_GOOD && !keyGiven && !breaking("update-no-key-check"))
         r = key_for(&c, session, key);
     OPENSSL_free(der);
     if(r == UA_STATUSCODE_GOOD)
@@ -1258,9 +1473,11 @@ static UA_StatusCode advertise(UA_Server *server) {
     UA_StatusCode r = UA_Server_writeValue(
         server, ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_CERTIFICATETYPES),
         v);
-    UA_String der = UA_STRING_STATIC("DER");
+    UA_String der = UA_STRING_STATIC("DER"), pem = UA_STRING_STATIC("PEM");
     if(breaking("bad-key-format-name"))
         UA_Variant_setArray(&v, &der, 1, &UA_TYPES[UA_TYPES_STRING]);
+    else if(P.acceptKeys)
+        UA_Variant_setArray(&v, &pem, 1, &UA_TYPES[UA_TYPES_STRING]);
     else
         UA_Variant_setArray(&v, UA_EMPTY_ARRAY_SENTINEL, 0, &UA_TYPES[UA_TYPES_STRING]);
     r |= UA_Server_writeValue(server, ns0(UA_NS0ID_SERVERCONFIGURATION_SUPPORTEDPRIVATEKEYFORMATS), v);
@@ -1374,6 +1591,7 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
     memset(&P, 0, sizeof(P));
     P.server = server;
     P.brk = mutant;
+    P.acceptKeys = acceptKeys;
     P.modeOf = modeOf;
     if(UA_ByteString_copy(ownKey, &P.ownKey) != UA_STATUSCODE_GOOD)
         return UA_STATUSCODE_BADOUTOFMEMORY;
@@ -1400,7 +1618,8 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
     /* CancelChanges is Optional (§7.10.11): offered when the node exists */
     if(set_cb(UA_NS0ID_SERVERCONFIGURATION_CANCELCHANGES, scCancelChanges) != UA_STATUSCODE_GOOD)
         UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "no CancelChanges node");
-    if(advertise(server) != UA_STATUSCODE_GOOD || structure_mutants(server) != UA_STATUSCODE_GOOD ||
+    if(advertise(server) != UA_STATUSCODE_GOOD || optional_methods(server) != UA_STATUSCODE_GOOD ||
+       structure_mutants(server) != UA_STATUSCODE_GOOD ||
        trustlist_props(server) != UA_STATUSCODE_GOOD)
         return UA_STATUSCODE_BADINTERNALERROR;
     return UA_STATUSCODE_GOOD;

@@ -28,6 +28,9 @@ typedef UA_MessageSecurityMode (*pm_mode_fn)(const UA_NodeId *sessionId);
  * signs with it and UpdateCertificate checks certificates against it. */
 UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteString *ownKey,
                          pm_mode_fn modeOf);
+/* --accept-keys: advertise SupportedPrivateKeyFormats ["PEM"] and take a
+ * pushed private key (12 §7.10.5). Call before pm_install. */
+void pm_accept_keys(bool on);
 /* True if mutant `name` is active (push_test_server's own mutants). */
 bool pm_breaking(const char *name);
 /* A Session ended: its transaction and file handles are discarded (§7.10.2). */

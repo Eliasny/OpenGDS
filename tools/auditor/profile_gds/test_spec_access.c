@@ -171,7 +171,7 @@ const ga_test spec_access_tests[] = {
      false, false, t_endpoints},
     {"gds.sec.none_session", "12 §7.2", "Directory methods are not reachable without security",
      false, false, t_none_session},
-    {"gds.sec.anonymous_register", "12 §6.2, §6.5.5", "An anonymous user cannot register applications",
+    {"gds.sec.anonymous_register", "12 §6.2, §6.5.6", "An anonymous user cannot register applications",
      true, false, t_anonymous_register},
 };
 const size_t spec_access_count = GDS_ARRAY_SIZE(spec_access_tests);

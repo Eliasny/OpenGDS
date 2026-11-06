@@ -84,12 +84,20 @@ gds_status probe_start(long port, fg_ca_id issuer) {
                                 "localhost", 1, &cert, &key);
     if(s != GDS_OK)
         return s;
+    s = probe_start_identity(port, &cert, &key);
+    gds_buf_free(&cert);
+    gds_buf_free_secret(&key);
+    return s;
+}
+
+gds_status probe_start_identity(long port, const gds_buf *cert, const gds_buf *key) {
+    probe_stop();
+    if(gds_path(P.url, sizeof(P.url), "opc.tcp://localhost:%ld", port) != GDS_OK)
+        return GDS_EINVAL;
     UA_ServerConfig sc;
     memset(&sc, 0, sizeof(sc));
     sc.logging = UA_Log_Stdout_new(UA_LOGLEVEL_FATAL);
-    UA_StatusCode r = sc.logging ? configure(&sc, port, &cert, &key) : UA_STATUSCODE_BADOUTOFMEMORY;
-    gds_buf_free(&cert);
-    gds_buf_free_secret(&key);
+    UA_StatusCode r = sc.logging ? configure(&sc, port, cert, key) : UA_STATUSCODE_BADOUTOFMEMORY;
     if(r != UA_STATUSCODE_GOOD) {
         UA_ServerConfig_clear(&sc);
         fprintf(stderr, "probe server config: %s\n", UA_StatusCode_name(r));

@@ -35,7 +35,8 @@ struct gds_server {
     pthread_mutex_t storeLock;
     gds_ca *ca;
     gds_buf caCert; /* issuer certificate for FinishRequest, read once at start */
-    bool autoApprove;
+    gds_approval_policy approval;
+    size_t pendingApprovals; /* live dialogs; server thread only */
     UA_DateTime counterReset; /* QueryApplications lastCounterResetTime */
     /* node role (gds_server.c); roleLock is a leaf lock */
     pthread_mutex_t roleLock;
@@ -170,6 +171,24 @@ GDS_MUST_CHECK UA_StatusCode gds_load_app(gds_server *s, const UA_Guid *id,
 GDS_MUST_CHECK UA_StatusCode gds_directory_install(gds_server *s);
 GDS_MUST_CHECK UA_StatusCode gds_certmgr_install(gds_server *s);
 GDS_MUST_CHECK UA_StatusCode gds_trustlist_install(gds_server *s);
+/* RevokeCertificate (gds_revoke.c). */
+GDS_MUST_CHECK UA_StatusCode gds_revoke_install(gds_server *s);
+/* Revoke every certificate of appId: store first, then the CA's CRL.
+ * Server thread; takes storeLock for the store part only. */
+GDS_MUST_CHECK UA_StatusCode gds_revoke_app_certs(gds_server *s, const UA_Guid *appId);
+/* Approvals (gds_approvals.c): the source object, Respond/Respond2 and a
+ * dialog for every Pending request in the store. Before the server runs. */
+GDS_MUST_CHECK UA_StatusCode gds_approvals_install(gds_server *s);
+/* A dialog for a request just stored as Pending. Server thread. */
+GDS_MUST_CHECK UA_StatusCode gds_approvals_raise(gds_server *s, const gds_request *q,
+                                                 const UA_String *appUri);
+/* The node role changed: re-synchronise the dialogs with the store on the
+ * server thread (none on a STANDBY). Any thread. */
+void gds_approvals_role_changed(gds_server *s);
+/* Policy (gds_policy.c): Received (approved) or Pending for a request made
+ * by sessionContext. Takes storeLock. */
+GDS_MUST_CHECK gds_status gds_policy_initial_state(gds_server *s, const void *sessionContext,
+                                                   const gds_request *q, gds_req_state *out);
 
 /* Signing worker (gds_certmgr.c). */
 GDS_MUST_CHECK gds_status gds_worker_start(gds_server *s);

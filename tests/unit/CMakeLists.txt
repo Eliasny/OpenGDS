@@ -26,6 +26,15 @@ target_link_libraries(test_daemon_config PRIVATE gds_daemon)
 add_test(NAME unit_daemon_config COMMAND test_daemon_config)
 add_test(NAME gdsadm_refuses_bad_args COMMAND gdsadm apps list)
 set_tests_properties(gdsadm_refuses_bad_args PROPERTIES WILL_FAIL TRUE)
+# approve without the request id, and with a request id that is not a GUID
+add_test(NAME gdsadm_approve_refuses_bad_args
+         COMMAND gdsadm approvals approve --url opc.tcp://localhost:1 --user u
+                 --password-file /x --trust /x)
+add_test(NAME gdsadm_approve_refuses_bad_id
+         COMMAND gdsadm approvals approve --url opc.tcp://localhost:1 --user u
+                 --password-file /x --trust /x not-a-guid)
+set_tests_properties(gdsadm_approve_refuses_bad_args PROPERTIES PASS_REGULAR_EXPRESSION "usage: gdsadm")
+set_tests_properties(gdsadm_approve_refuses_bad_id PROPERTIES PASS_REGULAR_EXPRESSION "not a request id")
 add_test(NAME opengdsd_refuses_bad_args COMMAND opengdsd)
 set_tests_properties(opengdsd_refuses_bad_args PROPERTIES WILL_FAIL TRUE)
 add_executable(test_plugin_abi test_plugin_abi.c)
@@ -41,6 +50,10 @@ add_test(NAME unit_embed COMMAND test_embed "${CMAKE_CURRENT_BINARY_DIR}/embed-r
 add_executable(test_store_slot test_store_slot.c)
 target_link_libraries(test_store_slot PRIVATE gds_server)
 add_test(NAME unit_store_slot COMMAND test_store_slot "${CMAKE_CURRENT_BINARY_DIR}/slot-run")
+add_executable(test_approvals test_approvals.c)
+target_link_libraries(test_approvals PRIVATE gds_server)
+add_test(NAME unit_approvals COMMAND test_approvals "${CMAKE_CURRENT_BINARY_DIR}/approvals-run")
+set_tests_properties(unit_approvals PROPERTIES TIMEOUT 120)
 
 add_executable(test_audit test_audit.c)
 target_link_libraries(test_audit PRIVATE gds_server)
@@ -55,6 +68,11 @@ add_executable(test_verify_audit test_verify_audit.c)
 target_link_libraries(test_verify_audit PRIVATE gds_verify_audit)
 add_test(NAME unit_verify_audit
          COMMAND test_verify_audit "${CMAKE_CURRENT_BINARY_DIR}/verify-audit-run" "$<TARGET_FILE:gdsctl>")
+
+add_executable(test_revoke test_revoke.c)
+target_link_libraries(test_revoke PRIVATE gds_server)
+add_test(NAME unit_revoke COMMAND test_revoke "${CMAKE_CURRENT_BINARY_DIR}/revoke-run")
+set_tests_properties(unit_revoke PROPERTIES TIMEOUT 120)
 
 add_executable(test_embed_roles test_embed_roles.c)
 target_link_libraries(test_embed_roles PRIVATE gds_server)

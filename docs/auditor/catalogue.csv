@@ -115,7 +115,7 @@ CLI-TRU-07,client,Trust in the GDS,cli_trust.c,OPC 10000-7 (security policy face
 CLI-REG-01,client,Registration,cli_register.c,"12 §6.5.5, §6.5.6; 6 §6.2.2",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,register-wrong-uri,selftest/pull_test_client
 CLI-REG-02,client,Registration,cli_register.c,12 §6.5.5,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,register-wrong-type,selftest/pull_test_client
 CLI-REG-03,client,Registration,cli_register.c,12 §6.5.5,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,register-bad-url,selftest/pull_test_client
-CLI-REG-04,client,Registration,cli_register.c,"12 §6.5.4, §6.5.6",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,register-every-run,selftest/pull_test_client
+CLI-REG-04,client,Registration,cli_register.c,"12 §6.5.5, §6.5.6",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,register-every-run,selftest/pull_test_client
 CLI-REG-05,client,Registration,cli_register.c,12 Annex G.1,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,persist-prompted-creds,selftest/pull_test_client
 CLI-CSR-01,client,Signing request,cli_csr.c,12 §7.9.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,csr-bad-signature,selftest/pull_test_client
 CLI-CSR-02,client,Signing request,cli_csr.c,12 §7.9.3; 6 §6.2.2,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,csr-wrong-uri,selftest/pull_test_client

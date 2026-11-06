@@ -11,5 +11,8 @@ signer_socket = /run/opengds/signer.sock
 # development alternative: opengdsd starts the signer itself
 # signer = /usr/libexec/opengds/opengds-signer
 organization = Example Oy
+# renewals (default): a renewal is approved on arrival, a RegistrationAuthorityAdmin
+# approves everything else; manual: every request; auto: test benches only
+approval = renewals
 # ca_dir is read by the signer only; with signer_socket the passphrase
 # belongs to opengds-signer@.service (LoadCredentialEncrypted)

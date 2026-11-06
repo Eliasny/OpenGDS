@@ -37,7 +37,7 @@
 #include "common/banned.h"
 
 #define APP_URI "urn:opengds:auditor"
-#define MAX_TESTS 64
+#define MAX_TESTS 160
 #define MAX_SERVER_TESTS 128
 
 static int usage(const char *argv0) {
@@ -48,7 +48,7 @@ static int usage(const char *argv0) {
             "   or: %s server --url URL (--server-cert SRV.der | --tofu)\n"
             "       [--admin-cert C --admin-key K | --admin-user U --admin-password-file F]\n"
             "       [--user U --user-password-file F] [--work DIR] [--allow-changes] [--only PREFIX]\n"
-            "       [--expect FILE.csv] [--list] [--init-only] [--slow]\n"
+            "       [--expect FILE.csv] [--list] [--init-only] [--slow] [--stop-after ID]\n"
             "       %s client --help\n",
             argv0, argv0, argv0);
     return 2;
@@ -115,7 +115,16 @@ static size_t collect(ga_test *all) {
     } sets[] = {{spec_access_tests, spec_access_count},
                 {spec_directory_tests, spec_directory_count},
                 {spec_certmgr_tests, spec_certmgr_count},
-                {spec_trustlist_tests, spec_trustlist_count}};
+                {spec_trustlist_tests, spec_trustlist_count},
+                {spec_query_tests, spec_query_count},
+                {spec_revoke_tests, spec_revoke_count},
+                {spec_keypair_tests, spec_keypair_count},
+                {spec_tlwrite_tests, spec_tlwrite_count},
+                {spec_keycred_tests, spec_keycred_count},
+                {spec_authz_tests, spec_authz_count},
+                {spec_events_tests, spec_events_count},
+                {spec_roles_tests, spec_roles_count},
+                {spec_model_tests, spec_model_count}};
     size_t n = 0;
     for(size_t s = 0; s < GDS_ARRAY_SIZE(sets); s++)
         for(size_t i = 0; i < sets[s].n && n < MAX_TESTS; i++)
@@ -283,9 +292,16 @@ static int server_main(int argc, char **argv) {
         else if(!strcmp(a, "--user-password-file")) userPwFile = v;
         else if(!strcmp(a, "--server-cert")) serverCert = v;
         else if(!strcmp(a, "--work")) work = v;
-        else if(!strcmp(a, "--only")) opt.only = v;
+        else if(!strcmp(a, "--only")) opt.only = t.only = v;
         else if(!strcmp(a, "--expect")) opt.expectCsv = v;
-        else return usage(argv[0]);
+        else if(!strcmp(a, "--stop-after")) { /* the self-test's mutant runs */
+            size_t k = 0;
+            while(k < nTests && strcmp(all[k].id, v) != 0)
+                k++;
+            if(k == nTests)
+                return usage(argv[0]);
+            nTests = k + 1;
+        } else return usage(argv[0]);
     }
     if(!initOnly && (!t.url || (!serverCert == !tofu))) {
         fprintf(stderr, "--url and one of --server-cert or --tofu (test setups only) are needed\n");
@@ -357,7 +373,7 @@ static int server_main(int argc, char **argv) {
     if(t.snapTaken && !t.restored) {
         char why[384];
         if(st_restore(&t, why, sizeof(why)) == UA_STATUSCODE_GOOD) {
-            printf("# restore: snapshot pushed back and applied\n");
+            printf("# restore: %s\n", why[0] ? why : "snapshot pushed back and applied");
         } else {
             printf("# restore FAILED: %s\n", why);
             rc = 1;

@@ -9,6 +9,7 @@
 #include <openssl/rsa.h>
 #include <openssl/crypto.h>
 #include <openssl/err.h>
+#include <openssl/pem.h>
 #include <openssl/x509v3.h>
 
 #include <stdarg.h>
@@ -237,9 +238,24 @@ UA_StatusCode st_write_trustlist(UA_Client *c, const UA_TrustListDataType *tl, s
     return st_write_trustlist_ex(c, tl, chunk, true, applyRequired, ctx);
 }
 
-UA_StatusCode st_write_trustlist_ex(UA_Client *c, const UA_TrustListDataType *tl, size_t chunk,
-                                    bool update, bool *applyRequired, ga_ctx *ctx) {
-    *applyRequired = false;
+/* ApplyChangesRequired of every UpdateCertificate and CloseAndUpdate (SRV-TXN-01) */
+static st_acr_log acrLog;
+
+const st_acr_log *st_acr(void) {
+    return &acrLog;
+}
+
+static void acr_seen(bool v, const char *what) {
+    acrLog.calls++;
+    if(!v) {
+        acrLog.falses++;
+        acrLog.firstFalse = acrLog.firstFalse ? acrLog.firstFalse : what;
+    }
+}
+
+UA_StatusCode st_tl_open_write(UA_Client *c, const UA_TrustListDataType *tl, size_t chunk,
+                               UA_UInt32 *handle, ga_ctx *ctx) {
+    *handle = 0;
     UA_ByteString file = UA_BYTESTRING_NULL;
     UA_StatusCode r = UA_encodeBinary(tl, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], &file, NULL);
     if(r != UA_STATUSCODE_GOOD)
@@ -283,31 +299,49 @@ UA_StatusCode st_write_trustlist_ex(UA_Client *c, const UA_TrustListDataType *tl
         close_handle(c, h);
         return r;
     }
-    UA_Variant_setScalar(&in[0], &h, &UA_TYPES[UA_TYPES_UINT32]);
+    ga_note(ctx, "Write %zu bytes in %zu chunk(s)", total, chunks);
+    *handle = h;
+    return UA_STATUSCODE_GOOD;
+}
+
+UA_StatusCode st_tl_finish(UA_Client *c, UA_UInt32 h, bool update, bool *applyRequired,
+                           ga_ctx *ctx) {
+    *applyRequired = false;
+    UA_Variant in;
+    UA_Variant_setScalar(&in, &h, &UA_TYPES[UA_TYPES_UINT32]);
+    size_t outN = 0;
+    UA_Variant *out = NULL;
     if(!update) { /* Close discards the written data (12 §7.8.2.1) */
-        r = call(c, tl_node(),
-                 UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_CLOSE,
-                 1, in, 0, &outN, &out);
-        ga_note(ctx, "Write %zu bytes in %zu chunk(s); Close -> %s", total, chunks,
-                UA_StatusCode_name(r));
+        UA_StatusCode r = call(c, tl_node(),
+                               UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_CLOSE,
+                               1, &in, 0, &outN, &out);
+        ga_note(ctx, "Close -> %s", UA_StatusCode_name(r));
         if(r == UA_STATUSCODE_GOOD)
             free_out(out, outN);
         return r;
     }
-    r = call(c, tl_node(),
-             UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_CLOSEANDUPDATE,
-             1, in, 1, &outN, &out);
-    ga_note(ctx, "Write %zu bytes in %zu chunk(s); CloseAndUpdate -> %s", total, chunks,
-            UA_StatusCode_name(r));
+    UA_StatusCode r = call(c, tl_node(),
+                           UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_CLOSEANDUPDATE,
+                           1, &in, 1, &outN, &out);
+    ga_note(ctx, "CloseAndUpdate -> %s", UA_StatusCode_name(r));
     if(r != UA_STATUSCODE_GOOD)
         return r;
     const UA_Boolean *acr = uac_out_scalar(out, outN, 0, &UA_TYPES[UA_TYPES_BOOLEAN]);
-    if(acr)
+    if(acr) {
         *applyRequired = *acr;
-    else
+        acr_seen(*acr, "CloseAndUpdate");
+    } else
         r = UA_STATUSCODE_BADUNEXPECTEDERROR;
     free_out(out, outN);
     return r;
+}
+
+UA_StatusCode st_write_trustlist_ex(UA_Client *c, const UA_TrustListDataType *tl, size_t chunk,
+                                    bool update, bool *applyRequired, ga_ctx *ctx) {
+    *applyRequired = false;
+    UA_UInt32 h = 0;
+    UA_StatusCode r = st_tl_open_write(c, tl, chunk, &h, ctx);
+    return r == UA_STATUSCODE_GOOD ? st_tl_finish(c, h, update, applyRequired, ctx) : r;
 }
 
 static bool lists_in_bounds(const UA_TrustListDataType *l) {
@@ -474,9 +508,10 @@ static UA_StatusCode update_call(UA_Client *c, UA_NodeId type, const gds_buf *ce
     if(r != UA_STATUSCODE_GOOD)
         return r;
     const UA_Boolean *acr = uac_out_scalar(out, outN, 0, &UA_TYPES[UA_TYPES_BOOLEAN]);
-    if(acr)
+    if(acr) {
         *applyRequired = *acr;
-    else
+        acr_seen(*acr, "UpdateCertificate");
+    } else
         r = UA_STATUSCODE_BADUNEXPECTEDERROR;
     free_out(out, outN);
     return r;
@@ -707,9 +742,10 @@ UA_StatusCode st_restore(srv_target *t, char *why, size_t whyLen) {
     bool certChanged = st_presented(t, &now) == UA_STATUSCODE_GOOD &&
                        (now.len != t->snapCert.len || memcmp(now.data, t->snapCert.data, now.len) != 0);
     gds_buf_free(&now);
-    bool acr = false;
-    if(certChanged && !UA_NodeId_isNull(&t->certType))
+    bool acr = false, keptKey = certChanged && t->keyReplaced;
+    if(certChanged && !keptKey && !UA_NodeId_isNull(&t->certType))
         rc = st_update_cert(t, t->client, &t->snapCert, NULL, 0, &acr);
+    certChanged = certChanged && !keptKey;
     UA_TrustListDataType l;
     UA_TrustListDataType_init(&l);
     r = UA_TrustListDataType_copy(&t->snap, &l);
@@ -734,6 +770,10 @@ UA_StatusCode st_restore(srv_target *t, char *why, size_t whyLen) {
                        x509_thumbprint(&t->snapCert, tp) == GDS_OK ? tp : "?");
         return rc;
     }
+    if(keptKey)
+        say(why, whyLen, "trust list restored; the certificate stays the TEST one of SRV-UPD-09, "
+                         "which replaced the private key (selected by name): reinstall the "
+                         "target's own certificate and key");
     t->restored = true;
     return UA_STATUSCODE_GOOD;
 }
@@ -871,5 +911,35 @@ gds_status st_intermediate(srv_target *t) {
         gds_buf_free(&t->peerInt);
     }
     ERR_clear_error();
+    return s;
+}
+
+/* t-withkey: a certificate for the target from the test CA, with a key the
+ * Auditor generated, as PEM. */
+gds_status st_withkey(const srv_target *t, gds_buf *cert, gds_buf *pem) {
+    gds_buf der = {NULL, 0};
+    pem->data = NULL;
+    pem->len = 0;
+    gds_status s = testca_issue(&t->ca, "OpenGDS Auditor TEST t-withkey", t->targetUri, NULL,
+                                TESTCA_MAX_DAYS, cert, &der);
+    if(s != GDS_OK)
+        return s;
+    const unsigned char *q = der.data;
+    EVP_PKEY *k = d2i_AutoPrivateKey(NULL, &q, (long)der.len);
+    gds_buf_free_secret(&der);
+    BIO *bio = BIO_new(BIO_s_mem());
+    char *data = NULL;
+    long len = 0;
+    s = GDS_ECRYPTO;
+    if(k && bio && PEM_write_bio_PrivateKey(bio, k, NULL, NULL, 0, NULL, NULL) == 1 &&
+       (len = BIO_get_mem_data(bio, &data)) > 0)
+        s = gds_buf_dup(data, (size_t)len, pem);
+    if(data && len > 0)
+        OPENSSL_cleanse(data, (size_t)len);
+    BIO_free(bio);
+    EVP_PKEY_free(k);
+    ERR_clear_error();
+    if(s != GDS_OK)
+        gds_buf_free(cert);
     return s;
 }
