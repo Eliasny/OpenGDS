@@ -221,6 +221,11 @@ static gds_status deliver(gds_server *s, const gds_audit_event *ev, const UA_Nod
 
 gds_status gds_server_raise_audit_event(gds_server *s, const gds_caller *caller,
                                         const gds_audit_event *ev, int64_t *seq) {
+    return gds_audit_raise(s, caller ? caller->userName : NULL, ev, seq);
+}
+
+gds_status gds_audit_raise(gds_server *s, const char *user, const gds_audit_event *ev,
+                           int64_t *seq) {
     if(!s || !ev || ev->abi_major != GDS_PLUGIN_ABI_MAJOR ||
        ev->struct_size < offsetof(gds_audit_event, visibleToSize) + sizeof(size_t) ||
        ev->severity < 1 || ev->severity > 1000 || ev->visibleToSize == 0 || !fields_ok(ev) ||
@@ -234,9 +239,7 @@ gds_status gds_server_raise_audit_event(gds_server *s, const gds_caller *caller,
         return st;
     UA_NodeId source = UA_NodeId_isNull(&ev->sourceNode) ? UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER)
                                                          : ev->sourceNode;
-    UA_String clientUser = caller && caller->userName
-                               ? UA_STRING((char *)(uintptr_t)caller->userName)
-                               : UA_STRING_NULL;
+    UA_String clientUser = user ? UA_STRING((char *)(uintptr_t)user) : UA_STRING_NULL;
     UA_ByteString body = UA_BYTESTRING_NULL;
     if(encode_body(s, ev, &source, &clientUser, &body) != UA_STATUSCODE_GOOD)
         return GDS_EINVAL;
