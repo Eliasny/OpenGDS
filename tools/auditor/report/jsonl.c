@@ -91,7 +91,7 @@ static void put_key_str(FILE *f, const char *key, const char *val) {
 
 bool ga_jsonl_write(FILE *f, const ga_event *ev) {
     static const char *const kinds[] = {"run_started", "test_started", "note", "verdict",
-                                        "run_finished"};
+                                        "run_finished", "paused", "resumed"};
     if((size_t)ev->kind >= sizeof(kinds) / sizeof(kinds[0]))
         return false;
     fprintf(f, "{\"v\":%d,\"ev\":\"%s\"", GA_EVENTS_SCHEMA, kinds[ev->kind]);
@@ -127,6 +127,9 @@ bool ga_jsonl_write(FILE *f, const ga_event *ev) {
             fprintf(f, ",\"%s\":%zu", ga_verdict_name((ga_verdict)i), ev->counts[i]);
         fprintf(f, ",\"exit\":%d,\"aborted\":%s", ev->exitCode, ev->aborted ? "true" : "false");
         put_key_str(f, "time", ev->time);
+        break;
+    case GA_EV_PAUSED:
+    case GA_EV_RESUMED:
         break;
     }
     fputs("}\n", f);
@@ -450,7 +453,7 @@ out:
 
 static int finish(ga_event *ev, const ga_jsonl_strings *strs, double schema, bool verdictSeen) {
     static const char *const kinds[] = {"run_started", "test_started", "note", "verdict",
-                                        "run_finished"};
+                                        "run_finished", "paused", "resumed"};
     if(schema < 1 || !strs->s[S_EV])
         return -1;
     int kind = -1;

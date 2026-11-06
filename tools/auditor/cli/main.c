@@ -17,6 +17,7 @@
  *   --report DIR   DIR/report.html and DIR/junit.xml at the end of the run
  * SIGINT and SIGTERM abort the run: later tests are Not tested and the
  * server profile still restores the target; a second signal kills.
+ * SIGUSR1 pauses before the next test, SIGUSR2 resumes.
  *
  * gds runs the GDS profile (the T0 spec tests) against a GDS; server runs
  * the server profile (docs/auditor/server-profile.md) against a push-managed
@@ -431,8 +432,12 @@ static bool take_front_end_options(int *argc, char **argv, front_end *fe) {
 }
 
 static void on_signal(int sig) {
-    (void)sig;
-    ga_request_abort();
+    if(sig == SIGUSR1)
+        ga_request_pause(true);
+    else if(sig == SIGUSR2)
+        ga_request_pause(false);
+    else
+        ga_request_abort();
 }
 
 static void install_abort_handler(void) {
@@ -443,6 +448,9 @@ static void install_abort_handler(void) {
     sigemptyset(&sa.sa_mask);
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
+    sa.sa_flags = 0; /* pause and resume may come many times */
+    sigaction(SIGUSR1, &sa, NULL);
+    sigaction(SIGUSR2, &sa, NULL);
 }
 
 static bool start_front_end(front_end *fe, const char *profile) {

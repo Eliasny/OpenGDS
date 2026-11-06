@@ -30,7 +30,9 @@ cmake --build build && ctest --test-dir build --output-on-failure
 Every subcommand also takes `--events FILE` (the event stream as JSON Lines,
 schema in `engine.h`) and `--report DIR` (`report.html` and `junit.xml`).
 SIGINT or SIGTERM aborts a run: later tests are Not tested and the server
-profile still restores the target.
+profile still restores the target. SIGUSR1 pauses before the next test (the
+test in progress finishes) and SIGUSR2 resumes. The HTML report has a table
+per ConformanceUnit, taken from `docs/auditor/catalogue.csv`.
 
 Desktop UI: `gdsaudit-gui` (built when GTK 4.12+ is found;
 `-DOPENGDS_BUILD_AUDITOR_GUI=ON|OFF|AUTO`, needs `libgtk-4-dev`). It runs the
@@ -44,7 +46,11 @@ a banner stays while changes are allowed. Abort finishes the current test and
 restores the target; closing the window during a run does the same. Each run
 is kept in `~/.local/share/gdsaudit/runs/<time>-<profile>/` (`events.jsonl`,
 `output.log`, `report/`); Export writes `report.html`, `junit.xml` and
-`events.jsonl` to a folder.
+`events.jsonl` to a folder. Pause waits before the next test. History lists
+the kept runs, opens one (or any folder with an `events.jsonl` from a headless
+`--events` run) and compares two runs test by test. The form is kept between
+sessions in `~/.config/gdsaudit/last-plan.ini` (no passwords: only the paths
+of password files).
 
 Server profile against a push-managed Server (the Auditor's own certificate,
 `<work>/own/cert.der`, must be trusted by the target and mapped to SecurityAdmin):

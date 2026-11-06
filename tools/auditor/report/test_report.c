@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cu.h"
 #include "results.h"
 
 #include "common/banned.h"
@@ -59,6 +60,8 @@ static void roundtrip(void) {
         {.kind = GA_EV_NOTE, .n = 1, .text = "bad utf8 \xff\xfe end"},
         {.kind = GA_EV_VERDICT, .n = 1, .id = "SRV-TL-02", .verdict = GA_FAIL, .ms = 41,
          .text = "list differs"},
+        {.kind = GA_EV_PAUSED},
+        {.kind = GA_EV_RESUMED},
         {.kind = GA_EV_TEST_STARTED, .n = 2, .id = "SRV-UPD-01", .clause = "12 x",
          .title = "t2", .needsOperator = true},
         {.kind = GA_EV_VERDICT, .n = 2, .id = "SRV-UPD-01", .verdict = GA_NOT_TESTED,
@@ -72,6 +75,8 @@ static void roundtrip(void) {
         CHECK(line != NULL);
         if(line) {
             CHECK(strchr(line, '\n') == NULL);
+            if(evs[i].kind == GA_EV_PAUSED)
+                CHECK(!strcmp(line, "{\"v\":1,\"ev\":\"paused\"}"));
             CHECK(parse_apply(&viaText, line));
         }
         free(line);
@@ -110,6 +115,11 @@ static void roundtrip(void) {
     CHECK(html && !strstr(html, "compliant") && !strstr(html, "certified"));
     CHECK(xml && strstr(xml, "failures=\"1\"") && strstr(xml, "skipped=\"1\""));
     CHECK(xml && strstr(xml, "<failure message=\"list differs\"/>"));
+    /* both tests are in one ConformanceUnit of the catalogue: Failed */
+    CHECK(html && strstr(html, "<h2>ConformanceUnits</h2>"));
+    CHECK(html && strstr(html, "<tr><td>Push Model for Global Certificate and TrustList "
+                               "Management</td><td>0</td><td>1</td><td>0</td><td>0</td>"
+                               "<td>1</td><td class=\"v fail\">Failed</td></tr>"));
     CHECK(xml && strstr(xml, "<skipped message=\"Not tested: run aborted\"/>"));
     free(html);
     free(xml);
@@ -164,9 +174,46 @@ static void refusals(void) {
     ga_jsonl_strings_free(&s);
 }
 
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): flat checks
+static void units(void) {
+    const char *u = ga_conformance_unit("SRV-TL-02");
+    CHECK(u && !strcmp(u, "Push Model for Global Certificate and TrustList Management"));
+    u = ga_conformance_unit("SRV-TXN-01");
+    CHECK(u && !strcmp(u, "Server PushManagement Transactions"));
+    u = ga_conformance_unit("CLI-TRU-02"); /* unit not named yet */
+    CHECK(u && !strcmp(u, GA_CU_TBD));
+    CHECK(ga_conformance_unit("gds.dir.register_valid") == NULL);
+    CHECK(ga_conformance_unit(NULL) == NULL);
+    CHECK(ga_cu_table_len >= 100);
+
+    /* a test outside the catalogue and one not yet named get rows of their own */
+    ga_results r = {0};
+    ga_event evs[] = {
+        {.kind = GA_EV_RUN_STARTED, .profile = "client", .target = "x", .planned = 2},
+        {.kind = GA_EV_TEST_STARTED, .n = 1, .id = "CLI-TRU-02", .clause = "c", .title = "t"},
+        {.kind = GA_EV_VERDICT, .n = 1, .id = "CLI-TRU-02", .verdict = GA_PASS},
+        {.kind = GA_EV_TEST_STARTED, .n = 2, .id = "gds.x", .clause = "c", .title = "t"},
+    };
+    for(size_t i = 0; i < sizeof(evs) / sizeof(evs[0]); i++)
+        CHECK(ga_results_apply(&r, &evs[i]));
+    char *html = NULL;
+    size_t hl = 0;
+    FILE *f = open_memstream(&html, &hl);
+    CHECK(f && ga_report_html(f, &r));
+    if(f)
+        fclose(f);
+    CHECK(html && strstr(html, "<em>Not named yet in the test catalogue</em></td><td>1</td>"));
+    /* no verdict: Incomplete */
+    CHECK(html && strstr(html, "<em>Not in the test catalogue</em></td><td>0</td><td>0</td>"
+                               "<td>0</td><td>0</td><td>0</td><td class=\"v nt\">Incomplete"));
+    free(html);
+    ga_results_free(&r);
+}
+
 int main(void) {
     roundtrip();
     refusals();
+    units();
     if(failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

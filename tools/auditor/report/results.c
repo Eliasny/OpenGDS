@@ -149,6 +149,9 @@ bool ga_results_apply(ga_results *r, const ga_event *ev) {
         if(!x->id && !dup_into(&x->id, ev->id))
             return false;
         return dup_into(&x->evidence, ev->text);
+    case GA_EV_PAUSED:
+    case GA_EV_RESUMED:
+        return true; /* no result of their own */
     case GA_EV_RUN_FINISHED:
         r->finishedSeen = true;
         r->aborted = ev->aborted;

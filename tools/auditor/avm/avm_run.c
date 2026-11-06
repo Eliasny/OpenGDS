@@ -22,6 +22,7 @@ struct AvmRun {
     AvmRunCallbacks cb;
     void *user;
     gboolean exited, eventsDone, outputDone, reported;
+    guint replaySource; /* avm_run_open: the pending replay */
     int exitCode;
     char *error;
 };
@@ -199,9 +200,101 @@ AvmRun *avm_run_start(char **argv, const char *runDir, const AvmRunCallbacks *cb
     return r;
 }
 
+/* Replay of a stored run: one idle callback feeds every event. */
+typedef struct {
+    AvmRun *run;
+    ga_results stored;
+} replay;
+
+static void replay_event(AvmRun *r, ga_event *ev, const ga_result *x, ga_event_kind kind) {
+    ev->kind = kind;
+    ev->id = x->id;
+    ev->clause = x->clause;
+    ev->title = x->title;
+    ev->needsWrite = x->needsWrite;
+    ev->needsOperator = x->needsOperator;
+    if(ga_results_apply(&r->results, ev) && r->cb.event)
+        r->cb.event(r, ev, r->user);
+}
+
+static void replay_test(AvmRun *r, const ga_result *x, size_t n) {
+    ga_event ev = {.n = n};
+    replay_event(r, &ev, x, GA_EV_TEST_STARTED);
+    if(x->notes) {
+        char **lines = g_strsplit(x->notes, "\n", -1);
+        for(char **l = lines; *l; l++) {
+            ga_event note = {.n = n, .text = *l};
+            replay_event(r, &note, x, GA_EV_NOTE);
+        }
+        g_strfreev(lines);
+    }
+    if(x->done) {
+        ga_event v = {.n = n, .verdict = x->verdict, .ms = x->ms, .text = x->evidence};
+        replay_event(r, &v, x, GA_EV_VERDICT);
+    }
+}
+
+static gboolean replay_all(gpointer data) {
+    replay *p = data;
+    AvmRun *r = p->run;
+    const ga_results *s = &p->stored;
+    ga_event start = {.kind = GA_EV_RUN_STARTED, .profile = s->profile, .target = s->target,
+                      .allowChanges = s->allowChanges, .planned = s->planned, .time = s->started};
+    if(ga_results_apply(&r->results, &start) && r->cb.event)
+        r->cb.event(r, &start, r->user);
+    for(size_t i = 0; i < s->n; i++)
+        replay_test(r, &s->items[i], i + 1);
+    if(s->finishedSeen) {
+        ga_event fin = {.kind = GA_EV_RUN_FINISHED, .exitCode = s->exitCode,
+                        .aborted = s->aborted, .time = s->finished};
+        memcpy(fin.counts, s->counts, sizeof(fin.counts));
+        if(ga_results_apply(&r->results, &fin) && r->cb.event)
+            r->cb.event(r, &fin, r->user);
+    }
+    r->reported = TRUE;
+    r->replaySource = 0;
+    if(r->cb.finished)
+        r->cb.finished(r, s->finishedSeen ? s->exitCode : 2, NULL, r->user);
+    return G_SOURCE_REMOVE;
+}
+
+static void replay_free(gpointer data) {
+    replay *p = data;
+    ga_results_free(&p->stored);
+    g_free(p);
+}
+
+AvmRun *avm_run_open(const char *runDir, const AvmRunCallbacks *cb, void *user, GError **error) {
+    char *path = g_build_filename(runDir, "events.jsonl", NULL);
+    replay *p = g_new0(replay, 1);
+    char err[512];
+    gboolean ok = ga_results_load(path, &p->stored, err, sizeof(err));
+    g_free(path);
+    if(!ok || !p->stored.profile) {
+        g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "%s",
+                    ok ? "the events file holds no run" : err);
+        replay_free(p);
+        return NULL;
+    }
+    AvmRun *r = g_new0(AvmRun, 1);
+    r->cancel = g_cancellable_new();
+    r->dir = g_strdup(runDir);
+    r->cb = *cb;
+    r->user = user;
+    r->exited = r->eventsDone = r->outputDone = TRUE;
+    p->run = r;
+    r->replaySource = g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, replay_all, p, replay_free);
+    return r;
+}
+
 void avm_run_abort(AvmRun *run) {
-    if(run && !run->exited)
+    if(run && !run->exited && run->proc)
         g_subprocess_send_signal(run->proc, SIGINT);
+}
+
+void avm_run_pause(AvmRun *run, gboolean paused) {
+    if(run && !run->exited && run->proc)
+        g_subprocess_send_signal(run->proc, paused ? SIGUSR1 : SIGUSR2);
 }
 
 gboolean avm_run_is_running(const AvmRun *run) {
@@ -220,7 +313,9 @@ void avm_run_free(AvmRun *run) {
     if(!run)
         return;
     g_cancellable_cancel(run->cancel);
-    if(!run->exited)
+    if(run->replaySource)
+        g_source_remove(run->replaySource);
+    if(!run->exited && run->proc)
         g_subprocess_force_exit(run->proc);
     g_clear_object(&run->events);
     g_clear_object(&run->output);

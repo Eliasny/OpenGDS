@@ -68,6 +68,14 @@ char *avm_plan_check(const AvmPlan *p);
 char **avm_plan_argv(const AvmPlan *p, const char *engine, const char *events,
                      const char *reportDir, GError **error);
 
+/* The form between sessions: a key file holding only the fields above
+ * (paths, never passwords). load keeps the defaults for missing keys and
+ * returns FALSE if the file cannot be read. */
+gboolean avm_plan_save(const AvmPlan *p, const char *path, GError **error);
+gboolean avm_plan_load(AvmPlan *p, const char *path, GError **error);
+/* <user config>/gdsaudit/last-plan.ini; g_free it. */
+char *avm_plan_default_path(void);
+
 /* SHA-1 thumbprint of the pinned server certificate as hex, as the target
  * would show it; NULL if there is no readable pinned certificate. */
 char *avm_plan_thumbprint(const AvmPlan *p);

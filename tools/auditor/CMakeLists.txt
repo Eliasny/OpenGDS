@@ -3,10 +3,13 @@
 
 # Engine API and result list: events as JSON Lines, HTML and JUnit reports.
 # libc only, so the desktop UI links it without open62541.
+include(cu_table.cmake)
 add_library(gdsaudit_report STATIC
     report/results.c
     report/jsonl.c
-    report/report.c)
+    report/report.c
+    report/cu.c
+    "${GA_CU_TABLE_C}")
 target_include_directories(gdsaudit_report PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/report"
     PRIVATE "${CMAKE_SOURCE_DIR}/src")
@@ -50,6 +53,11 @@ add_executable(test_report report/test_report.c)
 target_include_directories(test_report PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(test_report PRIVATE gdsaudit_report gds_hardening)
 add_test(NAME auditor_report_events COMMAND test_report)
+# Pause and resume between tests (SIGUSR1/SIGUSR2) against push_test_server.
+add_test(NAME auditor_pause_resume
+         COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/cli/test_pause.sh"
+                 "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/pause-run")
+set_tests_properties(auditor_pause_resume PROPERTIES TIMEOUT 600 ENVIRONMENT "PUSH_PORT=4991")
 
 # Desktop UI (GTK4): view-model in avm/, window in ui/. Built when GTK 4.12+
 # is found (AUTO), always (ON) or never (OFF); the headless gdsaudit never

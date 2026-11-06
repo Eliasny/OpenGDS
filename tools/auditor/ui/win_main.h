@@ -5,7 +5,19 @@
 
 #include <gtk/gtk.h>
 
+#include "results.h"
+
 GtkWindow *win_main_new(GtkApplication *app);
+
+/* Show a stored run (a run folder with events.jsonl) in the main window.
+ * Returns FALSE and sets *error if it cannot be read or a run is going. */
+gboolean win_main_show_run(GtkWindow *win, const char *dir, GError **error);
+/* The run shown in the main window, or NULL. */
+const ga_results *win_main_results(GtkWindow *win);
+
+/* History (ui/page_history.c): past runs, open one, compare one with the
+ * run shown in the main window. */
+void page_history_present(GtkWindow *main);
 
 /* For the smoke test: TRUE if every part of the window was built. */
 gboolean win_main_check(GtkWindow *win);

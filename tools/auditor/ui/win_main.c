@@ -26,6 +26,7 @@ typedef struct {
     AvmPlan plan;
     AvmRun *run;
     gboolean closeWhenDone;
+    gboolean replaying; /* showing a stored run */
     /* form */
     GtkDropDown *profile, *preset;
     GtkLabel *presetDesc;
@@ -35,7 +36,9 @@ typedef struct {
     GtkCheckButton *tofu, *allowChanges;
     GtkSpinButton *port;
     /* run */
-    GtkWidget *runBtn, *abortBtn, *exportBtn, *openBtn;
+    GtkWidget *pauseBtn;
+    gboolean paused;
+    GtkWidget *runBtn, *abortBtn, *exportBtn, *openBtn, *historyBtn, *openFolderBtn;
     GtkLabel *banner, *status;
     GtkProgressBar *progress;
     GtkListBox *list;
@@ -353,8 +356,15 @@ static void set_status(Win *w, const char *text) {
 static void set_running(Win *w, gboolean running) {
     gtk_widget_set_sensitive(w->runBtn, !running);
     gtk_widget_set_sensitive(w->abortBtn, running);
+    gtk_widget_set_sensitive(w->pauseBtn, running && !w->replaying);
+    if(!running) {
+        w->paused = FALSE;
+        gtk_button_set_label(GTK_BUTTON(w->pauseBtn), "_Pause");
+    }
     gtk_widget_set_sensitive(w->exportBtn, !running && w->run != NULL);
     gtk_widget_set_sensitive(GTK_WIDGET(w->profile), !running);
+    gtk_widget_set_sensitive(w->historyBtn, !running);
+    gtk_widget_set_sensitive(w->openFolderBtn, !running);
 }
 
 static void set_verdict_label(GtkLabel *l, int v) {
@@ -478,6 +488,13 @@ static void on_run_event(AvmRun *run, const ga_event *ev, void *user) {
         }
         update_counts(w);
         break;
+    case GA_EV_PAUSED:
+        set_status(w, "Paused before the next test. The target stays as the last test left "
+                      "it until you resume or abort.");
+        break;
+    case GA_EV_RESUMED:
+        update_counts(w);
+        break;
     case GA_EV_RUN_FINISHED:
         break;
     }
@@ -571,6 +588,7 @@ static void start_run(Win *w) {
         gtk_widget_set_visible(GTK_WIDGET(w->banner), writes);
         gtk_widget_set_sensitive(w->openBtn, FALSE);
         set_status(w, "Starting the engine…");
+        w->replaying = FALSE;
         set_running(w, TRUE);
     } else {
         char *m = g_strdup_printf("Cannot start %s: %s", engine, e ? e->message : "unknown error");
@@ -582,6 +600,67 @@ static void start_run(Win *w) {
     g_free(reportDir);
     g_free(dir);
     g_free(engine);
+}
+
+gboolean win_main_show_run(GtkWindow *win, const char *dir, GError **error) {
+    Win *w = g_object_get_data(G_OBJECT(win), "gdsaudit-win");
+    if(!w || avm_run_is_running(w->run)) {
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_BUSY, "A run is going: wait for it or abort it.");
+        return FALSE;
+    }
+    AvmRunCallbacks cb = {on_run_event, on_run_log, on_run_finished};
+    AvmRun *run = avm_run_open(dir, &cb, w, error);
+    if(!run)
+        return FALSE;
+    avm_run_free(w->run);
+    w->run = run;
+    clear_results(w);
+    gtk_widget_set_visible(GTK_WIDGET(w->banner), FALSE);
+    char *m = g_strdup_printf("Showing the stored run in %s", dir);
+    set_status(w, m);
+    g_free(m);
+    w->replaying = TRUE;
+    set_running(w, TRUE);
+    return TRUE;
+}
+
+const ga_results *win_main_results(GtkWindow *win) {
+    Win *w = g_object_get_data(G_OBJECT(win), "gdsaudit-win");
+    return w && w->run && !avm_run_is_running(w->run) ? avm_run_results(w->run) : NULL;
+}
+
+static void on_history(GtkButton *b, gpointer data) {
+    (void)b;
+    page_history_present(((Win *)data)->win);
+}
+
+static void on_open_folder_chosen(GObject *src, GAsyncResult *res, gpointer data) {
+    Win *w = data;
+    GError *e = NULL;
+    GFile *f = gtk_file_dialog_select_folder_finish(GTK_FILE_DIALOG(src), res, &e);
+    if(!f) {
+        g_clear_error(&e);
+        return;
+    }
+    char *dir = g_file_get_path(f);
+    g_object_unref(f);
+    if(dir && !win_main_show_run(w->win, dir, &e)) {
+        char *m = g_strdup_printf("Cannot open %s: %s", dir, e ? e->message : "");
+        set_status(w, m);
+        g_free(m);
+    }
+    g_clear_error(&e);
+    g_free(dir);
+}
+
+static void on_open_folder(GtkButton *b, gpointer data) {
+    (void)b;
+    Win *w = data;
+    GtkFileDialog *d = gtk_file_dialog_new();
+    gtk_file_dialog_set_title(d, "Open a results folder (with events.jsonl)");
+    gtk_file_dialog_set_modal(d, TRUE);
+    gtk_file_dialog_select_folder(d, w->win, NULL, on_open_folder_chosen, w);
+    g_object_unref(d);
 }
 
 static void on_allowed(gboolean allowed, gpointer user) {
@@ -605,6 +684,12 @@ static void on_run(GtkButton *b, gpointer data) {
         g_free(problem);
         return;
     }
+    char *saved = avm_plan_default_path();
+    GError *e = NULL;
+    if(!avm_plan_save(&w->plan, saved, &e))
+        g_warning("cannot keep the form in %s: %s", saved, e ? e->message : "");
+    g_clear_error(&e);
+    g_free(saved);
     if(w->plan.allowChanges && w->plan.profile != AVM_PROFILE_CLIENT) {
         char *thumb = avm_plan_thumbprint(&w->plan);
         dlg_allow_changes_run(w->win, w->plan.url, thumb, w->plan.tofu, on_allowed, w);
@@ -612,6 +697,18 @@ static void on_run(GtkButton *b, gpointer data) {
         return;
     }
     start_run(w);
+}
+
+static void on_pause(GtkButton *b, gpointer data) {
+    (void)b;
+    Win *w = data;
+    if(!avm_run_is_running(w->run))
+        return;
+    w->paused = !w->paused;
+    avm_run_pause(w->run, w->paused);
+    gtk_button_set_label(GTK_BUTTON(w->pauseBtn), w->paused ? "_Resume" : "_Pause");
+    if(w->paused)
+        set_status(w, "Pausing after the test in progress…");
 }
 
 static void on_abort(GtkButton *b, gpointer data) {
@@ -775,6 +872,9 @@ GtkWindow *win_main_new(GtkApplication *app) {
     Win *w = g_new0(Win, 1);
     w->rows = g_ptr_array_new_with_free_func(vrow_free);
     avm_plan_init(&w->plan);
+    char *saved = avm_plan_default_path();
+    (void)avm_plan_load(&w->plan, saved, NULL); /* the form as the user left it, if any */
+    g_free(saved);
     w->win = GTK_WINDOW(gtk_application_window_new(app));
     gtk_window_set_title(w->win, "OpenGDS Auditor");
     gtk_window_set_default_size(w->win, 1100, 720);
@@ -789,8 +889,17 @@ GtkWindow *win_main_new(GtkApplication *app) {
     w->exportBtn = button("_Export…", "Write report.html, junit.xml and events.jsonl to a folder",
                           G_CALLBACK(on_export), w);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), w->runBtn);
+    w->pauseBtn = button("_Pause", "Wait before the next test; the test in progress finishes",
+                         G_CALLBACK(on_pause), w);
+    gtk_header_bar_pack_start(GTK_HEADER_BAR(header), w->pauseBtn);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), w->abortBtn);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->exportBtn);
+    w->historyBtn = button("_History…", "Past runs: open one or compare two",
+                           G_CALLBACK(on_history), w);
+    w->openFolderBtn = button("Open _folder…", "Show a results folder, also of a headless run",
+                              G_CALLBACK(on_open_folder), w);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->historyBtn);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->openFolderBtn);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->openBtn);
     gtk_window_set_titlebar(w->win, header);
 
@@ -810,7 +919,7 @@ GtkWindow *win_main_new(GtkApplication *app) {
 
 gboolean win_main_check(GtkWindow *win) {
     Win *w = g_object_get_data(G_OBJECT(win), "gdsaudit-win");
-    return w && w->runBtn && w->list && w->profile && w->preset &&
+    return w && w->runBtn && w->list && w->profile && w->preset && w->historyBtn &&
            gtk_drop_down_get_selected(w->preset) == AVM_PRESET_QUICK &&
            !gtk_check_button_get_active(w->allowChanges);
 }

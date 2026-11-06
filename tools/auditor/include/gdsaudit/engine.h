@@ -16,6 +16,7 @@
  *   {"v":1,"ev":"note","n":1,"text":".."}
  *   {"v":1,"ev":"verdict","n":1,"id":"SRV-TL-02","verdict":"pass","ms":41,
  *    "evidence":".."}
+ *   {"v":1,"ev":"paused"}  {"v":1,"ev":"resumed"}   (between two tests)
  *   {"v":1,"ev":"run_finished","pass":10,"fail":1,"warn":0,"not_supported":1,
  *    "not_tested":0,"exit":1,"aborted":false,"time":".."}
  * Readers ignore unknown keys and unknown "ev" values.
@@ -52,7 +53,9 @@ typedef enum {
     GA_EV_TEST_STARTED,
     GA_EV_NOTE,
     GA_EV_VERDICT,
-    GA_EV_RUN_FINISHED
+    GA_EV_RUN_FINISHED,
+    GA_EV_PAUSED, /* between two tests, until resumed or aborted */
+    GA_EV_RESUMED
 } ga_event_kind;
 
 /* One engine event. Strings are borrowed for the duration of the callback.
@@ -99,5 +102,11 @@ void ga_set_run_info(const char *profile, const char *target);
  * trust list and certificates) runs as on a normal end. */
 void ga_request_abort(void);
 bool ga_abort_requested(void);
+
+/* Ask the running profile to wait before its next test, or to go on:
+ * async-signal-safe. The test in progress always finishes first, so no
+ * target is left half-changed; an abort ends a pause. */
+void ga_request_pause(bool paused);
+bool ga_pause_requested(void);
 
 #endif
