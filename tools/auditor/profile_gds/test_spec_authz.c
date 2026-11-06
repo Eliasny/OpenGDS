@@ -8,7 +8,11 @@
 #include <open62541/client_highlevel.h>
 #include <open62541/nodeids_gds.h>
 
+#include <limits.h>
 #include <string.h>
+
+#include <openssl/err.h>
+#include <openssl/x509.h>
 
 #include "common/limits.h"
 #include "gds_target.h"
@@ -110,13 +114,23 @@ static void t_description(ga_ctx *ctx, void *p) {
               !UA_ByteString_equal(cert, (const UA_ByteString *)pCert.data)) {
         ga_fail(ctx, "ServiceCertificate differs from the ServiceCertificate Property");
     } else {
-        gds_buf b = {cert->data, cert->length};
-        X509 *x = x509_parse_cert(&b);
-        if(!x)
-            ga_fail(ctx, "ServiceCertificate is not a DER X.509 certificate");
+        /* "The ServiceCertificate may be a complete chain" (§9.6.4): DER
+         * certificates back to back, the service's own first */
+        size_t n = 0;
+        bool ok = cert->length > 0 && cert->length <= LONG_MAX;
+        const unsigned char *pp = cert->data, *end = cert->data + cert->length;
+        while(ok && pp < end) {
+            X509 *x = d2i_X509(NULL, &pp, (long)(end - pp));
+            ok = x != NULL;
+            n += ok;
+            X509_free(x);
+        }
+        ERR_clear_error();
+        if(!ok)
+            ga_fail(ctx, "ServiceCertificate (%zu bytes) is not DER X.509 certificates "
+                         "(entry %zu does not parse)", cert->length, n + 1);
         else
-            ga_pass(ctx, "description matches the Properties; certificate parses");
-        X509_free(x);
+            ga_pass(ctx, "description matches the Properties; %zu certificate(s) parse", n);
     }
     UA_Variant_clear(&pUri);
     UA_Variant_clear(&pCert);

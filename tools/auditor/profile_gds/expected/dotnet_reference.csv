@@ -9,6 +9,22 @@
 #      registered application that has no certificate yet; the test expects true
 #      (GetCertificateStatus, OPC 10000-12 §7.9.10). Recorded, not resolved: to be
 #      settled against the clause text before OpenGDS implements the method.
+#   R2 gds.qry.na_excluded: QueryApplications returns a record whose
+#      ServerCapabilities include NA. §6.5.10: "This Method shall not return records
+#      with a ServerCapabilities that includes NA."
+#   R3 gds.cm.revoke: after RevokeCertificate, GetCertificates still returns the
+#      revoked certificate. §7.9.8: the list "only includes Certificates that are
+#      currently valid".
+#   R4 gds.cm.keypair_bad_format: StartNewKeyPairRequest accepts an unknown
+#      PrivateKeyFormat. §7.9.4 names Bad_InvalidArgument for an invalid
+#      PrivateKeyFormat.
+#   R5 gds.az.start_unknown_resource, gds.az.finish_unknown, gds.az.refresh_rejected
+#      (warn): the sample AuthorizationService answers Bad_NotSupported where
+#      §9.6.6 to §9.6.8 name Bad_NotFound (or Bad_IdentityTokenRejected for a refresh
+#      token). The sample does not implement token requests.
+#   Not supported: the sample has no KeyCredentialService (§8.5, Optional), sets
+#   Server.Auditing FALSE and raises no audit events (gds.ev.*), and has neither
+#   Optional CertificateGroup alarm.
 gds.sec.endpoints,pass
 gds.sec.none_session,pass
 gds.sec.anonymous_register,pass
@@ -34,3 +50,70 @@ gds.cm.status_after_issue,pass
 gds.tl.get_trustlist,pass
 gds.tl.read_bad_handle,pass
 gds.tl.write_anonymous,pass
+gds.qry.uri_pattern,pass
+gds.qry.type_mask,pass
+gds.qry.product_uri,pass
+gds.qry.name,pass
+gds.qry.paging,pass
+gds.qry.capabilities,pass
+gds.qry.na_excluded,fail
+gds.qry.servers,pass
+gds.cm.get_certificates,pass
+gds.cm.get_certificates_unknown,pass
+gds.cm.get_certificates_bad_group,pass
+gds.cm.revoke,fail
+gds.cm.revoke_foreign,pass
+gds.cm.revoke_unknown_app,pass
+gds.cm.check_good,pass
+gds.cm.check_revoked,pass
+gds.cm.check_bad_signature,pass
+gds.cm.keypair_pfx,pass
+gds.cm.keypair_pem,pass
+gds.cm.keypair_bad_format,fail
+gds.cm.keypair_unknown_app,pass
+gds.cm.sign_bad_group,pass
+gds.cm.sign_bad_type,pass
+gds.cm.sign_unknown_app,pass
+gds.cm.sign_null_group,pass
+gds.tl.open_bad_mode,pass
+gds.tl.open_with_masks,pass
+gds.tl.read_chunked,pass
+gds.tl.handle_other_session,pass
+gds.tl.close_discards,pass
+gds.tl.write_update,pass
+gds.tl.add_remove,pass
+gds.tl.add_untrusted_flag,pass
+gds.tl.add_no_issuer,pass
+gds.tl.add_while_open,pass
+gds.tl.remove_unknown,pass
+gds.kc.service,not_supported
+gds.kc.start_unknown_uri,not_supported
+gds.kc.request_flow,not_supported
+gds.kc.policy_without_key,not_supported
+gds.kc.finish_unknown,not_supported
+gds.kc.cancel,not_supported
+gds.kc.revoke,not_supported
+gds.kc.revoke_unknown,not_supported
+gds.kc.sign_only,not_supported
+gds.az.service,pass
+gds.az.description,pass
+gds.az.start_unknown_resource,warn
+gds.az.finish_unknown,warn
+gds.az.refresh_rejected,warn
+gds.az.sign_only,pass
+gds.ev.registration_changed,not_supported
+gds.ev.certificate_requested_delivered,not_supported
+gds.ev.certificate_revoked,not_supported
+gds.ev.trustlist_updated,not_supported
+gds.ev.auditing_flag,not_supported
+gds.ev.group_alarms,not_supported
+gds.acc.unregister_other,pass
+gds.acc.update_other,pass
+gds.acc.sign_other,pass
+gds.acc.get_certificates_other,pass
+gds.acc.revoke_needs_ca_admin,pass
+gds.acc.tl_add_needs_ca_admin,pass
+gds.acc.sign_sign_only,pass
+gds.acc.keypair_sign_only,pass
+gds.model.directory,pass
+gds.model.certificate_group,pass

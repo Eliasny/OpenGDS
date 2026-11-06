@@ -6,6 +6,7 @@
 #include <openssl/pem.h>
 #include <openssl/pkcs12.h>
 
+#include <stdint.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -116,6 +117,25 @@ static bool pfx_matches(const gds_buf *pfx, const gds_buf *certDer, bool *hasCer
     return ok;
 }
 
+/* PEM is PKCS #8 Base64 encoded DER (§7.9.4), encrypted with PrivateKeyPassword
+ * when one is given. The key shall match the issued certificate. */
+static bool pem_matches(const gds_buf *pem, const gds_buf *certDer) {
+    static const char tag[] = "-----BEGIN ";
+    if(pem->len < sizeof(tag) - 1 || memcmp(pem->data, tag, sizeof(tag) - 1) != 0 ||
+       pem->len > INT32_MAX)
+        return false;
+    BIO *bio = BIO_new_mem_buf(pem->data, (int)pem->len);
+    char pw[] = PFX_PASSWORD;
+    EVP_PKEY *k = bio ? PEM_read_bio_PrivateKey(bio, NULL, NULL, pw) : NULL;
+    X509 *issued = x509_parse_cert(certDer);
+    bool ok = k && issued && X509_check_private_key(issued, k) == 1;
+    X509_free(issued);
+    EVP_PKEY_free(k);
+    BIO_free(bio);
+    x509_drain_errors("pem");
+    return ok;
+}
+
 static void keypair_case(ga_ctx *ctx, gds_target *t, const char *format) {
     char uri[URI_LEN];
     UA_NodeId id, req;
@@ -143,8 +163,9 @@ static void keypair_case(ga_ctx *ctx, gds_target *t, const char *format) {
         ga_fail(ctx, "the PFX does not open with the password or its key does not match");
     else if(strcmp(format, "PFX") == 0 && !pfxCert)
         ga_fail(ctx, "the PFX holds no certificate (it shall include certificate and key)");
-    else if(strcmp(format, "PEM") == 0 && !x509_key_matches(&cert, &key))
-        ga_fail(ctx, "the PEM private key does not match the certificate");
+    else if(strcmp(format, "PEM") == 0 && !pem_matches(&key, &cert))
+        ga_fail(ctx, "the private key is not PEM, does not open with the password or does not "
+                     "match the certificate");
     else
         ga_pass(ctx, "%s key pair: certificate for the record's URI with the matching key",
                 format);
