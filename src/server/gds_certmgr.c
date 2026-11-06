@@ -119,7 +119,7 @@ static GDS_METHOD(start_signing_request) {
     q.certType = type;
     q.csr.data = csr->data; /* borrowed for the insert */
     q.csr.len = csr->length;
-    gds_status st = gds_policy_initial_state(s, &q, &q.state);
+    gds_status st = gds_policy_initial_state(s, sessionContext, &q, &q.state);
     if(st != GDS_OK)
         return gds_status_to_ua(st);
     if(q.state == GDS_REQ_PENDING && s->pendingApprovals >= GDS_MAX_PENDING_APPROVALS)
