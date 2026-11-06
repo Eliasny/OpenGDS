@@ -15,7 +15,7 @@
  *                     the Server presents the issued certificate and a session
  *                     trusting only the CA works; the TrustList reads back as sent
  *
- * PUSH_IDENTITY_X509 is not run here: push_test_server advertises the
+ * GDSC_IDENTITY_X509 is not run here: push_test_server advertises the
  * Certificate UserTokenType but has no user-token PKI, so it rejects every
  * X509IdentityToken. The push against a .NET reference Server (next T2
  * step) covers it.
@@ -37,7 +37,7 @@
 
 #include "client/gdsc_push.h"
 #include "common/limits.h"
-#include "push/push_session.h"
+#include "client/gdsc_session.h"
 #include "push/push_workflows.h"
 #include "test_ca.h"
 #include "common/banned.h"
@@ -152,7 +152,7 @@ static gds_status read_server_cert(void) {
 static gds_status wait_server(void) {
     const struct timespec step = {0, 100L * 1000L * 1000L};
     for(int i = 0; i < 100; i++) {
-        if(read_server_cert() == GDS_OK && push_wait_presents(F.url, &F.serverCert, 0) ==
+        if(read_server_cert() == GDS_OK && gdsc_wait_presents(F.url, &F.serverCert, 0) ==
                                                 UA_STATUSCODE_GOOD)
             return GDS_OK;
         gds_buf_free(&F.serverCert);
@@ -161,8 +161,8 @@ static gds_status wait_server(void) {
     return GDS_ENOTFOUND;
 }
 
-static push_session_cfg session_cfg(const gds_buf *trust, size_t trustN) {
-    push_session_cfg c;
+static gdsc_session_cfg session_cfg(const gds_buf *trust, size_t trustN) {
+    gdsc_session_cfg c;
     memset(&c, 0, sizeof(c));
     c.endpointUrl = F.url;
     c.serverUri = SERVER_URI;
@@ -173,17 +173,23 @@ static push_session_cfg session_cfg(const gds_buf *trust, size_t trustN) {
     c.trustN = trustN;
     c.crls = &F.crlDer;
     c.crlN = 1;
-    c.identity = PUSH_IDENTITY_APP_CERT;
+    c.identity = GDSC_IDENTITY_APP_CERT;
     return c;
 }
 
-static gds_status sign_ok(void *ctx, const gds_buf *csr, gds_buf *out) {
+static gds_status sign_ok(void *ctx, const gds_buf *csr, gds_buf *out, gds_buf *iss,
+                          size_t *issN) {
     (void)ctx;
+    (void)iss;
+    *issN = 0; /* the job's issuers (the test CA) */
     return testca_sign_csr(&F.ca, csr, SERVER_URI, TESTCA_MAX_DAYS, out);
 }
 
-static gds_status sign_refuses(void *ctx, const gds_buf *csr, gds_buf *out) {
+static gds_status sign_refuses(void *ctx, const gds_buf *csr, gds_buf *out, gds_buf *iss,
+                               size_t *issN) {
     (void)ctx;
+    (void)iss;
+    (void)issN;
     (void)csr;
     (void)out;
     return GDS_ECRYPTO;
@@ -203,40 +209,40 @@ static push_job job_for(const UA_TrustListDataType *tl, push_sign_fn sign) {
 }
 
 static void case_untrusted_server(void) {
-    push_session_cfg c = session_cfg(&F.ca2Der, 1); /* nothing that vouches for the Server */
-    push_session *s = NULL;
-    UA_StatusCode r = push_session_open(&c, &s);
+    gdsc_session_cfg c = session_cfg(&F.ca2Der, 1); /* nothing that vouches for the Server */
+    gdsc_session *s = NULL;
+    UA_StatusCode r = gdsc_session_open(&c, &s);
     result("untrusted-server", r != UA_STATUSCODE_GOOD, UA_StatusCode_name(r));
-    push_session_close(s);
+    gdsc_session_close(s);
 }
 
 static void case_wrong_uri(void) {
-    push_session_cfg c = session_cfg(&F.serverCert, 1);
+    gdsc_session_cfg c = session_cfg(&F.serverCert, 1);
     c.serverUri = "urn:opengds:test:someone-else";
-    push_session *s = NULL;
-    UA_StatusCode r = push_session_open(&c, &s);
+    gdsc_session *s = NULL;
+    UA_StatusCode r = gdsc_session_open(&c, &s);
     result("wrong-server-uri", r == UA_STATUSCODE_BADSERVERURIINVALID, UA_StatusCode_name(r));
-    push_session_close(s);
+    gdsc_session_close(s);
 }
 
 static void case_not_admin(const UA_TrustListDataType *tl) {
-    push_session_cfg c = session_cfg(&F.serverCert, 1);
+    gdsc_session_cfg c = session_cfg(&F.serverCert, 1);
     c.cert = &F.badCert;
     c.key = &F.badKey;
     c.applicationUri = "urn:opengds:test:intruder";
-    push_session *s = NULL;
-    UA_StatusCode r = push_session_open(&c, &s);
+    gdsc_session *s = NULL;
+    UA_StatusCode r = gdsc_session_open(&c, &s);
     push_report rep;
     memset(&rep, 0, sizeof(rep));
     if(r == UA_STATUSCODE_GOOD) {
         push_job j = job_for(tl, sign_ok);
-        gds_status gs = push_run(push_session_client(s), &j, &rep);
+        gds_status gs = push_run(gdsc_session_client(s), &j, &rep);
         r = gs == GDS_OK ? UA_STATUSCODE_GOOD : rep.failedCode;
     }
     result("not-admin", r == UA_STATUSCODE_BADUSERACCESSDENIED && !rep.trustListUpdated,
            UA_StatusCode_name(r));
     push_report_clear(&rep);
-    push_session_close(s);
+    gdsc_session_close(s);
 }
 
 static size_t trusted_count(UA_Client *c) {
@@ -250,14 +256,14 @@ static size_t trusted_count(UA_Client *c) {
 }
 
 static void case_cancel(void) {
-    push_session_cfg c = session_cfg(&F.serverCert, 1);
-    push_session *s = NULL;
-    UA_StatusCode r = push_session_open(&c, &s);
+    gdsc_session_cfg c = session_cfg(&F.serverCert, 1);
+    gdsc_session *s = NULL;
+    UA_StatusCode r = gdsc_session_open(&c, &s);
     if(r != UA_STATUSCODE_GOOD) {
         result("cancel", false, UA_StatusCode_name(r));
         return;
     }
-    UA_Client *cl = push_session_client(s);
+    UA_Client *cl = gdsc_session_client(s);
     size_t before = trusted_count(cl);
     UA_ByteString certs[2] = {{F.caDer.len, F.caDer.data}, {F.ca2Der.len, F.ca2Der.data}};
     UA_TrustListDataType tl;
@@ -278,7 +284,7 @@ static void case_cancel(void) {
                before != SIZE_MAX && after == before,
            d);
     push_report_clear(&rep);
-    push_session_close(s);
+    gdsc_session_close(s);
 }
 
 static bool same_list(const UA_TrustListDataType *a, const UA_TrustListDataType *b) {
@@ -291,39 +297,39 @@ static bool same_list(const UA_TrustListDataType *a, const UA_TrustListDataType 
 
 /* After the push: trust only the CA, and read the TrustList back */
 static void verify_after_push(const UA_TrustListDataType *sent, const char *name) {
-    push_session_cfg c = session_cfg(&F.caDer, 1);
-    push_session *s = NULL;
-    UA_StatusCode r = push_session_open(&c, &s);
+    gdsc_session_cfg c = session_cfg(&F.caDer, 1);
+    gdsc_session *s = NULL;
+    UA_StatusCode r = gdsc_session_open(&c, &s);
     UA_TrustListDataType back;
     UA_TrustListDataType_init(&back);
     const UA_NodeId tln = GDSC_DEFAULT_APP_TRUSTLIST;
     if(r == UA_STATUSCODE_GOOD)
-        r = gdsc_trustlist_read(push_session_client(s), &tln, &back);
+        r = gdsc_trustlist_read(gdsc_session_client(s), &tln, &back);
     result(name, r == UA_STATUSCODE_GOOD && same_list(sent, &back), UA_StatusCode_name(r));
     UA_TrustListDataType_clear(&back);
-    push_session_close(s);
+    gdsc_session_close(s);
 }
 
 static void case_push(const UA_TrustListDataType *tl) {
-    push_session_cfg c = session_cfg(&F.serverCert, 1);
-    push_session *s = NULL;
-    UA_StatusCode r = push_session_open(&c, &s);
+    gdsc_session_cfg c = session_cfg(&F.serverCert, 1);
+    gdsc_session *s = NULL;
+    UA_StatusCode r = gdsc_session_open(&c, &s);
     push_report rep;
     memset(&rep, 0, sizeof(rep));
     gds_status gs = GDS_EREMOTE;
     if(r == UA_STATUSCODE_GOOD) {
         push_job j = job_for(tl, sign_ok);
-        gs = push_run(push_session_client(s), &j, &rep);
+        gs = push_run(gdsc_session_client(s), &j, &rep);
         r = rep.failedCode;
     }
-    push_session_close(s);
+    gdsc_session_close(s);
     char d[160];
     snprintf(d, sizeof(d), "failed step=%s %s", push_step_name(rep.failedStep),
              UA_StatusCode_name(r));
     result("push", gs == GDS_OK && rep.trustListUpdated && rep.certificateUpdated && rep.applied,
            d);
     if(gs == GDS_OK) {
-        r = push_wait_presents(F.url, &rep.issued, 10000);
+        r = gdsc_wait_presents(F.url, &rep.issued, 10000);
         result("push-presents-issued", r == UA_STATUSCODE_GOOD, UA_StatusCode_name(r));
         verify_after_push(tl, "push-ca-trust-only");
     }

@@ -1,7 +1,7 @@
 /* OpenGDS - the opengdsd <-> opengds-signer protocol (docs/architecture.md,
  * "Split by privilege"). One message per SOCK_SEQPACKET datagram, fixed
  * and versioned, big-endian, every length checked. Fuzzed by
- * tests/fuzz/fuzz_signer_ipc.c.
+ * tests/fuzz/fuzz_signer_msg.c.
  *
  * Header (12 bytes): magic u32 "OGSG" | version u16 | op u16 | bodyLen u32
  * Request bodies:

@@ -54,6 +54,11 @@ GDS_MUST_CHECK UA_StatusCode gdsc_trustlist_write(UA_Client *c, const UA_NodeId 
  * bounded by GDS_MAX_TRUSTLIST_SIZE and GDS_MAX_TRUSTLIST_ENTRIES. */
 GDS_MUST_CHECK UA_StatusCode gdsc_trustlist_read(UA_Client *c, const UA_NodeId *trustList,
                                                  UA_TrustListDataType *out);
+/* Decode a TrustList file read from a Server (binary TrustListDataType) and
+ * check it against GDS_MAX_TRUSTLIST_SIZE and GDS_MAX_TRUSTLIST_ENTRIES.
+ * Used by gdsc_trustlist_read; fuzzed by tests/fuzz/fuzz_trustlist.c. */
+GDS_MUST_CHECK UA_StatusCode gdsc_trustlist_decode(const UA_ByteString *file,
+                                                   UA_TrustListDataType *out);
 
 /* CreateSigningRequest (12 §7.10.10) with SubjectName null (the Server keeps
  * its subject), RegeneratePrivateKey FALSE and no nonce. */

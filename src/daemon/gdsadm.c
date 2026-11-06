@@ -7,11 +7,15 @@
  *   gdsadm approvals approve|reject --url URL --user NAME --password-file F
  *          --trust CA.der [--crl CA.crl] [--comment TEXT] REQUEST_ID
  *
- * Passwords are read from stdin or a file, never argv. The store is opened
- * read-only and may be read while opengdsd runs. approve and reject answer
- * the request's dialog with Respond2 over SignAndEncrypt, as the
- * RegistrationAuthorityAdmin `--user` (docs/opengdsd.md, "Approving
- * certificate requests"); the store is never written here.
+ * Over OPC UA, as a standard Administration Component (gdsadm_push.c):
+ *   gdsadm apps register ...                RegisterApplication on the GDS
+ *   gdsadm push now URI ...                 push trust list + certificate to a device
+ *
+ * Passwords are read from stdin or a file, never argv. The store is opened read-only
+ * and may be read while opengdsd runs. approve and reject answer the request's
+ * dialog with Respond2 over SignAndEncrypt, as the RegistrationAuthorityAdmin
+ * `--user` (docs/opengdsd.md, "Approving certificate requests"); the store is
+ * never written here.
  * SPDX-License-Identifier: MPL-2.0 */
 #include <open62541/client_highlevel.h>
 #include <open62541/nodeids.h>
@@ -28,6 +32,7 @@
 #include "common/safeint.h"
 #include "client/gdsc_connect.h"
 #include "gds_access.h"
+#include "gdsadm_push.h"
 #include "store.h"
 #include "common/banned.h"
 
@@ -41,7 +46,12 @@ static int usage(void) {
                     "       gdsadm approvals list --store PATH\n"
                     "       gdsadm approvals approve|reject --url URL --user NAME "
                     "--password-file F --trust CA.der [--crl CA.crl] [--comment TEXT] "
-                    "REQUEST_ID\n");
+                    "REQUEST_ID\n"
+                    "       gdsadm apps register --uri URI --name NAME --type TYPE ... CONNECTION\n"
+                    "       gdsadm push now URI [--server-url URL] [--server-cert DER]\n"
+                    "                       [--device-user NAME --device-password-file FILE] CONNECTION\n"
+                    "  CONNECTION: --gds URL --cert DER --key DER --trust DER... [--crl DER]...\n"
+                    "              --user NAME --password-file FILE\n");
     return 2;
 }
 
@@ -295,6 +305,10 @@ int main(int argc, char **argv) {
         return hash_password(argc, argv);
     if(argc >= 3 && strcmp(argv[1], "apps") == 0 && strcmp(argv[2], "list") == 0)
         return store_cmd(argc, argv, list_cb, false);
+    if(argc >= 3 && strcmp(argv[1], "apps") == 0 && strcmp(argv[2], "register") == 0)
+        return gdsadm_apps_register(argc, argv);
+    if(argc >= 3 && strcmp(argv[1], "push") == 0 && strcmp(argv[2], "now") == 0)
+        return gdsadm_push_now(argc, argv);
     if(argc >= 3 && strcmp(argv[1], "certs") == 0 && strcmp(argv[2], "status") == 0)
         return store_cmd(argc, argv, status_cb, true);
     if(argc >= 3 && strcmp(argv[1], "approvals") == 0) {

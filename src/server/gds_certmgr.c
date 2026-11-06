@@ -177,7 +177,7 @@ static GDS_METHOD(finish_request) {
     if(r == UA_STATUSCODE_GOOD)
         r = gds_in_guid(s, inputSize, input, 1, &reqId);
     if(r == UA_STATUSCODE_BADNOTFOUND)
-        r = UA_STATUSCODE_BADINVALIDARGUMENT; /* §7.9.6: unknown requestId */
+        r = UA_STATUSCODE_BADINVALIDARGUMENT; /* §7.9.5: unknown requestId */
     if(r != UA_STATUSCODE_GOOD)
         return r;
     gds_request q;

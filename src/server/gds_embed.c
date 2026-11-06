@@ -19,6 +19,14 @@
  *      the server lock): clear the job's output pointer. No lock taken.
  * The in-flight table and output pointers are touched only on the server
  * thread (or by gds_server_delete after the loop stopped).
+ *
+ * Runtime changes (UASM ask A9, issue #49): bindings can be added and
+ * removed while the server runs, also from a plugin worker. bindLock
+ * guards the bindings table; it is a leaf lock, taken by the access checks
+ * under open62541's server lock and never held across a call into
+ * open62541. A binding is reference counted: the table holds one
+ * reference and every job one more, so a removed method's running calls
+ * finish on memory that stays valid.
  * SPDX-License-Identifier: MPL-2.0 */
 #include <open62541/nodeids.h>
 
@@ -39,6 +47,7 @@ struct gds_binding {
     size_t nPrivileges;
     gds_security_mode minMode;
     uint32_t flags;
+    int refs; /* atomic */
 };
 
 struct gds_job {
@@ -57,9 +66,23 @@ struct gds_job {
 
 /* ---- the worker pool ---- */
 
+static void binding_free(gds_binding *b) {
+    UA_NodeId_clear(&b->methodId);
+    for(size_t k = 0; k < b->nPrivileges; k++)
+        free(b->privileges[k]);
+    free(b);
+}
+
+static void binding_release(const gds_binding *cb) {
+    gds_binding *b = (gds_binding *)(uintptr_t)cb;
+    if(b && __atomic_sub_fetch(&b->refs, 1, __ATOMIC_ACQ_REL) == 0)
+        binding_free(b);
+}
+
 static void job_free(gds_job *j) {
     if(!j)
         return;
+    binding_release(j->b);
     UA_NodeId_clear(&j->sessionId);
     UA_NodeId_clear(&j->objectId);
     UA_Array_delete(j->in, j->nIn, &UA_TYPES[UA_TYPES_VARIANT]);
@@ -98,7 +121,11 @@ static void run_job(gds_job *j) {
         j->status = st == GDS_EDENIED ? UA_STATUSCODE_BADUSERACCESSDENIED : gds_status_to_ua(st);
         return;
     }
-    if(!caller_allowed(j->b, &cb.view)) {
+    /* RolePermissions again here: open62541 skips the object check for
+     * its local admin session, and they may have changed since the call */
+    gds_server *s = j->b->s;
+    if(!gds_node_call_allowed(s, &j->snap, &j->objectId) ||
+       !gds_node_call_allowed(s, &j->snap, &j->b->methodId) || !caller_allowed(j->b, &cb.view)) {
         j->status = UA_STATUSCODE_BADUSERACCESSDENIED;
     } else {
         j->status = j->b->fn(j->b->ctx, &cb.view, &j->objectId, j->nIn, j->in, j->nOut, j->out);
@@ -216,14 +243,10 @@ void gds_embed_free(gds_server *s) {
         j = n;
     }
     s->plugQueue = s->plugQueueTail = NULL;
-    for(size_t i = 0; i < s->nBindings; i++) {
-        gds_binding *b = s->bindings[i];
-        UA_NodeId_clear(&b->methodId);
-        for(size_t k = 0; k < b->nPrivileges; k++)
-            free(b->privileges[k]);
-        free(b);
-    }
+    for(size_t i = 0; i < s->nBindings; i++)
+        binding_release(s->bindings[i]);
     s->nBindings = 0;
+    gds_nodes_free(s);
 }
 
 /* The job for one call: copies of everything it needs. The session can
@@ -236,6 +259,7 @@ static UA_StatusCode job_new(const gds_binding *b, const gds_session *ss,
     gds_job *j = calloc(1, sizeof(*j));
     if(!j)
         return UA_STATUSCODE_BADOUTOFMEMORY;
+    __atomic_add_fetch(&((gds_binding *)(uintptr_t)b)->refs, 1, __ATOMIC_ACQ_REL);
     j->b = b;
     j->snap.anonymous = ss->anonymous;
     memcpy(j->snap.user, ss->user, sizeof(j->snap.user));
@@ -309,11 +333,70 @@ static UA_StatusCode call_cb(UA_Server *server, const UA_NodeId *sessionId, void
 
 /* ---- getUserExecutable for embedder methods (gds_access.c) ---- */
 
-const gds_binding *gds_embed_find(const gds_server *s, const UA_NodeId *methodId) {
-    for(size_t i = 0; s && i < s->nBindings; i++)
+/* bindLock held */
+static size_t find_locked(const gds_server *s, const UA_NodeId *methodId) {
+    for(size_t i = 0; i < s->nBindings; i++)
         if(UA_NodeId_equal(&s->bindings[i]->methodId, methodId))
-            return s->bindings[i];
-    return NULL;
+            return i;
+    return s->nBindings;
+}
+
+bool gds_embed_bound(gds_server *s, const UA_NodeId *methodId) {
+    if(!s)
+        return false;
+    pthread_mutex_lock(&s->bindLock);
+    bool found = find_locked(s, methodId) < s->nBindings;
+    pthread_mutex_unlock(&s->bindLock);
+    return found;
+}
+
+/* The table takes b's first reference. */
+static gds_status bind_insert(gds_server *s, gds_binding *b) {
+    gds_status st = GDS_OK;
+    pthread_mutex_lock(&s->bindLock);
+    if(find_locked(s, &b->methodId) < s->nBindings)
+        st = GDS_EEXISTS;
+    else if(s->nBindings == GDS_MAX_PLUGIN_METHODS)
+        st = GDS_ETOOBIG;
+    else
+        s->bindings[s->nBindings++] = b;
+    pthread_mutex_unlock(&s->bindLock);
+    if(st == GDS_OK)
+        __atomic_store_n(&b->refs, 1, __ATOMIC_RELEASE);
+    return st;
+}
+
+static void bind_remove(gds_server *s, const UA_NodeId *methodId) {
+    gds_binding *b = NULL;
+    pthread_mutex_lock(&s->bindLock);
+    size_t i = find_locked(s, methodId);
+    if(i < s->nBindings) {
+        b = s->bindings[i];
+        s->bindings[i] = s->bindings[--s->nBindings];
+        s->bindings[s->nBindings] = NULL;
+    }
+    pthread_mutex_unlock(&s->bindLock);
+    binding_release(b);
+}
+
+/* Drops the bindings whose method node is gone (removed with its parent). */
+void gds_embed_prune(gds_server *s) {
+    UA_NodeId *ids = calloc(GDS_MAX_PLUGIN_METHODS, sizeof(*ids));
+    size_t n = 0;
+    if(!ids)
+        return; /* the stale bindings stay until the next prune; harmless */
+    pthread_mutex_lock(&s->bindLock);
+    for(size_t i = 0; i < s->nBindings; i++)
+        if(UA_NodeId_copy(&s->bindings[i]->methodId, &ids[n]) == UA_STATUSCODE_GOOD)
+            n++;
+    pthread_mutex_unlock(&s->bindLock);
+    for(size_t i = 0; i < n; i++) {
+        UA_NodeClass nc = UA_NODECLASS_UNSPECIFIED;
+        if(UA_Server_readNodeClass(s->ua, ids[i], &nc) == UA_STATUSCODE_BADNODEIDUNKNOWN)
+            bind_remove(s, &ids[i]);
+        UA_NodeId_clear(&ids[i]);
+    }
+    free(ids);
 }
 
 /* What the session alone can tell, on the server thread: the Roles and
@@ -329,16 +412,22 @@ bool gds_embed_executable(const gds_binding *b, const void *sessionContext) {
 }
 
 int gds_embed_decide(const gds_server *s, const void *sessionContext, const UA_NodeId *methodId) {
-    const gds_binding *b = gds_embed_find(s, methodId);
-    if(b)
-        return gds_embed_executable(b, sessionContext) ? 1 : 0;
+    if(!s)
+        return -1;
+    gds_server *ms = (gds_server *)(uintptr_t)s; /* the lock only */
+    pthread_mutex_lock(&ms->bindLock);
+    size_t i = find_locked(s, methodId);
+    int d = i < s->nBindings ? (gds_embed_executable(s->bindings[i], sessionContext) ? 1 : 0) : -2;
+    pthread_mutex_unlock(&ms->bindLock);
+    if(d != -2)
+        return d;
     if(methodId->namespaceIndex == 0)
         return -1;
     /* the GDS methods check rights themselves; nothing else is offered */
     return s && methodId->namespaceIndex == s->ns ? 1 : 0;
 }
 
-/* ---- registration (before gds_server_run) ---- */
+/* ---- registration (before or while the server runs) ---- */
 
 gds_status gds_role_bits(const gds_server *s, const UA_NodeId *roles, size_t n, unsigned *bits,
                          bool *anonymous, bool *authenticated) {
@@ -379,10 +468,6 @@ static gds_status new_binding(gds_server *s, const gds_method_def *d, gds_bindin
        d->minSecurityMode > GDS_SECURITY_MODE_SIGN_AND_ENCRYPT ||
        (d->flags & ~GDS_METHOD_READ_ONLY) != 0 || UA_NodeId_isNull(&d->methodId))
         return GDS_EINVAL;
-    if(s->nBindings == GDS_MAX_PLUGIN_METHODS)
-        return GDS_ETOOBIG;
-    if(gds_embed_find(s, &d->methodId))
-        return GDS_EEXISTS;
     if(d->methodId.namespaceIndex == s->ns)
         return GDS_EDENIED; /* the GDS's own methods */
     gds_binding *b = calloc(1, sizeof(*b));
@@ -409,18 +494,17 @@ static gds_status new_binding(gds_server *s, const gds_method_def *d, gds_bindin
         st = GDS_EINVAL; /* nobody could call it */
     if(st == GDS_OK)
         st = pool_start(s);
+    if(st == GDS_OK)
+        st = bind_insert(s, b);
     if(st != GDS_OK) {
-        UA_NodeId_clear(&b->methodId);
-        for(size_t k = 0; k < b->nPrivileges; k++)
-            free(b->privileges[k]);
-        free(b);
+        binding_free(b);
         return st;
     }
     *out = b;
     return GDS_OK;
 }
 
-static gds_status ua_status(UA_StatusCode r) {
+gds_status gds_ua_status(UA_StatusCode r) {
     if(r == UA_STATUSCODE_GOOD)
         return GDS_OK;
     if(r == UA_STATUSCODE_BADNODEIDEXISTS || r == UA_STATUSCODE_BADBROWSENAMEDUPLICATED)
@@ -463,13 +547,9 @@ gds_status gds_server_add_method(gds_server *s, const gds_method_def *d) {
         call_cb, d->inputArgumentsSize, d->inputArguments, d->outputArgumentsSize,
         d->outputArguments, b, NULL);
     if(r != UA_STATUSCODE_GOOD) {
-        UA_NodeId_clear(&b->methodId);
-        for(size_t k = 0; k < b->nPrivileges; k++)
-            free(b->privileges[k]);
-        free(b);
-        return ua_status(r);
+        bind_remove(s, &d->methodId);
+        return gds_ua_status(r);
     }
-    s->bindings[s->nBindings++] = b;
     return GDS_OK;
 }
 
@@ -491,13 +571,9 @@ gds_status gds_server_bind_method(gds_server *s, const gds_method_def *d) {
         r = UA_Server_setMethodNodeCallback(s->ua, d->methodId, call_cb);
     if(r != UA_STATUSCODE_GOOD) {
         (void)UA_Server_setNodeContext(s->ua, d->methodId, NULL);
-        UA_NodeId_clear(&b->methodId);
-        for(size_t k = 0; k < b->nPrivileges; k++)
-            free(b->privileges[k]);
-        free(b);
-        return ua_status(r);
+        bind_remove(s, &d->methodId);
+        return gds_ua_status(r);
     }
-    s->bindings[s->nBindings++] = b;
     return GDS_OK;
 }
 
@@ -516,7 +592,7 @@ gds_status gds_server_add_namespace(gds_server *s, const char *uri, UA_UInt16 *n
 gds_status gds_server_load_nodeset(gds_server *s, gds_nodeset_fn fn) {
     if(!s || !fn)
         return GDS_EINVAL;
-    return ua_status(fn(s->ua));
+    return gds_ua_status(fn(s->ua));
 }
 
 gds_status gds_server_add_object(gds_server *s, const UA_NodeId *nodeId, const UA_NodeId *parentId,
@@ -532,6 +608,6 @@ gds_status gds_server_add_object(gds_server *s, const UA_NodeId *nodeId, const U
                          ? *typeDefinition
                          : UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE);
     UA_QualifiedName bn = UA_QUALIFIEDNAME(nodeId->namespaceIndex, (char *)(uintptr_t)browseName);
-    return ua_status(
+    return gds_ua_status(
         UA_Server_addObjectNode(s->ua, *nodeId, *parentId, ref, bn, type, oa, NULL, NULL));
 }

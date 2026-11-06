@@ -21,6 +21,10 @@ typedef enum {
     FAULT_ISSUE_WRONG_KEY, /* a new request; the certificate is for another key */
     FAULT_ISSUE_WRONG_URI, /* a new request; the certificate names another ApplicationUri */
     FAULT_ISSUE_EXPIRED,  /* a new request; the certificate has expired */
+    FAULT_GDS_ROGUE,      /* gds-rogue: a GDS cert from ca-rogue, which also issues and lists ca-rogue */
+    FAULT_GDS_REVOKED,    /* gds-revoked: the GDS cert is on the GDS CA's CRL */
+    FAULT_GDS_EXPIRED,    /* gds-expired: the GDS cert has expired */
+    FAULT_GDS_WRONG_URI,  /* gds-wronguri: the GDS cert names another ApplicationUri */
     FAULT_COUNT
 } fault_id;
 

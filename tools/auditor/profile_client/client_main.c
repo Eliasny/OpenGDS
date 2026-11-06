@@ -102,7 +102,10 @@ bool cli_probe(cli_profile *p, fg_ca_id issuer, ga_ctx *ctx, cli_probe_result *o
     }
     p->trig.action = "probe";
     p->trig.probeUrl = probe_url();
-    printf("#   probe connection (%s)\n", issuer == FG_CA_MAIN ? "GDS CA" : issuer == FG_CA_X ? "CA X" : "CA Y");
+    printf("#   probe connection (%s)\n", issuer == FG_CA_MAIN    ? "GDS CA"
+           : issuer == FG_CA_X     ? "CA X"
+           : issuer == FG_CA_ROGUE ? "ca-rogue"
+                                   : "CA Y");
     fflush(stdout);
     r = trig_run(&p->trig, p->user, &out->run);
     p->trig.action = NULL;
@@ -170,7 +173,8 @@ static size_t collect(ga_test *all) {
                 {cli_renew_tests, cli_renew_count},
                 {cli_trustlist_tests, cli_trustlist_count},
                 {cli_install_tests, cli_install_count},
-                {cli_faults_tests, cli_faults_count}};
+                {cli_faults_tests, cli_faults_count},
+                {cli_trust_tests, cli_trust_count}};
     size_t n = 0;
     for(size_t s = 0; s < GDS_ARRAY_SIZE(sets); s++)
         for(size_t i = 0; i < sets[s].n && n < CLI_MAX_TESTS; i++)
