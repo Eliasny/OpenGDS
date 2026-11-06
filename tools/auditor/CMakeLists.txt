@@ -5,7 +5,8 @@
 add_library(gdsaudit_core STATIC
     core/x509util.c
     core/test_ca.c
-    core/uaclient.c)
+    core/uaclient.c
+    core/harness.c)
 target_include_directories(gdsaudit_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/core")
 target_link_libraries(gdsaudit_core PUBLIC gds_common)
 

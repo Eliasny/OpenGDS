@@ -183,3 +183,65 @@ cleanup:
     X509_REQ_free(req);
     return ret;
 }
+
+gds_status x509_new_rsa_key(unsigned bits, gds_buf *keyOut) {
+    keyOut->data = NULL;
+    keyOut->len = 0;
+    EVP_PKEY *k = EVP_RSA_gen(bits);
+    if(!k) {
+        x509_drain_errors("new_rsa_key");
+        return GDS_ECRYPTO;
+    }
+    gds_status r = x509_key_to_der(k, keyOut);
+    EVP_PKEY_free(k);
+    return r;
+}
+
+gds_status x509_san_uri(const gds_buf *certDer, char *out, size_t outLen) {
+    if(outLen == 0)
+        return GDS_ETOOBIG;
+    out[0] = '\0';
+    X509 *x = x509_parse_cert(certDer);
+    if(!x)
+        return GDS_EINVAL;
+    gds_status r = GDS_ENOTFOUND;
+    GENERAL_NAMES *gens = X509_get_ext_d2i(x, NID_subject_alt_name, NULL, NULL);
+    for(int i = 0; gens && i < sk_GENERAL_NAME_num(gens); i++) {
+        const GENERAL_NAME *g = sk_GENERAL_NAME_value(gens, i);
+        if(g->type != GEN_URI)
+            continue;
+        r = gds_path(out, outLen, "%.*s", ASN1_STRING_length(g->d.uniformResourceIdentifier),
+                     (const char *)ASN1_STRING_get0_data(g->d.uniformResourceIdentifier));
+        break;
+    }
+    GENERAL_NAMES_free(gens);
+    X509_free(x);
+    ERR_clear_error();
+    return r;
+}
+
+bool x509_cert_has_csr_key(const gds_buf *certDer, const gds_buf *csrDer) {
+    if(!fits(csrDer, GDS_MAX_CSR_SIZE))
+        return false;
+    X509 *x = x509_parse_cert(certDer);
+    const unsigned char *p = csrDer->data;
+    X509_REQ *req = d2i_X509_REQ(NULL, &p, (long)csrDer->len);
+    EVP_PKEY *a = x ? X509_get0_pubkey(x) : NULL;
+    EVP_PKEY *b = req ? X509_REQ_get0_pubkey(req) : NULL;
+    bool same = a && b && EVP_PKEY_eq(a, b) == 1;
+    X509_REQ_free(req);
+    X509_free(x);
+    ERR_clear_error();
+    return same;
+}
+
+bool x509_signed_by(const gds_buf *certDer, const gds_buf *issuerDer) {
+    X509 *x = x509_parse_cert(certDer);
+    X509 *i = x509_parse_cert(issuerDer);
+    EVP_PKEY *k = i ? X509_get0_pubkey(i) : NULL;
+    bool ok = x && k && X509_verify(x, k) == 1;
+    X509_free(x);
+    X509_free(i);
+    ERR_clear_error();
+    return ok;
+}
