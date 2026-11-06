@@ -29,7 +29,8 @@ fi
 
 # Carry our fixes for the open62541 v1.5.10 gaps until upstream releases them
 # (docs/upstream/README.md): key file after a key-kept CSR push, #None for
-# discovery in the secure-only config, GDS headers installed with AUTOLOAD.
+# discovery in the secure-only config, GDS headers installed with AUTOLOAD,
+# ConditionRefresh keeping the original EventId (Part 9, 5.5.7).
 # A cached source tree may already have them; apply each patch only once.
 PATCHES="$(cd "$(dirname "$0")/.." && pwd)/docs/upstream/patches/v1.5.10"
 for p in "$PATCHES"/*.patch; do

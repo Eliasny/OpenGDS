@@ -6,6 +6,8 @@
 
 #include "harness.h"
 
+extern const ga_test srv_security_tests[];
+extern const size_t srv_security_count;
 extern const ga_test srv_trustlist_tests[];
 extern const size_t srv_trustlist_count;
 extern const ga_test srv_update_tests[];

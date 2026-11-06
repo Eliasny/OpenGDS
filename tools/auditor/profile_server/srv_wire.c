@@ -59,7 +59,7 @@ static void check_endpoint(ga_ctx *ctx, const srv_target *t, const UA_EndpointDe
         return;
     memcpy(polUri, e->securityPolicyUri.data, e->securityPolicyUri.length);
     polUri[e->securityPolicyUri.length] = '\0';
-    UA_Client *c = st_new_client(t, false, polUri, e->securityMode);
+    UA_Client *c = st_new_client(t, ST_ADMIN, false, polUri, e->securityMode);
     if(!c) {
         w->noChannel++;
         first_problem(w, pol, mode, "no client", UA_STATUSCODE_BADOUTOFMEMORY);

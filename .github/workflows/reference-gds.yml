@@ -46,7 +46,7 @@ jobs:
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: ${{ runner.temp }}/open62541
-          key: open62541-v1.5.10-gcc-release-${{ hashFiles('scripts/build_open62541.sh', 'scripts/build_openssl.sh') }}
+          key: open62541-v1.5.10-gcc-release-${{ hashFiles('scripts/build_open62541.sh', 'scripts/build_openssl.sh', 'docs/upstream/patches/v1.5.10/*.patch') }}
       - name: Build open62541 v1.5.10 (pinned, hardened)
         if: steps.cache.outputs.cache-hit != 'true'
         env:

@@ -21,10 +21,12 @@
 typedef struct {
     /* configuration */
     const char *url;
-    const char *user;          /* SecurityAdmin user (NULL: the certificate is the identity) */
+    const char *adminUser;     /* SecurityAdmin user (NULL: adminCert is the identity) */
+    const char *userName;      /* the `user` fixture: authenticated, no SecurityAdmin (NULL: none) */
     const char *appUri;        /* ApplicationUri in cert */
     UA_Client *client;         /* the admin session; it holds the transaction across tests */
-    gds_buf cert, key;         /* the Auditor's application identity, SecurityAdmin on the target */
+    gds_buf cert, key;         /* the Auditor's plain application identity (no SecurityAdmin) */
+    gds_buf adminCert, adminKey; /* the application identity the target maps to SecurityAdmin */
     gds_buf pinned;            /* the target's certificate, trusted at the start of the run */
     testca_t ca;               /* the run's test CA ("OpenGDS Auditor TEST") */
     gds_buf caDer, caCrl;
@@ -41,16 +43,26 @@ typedef struct {
     bool certQueued;           /* SRV-UPD-01 queued t-good in the admin session */
     bool applied;              /* SRV-TXN-03 passed: t-good and the queued list are in use */
     bool restored;             /* the snapshot was pushed back */
-    char password[256];
+    char adminPassword[256];
+    char userPassword[256];
     char targetUri[GDS_MAX_APPLICATION_URI + 1]; /* learned from GetEndpoints */
 } srv_target;
 
 /* Status of the target's verdict-relevant calls is always noted with ga_note. */
 
-/* A fresh client with the Auditor identity. It trusts the pinned target
- * certificate (only if withPinned), the test CA and its CRL. Not connected. */
-UA_Client *st_new_client(const srv_target *t, bool withPinned, const char *policyUri,
-                         UA_MessageSecurityMode mode);
+/* Who a connection acts as (catalogue fixtures admin, user, anon) */
+typedef enum { ST_ADMIN, ST_USER, ST_ANON } st_role;
+
+/* A fresh client. ST_ADMIN uses the admin application identity (unless an
+ * admin user is configured), the others the plain one. It trusts the pinned
+ * target certificate (only if withPinned), the test CA and its CRL. */
+UA_Client *st_new_client(const srv_target *t, st_role role, bool withPinned,
+                         const char *policyUri, UA_MessageSecurityMode mode);
+/* Connect a client from st_new_client with the role's identity token. */
+GDS_MUST_CHECK UA_StatusCode st_connect(const srv_target *t, st_role role, UA_Client *c);
+/* st_new_client + st_connect; *out is NULL on error. */
+GDS_MUST_CHECK UA_StatusCode st_open(const srv_target *t, st_role role, const char *policyUri,
+                                     UA_MessageSecurityMode mode, UA_Client **out);
 /* Connect as SecurityAdmin over SignAndEncrypt, or reuse the open session. */
 GDS_MUST_CHECK UA_StatusCode st_admin(srv_target *t);
 /* A second admin session on its own connection (fresh read-back). */
