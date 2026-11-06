@@ -18,6 +18,8 @@
 #define ST_OPEN_READ 0x01
 #define ST_OPEN_WRITE_ERASE 0x06
 
+#define ST_MAX_TARGET_TRUST 8
+
 typedef struct {
     /* configuration */
     const char *url;
@@ -28,6 +30,10 @@ typedef struct {
     gds_buf cert, key;         /* the Auditor's plain application identity (no SecurityAdmin) */
     gds_buf adminCert, adminKey; /* the application identity the target maps to SecurityAdmin */
     gds_buf pinned;            /* the target's certificate, trusted at the start of the run */
+    /* --target-trust / --target-crl: the issuers of a CA-issued target
+     * certificate and their CRLs, trusted wherever the pinned one is */
+    gds_buf targetTrust[ST_MAX_TARGET_TRUST], targetCrl[ST_MAX_TARGET_TRUST];
+    size_t targetTrustN, targetCrlN;
     testca_t ca;               /* the run's test CA ("OpenGDS Auditor TEST") */
     gds_buf caDer, caCrl;
     gds_buf peerCert, peerKey; /* peer-good: client certificate from ca */
