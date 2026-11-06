@@ -20,6 +20,14 @@
  *          §7.9.6) -> UpdateCertificate, then ApplyChanges (§7.7.2)
  *       5. check the device now presents the issued certificate
  *
+ *   gdsadm apps unregister URI CONNECTION
+ *       UnregisterApplication (§6.5.8) as DiscoveryAdmin; the GDS revokes the
+ *       application's certificates
+ *
+ *   gdsadm certs revoke URI --revoke-cert DER CONNECTION
+ *       RevokeCertificate (§7.9.6) as CertificateAuthorityAdmin; the
+ *       certificate goes on the CRL of every trust list
+ *
  *   CONNECTION: --gds URL --cert DER --key DER --trust DER [--trust DER]...
  *               [--crl DER]... --user NAME --password-file FILE
  *
@@ -57,6 +65,8 @@ typedef struct {
     /* push now */
     const char *serverUrl, *serverCertFile, *deviceUser, *devicePasswordFile;
     long pollSeconds;
+    /* certs revoke */
+    const char *revokeCertFile;
 } adm_args;
 
 typedef struct {
@@ -102,6 +112,7 @@ static bool parse_opt(adm_args *a, const char *opt, const char *v) {
         {"--server-cert", &a->serverCertFile},
         {"--device-user", &a->deviceUser},
         {"--device-password-file", &a->devicePasswordFile},
+        {"--revoke-cert", &a->revokeCertFile},
     };
     for(size_t i = 0; i < GDS_ARRAY_SIZE(single); i++) {
         if(strcmp(opt, single[i].name) == 0) {
@@ -435,5 +446,92 @@ int gdsadm_push_now(int argc, char **argv) {
     UA_ApplicationRecordDataType_clear(&rec);
     gdsc_session_close(gds);
     files_clear(&f);
+    return rc;
+}
+
+/* ---- apps unregister, certs revoke ---- */
+
+/* The one record with this ApplicationUri; *id is a copy. */
+static int find_app_id(UA_Client *gds, UA_UInt16 ns, const char *uri, UA_NodeId *id) {
+    UA_ApplicationRecordDataType *recs = NULL;
+    size_t n = 0;
+    UA_StatusCode r = gdsc_find_applications(gds, ns, uri, &recs, &n);
+    if(r != UA_STATUSCODE_GOOD)
+        return report("FindApplications", r);
+    int rc = 0;
+    if(n != 1) {
+        fprintf(stderr, "gdsadm: %s: %zu record(s), need exactly one\n", uri, n);
+        rc = 1;
+    } else if(UA_NodeId_copy(&recs[0].applicationId, id) != UA_STATUSCODE_GOOD) {
+        rc = 1;
+    }
+    UA_Array_delete(recs, n, &UA_TYPES_GDS[UA_TYPES_GDS_APPLICATIONRECORDDATATYPE]);
+    return rc;
+}
+
+/* argv[3] is the ApplicationUri, options from argv[4] */
+static bool uri_args(int argc, char **argv, adm_args *a) {
+    if(argc < 4 || argv[3][0] == '-' || !parse_args(argc, argv, 4, a))
+        return false;
+    a->uri = argv[3];
+    return true;
+}
+
+int gdsadm_apps_unregister(int argc, char **argv) {
+    adm_args a;
+    if(!uri_args(argc, argv, &a)) {
+        fprintf(stderr, "usage: gdsadm apps unregister URI CONNECTION\n");
+        return 2;
+    }
+    adm_files f;
+    memset(&f, 0, sizeof(f));
+    gdsc_session *gds = NULL;
+    UA_UInt16 ns = 0;
+    UA_NodeId id = UA_NODEID_NULL;
+    int rc = open_gds(&a, &f, &gds, &ns);
+    if(rc == 0)
+        rc = find_app_id(gdsc_session_client(gds), ns, a.uri, &id);
+    if(rc == 0) {
+        UA_StatusCode r = gdsc_unregister_application(gdsc_session_client(gds), ns, &id);
+        if(r == UA_STATUSCODE_GOOD)
+            printf("unregistered %s; its certificates are revoked\n", a.uri);
+        else
+            rc = report("UnregisterApplication", r);
+    }
+    UA_NodeId_clear(&id);
+    gdsc_session_close(gds);
+    files_clear(&f);
+    return rc;
+}
+
+int gdsadm_certs_revoke(int argc, char **argv) {
+    adm_args a;
+    if(!uri_args(argc, argv, &a) || !a.revokeCertFile) {
+        fprintf(stderr, "usage: gdsadm certs revoke URI --revoke-cert DER CONNECTION\n");
+        return 2;
+    }
+    gds_buf cert = {0};
+    gds_status s = gds_file_read(a.revokeCertFile, GDS_MAX_CERT_SIZE, &cert);
+    if(s != GDS_OK)
+        return reportg("reading --revoke-cert", s);
+    adm_files f;
+    memset(&f, 0, sizeof(f));
+    gdsc_session *gds = NULL;
+    UA_UInt16 ns = 0;
+    UA_NodeId id = UA_NODEID_NULL;
+    int rc = open_gds(&a, &f, &gds, &ns);
+    if(rc == 0)
+        rc = find_app_id(gdsc_session_client(gds), ns, a.uri, &id);
+    if(rc == 0) {
+        UA_StatusCode r = gdsc_revoke_certificate(gdsc_session_client(gds), ns, &id, &cert);
+        if(r == UA_STATUSCODE_GOOD)
+            printf("revoked; the certificate is on the GDS CRL\n");
+        else
+            rc = report("RevokeCertificate", r);
+    }
+    UA_NodeId_clear(&id);
+    gdsc_session_close(gds);
+    files_clear(&f);
+    gds_buf_free(&cert);
     return rc;
 }

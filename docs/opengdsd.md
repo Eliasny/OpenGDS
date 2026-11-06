@@ -70,6 +70,15 @@ A session with the CertificateAuthorityAdmin role calls RevokeCertificate (OPC 1
 
 The store marks the certificate revoked first. Then `opengds-signer` puts its serial on a new CRL (CRL number + 1), and only if the store marks that serial revoked, so `opengdsd` cannot revoke a certificate on its own. Every trust list of the group carries the CA's CRL, so applications see the revocation at their next trust list update. Revoking again succeeds and changes nothing, so a call that failed at the signer can simply be repeated. A revoked certificate stays on the CRL; GetCertificateStatus then answers that an update is required.
 
+With gdsadm, as a user with CertificateAuthorityAdmin (revoke) or DiscoveryAdmin (unregister):
+
+```sh
+gdsadm certs revoke urn:example:device --revoke-cert device-cert.der CONNECTION
+gdsadm apps unregister urn:example:device CONNECTION
+```
+
+CONNECTION is the same as for `gdsadm push now`: `--gds URL --cert DER --key DER --trust DER [--crl DER] --user NAME --password-file FILE`.
+
 ## Inspecting a running GDS
 
 ```sh
