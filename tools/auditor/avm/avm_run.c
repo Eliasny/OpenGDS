@@ -292,6 +292,11 @@ void avm_run_abort(AvmRun *run) {
         g_subprocess_send_signal(run->proc, SIGINT);
 }
 
+void avm_run_pause(AvmRun *run, gboolean paused) {
+    if(run && !run->exited && run->proc)
+        g_subprocess_send_signal(run->proc, paused ? SIGUSR1 : SIGUSR2);
+}
+
 gboolean avm_run_is_running(const AvmRun *run) {
     return run && !run->reported;
 }

@@ -26,6 +26,7 @@ typedef struct {
     AvmPlan plan;
     AvmRun *run;
     gboolean closeWhenDone;
+    gboolean replaying; /* showing a stored run */
     /* form */
     GtkDropDown *profile, *preset;
     GtkLabel *presetDesc;
@@ -35,6 +36,8 @@ typedef struct {
     GtkCheckButton *tofu, *allowChanges;
     GtkSpinButton *port;
     /* run */
+    GtkWidget *pauseBtn;
+    gboolean paused;
     GtkWidget *runBtn, *abortBtn, *exportBtn, *openBtn, *historyBtn, *openFolderBtn;
     GtkLabel *banner, *status;
     GtkProgressBar *progress;
@@ -353,6 +356,11 @@ static void set_status(Win *w, const char *text) {
 static void set_running(Win *w, gboolean running) {
     gtk_widget_set_sensitive(w->runBtn, !running);
     gtk_widget_set_sensitive(w->abortBtn, running);
+    gtk_widget_set_sensitive(w->pauseBtn, running && !w->replaying);
+    if(!running) {
+        w->paused = FALSE;
+        gtk_button_set_label(GTK_BUTTON(w->pauseBtn), "_Pause");
+    }
     gtk_widget_set_sensitive(w->exportBtn, !running && w->run != NULL);
     gtk_widget_set_sensitive(GTK_WIDGET(w->profile), !running);
     gtk_widget_set_sensitive(w->historyBtn, !running);
@@ -480,6 +488,13 @@ static void on_run_event(AvmRun *run, const ga_event *ev, void *user) {
         }
         update_counts(w);
         break;
+    case GA_EV_PAUSED:
+        set_status(w, "Paused before the next test. The target stays as the last test left "
+                      "it until you resume or abort.");
+        break;
+    case GA_EV_RESUMED:
+        update_counts(w);
+        break;
     case GA_EV_RUN_FINISHED:
         break;
     }
@@ -573,6 +588,7 @@ static void start_run(Win *w) {
         gtk_widget_set_visible(GTK_WIDGET(w->banner), writes);
         gtk_widget_set_sensitive(w->openBtn, FALSE);
         set_status(w, "Starting the engine…");
+        w->replaying = FALSE;
         set_running(w, TRUE);
     } else {
         char *m = g_strdup_printf("Cannot start %s: %s", engine, e ? e->message : "unknown error");
@@ -603,6 +619,7 @@ gboolean win_main_show_run(GtkWindow *win, const char *dir, GError **error) {
     char *m = g_strdup_printf("Showing the stored run in %s", dir);
     set_status(w, m);
     g_free(m);
+    w->replaying = TRUE;
     set_running(w, TRUE);
     return TRUE;
 }
@@ -680,6 +697,18 @@ static void on_run(GtkButton *b, gpointer data) {
         return;
     }
     start_run(w);
+}
+
+static void on_pause(GtkButton *b, gpointer data) {
+    (void)b;
+    Win *w = data;
+    if(!avm_run_is_running(w->run))
+        return;
+    w->paused = !w->paused;
+    avm_run_pause(w->run, w->paused);
+    gtk_button_set_label(GTK_BUTTON(w->pauseBtn), w->paused ? "_Resume" : "_Pause");
+    if(w->paused)
+        set_status(w, "Pausing after the test in progress…");
 }
 
 static void on_abort(GtkButton *b, gpointer data) {
@@ -860,6 +889,9 @@ GtkWindow *win_main_new(GtkApplication *app) {
     w->exportBtn = button("_Export…", "Write report.html, junit.xml and events.jsonl to a folder",
                           G_CALLBACK(on_export), w);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), w->runBtn);
+    w->pauseBtn = button("_Pause", "Wait before the next test; the test in progress finishes",
+                         G_CALLBACK(on_pause), w);
+    gtk_header_bar_pack_start(GTK_HEADER_BAR(header), w->pauseBtn);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), w->abortBtn);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->exportBtn);
     w->historyBtn = button("_History…", "Past runs: open one or compare two",

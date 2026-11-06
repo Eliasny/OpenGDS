@@ -45,6 +45,8 @@ AvmRun *avm_run_open(const char *runDir, const AvmRunCallbacks *cb, void *user, 
 /* Abort: the engine finishes the test in progress, marks the rest Not
  * tested and restores the target, then exits (SIGINT, as Ctrl-C would). */
 void avm_run_abort(AvmRun *run);
+/* Pause before the next test (the one in progress finishes), or resume. */
+void avm_run_pause(AvmRun *run, gboolean paused);
 gboolean avm_run_is_running(const AvmRun *run);
 const ga_results *avm_run_results(const AvmRun *run);
 const char *avm_run_dir(const AvmRun *run);

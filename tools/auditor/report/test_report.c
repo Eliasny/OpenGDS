@@ -59,6 +59,8 @@ static void roundtrip(void) {
         {.kind = GA_EV_NOTE, .n = 1, .text = "bad utf8 \xff\xfe end"},
         {.kind = GA_EV_VERDICT, .n = 1, .id = "SRV-TL-02", .verdict = GA_FAIL, .ms = 41,
          .text = "list differs"},
+        {.kind = GA_EV_PAUSED},
+        {.kind = GA_EV_RESUMED},
         {.kind = GA_EV_TEST_STARTED, .n = 2, .id = "SRV-UPD-01", .clause = "12 x",
          .title = "t2", .needsOperator = true},
         {.kind = GA_EV_VERDICT, .n = 2, .id = "SRV-UPD-01", .verdict = GA_NOT_TESTED,
@@ -72,6 +74,8 @@ static void roundtrip(void) {
         CHECK(line != NULL);
         if(line) {
             CHECK(strchr(line, '\n') == NULL);
+            if(evs[i].kind == GA_EV_PAUSED)
+                CHECK(!strcmp(line, "{\"v\":1,\"ev\":\"paused\"}"));
             CHECK(parse_apply(&viaText, line));
         }
         free(line);

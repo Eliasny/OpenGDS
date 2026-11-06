@@ -30,7 +30,7 @@ static struct {
 } sinks[GA_MAX_SINKS];
 static size_t nSinks;
 static const char *runProfile = "", *runTarget = "";
-static volatile sig_atomic_t abortRequested;
+static volatile sig_atomic_t abortRequested, pauseRequested;
 
 bool ga_add_event_sink(ga_event_fn fn, void *user) {
     if(!fn || nSinks >= GA_MAX_SINKS)
@@ -58,9 +58,33 @@ bool ga_abort_requested(void) {
     return abortRequested != 0;
 }
 
+void ga_request_pause(bool paused) {
+    pauseRequested = paused ? 1 : 0;
+}
+
+bool ga_pause_requested(void) {
+    return pauseRequested != 0;
+}
+
 static void emit(const ga_event *ev) {
     for(size_t i = 0; i < nSinks; i++)
         sinks[i].fn(ev, sinks[i].user);
+}
+
+/* Between two tests: wait while a pause is asked for. */
+static void wait_if_paused(void) {
+    if(!ga_pause_requested() || ga_abort_requested())
+        return;
+    printf("# paused\n");
+    fflush(stdout);
+    ga_event paused = {.kind = GA_EV_PAUSED};
+    emit(&paused);
+    struct timespec tick = {0, 100L * 1000 * 1000};
+    while(ga_pause_requested() && !ga_abort_requested())
+        nanosleep(&tick, NULL);
+    printf("# resumed\n");
+    ga_event resumed = {.kind = GA_EV_RESUMED};
+    emit(&resumed);
 }
 
 static void utc_now(char *out, size_t len) {
@@ -270,6 +294,7 @@ static int run_tests(const ga_test *tests, size_t n, void *profile, const ga_run
     for(size_t i = 0; i < n; i++) {
         if(!selected(&tests[i], opt))
             continue;
+        wait_if_paused();
         ga_verdict v = run_one(&tests[i], ++k, profile, opt);
         counts[v]++;
         if(opt->expectCsv && check_expect(&tests[i], v, expect, nExpect, opt->expectCsv))
