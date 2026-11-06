@@ -1,0 +1,226 @@
+From cd61e12a24985a67a83d9c3e41320f2187bc64ac Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Elias=20Nyk=C3=A4nen?=
+ <61413159+Eliasny@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 04:29:54 +0000
+Subject: [PATCH] fix(plugin): store the key in use for a certificate pushed
+ without a key
+
+When UpdateCertificate installs a certificate without a new private key
+(the certificate was issued for a CSR without regeneratePrivateKey), the
+filestore SecurityPolicy wrote the certificate to own/certs but no key to
+own/private. After a restart, the application finds the new certificate
+in the store but no key with the same name.
+
+Find the key in own/private that pairs with the new certificate and store
+it under the name of the certificate as well. A certificate that is
+already in the store no longer skips writing its key. If no key in the
+store pairs with the certificate, log a warning.
+---
+ plugins/crypto/ua_securitypolicy_filestore.c | 72 +++++++++++++++++---
+ tests/encryption/check_update_certificate.c  | 67 ++++++++++++++++++
+ 2 files changed, 130 insertions(+), 9 deletions(-)
+
+diff --git a/plugins/crypto/ua_securitypolicy_filestore.c b/plugins/crypto/ua_securitypolicy_filestore.c
+index e0caa7254..24d2d2cf7 100644
+--- a/plugins/crypto/ua_securitypolicy_filestore.c
++++ b/plugins/crypto/ua_securitypolicy_filestore.c
+@@ -130,8 +130,40 @@ createCertName(const UA_ByteString *certificate, char *fileNameBuf, size_t fileN
+ }
+ 
+ 
++/* Find the private key in the directory that pairs with the certificate */
+ static UA_StatusCode
+-writeCertificateAndPrivateKeyToFilestore(const UA_String storePath,
++findPrivateKeyInFilestore(const char *keyDir, const UA_ByteString *certificate,
++                          UA_ByteString *privateKey) {
++    UA_DIR *dir = UA_opendir(keyDir);
++    if(!dir)
++        return UA_STATUSCODE_BADNOTFOUND;
++
++    UA_StatusCode retval = UA_STATUSCODE_BADNOTFOUND;
++    struct UA_DIRENT *dirent;
++    while((dirent = UA_readdir(dir)) != NULL) {
++        if(dirent->d_type != UA_DT_REG)
++            continue;
++        char filename[UA_PATH_MAX];
++        if(mp_snprintf(filename, UA_PATH_MAX, "%s/%s", keyDir, dirent->d_name) < 0)
++            continue;
++        UA_ByteString key = UA_BYTESTRING_NULL;
++        if(readFileToByteString(filename, &key) != UA_STATUSCODE_GOOD)
++            continue;
++        if(UA_CertificateUtils_checkKeyPair(certificate, &key) == UA_STATUSCODE_GOOD) {
++            *privateKey = key;
++            retval = UA_STATUSCODE_GOOD;
++            break;
++        }
++        UA_ByteString_memZero(&key);
++        UA_ByteString_clear(&key);
++    }
++    UA_closedir(dir);
++    return retval;
++}
++
++static UA_StatusCode
++writeCertificateAndPrivateKeyToFilestore(const UA_Logger *logger,
++                                         const UA_String storePath,
+                                          const UA_ByteString newCertificate,
+                                          const UA_ByteString newPrivateKey) {
+     UA_StatusCode retval = UA_STATUSCODE_GOOD;
+@@ -148,8 +180,7 @@ writeCertificateAndPrivateKeyToFilestore(const UA_String storePath,
+         return UA_STATUSCODE_BADINTERNALERROR;
+ 
+     /* Check if certificate is already stored */
+-    if(checkCertificateInFilestore(ownCertPathDir, newCertificate))
+-        return UA_STATUSCODE_GOOD;
++    UA_Boolean certStored = checkCertificateInFilestore(ownCertPathDir, newCertificate);
+ 
+     /* Create filename for new certificate */
+     char newFilename[UA_PATH_MAX];
+@@ -167,15 +198,38 @@ writeCertificateAndPrivateKeyToFilestore(const UA_String storePath,
+                    ownKeyPathDir, newFilename, ".key") < 0)
+         return UA_STATUSCODE_BADINTERNALERROR;
+ 
+-    retval = writeByteStringToFile(newCertFilename, &newCertificate);
+-    if(retval != UA_STATUSCODE_GOOD)
+-        return retval;
++    if(!certStored) {
++        retval = writeByteStringToFile(newCertFilename, &newCertificate);
++        if(retval != UA_STATUSCODE_GOOD)
++            return retval;
++    }
+ 
+-    /* Write new private key only if it is set */
+     if(newPrivateKey.length > 0)
+         return writeByteStringToFile(newKeyFilename, &newPrivateKey);
+-    else
++
++    /* No new private key: the certificate was issued for the key pair in use
++     * (CreateSigningRequest without regeneratePrivateKey). Store that key
++     * under the name of the new certificate as well, so that the certificate
++     * and its key can be loaded as a pair after a restart. */
++    UA_ByteString existingKey = UA_BYTESTRING_NULL;
++    retval = readFileToByteString(newKeyFilename, &existingKey);
++    if(retval == UA_STATUSCODE_GOOD) {
++        UA_ByteString_memZero(&existingKey);
++        UA_ByteString_clear(&existingKey);
++        return UA_STATUSCODE_GOOD; /* Already stored */
++    }
++    retval = findPrivateKeyInFilestore(ownKeyPathDir, &newCertificate, &existingKey);
++    if(retval != UA_STATUSCODE_GOOD) {
++        UA_LOG_WARNING(logger, UA_LOGCATEGORY_SECURITYPOLICY,
++                       "The private key of the new certificate is not in the "
++                       "filestore. The certificate cannot be loaded with its "
++                       "key after a restart.");
+         return UA_STATUSCODE_GOOD;
++    }
++    retval = writeByteStringToFile(newKeyFilename, &existingKey);
++    UA_ByteString_memZero(&existingKey);
++    UA_ByteString_clear(&existingKey);
++    return retval;
+ }
+ 
+ /************************/
+@@ -553,7 +607,7 @@ updateCertificate_filestore(UA_SecurityPolicy *sp,
+ 
+     sp->localCertificate = isp->localCertificate;
+ 
+-    retval = writeCertificateAndPrivateKeyToFilestore(pc->storePath,
++    retval = writeCertificateAndPrivateKeyToFilestore(sp->logger, pc->storePath,
+                                                       newCertificate, newPrivateKey);
+     UA_ByteString_clear(&localCertificateTmp);
+ 
+diff --git a/tests/encryption/check_update_certificate.c b/tests/encryption/check_update_certificate.c
+index 3bffd0ada..fc7005736 100644
+--- a/tests/encryption/check_update_certificate.c
++++ b/tests/encryption/check_update_certificate.c
+@@ -19,6 +19,7 @@
+ 
+ #if defined(__linux__) || defined(UA_ARCHITECTURE_WIN32)
+ #include "mp_printf.h"
++#include "crypto/ua_filestore_common.h"
+ #define TEST_PATH_MAX 256
+ #endif /* defined(__linux__) || defined(UA_ARCHITECTURE_WIN32) */
+ 
+@@ -227,6 +228,71 @@ START_TEST(certificate_types_configured_filestore) {
+ END_TEST
+ #endif /* defined(__linux__) || defined(UA_ARCHITECTURE_WIN32) */
+ 
++#if defined(__linux__) || defined(UA_ARCHITECTURE_WIN32)
++/* Find a file in the directory whose content equals data. Skip the file
++ * with the name skipName. Returns the file name without the extension. */
++static UA_Boolean
++findFileWithContent(const char *dirPath, const char *skipName,
++                    const UA_ByteString *data, char *baseName, size_t baseNameLen) {
++    UA_DIR *dir = UA_opendir(dirPath);
++    ck_assert_ptr_nonnull(dir);
++    UA_Boolean found = false;
++    struct UA_DIRENT *dirent;
++    while(!found && (dirent = UA_readdir(dir)) != NULL) {
++        if(dirent->d_type != UA_DT_REG || strcmp(dirent->d_name, skipName) == 0)
++            continue;
++        char path[TEST_PATH_MAX * 2];
++        mp_snprintf(path, sizeof(path), "%s/%s", dirPath, dirent->d_name);
++        UA_ByteString content = UA_BYTESTRING_NULL;
++        if(readFileToByteString(path, &content) != UA_STATUSCODE_GOOD)
++            continue;
++        if(UA_ByteString_equal(&content, data)) {
++            found = true;
++            mp_snprintf(baseName, baseNameLen, "%s", dirent->d_name);
++            char *ext = strrchr(baseName, '.');
++            if(ext)
++                *ext = '\0';
++        }
++        UA_ByteString_clear(&content);
++    }
++    UA_closedir(dir);
++    return found;
++}
++
++/* A certificate for the key pair in use (CSR without a new key) is pushed
++ * without a private key. The filestore stores the key in use under the name
++ * of the new certificate, so the pair can be loaded after a restart. */
++START_TEST(update_certificate_noKey_storesKeyInUse) {
++    char cwd[TEST_PATH_MAX];
++    ck_assert_ptr_nonnull(getcwd(cwd, TEST_PATH_MAX - 32));
++    char certDir[TEST_PATH_MAX * 2], keyDir[TEST_PATH_MAX * 2], appKey[TEST_PATH_MAX * 3];
++    mp_snprintf(certDir, sizeof(certDir), "%s/pki/ApplCerts/own/certs", cwd);
++    mp_snprintf(keyDir, sizeof(keyDir), "%s/pki/ApplCerts/own/private", cwd);
++    mp_snprintf(appKey, sizeof(appKey), "%s/app.key", keyDir);
++
++    /* The application keeps its key in the filestore */
++    UA_ByteString key = {KEY_DER_LENGTH, KEY_DER_DATA};
++    ck_assert_uint_eq(writeByteStringToFile(appKey, &key), UA_STATUSCODE_GOOD);
++
++    UA_ByteString cert = {CERT_DER_LENGTH, CERT_DER_DATA};
++    UA_NodeId defaultApplicationGroup = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
++    UA_NodeId certTypRsaSha256 = UA_NODEID_NUMERIC(0, UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
++    UA_StatusCode retval =
++        UA_GDSReceiver_updateCertificate(receiver, defaultApplicationGroup,
++                                         certTypRsaSha256, cert, NULL);
++    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
++
++    /* The certificate and a copy of the key in use share the base name */
++    char certName[TEST_PATH_MAX], keyName[TEST_PATH_MAX];
++    ck_assert(findFileWithContent(certDir, "", &cert, certName, sizeof(certName)));
++    ck_assert(findFileWithContent(keyDir, "app.key", &key, keyName, sizeof(keyName)));
++    ck_assert_str_eq(certName, keyName);
++
++    UA_remove(appKey);
++}
++END_TEST
++#endif /* defined(__linux__) || defined(UA_ARCHITECTURE_WIN32) */
++
+ START_TEST(addDriver_rejectsDuplicateGDSReceiver) {
+     UA_GDSReceiver *duplicate = UA_GDSReceiver_new();
+     ck_assert_ptr_nonnull(duplicate);
+@@ -399,6 +465,7 @@ static Suite* testSuite_create_certificate(void) {
+     tcase_add_test(tc_cert_filestore, update_certificate);
+     tcase_add_test(tc_cert_filestore, update_certificate_wrongKey);
+     tcase_add_test(tc_cert_filestore, update_certificate_noKey);
++    tcase_add_test(tc_cert_filestore, update_certificate_noKey_storesKeyInUse);
+     tcase_add_test(tc_cert_filestore, certificate_types_configured_filestore);
+     tcase_add_test(tc_cert_filestore, addDriver_rejectsDuplicateGDSReceiver);
+     tcase_add_test(tc_cert_filestore, update_certificate_preflightsAllEndpoints);
+-- 
+2.43.0
+
