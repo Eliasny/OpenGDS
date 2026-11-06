@@ -8,4 +8,4 @@ add_executable(opengdsd main.c)
 target_link_libraries(opengdsd PRIVATE gds_daemon)
 
 add_executable(gdsadm gdsadm.c)
-target_link_libraries(gdsadm PRIVATE gds_server)
+target_link_libraries(gdsadm PRIVATE gds_server gds_client)

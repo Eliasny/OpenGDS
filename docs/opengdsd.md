@@ -64,6 +64,18 @@ A waiting request has state Pending. FinishRequest answers Bad_NothingToDo until
 
 Each waiting request is a standard Part 9 DialogCondition under the `Approvals` object (`ns=1;s=Approvals`), with NodeId `ns=1;g=<RequestId>`. Its ResponseOptionSet is Approve (0) and Reject (1). A session with the RegistrationAuthorityAdmin role answers with Respond2 (or Respond), and every answer emits an AuditConditionRespondEventType. Subscribe to events on the Server object and call ConditionRefresh to see every waiting request. The store holds the truth: the dialogs are raised again when `opengdsd` restarts. At most 10,000 requests wait at once; beyond that StartSigningRequest answers Bad_ServerTooBusy.
 
+From the GDS host:
+
+```sh
+gdsadm approvals list --store /var/lib/opengds/opengds.db        # request id and ApplicationUri
+gdsadm approvals approve --url opc.tcp://gds.example.com:58810 --user approver \
+    --password-file ~/.opengds-pw --trust /var/lib/opengds-signer/ca/ca.der \
+    --crl /var/lib/opengds-signer/ca/ca.crl --comment "known device" REQUEST_ID
+gdsadm approvals reject ...same options... REQUEST_ID
+```
+
+`list` reads the store; `approve` and `reject` call Respond2 over SignAndEncrypt as the named user, who needs the RegistrationAuthorityAdmin role in the users file. The password comes from a file, never the command line, and the GDS certificate is checked against the CA given with `--trust`.
+
 ## Inspecting a running GDS
 
 ```sh
