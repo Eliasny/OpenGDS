@@ -1,0 +1,117 @@
+# OpenGDS CI (docs/architecture.md, "Analysis and testing that enforces the rules")
+# SPDX-License-Identifier: MPL-2.0
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: ${{ matrix.cc }} ${{ matrix.variant }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+        variant: [release, asan-ubsan]
+        include:
+          - cc: clang
+            variant: tsan
+    env:
+      CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build libssl-dev python3
+      - name: Sanitizer settings
+        id: san
+        run: |
+          case "${{ matrix.variant }}" in
+            asan-ubsan) echo "flags=address,undefined" >> "$GITHUB_OUTPUT" ;;
+            tsan)       echo "flags=thread" >> "$GITHUB_OUTPUT" ;;
+            *)          echo "flags=" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - name: Cache pinned open62541
+        id: cache
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/open62541
+          key: open62541-v1.5.10-${{ matrix.cc }}-${{ matrix.variant }}-${{ hashFiles('scripts/build_open62541.sh') }}
+      - name: Build open62541 v1.5.10 (pinned, hardened)
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          SANITIZE: ${{ steps.san.outputs.flags }}
+        run: scripts/build_open62541.sh "${{ runner.temp }}/open62541"
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DOPEN62541_PREFIX="${{ runner.temp }}/open62541"
+          -DOPENGDS_SANITIZE="${{ steps.san.outputs.flags }}"
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          TSAN_OPTIONS: halt_on_error=1
+        run: ctest --test-dir build --output-on-failure
+      - name: Check binary hardening
+        if: matrix.variant == 'release'
+        run: |
+          for b in build/tools/auditor/push_test_server build/tools/auditor/pull_test_client \
+                   build/tools/auditor/mock_gds build/tools/auditor/push_driver; do
+            readelf -h "$b" | grep -q 'DYN' || { echo "$b is not PIE"; exit 1; }
+            readelf -d "$b" | grep -q 'BIND_NOW' || readelf -d "$b" | grep -q 'FLAGS.*NOW' || { echo "$b lacks BIND_NOW"; exit 1; }
+            readelf -l "$b" | grep -q 'GNU_RELRO' || { echo "$b lacks RELRO"; exit 1; }
+            readelf -lW "$b" | grep 'GNU_STACK' | grep -q 'RWE' && { echo "$b has an executable stack"; exit 1; }
+            nm -D "$b" | grep -q '__stack_chk_fail' || { echo "$b lacks stack protector"; exit 1; }
+            nm -D "$b" | grep -q '_chk@' || { echo "$b lacks FORTIFY"; exit 1; }
+            echo "$b: PIE, full RELRO, NX, canary, FORTIFY"
+          done
+
+  analysis:
+    name: static analysis
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build libssl-dev python3 clang-tidy cppcheck
+      - name: Cache pinned open62541
+        id: cache
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/open62541
+          key: open62541-v1.5.10-gcc-release-${{ hashFiles('scripts/build_open62541.sh') }}
+      - name: Build open62541 v1.5.10
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          CC: gcc
+        run: scripts/build_open62541.sh "${{ runner.temp }}/open62541"
+      - name: GCC -fanalyzer
+        run: |
+          cmake -S . -B build-analyzer -G Ninja -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_C_FLAGS="-fanalyzer" -DOPEN62541_PREFIX="${{ runner.temp }}/open62541"
+          cmake --build build-analyzer
+      - name: clang-tidy
+        run: |
+          cmake -S . -B build-tidy -G Ninja -DOPEN62541_PREFIX="${{ runner.temp }}/open62541"
+          git ls-files '*.c' | xargs clang-tidy -p build-tidy --quiet --warnings-as-errors='*'
+      - name: cppcheck
+        run: >
+          cppcheck --enable=warning,portability,performance --error-exitcode=1
+          --inline-suppr --std=c11 -I src -I tools/auditor/core
+          --suppress=missingIncludeSystem src tools
+      - name: Banned functions
+        run: |
+          if git grep -nE '\b(strcpy|strcat|sprintf|vsprintf|gets|strtok|atoi|atol|atof|system|popen|tmpnam|mktemp)\s*\(' -- '*.c' '*.h' ':!src/common/banned.h'; then
+            echo "banned function used (docs/architecture.md)"; exit 1
+          fi
