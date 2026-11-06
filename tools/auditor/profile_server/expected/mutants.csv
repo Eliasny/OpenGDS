@@ -8,6 +8,15 @@ sign-for-apply,SRV-SEC-05,warn
 # diag-public,SRV-SEC-06,fail: enabled when push_test_server gets TransactionDiagnostics (SRV-TXN-12)
 trustlist-read-any,SRV-SEC-07,fail
 deprecated-policy,SRV-SEC-08,warn
+no-rejected-list-method,SRV-CAP-01,fail
+no-default-group,SRV-CAP-02,fail
+mixed-cert-types,SRV-CAP-03,fail
+bad-capability-id,SRV-CAP-04,warn
+bad-key-format-name,SRV-CAP-05,fail
+accept-key-unadvertised,SRV-CAP-06,fail
+ignore-max-size,SRV-CAP-07,fail
+transactions-no-cancel,SRV-CAP-08,fail
+advertise-unsupported-type,SRV-CAP-09,fail
 drop-last-chunk,SRV-TL-02,fail
 update-refuse-valid,SRV-UPD-01,fail
 apply-ignored,SRV-TXN-03,fail

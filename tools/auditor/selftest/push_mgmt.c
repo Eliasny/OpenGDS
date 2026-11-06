@@ -12,6 +12,7 @@
 
 #include <openssl/crypto.h>
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,7 @@
 #define PM_MODE_READ 0x01
 #define PM_MODE_WRITE_ERASE 0x06
 #define PM_MASK_ALL 15u
+#define PM_MAX_TL_SIZE 65535u /* the MaxTrustListSize default of 12 §7.10.3 */
 
 /* ---------------- Mutants ---------------- */
 
@@ -50,6 +52,18 @@ static const struct {
     {"deprecated-policy", "SRV-SEC-08", "Basic128Rsa15 and Basic256 endpoints offered"},
     {"wire-old-cert", "SRV-WIRE-01",
      "after ApplyChanges the Basic256Sha256 policy keeps the old certificate"},
+    {"no-rejected-list-method", "SRV-CAP-01", "ServerConfiguration has no GetRejectedList"},
+    {"no-default-group", "SRV-CAP-02", "CertificateGroups does not reference DefaultApplicationGroup"},
+    {"mixed-cert-types", "SRV-CAP-03",
+     "DefaultApplicationGroup advertises an application and an HTTPS CertificateType"},
+    {"bad-capability-id", "SRV-CAP-04", "ServerCapabilities holds an identifier not in Annex D"},
+    {"bad-key-format-name", "SRV-CAP-05", "SupportedPrivateKeyFormats is [\"DER\"]"},
+    {"accept-key-unadvertised", "SRV-CAP-06",
+     "UpdateCertificate accepts (and ignores) a private key although none is advertised"},
+    {"ignore-max-size", "SRV-CAP-07", "TrustList Write ignores MaxTrustListSize"},
+    {"transactions-no-cancel", "SRV-CAP-08", "SupportsTransactions TRUE without CancelChanges"},
+    {"advertise-unsupported-type", "SRV-CAP-09",
+     "RsaMinApplicationCertificateType advertised but CreateSigningRequest refuses it"},
 };
 
 bool pm_mutant_known(const char *name) {
@@ -386,8 +400,10 @@ static UA_StatusCode tlWrite(METHOD_ARGS) {
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     if(f->mode != PM_MODE_WRITE_ERASE)
         return UA_STATUSCODE_BADINVALIDSTATE;
-    if(d->length > P.maxSize || f->pos > P.maxSize - d->length)
-        return UA_STATUSCODE_BADREQUESTTOOLARGE; /* §7.10.3 MaxTrustListSize */
+    /* §7.10.3 MaxTrustListSize; ignore-max-size keeps only the hard cap */
+    size_t cap = breaking("ignore-max-size") ? GDS_MAX_TRUSTLIST_SIZE : P.maxSize;
+    if(d->length > cap || f->pos > cap - d->length)
+        return UA_STATUSCODE_BADREQUESTTOOLARGE;
     size_t end = f->pos + d->length;
     if(end > f->data.length) {
         UA_Byte *nd = realloc(f->data.data, end ? end : 1);
@@ -515,7 +531,7 @@ static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
     const UA_NodeId rsa = ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
     if(!UA_NodeId_equal(group, &dag) || !UA_NodeId_equal(type, &rsa))
         return UA_STATUSCODE_BADINVALIDARGUMENT; /* §7.10.5: not in the group's CertificateTypes */
-    if(key->length > 0)
+    if(key->length > 0 && !breaking("accept-key-unadvertised"))
         return UA_STATUSCODE_BADNOTSUPPORTED; /* SupportedPrivateKeyFormats is empty */
     if(cert->length == 0 || cert->length > GDS_MAX_CERT_SIZE)
         return UA_STATUSCODE_BADCERTIFICATEINVALID;
@@ -634,6 +650,13 @@ static UA_StatusCode scCreateSigningRequest(METHOD_ARGS) {
     UA_StatusCode sec = need_channel(sessionId, true);
     if(sec != UA_STATUSCODE_GOOD)
         return sec;
+    /* §7.10.10 Bad_InvalidArgument: only the one slot this target has */
+    const UA_NodeId dag = ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
+    const UA_NodeId rsa = ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
+    if(inputSize < 2 || !scalar(input, inputSize, 0, &UA_TYPES[UA_TYPES_NODEID]) ||
+       !scalar(input, inputSize, 1, &UA_TYPES[UA_TYPES_NODEID]) ||
+       !UA_NodeId_equal(input[0].data, &dag) || !UA_NodeId_equal(input[1].data, &rsa))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
     return P.libCsr(server, sessionId, sessionContext, methodId, methodContext, objectId,
                     objectContext, inputSize, input, outputSize, output);
 }
@@ -677,6 +700,72 @@ static UA_StatusCode set_cb(UA_UInt32 id, UA_MethodCallback cb) {
     return UA_Server_setMethodNodeCallback(P.server, ns0(id), cb);
 }
 
+/* Advertise what this target supports (§7.10.3): one RSA slot, no private
+ * keys pushed, the size limit tlWrite enforces, and transactions (§7.10.2). */
+static UA_StatusCode advertise(UA_Server *server) {
+    UA_NodeId types[3] = {ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE), UA_NODEID_NULL,
+                          UA_NODEID_NULL};
+    size_t nTypes = 1;
+    if(breaking("mixed-cert-types"))
+        types[nTypes++] = ns0(UA_NS0ID_HTTPSCERTIFICATETYPE);
+    if(breaking("advertise-unsupported-type"))
+        types[nTypes++] = ns0(UA_NS0ID_RSAMINAPPLICATIONCERTIFICATETYPE);
+    UA_Variant v;
+    UA_Variant_setArray(&v, types, nTypes, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_StatusCode r = UA_Server_writeValue(
+        server, ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_CERTIFICATETYPES),
+        v);
+    UA_String der = UA_STRING_STATIC("DER");
+    if(breaking("bad-key-format-name"))
+        UA_Variant_setArray(&v, &der, 1, &UA_TYPES[UA_TYPES_STRING]);
+    else
+        UA_Variant_setArray(&v, UA_EMPTY_ARRAY_SENTINEL, 0, &UA_TYPES[UA_TYPES_STRING]);
+    r |= UA_Server_writeValue(server, ns0(UA_NS0ID_SERVERCONFIGURATION_SUPPORTEDPRIVATEKEYFORMATS), v);
+    /* Annex D "NA": no capability information (this target registers nowhere) */
+    UA_String cap = UA_STRING_STATIC("NA");
+    if(breaking("bad-capability-id"))
+        cap = UA_STRING((char *)(uintptr_t)"NOT-A-CAPABILITY");
+    UA_Variant_setArray(&v, &cap, 1, &UA_TYPES[UA_TYPES_STRING]);
+    r |= UA_Server_writeValue(server, ns0(UA_NS0ID_SERVERCONFIGURATION_SERVERCAPABILITIES), v);
+    UA_UInt32 max = (UA_UInt32)P.maxSize;
+    UA_Variant_setScalar(&v, &max, &UA_TYPES[UA_TYPES_UINT32]);
+    r |= UA_Server_writeValue(server, ns0(UA_NS0ID_SERVERCONFIGURATION_MAXTRUSTLISTSIZE), v);
+    /* SupportsTransactions (Optional) is not in the library's ns0 instance */
+    UA_Boolean yes = true;
+    UA_VariableAttributes va = UA_VariableAttributes_default;
+    UA_Variant_setScalar(&va.value, &yes, &UA_TYPES[UA_TYPES_BOOLEAN]);
+    va.dataType = UA_TYPES[UA_TYPES_BOOLEAN].typeId;
+    va.displayName = UA_LOCALIZEDTEXT("", "SupportsTransactions");
+    UA_StatusCode a = UA_Server_addVariableNode(
+        server, ns0(UA_NS0ID_SERVERCONFIGURATION_SUPPORTSTRANSACTIONS),
+        ns0(UA_NS0ID_SERVERCONFIGURATION), ns0(UA_NS0ID_HASPROPERTY),
+        UA_QUALIFIEDNAME(0, "SupportsTransactions"), ns0(UA_NS0ID_PROPERTYTYPE), va, NULL, NULL);
+    if(a == UA_STATUSCODE_BADNODEIDEXISTS)
+        a = UA_Server_writeValue(server, ns0(UA_NS0ID_SERVERCONFIGURATION_SUPPORTSTRANSACTIONS),
+                                 va.value);
+    return r | a;
+}
+
+/* The mutants that remove a node or a reference (SRV-CAP-01, -02, -08). */
+static UA_StatusCode structure_mutants(UA_Server *server) {
+    if(breaking("no-rejected-list-method"))
+        return UA_Server_deleteNode(server, ns0(UA_NS0ID_SERVERCONFIGURATION_GETREJECTEDLIST), true);
+    if(breaking("transactions-no-cancel"))
+        return UA_Server_deleteNode(server, ns0(UA_NS0ID_SERVERCONFIGURATION_CANCELCHANGES), true);
+    if(breaking("no-default-group")) {
+        UA_ExpandedNodeId dag =
+            UA_EXPANDEDNODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
+        const UA_UInt32 refs[] = {UA_NS0ID_ORGANIZES, UA_NS0ID_HASCOMPONENT};
+        bool gone = false;
+        for(size_t i = 0; i < GDS_ARRAY_SIZE(refs); i++)
+            gone |= UA_Server_deleteReference(server,
+                                              ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS),
+                                              ns0(refs[i]), true, dag, true) == UA_STATUSCODE_GOOD;
+        return gone ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNOTFOUND;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
 UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteString *ownKey,
                          pm_mode_fn modeOf) {
     memset(&P, 0, sizeof(P));
@@ -685,7 +774,7 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
     P.modeOf = modeOf;
     if(breaking("wire-old-cert") && UA_ByteString_copy(ownKey, &P.ownKey) != UA_STATUSCODE_GOOD)
         return UA_STATUSCODE_BADOUTOFMEMORY;
-    P.maxSize = GDS_MAX_TRUSTLIST_SIZE;
+    P.maxSize = PM_MAX_TL_SIZE;
 #define TL(x) UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_##x
     UA_StatusCode r = UA_STATUSCODE_GOOD;
     r |= set_cb(TL(OPEN), tlOpen);
@@ -711,19 +800,9 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
     /* CancelChanges is Optional (§7.10.11): offered when the node exists */
     if(set_cb(UA_NS0ID_SERVERCONFIGURATION_CANCELCHANGES, scCancelChanges) != UA_STATUSCODE_GOOD)
         UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "no CancelChanges node");
-
-    /* Advertise what this target supports (§7.10.3): one RSA slot, no
-     * private keys pushed, and the size limit enforced above. */
-    UA_NodeId rsa = ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
-    UA_Variant v;
-    UA_Variant_setArray(&v, &rsa, 1, &UA_TYPES[UA_TYPES_NODEID]);
-    r |= UA_Server_writeValue(
-        server, ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_CERTIFICATETYPES),
-        v);
-    UA_Variant_setArray(&v, UA_EMPTY_ARRAY_SENTINEL, 0, &UA_TYPES[UA_TYPES_STRING]);
-    r |= UA_Server_writeValue(server, ns0(UA_NS0ID_SERVERCONFIGURATION_SUPPORTEDPRIVATEKEYFORMATS), v);
-    UA_UInt32 max = (UA_UInt32)P.maxSize;
-    UA_Variant_setScalar(&v, &max, &UA_TYPES[UA_TYPES_UINT32]);
-    r |= UA_Server_writeValue(server, ns0(UA_NS0ID_SERVERCONFIGURATION_MAXTRUSTLISTSIZE), v);
-    return r == UA_STATUSCODE_GOOD ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADINTERNALERROR;
+    if(advertise(server) != UA_STATUSCODE_GOOD || structure_mutants(server) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    return UA_STATUSCODE_GOOD;
 }
+
+
