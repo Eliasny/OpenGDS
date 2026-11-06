@@ -1,0 +1,117 @@
+From 6a99a966e262f2fb37f82fd0027cf2134f4742c7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Elias=20Nyk=C3=A4nen?=
+ <61413159+Eliasny@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 04:21:56 +0000
+Subject: [PATCH] fix(build): install the headers of autoloaded information
+ models
+
+With UA_INFORMATION_MODEL_AUTOLOAD the generated datatype, NodeId and
+namespace headers of the selected models (e.g. types_gds_generated.h,
+nodeids_gds.h) are compiled into the library but not installed. An
+application built against the installed library therefore cannot use the
+datatypes or NodeIds of a model it loads.
+
+Add the generated public headers to the exported headers so that they are
+installed with the other generated headers. Add a CI job that installs a
+build with AUTOLOAD=GDS and compiles an application against it.
+---
+ .github/workflows/build_linux.yml |  3 +++
+ CHANGES.md                        |  7 +++++++
+ CMakeLists.txt                    |  8 ++++++++
+ tools/ci/linux/ci.sh              | 29 +++++++++++++++++++++++++++++
+ 4 files changed, 47 insertions(+)
+
+diff --git a/.github/workflows/build_linux.yml b/.github/workflows/build_linux.yml
+index b46aa9e74..2d63ff663 100644
+--- a/.github/workflows/build_linux.yml
++++ b/.github/workflows/build_linux.yml
+@@ -160,6 +160,9 @@ jobs:
+             mbedtls: true
+             cmd_action: build_release
+ 
++          - name: "Install with autoloaded companion specification"
++            cmd_action: build_install_autoload
++
+           - name: "Amalgamation Build"
+             cmd_action: build_amalgamation
+ 
+diff --git a/CHANGES.md b/CHANGES.md
+index 516234e58..f5e462b10 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -3,6 +3,13 @@ refactorings and bug fixes are not reported here.
+ 
+ # Development
+ 
++### Headers of autoloaded information models are installed
++
++With `UA_INFORMATION_MODEL_AUTOLOAD`, `cmake --install` now installs the
++generated public headers of the selected models next to the other generated
++headers, e.g. `open62541/types_gds_generated.h`, `open62541/nodeids_gds.h` and
++`open62541/namespace_gds_generated.h` for `GDS`.
++
+ ### Configure the advertised server profiles explicitly
+ 
+ `UA_ServerConfig.serverProfileArray` and `serverProfileArraySize` now determine
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 80989e624..0f141c688 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1575,6 +1575,14 @@ if(UA_ENABLE_NODESET_INJECTOR)
+     list(APPEND lib_headers ${PROJECT_BINARY_DIR}/src_generated/open62541/nodesetinjector.h)
+     list(APPEND lib_sources ${PROJECT_BINARY_DIR}/src_generated/open62541/nodesetinjector.c
+                             ${UA_NODESETINJECTOR_SOURCE_FILES})
++
++    # Install the public headers of the autoloaded models (datatypes, NodeIds
++    # and the namespace function) so that applications built against the
++    # installed library can use the datatypes and NodeIds of these models.
++    set(UA_NODESETINJECTOR_HEADERS ${UA_NODESETINJECTOR_SOURCE_FILES})
++    list(FILTER UA_NODESETINJECTOR_HEADERS INCLUDE REGEX "\\.h$")
++    list(FILTER UA_NODESETINJECTOR_HEADERS EXCLUDE REGEX "_internal\\.h$")
++    list(APPEND exported_headers ${UA_NODESETINJECTOR_HEADERS})
+ endif()
+ 
+ #####################
+diff --git a/tools/ci/linux/ci.sh b/tools/ci/linux/ci.sh
+index 72b07cd51..a9266fda2 100644
+--- a/tools/ci/linux/ci.sh
++++ b/tools/ci/linux/ci.sh
+@@ -123,6 +123,35 @@ function build_release_amalgamation {
+     gcc -Wall -Werror "${mbedtls_include_flags[@]}" -c open62541.c
+ }
+ 
++# Install a build with an autoloaded companion specification and compile an
++# application against the installed headers of that specification.
++function build_install_autoload {
++    rm -rf build install; mkdir -p build; cd build
++    cmake -DCMAKE_BUILD_TYPE=Debug \
++          -DCMAKE_INSTALL_PREFIX="$(pwd)/../install" \
++          -DUA_NAMESPACE_ZERO=FULL \
++          -DUA_INFORMATION_MODEL_AUTOLOAD=GDS \
++          ..
++    make ${MAKEOPTS}
++    make install
++    cat > autoload_consumer.c <<'EOT'
++#include <open62541/server.h>
++#include <open62541/types_gds_generated.h>
++#include <open62541/nodeids_gds.h>
++#include <open62541/namespace_gds_generated.h>
++int main(void) {
++    UA_ApplicationRecordDataType record;
++    UA_ApplicationRecordDataType_init(&record);
++    UA_UInt32 id = UA_GDSID_DIRECTORY;
++    return (id != 0 && UA_TYPES_GDS_COUNT > 0) ? 0 : 1;
++}
++EOT
++    export PKG_CONFIG_PATH="$(pwd)/../install/lib/pkgconfig:$(pwd)/../install/lib64/pkgconfig"
++    gcc -Wall -Werror autoload_consumer.c $(pkg-config --cflags open62541) \
++        $(pkg-config --libs --static open62541) -o autoload_consumer
++    ./autoload_consumer
++}
++
+ ######################
+ # Build Amalgamation #
+ ######################
+-- 
+2.43.0
+

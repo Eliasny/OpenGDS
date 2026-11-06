@@ -1,0 +1,74 @@
+From 68c105ce25e6280b0840b0d51b66b5dbd30d5976 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Elias=20Nyk=C3=A4nen?=
+ <61413159+Eliasny@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 04:25:49 +0000
+Subject: [PATCH] fix(plugin): allow discovery over #None with the secure-only
+ server config
+
+UA_ServerConfig_setDefaultWithSecureSecurityPolicies adds no
+SecurityPolicy#None. A client therefore cannot call GetEndpoints or
+FindServers to learn the endpoints and the server certificate, although
+Part 4, 5.4.1 requires these services without message security. A
+connection is only possible if the client already knows the server
+certificate. This also breaks GDS pull and push clients, which discover
+the endpoints of a server before it trusts them (Part 12).
+
+Add SecurityPolicy#None for the discovery services only
+(securityPolicyNoneDiscoveryOnly). No endpoint and no UserTokenPolicy is
+created for #None, so every Session stays secured. The server_encryption
+example no longer needs to add #None itself.
+
+Fixes #6771
+---
+ plugins/include/open62541/server_config_default.h | 11 ++++++-----
+ plugins/ua_config_default.c                       | 12 ++++++++++++
+ 2 files changed, 18 insertions(+), 5 deletions(-)
+
+diff --git a/plugins/include/open62541/server_config_default.h b/plugins/include/open62541/server_config_default.h
+index 8b091d8f7..a1aee57f8 100644
+--- a/plugins/include/open62541/server_config_default.h
++++ b/plugins/include/open62541/server_config_default.h
+@@ -82,11 +82,12 @@ UA_ServerConfig_setDefaultWithSecurityPolicies(UA_ServerConfig *conf,
+                                                const UA_ByteString *revocationList,
+                                                size_t revocationListSize);
+ 
+-/* This function adds only secure security policies to the policy list,
+- * explicitly excluding the 'None' policy.
+- * Because of this, clients cannot retrieve the server certificate
+- * or access the server’s exposed endpoints.
+- * As a result, connections can only be established in 'direct' way. */
++/* Creates a server config with only secure endpoints. SecurityPolicy#None is
++ * added for the discovery services only (securityPolicyNoneDiscoveryOnly):
++ * clients can call GetEndpoints and FindServers over #None to retrieve the
++ * endpoints and the server certificate (Part 4, 5.4.1). There is no #None
++ * endpoint and no UserTokenPolicy for #None, so every Session is secured.
++ * Clients that know the server certificate can still connect 'directly'. */
+ UA_EXPORT UA_StatusCode
+ UA_ServerConfig_setDefaultWithSecureSecurityPolicies(UA_ServerConfig *conf,
+                                                      UA_UInt16 portNumber,
+diff --git a/plugins/ua_config_default.c b/plugins/ua_config_default.c
+index 4caaed8d9..dd65e31ec 100644
+--- a/plugins/ua_config_default.c
++++ b/plugins/ua_config_default.c
+@@ -1616,6 +1616,18 @@ UA_ServerConfig_setDefaultWithSecureSecurityPolicies(UA_ServerConfig *conf,
+         return retval;
+     }
+ 
++    /* Clients discover the endpoints and the server certificate with
++     * GetEndpoints and FindServers over a SecureChannel with SecurityPolicy
++     * #None (Part 4, 5.4.1). Add #None for the discovery services only. No
++     * endpoint and no UserTokenPolicy is created for it, so a Session can
++     * never use #None. */
++    retval = UA_ServerConfig_addSecurityPolicyNone(conf, certificate);
++    if(retval != UA_STATUSCODE_GOOD) {
++        UA_ServerConfig_clear(conf);
++        return retval;
++    }
++    conf->securityPolicyNoneDiscoveryOnly = true;
++
+     return UA_STATUSCODE_GOOD;
+ }
+ 
+-- 
+2.43.0
+

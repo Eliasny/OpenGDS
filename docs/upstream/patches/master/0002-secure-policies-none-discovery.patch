@@ -1,0 +1,390 @@
+From 68c105ce25e6280b0840b0d51b66b5dbd30d5976 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Elias=20Nyk=C3=A4nen?=
+ <61413159+Eliasny@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 04:25:49 +0000
+Subject: [PATCH] fix(plugin): allow discovery over #None with the secure-only
+ server config
+
+UA_ServerConfig_setDefaultWithSecureSecurityPolicies adds no
+SecurityPolicy#None. A client therefore cannot call GetEndpoints or
+FindServers to learn the endpoints and the server certificate, although
+Part 4, 5.4.1 requires these services without message security. A
+connection is only possible if the client already knows the server
+certificate. This also breaks GDS pull and push clients, which discover
+the endpoints of a server before it trusts them (Part 12).
+
+Add SecurityPolicy#None for the discovery services only
+(securityPolicyNoneDiscoveryOnly). No endpoint and no UserTokenPolicy is
+created for #None, so every Session stays secured. The server_encryption
+example no longer needs to add #None itself.
+
+Fixes #6771
+---
+ CHANGES.md                                    |  11 ++
+ examples/encryption/server_encryption.c       |  16 +-
+ .../include/open62541/server_config_default.h |  11 +-
+ plugins/ua_config_default.c                   |  12 ++
+ tests/CMakeLists.txt                          |   2 +
+ .../check_secure_policies_discovery.c         | 148 ++++++++++++++++++
+ .../encryption/check_server_config_default.c  |  25 ++-
+ 7 files changed, 200 insertions(+), 25 deletions(-)
+ create mode 100644 tests/encryption/check_secure_policies_discovery.c
+
+diff --git a/CHANGES.md b/CHANGES.md
+index 516234e58..316a0641e 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -3,6 +3,17 @@ refactorings and bug fixes are not reported here.
+ 
+ # Development
+ 
++### Discovery over #None with the secure-only server config
++
++`UA_ServerConfig_setDefaultWithSecureSecurityPolicies` now adds
++SecurityPolicy#None for the discovery services only and sets
++`securityPolicyNoneDiscoveryOnly`. Clients can call GetEndpoints and
++FindServers over #None to learn the endpoints and the server certificate
++([OPC UA Part 4, 5.4.1](https://reference.opcfoundation.org/specs/OPC-10000-4/5.4.1)).
++No endpoint and no UserTokenPolicy is created for #None, and every other
++service on a #None SecureChannel is rejected with `BadSecurityPolicyRejected`.
++Applications that added #None themselves for this purpose can drop that code.
++
+ ### Configure the advertised server profiles explicitly
+ 
+ `UA_ServerConfig.serverProfileArray` and `serverProfileArraySize` now determine
+diff --git a/examples/encryption/server_encryption.c b/examples/encryption/server_encryption.c
+index 63a0a0f0a..b0329f893 100644
+--- a/examples/encryption/server_encryption.c
++++ b/examples/encryption/server_encryption.c
+@@ -33,7 +33,6 @@ int main(int argc, char* argv[]) {
+     UA_ByteString certificate = UA_BYTESTRING_NULL;
+     UA_ByteString privateKey = UA_BYTESTRING_NULL;
+     bool onlySecure = false;
+-    bool allowDiscovery = false;
+     bool useEcc = false;
+     const char *eccCertDir = NULL;
+ 
+@@ -43,10 +42,10 @@ int main(int argc, char* argv[]) {
+             onlySecure = true;
+             continue;
+         }
+-        if(strcmp(argv[argpos], "--allowDiscovery") == 0) {
+-            allowDiscovery = true;
++        /* Kept for compatibility. The discovery services are always
++         * available over SecurityPolicy#None (without a #None endpoint). */
++        if(strcmp(argv[argpos], "--allowDiscovery") == 0)
+             continue;
+-        }
+         if(strcmp(argv[argpos], "--ecc") == 0) {
+             useEcc = true;
+             continue;
+@@ -67,7 +66,6 @@ int main(int argc, char* argv[]) {
+                      "<server-certificate.der> <private-key.der> "
+                      "[<trustlist1.crl>, ...] "
+                      "[--onlySecure] "
+-                     "[--allowDiscovery] "
+                      "[--ecc] "
+                      "[--ecc-cert-dir <dir>]");
+         UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_APPLICATION,
+@@ -143,14 +141,6 @@ int main(int argc, char* argv[]) {
+                                                                 revocationList, revocationListSize);
+     }
+ 
+-    /* Adds the None policy to the security policy list, but does not provide a None endpoint.
+-     * This enables a client to retrieve the server certificate and
+-     * all endpoints offered by a server. */
+-    if(onlySecure && allowDiscovery) {
+-        UA_ServerConfig_addSecurityPolicyNone(config, &certificate);
+-        config->securityPolicyNoneDiscoveryOnly = true;
+-    }
+-
+     /* --- ECC security policies from a certificate directory ---
+      * Each ECC curve requires its own certificate/key pair. Place DER files in
+      * a directory with names: server_c_<curve>.cert.der / server_c_<curve>.key.der
+diff --git a/plugins/include/open62541/server_config_default.h b/plugins/include/open62541/server_config_default.h
+index 8b091d8f7..a1aee57f8 100644
+--- a/plugins/include/open62541/server_config_default.h
++++ b/plugins/include/open62541/server_config_default.h
+@@ -82,11 +82,12 @@ UA_ServerConfig_setDefaultWithSecurityPolicies(UA_ServerConfig *conf,
+                                                const UA_ByteString *revocationList,
+                                                size_t revocationListSize);
+ 
+-/* This function adds only secure security policies to the policy list,
+- * explicitly excluding the 'None' policy.
+- * Because of this, clients cannot retrieve the server certificate
+- * or access the server’s exposed endpoints.
+- * As a result, connections can only be established in 'direct' way. */
++/* Creates a server config with only secure endpoints. SecurityPolicy#None is
++ * added for the discovery services only (securityPolicyNoneDiscoveryOnly):
++ * clients can call GetEndpoints and FindServers over #None to retrieve the
++ * endpoints and the server certificate (Part 4, 5.4.1). There is no #None
++ * endpoint and no UserTokenPolicy for #None, so every Session is secured.
++ * Clients that know the server certificate can still connect 'directly'. */
+ UA_EXPORT UA_StatusCode
+ UA_ServerConfig_setDefaultWithSecureSecurityPolicies(UA_ServerConfig *conf,
+                                                      UA_UInt16 portNumber,
+diff --git a/plugins/ua_config_default.c b/plugins/ua_config_default.c
+index 4caaed8d9..dd65e31ec 100644
+--- a/plugins/ua_config_default.c
++++ b/plugins/ua_config_default.c
+@@ -1616,6 +1616,18 @@ UA_ServerConfig_setDefaultWithSecureSecurityPolicies(UA_ServerConfig *conf,
+         return retval;
+     }
+ 
++    /* Clients discover the endpoints and the server certificate with
++     * GetEndpoints and FindServers over a SecureChannel with SecurityPolicy
++     * #None (Part 4, 5.4.1). Add #None for the discovery services only. No
++     * endpoint and no UserTokenPolicy is created for it, so a Session can
++     * never use #None. */
++    retval = UA_ServerConfig_addSecurityPolicyNone(conf, certificate);
++    if(retval != UA_STATUSCODE_GOOD) {
++        UA_ServerConfig_clear(conf);
++        return retval;
++    }
++    conf->securityPolicyNoneDiscoveryOnly = true;
++
+     return UA_STATUSCODE_GOOD;
+ }
+ 
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 2031b36bb..f7ce829b6 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -640,6 +640,7 @@ if(UA_ENABLE_ENCRYPTION_MBEDTLS)
+     ua_add_test(encryption/check_encryption_basic256.c)
+     ua_add_test(encryption/check_encryption_basic256sha256.c)
+     ua_add_test(encryption/check_server_config_default.c)
++    ua_add_test(encryption/check_secure_policies_discovery.c)
+     ua_add_test(encryption/check_encryption_basic256sha256_with_config.c)
+     ua_add_test(encryption/check_encryption_aes128sha256rsaoaep.c)
+     ua_add_test(encryption/check_encryption_aes256sha256rsapss.c)
+@@ -664,6 +665,7 @@ if(UA_ENABLE_ENCRYPTION_OPENSSL OR UA_ENABLE_ENCRYPTION_LIBRESSL)
+     ua_add_test(encryption/check_encryption_basic256.c)
+     ua_add_test(encryption/check_encryption_basic256sha256.c)
+     ua_add_test(encryption/check_server_config_default.c)
++    ua_add_test(encryption/check_secure_policies_discovery.c)
+     ua_add_test(encryption/check_encryption_basic256sha256_with_config.c)
+     ua_add_test(encryption/check_encryption_aes128sha256rsaoaep.c)
+     ua_add_test(encryption/check_encryption_aes256sha256rsapss.c)
+diff --git a/tests/encryption/check_secure_policies_discovery.c b/tests/encryption/check_secure_policies_discovery.c
+new file mode 100644
+index 000000000..d68f8afbf
+--- /dev/null
++++ b/tests/encryption/check_secure_policies_discovery.c
+@@ -0,0 +1,148 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++
++/* A server configured with UA_ServerConfig_setDefaultWithSecureSecurityPolicies
++ * answers the discovery services over SecurityPolicy#None (Part 4, 5.4.1) but
++ * rejects every other service on a #None SecureChannel. */
++
++#include <open62541/client_config_default.h>
++#include <open62541/plugin/log_stdout.h>
++#include <open62541/server_config_default.h>
++
++#include "client/ua_client_internal.h"
++#include "test_helpers.h"
++
++#include <check.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "certificates.h"
++#include "thread_wrapper.h"
++
++#define ENDPOINT_URL "opc.tcp://localhost:4840"
++
++static UA_Server *server;
++static UA_atomic(uintptr_t) running;
++static THREAD_HANDLE server_thread;
++
++THREAD_CALLBACK(serverloop) {
++    while(UA_atomic_load(&running))
++        UA_Server_run_iterate(server, true);
++    return 0;
++}
++
++static void setup(void) {
++    UA_ByteString certificate = {CERT_DER_LENGTH, CERT_DER_DATA};
++    UA_ByteString privateKey = {KEY_DER_LENGTH, KEY_DER_DATA};
++
++    UA_ServerConfig config;
++    memset(&config, 0, sizeof(UA_ServerConfig));
++    config.logging = UA_Log_Stdout_new(UA_LOGLEVEL_INFO);
++    UA_StatusCode res =
++        UA_ServerConfig_setDefaultWithSecureSecurityPolicies(&config, 4840,
++                                                             &certificate, &privateKey,
++                                                             NULL, 0, NULL, 0, NULL, 0);
++    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
++    config.tcpReuseAddr = true;
++    server = UA_Server_newWithConfig(&config);
++    ck_assert(server != NULL);
++
++    UA_atomic_store(&running, true);
++    UA_Server_run_startup(server);
++    THREAD_CREATE(server_thread, serverloop);
++}
++
++/* A client that opens a #None SecureChannel directly, without first selecting
++ * an endpoint from GetEndpoints (the server has no #None endpoint) */
++static UA_Client *
++newNoneClient(void) {
++    UA_Client *client = UA_Client_newForUnitTest();
++    UA_ClientConfig *cc = UA_Client_getConfig(client);
++    cc->endpoint.securityMode = UA_MESSAGESECURITYMODE_NONE;
++    cc->endpoint.securityPolicyUri =
++        UA_STRING_ALLOC("http://opcfoundation.org/UA/SecurityPolicy#None");
++    cc->endpoint.endpointUrl = UA_STRING_ALLOC(ENDPOINT_URL);
++    return client;
++}
++
++static void teardown(void) {
++    UA_atomic_store(&running, false);
++    THREAD_JOIN(server_thread);
++    UA_Server_run_shutdown(server);
++    UA_Server_delete(server);
++}
++
++START_TEST(get_endpoints_over_none) {
++    UA_Client *client = newNoneClient();
++    size_t endpointsSize = 0;
++    UA_EndpointDescription *endpoints = NULL;
++    UA_StatusCode res =
++        UA_Client_getEndpoints(client, ENDPOINT_URL, &endpointsSize, &endpoints);
++    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
++    ck_assert_uint_gt(endpointsSize, 0);
++
++    /* Only secure endpoints. Each one carries the server certificate. */
++    for(size_t i = 0; i < endpointsSize; i++) {
++        ck_assert_uint_ne(endpoints[i].securityMode, UA_MESSAGESECURITYMODE_NONE);
++        ck_assert_uint_gt(endpoints[i].serverCertificate.length, 0);
++    }
++    UA_Array_delete(endpoints, endpointsSize, &UA_TYPES[UA_TYPES_ENDPOINTDESCRIPTION]);
++    UA_Client_delete(client);
++}
++END_TEST
++
++START_TEST(find_servers_over_none) {
++    UA_Client *client = newNoneClient();
++    size_t serversSize = 0;
++    UA_ApplicationDescription *servers = NULL;
++    UA_StatusCode res = UA_Client_findServers(client, ENDPOINT_URL, 0, NULL, 0, NULL,
++                                              &serversSize, &servers);
++    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
++    ck_assert_uint_gt(serversSize, 0);
++    UA_Array_delete(servers, serversSize, &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]);
++    UA_Client_delete(client);
++}
++END_TEST
++
++START_TEST(create_session_over_none_rejected) {
++    UA_Client *client = newNoneClient();
++    UA_StatusCode res = UA_Client_connectSecureChannel(client, ENDPOINT_URL);
++    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
++
++    UA_CreateSessionRequest request;
++    UA_CreateSessionRequest_init(&request);
++    UA_CreateSessionResponse response;
++    UA_CreateSessionResponse_init(&response);
++    __UA_Client_Service(client, &request, &UA_TYPES[UA_TYPES_CREATESESSIONREQUEST],
++                        &response, &UA_TYPES[UA_TYPES_CREATESESSIONRESPONSE]);
++    ck_assert_uint_eq(response.responseHeader.serviceResult,
++                      UA_STATUSCODE_BADSECURITYPOLICYREJECTED);
++    UA_CreateSessionResponse_clear(&response);
++
++    UA_Client_disconnect(client);
++    UA_Client_delete(client);
++}
++END_TEST
++
++static Suite *testSuite(void) {
++    Suite *s = suite_create("Secure SecurityPolicies with discovery over #None");
++    TCase *tc = tcase_create("Discovery");
++    tcase_add_checked_fixture(tc, setup, teardown);
++    tcase_add_test(tc, get_endpoints_over_none);
++    tcase_add_test(tc, find_servers_over_none);
++    tcase_add_test(tc, create_session_over_none_rejected);
++    suite_add_tcase(s, tc);
++    return s;
++}
++
++int main(void) {
++    Suite *s = testSuite();
++    SRunner *sr = srunner_create(s);
++    srunner_set_fork_status(sr, CK_NOFORK);
++    srunner_run_all(sr, CK_NORMAL);
++    int number_failed = srunner_ntests_failed(sr);
++    srunner_free(sr);
++    return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
++}
+diff --git a/tests/encryption/check_server_config_default.c b/tests/encryption/check_server_config_default.c
+index 507296375..60e83e34a 100644
+--- a/tests/encryption/check_server_config_default.c
++++ b/tests/encryption/check_server_config_default.c
+@@ -243,7 +243,7 @@ START_TEST(addAllSecureEndpoints_skipsLevel0Policies) {
+ }
+ END_TEST
+ 
+-START_TEST(setDefaultWithSecureSecurityPolicies_excludesNone) {
++START_TEST(setDefaultWithSecureSecurityPolicies_noneForDiscoveryOnly) {
+     UA_StatusCode retval;
+     UA_ByteString certificate = rsaCertificate();
+     UA_ByteString privateKey = rsaPrivateKey();
+@@ -255,17 +255,27 @@ START_TEST(setDefaultWithSecureSecurityPolicies_excludesNone) {
+                                                                   NULL, 0, NULL, 0,
+                                                                   NULL, 0);
+     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+-    ck_assert_uint_gt(config.securityPoliciesSize, 0);
+-    ck_assert_uint_eq(config.endpointsSize, 2 * config.securityPoliciesSize);
+ 
++    /* #None is present for the discovery services only */
++    ck_assert(config.securityPolicyNoneDiscoveryOnly);
+     UA_String noneUri = UA_STRING("http://opcfoundation.org/UA/SecurityPolicy#None");
++    size_t noneCount = 0;
+     for(size_t i = 0; i < config.securityPoliciesSize; ++i) {
+-        ck_assert(!UA_String_equal(&config.securityPolicies[i].policyUri, &noneUri));
++        if(UA_String_equal(&config.securityPolicies[i].policyUri, &noneUri))
++            noneCount++;
+     }
++    ck_assert_uint_eq(noneCount, 1);
++    ck_assert_uint_eq(config.endpointsSize, 2 * (config.securityPoliciesSize - 1));
++
++    /* No endpoint and no UserTokenPolicy uses #None */
+     for(size_t i = 0; i < config.endpointsSize; ++i) {
+         ck_assert_uint_ne(config.endpoints[i].securityMode, UA_MESSAGESECURITYMODE_NONE);
+         ck_assert(!UA_String_equal(&config.endpoints[i].securityPolicyUri, &noneUri));
+     }
++    for(size_t i = 0; i < config.accessControl.userTokenPoliciesSize; ++i) {
++        ck_assert(!UA_String_equal(&config.accessControl.userTokenPolicies[i].securityPolicyUri,
++                                   &noneUri));
++    }
+ 
+     UA_ServerConfig_clear(&config);
+ }
+@@ -321,8 +331,9 @@ START_TEST(setDefaultWithSecureSecurityPolicies_withTrustLists) {
+                                                                   issuerList, 2,
+                                                                   revocationList, 2);
+     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+-    ck_assert_uint_gt(config.securityPoliciesSize, 0);
+-    ck_assert_uint_eq(config.endpointsSize, 2 * config.securityPoliciesSize);
++    ck_assert_uint_gt(config.securityPoliciesSize, 1);
++    /* #None for discovery has no endpoint */
++    ck_assert_uint_eq(config.endpointsSize, 2 * (config.securityPoliciesSize - 1));
+     ck_assert(config.secureChannelPKI.clear != NULL);
+     ck_assert(config.sessionPKI.clear != NULL);
+ 
+@@ -496,7 +507,7 @@ testSuite_server_config_default(void) {
+     tcase_add_test(testCase, addEndpoint_unknownPolicy_returnsBadInvalidArgument);
+     tcase_add_test(testCase, setMinimalCustomBuffer_addsOnlyNone);
+     tcase_add_test(testCase, addAllSecureEndpoints_skipsLevel0Policies);
+-    tcase_add_test(testCase, setDefaultWithSecureSecurityPolicies_excludesNone);
++    tcase_add_test(testCase, setDefaultWithSecureSecurityPolicies_noneForDiscoveryOnly);
+     tcase_add_test(testCase, setBasics_overridesServerUrls);
+     tcase_add_test(testCase, setDefaultWithSecureSecurityPolicies_withTrustLists);
+     tcase_add_test(testCase, setDefaultWithSecurityPolicies_withTrustLists);
+-- 
+2.43.0
+
