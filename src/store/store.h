@@ -15,6 +15,7 @@
 #include <open62541/types.h>
 #include <open62541/types_gds_generated.h>
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "common/buf.h"
@@ -24,6 +25,11 @@ typedef struct gds_store gds_store;
 
 /* Open (and create or migrate) the database at path, mode 0600. */
 GDS_MUST_CHECK gds_status gds_store_open(const char *path, gds_store **out);
+/* Read-only connection for opengds-signer, which re-reads requests and
+ * records instead of trusting opengdsd. Never creates or migrates; refuses
+ * a schema other than the latest. The database must already be in WAL mode
+ * with its -shm file accessible to the reader. */
+GDS_MUST_CHECK gds_status gds_store_open_readonly(const char *path, gds_store **out);
 void gds_store_close(gds_store *s);
 /* Schema version after migration. */
 int gds_store_schema_version(gds_store *s);
@@ -37,6 +43,21 @@ GDS_MUST_CHECK gds_status gds_store_app_get(gds_store *s, const UA_Guid *id,
 /* Records with this ApplicationUri (at most max). *out is a UA array. */
 GDS_MUST_CHECK gds_status gds_store_app_find_uri(gds_store *s, const UA_String *uri, size_t max,
                                                  UA_ApplicationRecordDataType **out, size_t *n);
+
+/* Replace the record (and its searchable names). GDS_ENOTFOUND if the id
+ * is unknown, GDS_EEXISTS if the new ApplicationUri belongs to another one. */
+GDS_MUST_CHECK gds_status gds_store_app_update(gds_store *s, const UA_Guid *id,
+                                               const UA_ApplicationRecordDataType *rec);
+/* Remove the record with its requests and certificates. GDS_ENOTFOUND if
+ * unknown. (Revocation of its certificates comes with REVOKE in T2.) */
+GDS_MUST_CHECK gds_status gds_store_app_delete(gds_store *s, const UA_Guid *id);
+/* Visit records in record-id order from fromRecordId; the record id is the
+ * QueryApplications counter (OPC 10000-12 §6.5.10). rec->applicationId has
+ * namespace 0; the callback borrows rec and returns false to stop. */
+typedef bool (*gds_store_scan_cb)(void *ctx, int64_t recordId,
+                                  const UA_ApplicationRecordDataType *rec);
+GDS_MUST_CHECK gds_status gds_store_app_scan(gds_store *s, int64_t fromRecordId,
+                                             gds_store_scan_cb cb, void *ctx);
 
 /* Certificate requests: Received -> Issued -> Delivered (or Failed). */
 typedef enum {

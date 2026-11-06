@@ -35,6 +35,8 @@ target_link_libraries(gds_common PUBLIC gds_hardening open62541::open62541)
 
 add_subdirectory(src/store)
 add_subdirectory(src/ca)
+add_subdirectory(src/signer)
+add_subdirectory(src/server)
 add_subdirectory(src/client)
 add_subdirectory(src/push)
 add_subdirectory(tests/unit)

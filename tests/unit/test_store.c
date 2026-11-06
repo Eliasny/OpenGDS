@@ -99,6 +99,52 @@ static void test_certs(gds_store *s, const UA_Guid *id, const UA_Guid *id2) {
     CHECK(gds_store_cert_latest(s, id2, 615, 12557, &der, &notAfter) == GDS_ENOTFOUND);
 }
 
+typedef struct {
+    int n;
+    int64_t last;
+} scan_ctx;
+
+static bool count_cb(void *ctx, int64_t id, const UA_ApplicationRecordDataType *rec) {
+    scan_ctx *c = ctx;
+    CHECK(id > c->last && rec->applicationUri.length > 0);
+    c->last = id;
+    c->n++;
+    return true;
+}
+
+static void test_update_delete(gds_store *s) {
+    UA_ApplicationRecordDataType rec;
+    UA_LocalizedText name;
+    make_record(&rec, "urn:opengds:test:b", &name);
+    UA_Guid b = rnd_guid(), unknown = rnd_guid();
+    CHECK(gds_store_app_insert(s, &b, &rec) == GDS_OK);
+    /* rename and change the URI */
+    UA_LocalizedText newName = UA_LOCALIZEDTEXT("en", "Renamed");
+    rec.applicationNames = &newName;
+    rec.applicationUri = UA_STRING("urn:opengds:test:b2");
+    CHECK(gds_store_app_update(s, &b, &rec) == GDS_OK);
+    UA_ApplicationRecordDataType got;
+    CHECK(gds_store_app_get(s, &b, &got) == GDS_OK);
+    UA_String want = UA_STRING("urn:opengds:test:b2");
+    CHECK(UA_String_equal(&got.applicationUri, &want));
+    CHECK(got.applicationNamesSize == 1 && UA_String_equal(&got.applicationNames[0].text,
+                                                           &newName.text));
+    UA_ApplicationRecordDataType_clear(&got);
+    /* the URI of another record is taken */
+    rec.applicationUri = UA_STRING("urn:opengds:test:a");
+    CHECK(gds_store_app_update(s, &b, &rec) == GDS_EEXISTS);
+    CHECK(gds_store_app_update(s, &unknown, &rec) == GDS_ENOTFOUND);
+    scan_ctx c = {0, 0};
+    CHECK(gds_store_app_scan(s, 0, count_cb, &c) == GDS_OK);
+    CHECK_EQ_INT(c.n, 2);
+    scan_ctx tail = {0, c.last - 1};
+    CHECK(gds_store_app_scan(s, c.last, count_cb, &tail) == GDS_OK);
+    CHECK_EQ_INT(tail.n, 1);
+    CHECK(gds_store_app_delete(s, &b) == GDS_OK);
+    CHECK(gds_store_app_delete(s, &b) == GDS_ENOTFOUND);
+    CHECK(gds_store_app_get(s, &b, &got) == GDS_ENOTFOUND);
+}
+
 int main(int argc, char **argv) {
     if(argc < 2) {
         fprintf(stderr, "usage: %s <dir>\n", argv[0]);
@@ -120,6 +166,7 @@ int main(int argc, char **argv) {
     test_apps(s, &id, &id2);
     test_requests(s, &id);
     test_certs(s, &id, &id2);
+    test_update_delete(s);
     gds_store_close(s);
 
     /* everything survives a reopen */
