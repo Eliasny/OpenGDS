@@ -20,9 +20,15 @@
 
 #include <stdbool.h>
 
+/* The SecurityMode of a Session's channel (INVALID if unknown). */
+typedef UA_MessageSecurityMode (*pm_mode_fn)(const UA_NodeId *sessionId);
+
 /* Install the methods. mutant is NULL or a name from pm_mutant_known;
  * ownKey (the server's private key) is copied only for wire-old-cert. */
-UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteString *ownKey);
+UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteString *ownKey,
+                         pm_mode_fn modeOf);
+/* True if mutant `name` is active (push_test_server's own mutants). */
+bool pm_breaking(const char *name);
 /* A Session ended: its transaction and file handles are discarded (§7.10.2). */
 void pm_session_closed(const UA_NodeId *sessionId);
 void pm_clear(void);

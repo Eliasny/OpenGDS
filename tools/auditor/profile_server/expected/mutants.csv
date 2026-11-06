@@ -1,5 +1,13 @@
 # mutant,test that must catch it,verdict that counts as caught
 # (docs/auditor/README.md, "Mutants"). One line per catalogue test.
+anon-admin,SRV-SEC-01,fail
+no-secadmin,SRV-SEC-02,fail
+allow-none,SRV-SEC-03,fail
+sign-is-enough,SRV-SEC-04,fail
+sign-for-apply,SRV-SEC-05,warn
+# diag-public,SRV-SEC-06,fail: enabled when push_test_server gets TransactionDiagnostics (SRV-TXN-12)
+trustlist-read-any,SRV-SEC-07,fail
+deprecated-policy,SRV-SEC-08,warn
 drop-last-chunk,SRV-TL-02,fail
 update-refuse-valid,SRV-UPD-01,fail
 apply-ignored,SRV-TXN-03,fail
