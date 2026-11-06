@@ -21,6 +21,10 @@ set_tests_properties(signer_refuses_fd_and_listen signer_refuses_relative_listen
 add_executable(test_server test_server.c)
 target_link_libraries(test_server PRIVATE gds_server)
 add_test(NAME unit_server COMMAND test_server "${CMAKE_CURRENT_BINARY_DIR}/server-run")
+add_executable(test_directory_query test_directory_query.c)
+target_link_libraries(test_directory_query PRIVATE gds_server)
+add_test(NAME unit_directory_query COMMAND test_directory_query
+         "${CMAKE_CURRENT_BINARY_DIR}/directory-query-run")
 add_executable(test_daemon_config test_daemon_config.c)
 target_link_libraries(test_daemon_config PRIVATE gds_daemon)
 add_test(NAME unit_daemon_config COMMAND test_daemon_config)

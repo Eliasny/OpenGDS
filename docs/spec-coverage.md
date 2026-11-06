@@ -23,8 +23,8 @@ the service Object, which is itself Optional.
 | UpdateApplication | Method | M | §6.5.7 | `gds.acc.update_other` (pass), `gds.dir.update_application` (pass) |
 | UnregisterApplication | Method | M | §6.5.8 | `gds.acc.unregister_other` (pass), `gds.dir.unregister` (pass), `gds.dir.unregister_revokes` (pass) |
 | GetApplication | Method | M | §6.5.9 | `gds.dir.get_application` (pass), `gds.dir.get_unknown` (pass) |
-| QueryApplications | Method | M | §6.5.10 | `gds.dir.query_by_uri` (pass), `gds.qry.capabilities` (pass), `gds.qry.na_excluded` (fail), `gds.qry.name` (pass), `gds.qry.paging` (pass), `gds.qry.product_uri` (pass), `gds.qry.type_mask` (pass), `gds.qry.uri_pattern` (pass) |
-| QueryServers | Method (deprecated) | M | §6.5.11 | `gds.qry.servers` (fail) |
+| QueryApplications | Method | M | §6.5.10 | `gds.dir.query_by_uri` (pass), `gds.qry.capabilities` (pass), `gds.qry.na_excluded` (pass), `gds.qry.name` (pass), `gds.qry.paging` (pass), `gds.qry.product_uri` (pass), `gds.qry.type_mask` (pass), `gds.qry.uri_pattern` (pass) |
+| QueryServers | Method (deprecated) | M | §6.5.11 | `gds.qry.servers` (pass) |
 | ApplicationRegistrationChangedAuditEventType | Event | M | §6.5.12 | `gds.ev.auditing_flag` (not_supported), `gds.ev.registration_changed` (not_supported) |
 | Directory roles | DiscoveryAdmin, self-admin | M | §6.2 | `gds.acc.unregister_other` (pass), `gds.acc.update_other` (pass), `gds.sec.anonymous_register` (pass) |
 | CertificateDirectoryType | member list | M | §7.9.2 | `gds.model.directory` (pass) |
