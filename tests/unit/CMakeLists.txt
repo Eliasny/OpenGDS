@@ -55,3 +55,7 @@ add_executable(test_verify_audit test_verify_audit.c)
 target_link_libraries(test_verify_audit PRIVATE gds_verify_audit)
 add_test(NAME unit_verify_audit
          COMMAND test_verify_audit "${CMAKE_CURRENT_BINARY_DIR}/verify-audit-run" "$<TARGET_FILE:gdsctl>")
+
+add_executable(test_embed_roles test_embed_roles.c)
+target_link_libraries(test_embed_roles PRIVATE gds_server)
+add_test(NAME unit_embed_roles COMMAND test_embed_roles "${CMAKE_CURRENT_BINARY_DIR}/roles-run")

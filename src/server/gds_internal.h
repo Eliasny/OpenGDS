@@ -19,8 +19,8 @@
 
 #define GDS_NS_URI "http://opcfoundation.org/UA/GDS/"
 #define GDS_MAX_PRIVILEGE_PROVIDERS 8
-/* Anonymous, AuthenticatedUser and every role of gds_role_table */
-#define GDS_MAX_CALLER_ROLES 16
+/* Anonymous, AuthenticatedUser and every built-in and embedder Role */
+#define GDS_MAX_CALLER_ROLES (2 + GDS_ROLE_BUILTIN_COUNT + GDS_MAX_EMBED_ROLES)
 
 typedef struct gds_binding gds_binding;
 typedef struct gds_job gds_job;
@@ -36,6 +36,7 @@ struct gds_server {
     gds_ca *ca;
     gds_buf caCert; /* issuer certificate for FinishRequest, read once at start */
     bool autoApprove;
+    bool started; /* gds_server_run was called (__atomic) */
     UA_DateTime counterReset; /* QueryApplications lastCounterResetTime */
     /* node role (gds_server.c); roleLock is a leaf lock */
     pthread_mutex_t roleLock;

@@ -279,14 +279,24 @@ static void test_users_file(const char *dir) {
         CHECK_EQ_INT(u.users[1].roles,
                      GDS_ROLE_REGISTRATION_AUTHORITY_ADMIN | GDS_ROLE_KEY_CREDENTIAL_ADMIN);
     }
-    /* never from the file: implicit Roles and unknown names */
-    static const char *const refused[] = {"Anonymous", "AuthenticatedUser", "TrustedApplication",
-                                          "securitykeyserveradmin", "Nobody"};
+    /* never from the file: the implicit Roles and malformed names */
+    static const char *const refused[] = {"Anonymous", "AuthenticatedUser", "Bad/Name",
+                                          "Operator,Anonymous"};
     for(size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
         n = snprintf(line, sizeof(line), "x %s %s\n", refused[i], cred);
         b.len = (size_t)n;
         CHECK(gds_file_write_atomic(path, line, b.len, 0600) == GDS_OK);
         CHECK(gds_users_load(path, &u) == GDS_EINVAL);
+    }
+    /* other names wait for the embedder Roles (A10); gds_server_run
+     * checks them (test_embed_roles) */
+    n = snprintf(line, sizeof(line), "x Operator,TrustedApplication,Nobody,Nobody %s\n", cred);
+    b.len = (size_t)n;
+    CHECK(gds_file_write_atomic(path, line, b.len, 0600) == GDS_OK);
+    if(CHECK(gds_users_load(path, &u) == GDS_OK) && CHECK_EQ_INT(u.users[0].nEmbedRoles, 2)) {
+        CHECK_EQ_INT(u.users[0].roles, GDS_ROLE_OPERATOR);
+        CHECK(strcmp(u.users[0].embedRoles[0], "TrustedApplication") == 0);
+        CHECK(strcmp(u.users[0].embedRoles[1], "Nobody") == 0);
     }
     (void)unlink(path);
 }

@@ -115,8 +115,145 @@ const gds_role_info *gds_role_table(size_t *n) {
     return roleTable;
 }
 
-static bool parse_roles(span f, unsigned *roles) {
-    *roles = 0;
+/* ---- embedder Roles (A10) ----
+ * Added on the server thread before the server runs and read after, so
+ * they need no lock; gds_access_uninstall clears them. */
+typedef struct {
+    char name[GDS_MAX_ROLE_NAME + 1];
+    UA_NodeId id;
+} embed_role;
+static embed_role embedRoles[GDS_MAX_EMBED_ROLES];
+static size_t nEmbedRoles;
+static const gds_users *installedUsers;
+
+_Static_assert(sizeof(roleTable) / sizeof(roleTable[0]) == GDS_ROLE_BUILTIN_COUNT,
+               "GDS_ROLE_BUILTIN_COUNT");
+_Static_assert(GDS_ROLE_EMBED_FIRST_BIT + GDS_MAX_EMBED_ROLES <= 31, "role bits");
+
+size_t gds_role_count(void) {
+    return GDS_ROLE_BUILTIN_COUNT + nEmbedRoles;
+}
+
+void gds_role_at(size_t i, UA_UInt16 gdsNs, UA_NodeId *id, unsigned *bit, const char **name) {
+    if(i < GDS_ROLE_BUILTIN_COUNT) {
+        const gds_role_info *r = &roleTable[i];
+        *id = UA_NODEID_NUMERIC(r->gdsNamespace ? gdsNs : 0, r->id);
+        *bit = r->bit;
+        *name = r->name;
+        return;
+    }
+    const embed_role *e = &embedRoles[i - GDS_ROLE_BUILTIN_COUNT];
+    *id = e->id;
+    *bit = 1u << (GDS_ROLE_EMBED_FIRST_BIT + (i - GDS_ROLE_BUILTIN_COUNT));
+    *name = e->name;
+}
+
+unsigned gds_role_bit(UA_UInt16 gdsNs, const UA_NodeId *id) {
+    for(size_t i = 0; i < gds_role_count(); i++) {
+        UA_NodeId r;
+        unsigned bit = 0;
+        const char *name = NULL;
+        gds_role_at(i, gdsNs, &r, &bit, &name);
+        if(UA_NodeId_equal(&r, id))
+            return bit;
+    }
+    return 0;
+}
+
+static bool role_name_ok(span f) {
+    if(f.n == 0 || f.n > GDS_MAX_ROLE_NAME || span_eq(f, "Anonymous") ||
+       span_eq(f, "AuthenticatedUser") || span_eq(f, "-"))
+        return false;
+    for(size_t i = 0; i < f.n; i++) {
+        char c = f.p[i];
+        if(!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+             c == '.' || c == '_' || c == '-'))
+            return false;
+    }
+    return true;
+}
+
+static unsigned role_by_name(span f) {
+    for(size_t i = 0; i < gds_role_count(); i++) {
+        UA_NodeId id;
+        unsigned bit = 0;
+        const char *name = NULL;
+        gds_role_at(i, 0, &id, &bit, &name);
+        if(span_eq(f, name))
+            return bit;
+    }
+    return 0;
+}
+
+gds_status gds_access_add_role(const char *name, const UA_NodeId *id, UA_UInt16 gdsNs) {
+    if(!name || !id || UA_NodeId_isNull(id))
+        return GDS_EINVAL;
+    span f = {name, strlen(name)};
+    if(f.n > GDS_MAX_ROLE_NAME || !role_name_ok(f))
+        return span_eq(f, "Anonymous") || span_eq(f, "AuthenticatedUser") ? GDS_EEXISTS
+                                                                            : GDS_EINVAL;
+    const UA_NodeId anon = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+    const UA_NodeId auth = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_AUTHENTICATEDUSER);
+    if(role_by_name(f) || gds_role_bit(gdsNs, id) || UA_NodeId_equal(id, &anon) ||
+       UA_NodeId_equal(id, &auth))
+        return GDS_EEXISTS;
+    if(nEmbedRoles == GDS_MAX_EMBED_ROLES)
+        return GDS_ETOOBIG;
+    embed_role *e = &embedRoles[nEmbedRoles];
+    if(UA_NodeId_copy(id, &e->id) != UA_STATUSCODE_GOOD)
+        return GDS_ENOMEM;
+    memcpy(e->name, name, f.n);
+    e->name[f.n] = '\0';
+    nEmbedRoles++;
+    return GDS_OK;
+}
+
+void gds_access_drop_last_role(void) {
+    if(nEmbedRoles == 0)
+        return;
+    nEmbedRoles--;
+    UA_NodeId_clear(&embedRoles[nEmbedRoles].id);
+    memset(&embedRoles[nEmbedRoles], 0, sizeof(embedRoles[0]));
+}
+
+static void embed_roles_clear(void) {
+    for(size_t i = 0; i < nEmbedRoles; i++)
+        UA_NodeId_clear(&embedRoles[i].id);
+    memset(embedRoles, 0, sizeof(embedRoles));
+    nEmbedRoles = 0;
+}
+
+/* The embedder Role bits of a user; 0 for names that are no Role. */
+static unsigned embed_bits(const gds_user *u) {
+    unsigned bits = 0;
+    for(size_t i = 0; i < u->nEmbedRoles; i++) {
+        span f = {u->embedRoles[i], strlen(u->embedRoles[i])};
+        bits |= role_by_name(f);
+    }
+    return bits;
+}
+
+gds_status gds_access_check_users(void) {
+    const gds_users *users = installedUsers;
+    for(size_t i = 0; users && i < users->n; i++) {
+        const gds_user *u = &users->users[i];
+        for(size_t k = 0; k < u->nEmbedRoles; k++) {
+            span f = {u->embedRoles[k], strlen(u->embedRoles[k])};
+            if(!role_by_name(f)) {
+                fprintf(stderr, "users file: user %s: %s is not a Role\n", u->name,
+                        u->embedRoles[k]);
+                return GDS_EINVAL;
+            }
+        }
+    }
+    return GDS_OK;
+}
+
+/* Built-in names become bits; any other well-formed name is kept for
+ * the embedder Roles, which may be added after the file is loaded. */
+static bool parse_roles(span f, gds_user *u) {
+    u->roles = 0;
+    u->nEmbedRoles = 0;
     if(span_eq(f, "-"))
         return true;
     const char *p = f.p;
@@ -126,12 +263,22 @@ static bool parse_roles(span f, unsigned *roles) {
         if(r.n == 0)
             break;
         unsigned bit = 0;
-        for(size_t i = 0; i < sizeof(roleTable) / sizeof(roleTable[0]) && !bit; i++)
+        for(size_t i = 0; i < GDS_ROLE_BUILTIN_COUNT && !bit; i++)
             if(span_eq(r, roleTable[i].name))
                 bit = roleTable[i].bit;
-        if(!bit)
+        if(bit) {
+            u->roles |= bit;
+            continue;
+        }
+        if(!role_name_ok(r) || u->nEmbedRoles == GDS_MAX_EMBED_ROLES)
             return false;
-        *roles |= bit;
+        bool dup = false;
+        for(size_t i = 0; i < u->nEmbedRoles && !dup; i++)
+            dup = span_eq(r, u->embedRoles[i]);
+        if(dup)
+            continue;
+        memcpy(u->embedRoles[u->nEmbedRoles], r.p, r.n);
+        u->embedRoles[u->nEmbedRoles++][r.n] = '\0';
     }
     return true;
 }
@@ -172,7 +319,7 @@ static bool parse_line(const char *line, size_t len, gds_user *u, bool *blank) {
     span cred = next_field(&line, &len, ' ');
     span extra = next_field(&line, &len, ' ');
     memset(u, 0, sizeof(*u));
-    return extra.n == 0 && parse_name(name, u) && parse_roles(roles, &u->roles) &&
+    return extra.n == 0 && parse_name(name, u) && parse_roles(roles, u) &&
            parse_credential(cred, u);
 }
 
@@ -393,7 +540,7 @@ static UA_StatusCode login_cb(const UA_String *userName, const UA_ByteString *pa
             return UA_STATUSCODE_BADUSERACCESSDENIED;
         }
         memcpy(s->user, u->name, sizeof(s->user));
-        s->roles = u->roles;
+        s->roles = u->roles | embed_bits(u);
     }
     *sessionContext = s;
     return UA_STATUSCODE_GOOD;
@@ -557,6 +704,8 @@ static UA_Boolean executable_on(UA_Server *server, UA_AccessControl *ac, const U
 
 void gds_access_uninstall(void) {
     live_clear();
+    embed_roles_clear();
+    installedUsers = NULL;
     X509_free(gdsCa);
     gdsCa = NULL;
 }
@@ -582,6 +731,7 @@ gds_status gds_access_install(UA_ServerConfig *config, const gds_users *users,
     OPENSSL_cleanse(rnd, sizeof(rnd));
     if(r != UA_STATUSCODE_GOOD)
         return GDS_ENOMEM;
+    installedUsers = users;
     defaultActivate = config->accessControl.activateSession;
     config->accessControl.activateSession = activate;
     config->accessControl.closeSession = close_session;
