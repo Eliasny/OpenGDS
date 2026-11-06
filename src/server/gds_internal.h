@@ -24,6 +24,7 @@
 
 typedef struct gds_binding gds_binding;
 typedef struct gds_job gds_job;
+typedef struct gds_node_perms gds_node_perms;
 
 struct gds_server {
     UA_Server *ua;
@@ -51,11 +52,15 @@ struct gds_server {
     /* plugin privilege providers, fixed before the server runs */
     gds_privilege_provider privProviders[GDS_MAX_PRIVILEGE_PROVIDERS];
     size_t nPrivProviders;
-    /* plugin methods (gds_embed.c): bindings fixed before the server
-     * runs; plugLock guards the queue, the done list and plugStop only;
-     * plugInflight is touched on the server thread only */
+    /* plugin methods (gds_embed.c): bindLock (a leaf lock) guards the
+     * bindings and the RolePermissions table (gds_nodes.c); plugLock
+     * guards the queue, the done list and plugStop only; plugInflight is
+     * touched on the server thread only */
+    pthread_mutex_t bindLock;
     gds_binding *bindings[GDS_MAX_PLUGIN_METHODS];
     size_t nBindings;
+    gds_node_perms *perms;
+    size_t nPerms, capPerms;
     pthread_mutex_t plugLock;
     pthread_cond_t plugCond;
     pthread_t plugThreads[GDS_PLUGIN_WORKERS];
@@ -99,7 +104,15 @@ void gds_embed_configure(UA_ServerConfig *c, gds_server *s);
 void gds_embed_stop(gds_server *s);
 /* Frees jobs and bindings; after UA_Server_delete. */
 void gds_embed_free(gds_server *s);
-const gds_binding *gds_embed_find(const gds_server *s, const UA_NodeId *methodId);
+/* Is a plugin callback bound to this method node? */
+bool gds_embed_bound(gds_server *s, const UA_NodeId *methodId);
+/* Drop the bindings whose method node no longer exists. */
+void gds_embed_prune(gds_server *s);
+gds_status gds_ua_status(UA_StatusCode r);
+/* RolePermissions of embedder nodes (gds_nodes.c, issue #49). */
+void gds_nodes_prune(gds_server *s);
+void gds_nodes_free(gds_server *s);
+
 /* Role NodeIds to gds_role bits, plus the implicit Anonymous and
  * AuthenticatedUser; GDS_EINVAL for a Role no session can hold. */
 GDS_MUST_CHECK gds_status gds_role_bits(const gds_server *s, const UA_NodeId *roles, size_t n,

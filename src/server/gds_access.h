@@ -117,6 +117,12 @@ static inline bool gds_session_has(const void *sessionContext, unsigned roles) {
  * session's client certificate carries this ApplicationUri. */
 bool gds_session_is_app(const void *sessionContext, const UA_String *applicationUri);
 
+/* May this session Call on the node (RolePermissions of embedder nodes,
+ * gds_nodes.c)? True when the node has none. Thread safe. */
+struct gds_server;
+bool gds_node_call_allowed(struct gds_server *s, const void *sessionContext,
+                           const UA_NodeId *nodeId);
+
 /* The activated sessions with any of these Roles (or every session when
  * anonymous, every non-anonymous one when authenticated): their ids are
  * copied to out (at most max; the caller clears them). Thread safe. */
