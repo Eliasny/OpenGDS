@@ -137,7 +137,8 @@ static const char *const signerAllow[] = {
     "futex", "getrandom", "clock_gettime", "clock_nanosleep", "nanosleep", "gettimeofday",
     "time", "exit", "exit_group", "rt_sigreturn", "rt_sigprocmask", "rt_sigaction",
     "sigaltstack", "getpid", "gettid", "getuid", "geteuid", "getgid", "getegid", "tgkill",
-    "sched_yield", "uname", "sysinfo", "prlimit64", "restart_syscall", "flock",
+    "sched_yield", "uname", "sysinfo", "prlimit64", "restart_syscall", "flock", "dup", "dup3",
+    "getdents64",
 };
 
 /* Never needed; their use means the process was taken over. */
