@@ -47,10 +47,12 @@ Each new test was run without the library change (it must fail) and with it
   commit messages follow open62541's `CONTRIBUTING.md` (Conventional Commits,
   100-column lines).
 - `patches/v1.5.10/` holds only the library part of each patch (the
-  `plugins/` and `CMakeLists.txt` changes). They apply cleanly to v1.5.10. If
-  we want, `scripts/build_open62541.sh` can apply them to our pinned build and
-  drop the workarounds in `push_test_server`, `mock_gds` and the header copy.
-  A separate OpenGDS PR does that (O3).
+  `plugins/` and `CMakeLists.txt` changes). `scripts/build_open62541.sh`
+  applies them to our pinned v1.5.10 (O3), so `push_test_server` pairs its
+  certificate and key by file name, `mock_gds` no longer adds #None itself, and
+  the GDS headers are installed by open62541. **Editing these files changes our
+  build** (the CI cache key includes them). Drop each one once open62541
+  releases the fix and we move the pin.
 
 ## How to post (for Elias)
 

@@ -185,77 +185,76 @@ getUserExecutableOnObject(UA_Server *server, UA_AccessControl *ac, const UA_Node
 
 /* ---------------- Own certificate (Annex F.1 store) ---------------- */
 
-/* open62541's filestore writes "<CN>[<thumbprint>].der" to own/certs on
- * UpdateCertificate, but a key file only when a NEW key arrives (upstream gap
- * 1). In the CSR flow the key stays the same, so the tool keeps its key in
- * own/private/app.key and pairs it with the newest certificate it matches,
- * preferring CA-issued over self-signed. */
-#define OWN_KEY_FILE "ApplCerts/own/private/app.key"
-
+/* Each own certificate in own/certs/<name>.der has its key in
+ * own/private/<name>.key. open62541's filestore writes the pair on
+ * UpdateCertificate, also when the CSR kept the key (carried patch, see
+ * docs/upstream/01-filestore-key-kept-csr.md). Load the newest pair, preferring
+ * a CA-issued certificate over the initial self-signed one. */
 static gds_status loadOwnFromStore(const char *pki, gds_buf *certOut, gds_buf *keyOut) {
-    char dir[GDS_MAX_PATH], kp[GDS_MAX_PATH];
+    char dir[GDS_MAX_PATH];
     gds_status r;
-    if((r = gds_path(dir, sizeof(dir), "%s/ApplCerts/own/certs", pki)) != GDS_OK ||
-       (r = gds_path(kp, sizeof(kp), "%s/" OWN_KEY_FILE, pki)) != GDS_OK)
-        return r;
-    gds_buf k = {0};
-    if((r = gds_file_read(kp, GDS_MAX_KEY_SIZE, &k)) != GDS_OK)
+    if((r = gds_path(dir, sizeof(dir), "%s/ApplCerts/own/certs", pki)) != GDS_OK)
         return r;
     DIR *d = opendir(dir);
-    if(!d) {
-        gds_buf_free_secret(&k);
+    if(!d)
         return GDS_ENOTFOUND;
-    }
     struct dirent *e;
-    gds_buf best = {0};
+    gds_buf best = {0}, bestKey = {0};
     time_t bestTime = 0;
     bool bestIssued = false;
     while((e = readdir(d))) {
         size_t n = strlen(e->d_name);
         if(n < 5 || strcmp(e->d_name + n - 4, ".der") != 0)
             continue;
-        char p[GDS_MAX_PATH];
+        char p[GDS_MAX_PATH], kp[GDS_MAX_PATH];
         struct stat st;
-        gds_buf c = {0};
-        if(gds_path(p, sizeof(p), "%s/%s", dir, e->d_name) != GDS_OK || stat(p, &st) != 0 ||
-           gds_file_read(p, GDS_MAX_CERT_SIZE, &c) != GDS_OK)
+        gds_buf c = {0}, k = {0};
+        if(gds_path(p, sizeof(p), "%s/%s", dir, e->d_name) != GDS_OK ||
+           gds_path(kp, sizeof(kp), "%s/ApplCerts/own/private/%.*s.key", pki,
+                    (int)(n - 4), e->d_name) != GDS_OK ||
+           stat(p, &st) != 0 || gds_file_read(p, GDS_MAX_CERT_SIZE, &c) != GDS_OK)
             continue;
-        if(!x509_key_matches(&c, &k)) { /* stale or foreign */
-            gds_buf_free(&c);
+        if(gds_file_read(kp, GDS_MAX_KEY_SIZE, &k) != GDS_OK || !x509_key_matches(&c, &k)) {
+            gds_buf_free(&c); /* no key with this name, or not its pair */
+            gds_buf_free_secret(&k);
             continue;
         }
         bool issued = !x509_is_self_signed(&c);
         if((!issued && bestIssued) || (issued == bestIssued && best.data && st.st_mtime < bestTime)) {
             gds_buf_free(&c);
+            gds_buf_free_secret(&k);
             continue;
         }
         gds_buf_free(&best);
+        gds_buf_free_secret(&bestKey);
         best = c;
+        bestKey = k;
         bestTime = st.st_mtime;
         bestIssued = issued;
     }
     closedir(d);
-    if(!best.data) {
-        gds_buf_free_secret(&k);
+    if(!best.data)
         return GDS_ENOTFOUND;
-    }
     *certOut = best;
-    *keyOut = k;
+    *keyOut = bestKey;
     return GDS_OK;
 }
 
+/* Store the initial self-signed pair under one name in own/certs and
+ * own/private, the layout the filestore uses */
 static gds_status saveOwnToStore(const char *pki, const UA_ByteString *cert,
                                  const UA_ByteString *key) {
     char dir[GDS_MAX_PATH], path[GDS_MAX_PATH], tp[X509_THUMBPRINT_LEN];
     gds_buf c = {cert->data, cert->length};
     gds_status r;
-    if((r = gds_path(dir, sizeof(dir), "%s/ApplCerts/own/private", pki)) != GDS_OK ||
+    if((r = x509_thumbprint(&c, tp)) != GDS_OK ||
+       (r = gds_path(dir, sizeof(dir), "%s/ApplCerts/own/private", pki)) != GDS_OK ||
        (r = gds_mkdirs(dir, 0700)) != GDS_OK ||
-       (r = gds_path(path, sizeof(path), "%s/" OWN_KEY_FILE, pki)) != GDS_OK ||
+       (r = gds_path(path, sizeof(path), "%s/selfsigned[%s].key", dir, tp)) != GDS_OK ||
        (r = gds_file_write_atomic(path, key->data, key->length, 0600)) != GDS_OK)
         return r;
     if((r = gds_path(dir, sizeof(dir), "%s/ApplCerts/own/certs", pki)) != GDS_OK ||
-       (r = gds_mkdirs(dir, 0700)) != GDS_OK || (r = x509_thumbprint(&c, tp)) != GDS_OK ||
+       (r = gds_mkdirs(dir, 0700)) != GDS_OK ||
        (r = gds_path(path, sizeof(path), "%s/selfsigned[%s].der", dir, tp)) != GDS_OK)
         return r;
     return gds_file_write_atomic(path, c.data, c.len, 0644);
