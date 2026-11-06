@@ -96,7 +96,7 @@ AvmDiscovery *avm_discovery_parse(const char *output) {
     d->servers = g_ptr_array_new_with_free_func(g_free);
     d->errors = g_ptr_array_new_with_free_func(g_free);
     char **lines = g_strsplit(output ? output : "", "\n", MAX_RECORDS + 1);
-    for(guint i = 0; lines[i] && i < MAX_RECORDS; i++) {
+    for(guint i = 0; i < MAX_RECORDS && lines[i]; i++) {
         if(!g_utf8_validate(lines[i], -1, NULL))
             continue;
         char **f = g_strsplit(lines[i], "\t", 10);
@@ -153,9 +153,9 @@ static void on_discovered(GObject *src, GAsyncResult *res, gpointer data) {
 void avm_discover(const char *engine, const char *url, const char *certsDir,
                   GCancellable *cancel, AvmDiscoverDone done, gpointer user) {
     GError *e = NULL;
-    GSubprocess *proc = g_subprocess_new(
-        G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE, &e, engine, "discover",
-        "--url", url, "--certs", certsDir, NULL);
+    GSubprocessFlags flags = G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE; // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange)
+    GSubprocess *proc = g_subprocess_new(flags, &e, engine, "discover", "--url", url, "--certs",
+                                         certsDir, NULL);
     if(!proc) {
         done(NULL, e ? e->message : "cannot start the engine", user);
         g_clear_error(&e);

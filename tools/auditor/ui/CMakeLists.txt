@@ -1,6 +1,6 @@
 # Desktop UI: gdsaudit-gui (Auditor plan ui/)
 # SPDX-License-Identifier: MPL-2.0
-add_executable(gdsaudit-gui app.c win_main.c dlg_allow_changes.c page_history.c)
+add_executable(gdsaudit-gui app.c win_main.c dlg_allow_changes.c page_history.c page_targets.c)
 target_include_directories(gdsaudit-gui PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(gdsaudit-gui PRIVATE gdsaudit_avm PkgConfig::GDSAUDIT_GTK4 gds_hardening)
 # next to gdsaudit, where the UI looks for its engine
