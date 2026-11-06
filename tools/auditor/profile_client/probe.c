@@ -20,6 +20,7 @@ static struct {
     UA_Server *server;
     bool connected;
     gds_buf clientCert;
+    gds_buf lastChain; /* as sent in OpenSecureChannel (the server keeps only the leaf) */
     char url[64];
     UA_StatusCode (*origActivate)(UA_Server *, UA_AccessControl *, const UA_EndpointDescription *,
                                   const UA_ByteString *, const UA_NodeId *,
@@ -30,6 +31,16 @@ const char *probe_url(void) { return P.url; }
 bool probe_connected(void) { return P.connected; }
 const gds_buf *probe_client_cert(void) { return &P.clientCert; }
 
+/* AcceptAll, but remember the certificate chain the client sent */
+static UA_StatusCode probe_verify(UA_CertificateGroup *cg, const UA_ByteString *chain) {
+    (void)cg;
+    gds_buf_free(&P.lastChain);
+    if(chain && chain->length && chain->length <= GDS_MAX_CERT_SIZE * GDS_MAX_CHAIN_LEN &&
+       gds_buf_dup(chain->data, chain->length, &P.lastChain) != GDS_OK)
+        P.lastChain.len = 0;
+    return UA_STATUSCODE_GOOD;
+}
+
 static UA_StatusCode probe_activate(UA_Server *server, UA_AccessControl *ac,
                                     const UA_EndpointDescription *ep, const UA_ByteString *cert,
                                     const UA_NodeId *sessionId, const UA_ExtensionObject *token,
@@ -37,7 +48,12 @@ static UA_StatusCode probe_activate(UA_Server *server, UA_AccessControl *ac,
     UA_StatusCode r = P.origActivate(server, ac, ep, cert, sessionId, token, sessionContext);
     if(r == UA_STATUSCODE_GOOD && !P.connected) {
         P.connected = true;
-        if(cert && cert->length && cert->length <= GDS_MAX_CERT_SIZE * GDS_MAX_CHAIN_LEN &&
+        if(cert && cert->length && P.lastChain.len > cert->length &&
+           memcmp(P.lastChain.data, cert->data, cert->length) == 0)
+            cert = NULL; /* the full chain of the same certificate is kept below */
+        if(!cert && gds_buf_dup(P.lastChain.data, P.lastChain.len, &P.clientCert) != GDS_OK)
+            P.clientCert.len = 0;
+        else if(cert && cert->length && cert->length <= GDS_MAX_CERT_SIZE * GDS_MAX_CHAIN_LEN &&
            gds_buf_dup(cert->data, cert->length, &P.clientCert) != GDS_OK)
             P.clientCert.len = 0;
     }
@@ -61,6 +77,7 @@ static UA_StatusCode configure(UA_ServerConfig *c, long port, const gds_buf *cer
     c->applicationDescription.applicationUri = UA_STRING_ALLOC(PROBE_APP_URI);
     c->secureChannelPKI.clear(&c->secureChannelPKI);
     UA_CertificateGroup_AcceptAll(&c->secureChannelPKI);
+    c->secureChannelPKI.verifyCertificate = probe_verify;
     c->sessionPKI.clear(&c->sessionPKI);
     UA_CertificateGroup_AcceptAll(&c->sessionPKI);
     c->accessControl.clear(&c->accessControl);
@@ -127,5 +144,6 @@ void probe_stop(void) {
         P.server = NULL;
     }
     gds_buf_free(&P.clientCert);
+    gds_buf_free(&P.lastChain);
     P.connected = false;
 }

@@ -6,7 +6,10 @@
 #include "client_profile.h"
 #include "common/banned.h"
 
-static void not_installed(cli_profile *p, ga_ctx *ctx, fault_id fault, const char *what) {
+/* suppressible: Part 4 Table 100 lets an application suppress this check, so
+ * installing the certificate is a Warn, not a Fail (decision D2) */
+static void not_installed(cli_profile *p, ga_ctx *ctx, fault_id fault, const char *what,
+                          bool suppressible) {
     if(!cli_base_cycle(p, ctx))
         return;
     const fg_event *good = cli_last_issued();
@@ -43,6 +46,9 @@ static void not_installed(cli_profile *p, ga_ctx *ctx, fault_id fault, const cha
     if(!pr.connected)
         ga_fail(ctx, "after it was offered the %s certificate the client no longer connects with "
                      "its own (it was installed or broke the old one)", what);
+    else if(cli_cert_is(&pr.cert, &bad->issued) && suppressible)
+        ga_warn(ctx, "the client installed the %s certificate (the check can be suppressed, "
+                     "Part 4 Table 100)", what);
     else if(cli_cert_is(&pr.cert, &bad->issued))
         ga_fail(ctx, "the client installed the %s certificate", what);
     else if(cli_cert_is(&pr.cert, &good->issued))
@@ -53,16 +59,16 @@ static void not_installed(cli_profile *p, ga_ctx *ctx, fault_id fault, const cha
 }
 
 static void t_flt_untrusted(ga_ctx *ctx, void *profile) {
-    not_installed(profile, ctx, FAULT_ISSUE_UNTRUSTED, "untrusted");
+    not_installed(profile, ctx, FAULT_ISSUE_UNTRUSTED, "untrusted", false);
 }
 static void t_flt_wrong_key(ga_ctx *ctx, void *profile) {
-    not_installed(profile, ctx, FAULT_ISSUE_WRONG_KEY, "wrong-key");
+    not_installed(profile, ctx, FAULT_ISSUE_WRONG_KEY, "wrong-key", false);
 }
 static void t_flt_wrong_uri(ga_ctx *ctx, void *profile) {
-    not_installed(profile, ctx, FAULT_ISSUE_WRONG_URI, "wrong-URI");
+    not_installed(profile, ctx, FAULT_ISSUE_WRONG_URI, "wrong-URI", false);
 }
 static void t_flt_expired(ga_ctx *ctx, void *profile) {
-    not_installed(profile, ctx, FAULT_ISSUE_EXPIRED, "expired");
+    not_installed(profile, ctx, FAULT_ISSUE_EXPIRED, "expired", true);
 }
 
 /* After a fault the client still runs and connects as before */
@@ -217,7 +223,7 @@ const ga_test cli_faults_tests[] = {
     {"CLI-FLT-03", "12 §7.9.5; 4 §6.1.3", "A certificate from an untrusted CA is not installed", false, true, t_flt_untrusted},
     {"CLI-FLT-04", "12 §7.9.5", "A certificate for another key is not installed", false, true, t_flt_wrong_key},
     {"CLI-FLT-05", "12 §7.9.5; 6 §6.2.2", "A certificate for another ApplicationUri is not installed", false, true, t_flt_wrong_uri},
-    {"CLI-FLT-06", "12 §7.9.5; 4 §6.1.3", "An expired certificate is not installed", false, true, t_flt_expired},
+    {"CLI-FLT-06", "12 §7.9.5; 4 §6.1.3", "An expired certificate is not installed (installed: Warn)", false, true, t_flt_expired},
     {"CLI-FLT-01", "12 §7.6, §7.8.2.4", "A cut-off trust list download is not installed", false, true, t_flt_partial},
     {"CLI-FLT-02", "12 §7.8.2.8", "A malformed trust list is refused", false, true, t_flt_garbage},
     {"CLI-FLT-07", "12 §7.6", "An unanswered call is given up", false, true, t_flt_hang},

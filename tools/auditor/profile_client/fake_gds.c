@@ -56,6 +56,7 @@ typedef struct {
 static struct {
     UA_Server *server;
     testca_t ca;      /* FG_CA_MAIN: the GDS CA */
+    testca_t caInt;   /* ca-int: an intermediate under ca (CLI-INS-02), in memory */
     testca_t cas[FG_CA_COUNT]; /* X, Y, OTHER (index 0 unused) */
     UA_UInt16 ns;
     fg_behaviour b;
@@ -112,6 +113,10 @@ UA_NodeId fg_default_group(void) {
 
 UA_NodeId fg_listed_cert_type(void) {
     return UA_NODEID_NUMERIC(0, UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
+}
+
+const testca_t *fg_ca_int(void) {
+    return &G.caInt;
 }
 
 const testca_t *fg_ca(fg_ca_id which) {
@@ -434,6 +439,9 @@ static gds_status make_cert(const char *uri, const fg_req *q, gds_buf *cert, con
         *by = &G.cas[FG_CA_ROGUE];
         return testca_sign_csr(*by, &q->csr, uri, TESTCA_MAX_DAYS, cert);
     case FG_ISSUE_GOOD:
+    case FG_ISSUE_INTERMEDIATE:
+        *by = &G.caInt;
+        return testca_sign_csr(*by, &q->csr, uri, TESTCA_MAX_DAYS, cert);
     case FG_ISSUE_BAD_CHAIN:
     default:
         return testca_sign_csr(&G.ca, &q->csr, uri, TESTCA_MAX_DAYS, cert);
@@ -471,6 +479,15 @@ static UA_StatusCode issue(fg_event *ev, fg_app *a, fg_req *q, UA_Variant *out) 
             UA_Variant_setArray(&out[2], arr, G.b.hugeIssuers, &UA_TYPES[UA_TYPES_BYTESTRING]);
         else if(arr)
             UA_Array_delete(arr, G.b.hugeIssuers, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    } else if(r == UA_STATUSCODE_GOOD && by == &G.caInt) {
+        /* the chain up to the root: ca-int, then ca */
+        gds_buf root = {0};
+        r = testca_cert_der(&G.ca, &root) == GDS_OK ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADINTERNALERROR;
+        if(r == UA_STATUSCODE_GOOD) {
+            UA_ByteString two[2] = {issuer, {root.len, root.data}};
+            r = UA_Variant_setArrayCopy(&out[2], two, 2, &UA_TYPES[UA_TYPES_BYTESTRING]);
+        }
+        gds_buf_free(&root);
     } else if(r == UA_STATUSCODE_GOOD) {
         r = UA_Variant_setArrayCopy(&out[2], &issuer, 1, &UA_TYPES[UA_TYPES_BYTESTRING]);
     }
@@ -772,6 +789,8 @@ static gds_status write_files(const fg_config *cfg) {
            (r = gds_path(cn, sizeof(cn), "OpenGDS Auditor TEST %s", extra[i])) == GDS_OK)
             r = testca_load_or_create(&G.cas[i], d, cn);
     }
+    if(r == GDS_OK)
+        r = testca_create_sub(&G.caInt, &G.ca, "OpenGDS Auditor TEST ca-int");
     if(r == GDS_OK)
         r = testca_identity(&G.ca, caDir, "fakegds", "OpenGDS Auditor TEST fake GDS", FG_APP_URI,
                             &G.cert, &G.key);
@@ -1110,6 +1129,7 @@ void fg_stop(void) {
     gds_buf_free(&G.cert);
     gds_buf_free_secret(&G.key);
     testca_free(&G.ca);
+    testca_free(&G.caInt);
     for(size_t i = 1; i < FG_CA_COUNT; i++)
         testca_free(&G.cas[i]);
 }

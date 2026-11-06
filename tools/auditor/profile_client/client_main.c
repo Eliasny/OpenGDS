@@ -165,7 +165,7 @@ const fg_event *cli_last_issued(void) {
     for(size_t i = fg_event_count(); i-- > 0;) {
         const fg_event *ev = fg_event_at(i);
         if(ev->method == FG_M_FINISH && ev->result == UA_STATUSCODE_GOOD && ev->issued.len &&
-           ev->issueMode == FG_ISSUE_GOOD)
+           (ev->issueMode == FG_ISSUE_GOOD || ev->issueMode == FG_ISSUE_INTERMEDIATE))
             return ev;
     }
     return NULL;

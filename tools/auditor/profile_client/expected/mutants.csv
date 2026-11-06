@@ -34,7 +34,7 @@ renew-keep-old,CLI-REN-04,fail,
 install-unverified,CLI-FLT-03,fail,
 install-wrong-key,CLI-FLT-04,fail,
 install-wrong-uri,CLI-FLT-05,fail,
-install-expired,CLI-FLT-06,fail,
+install-expired,CLI-FLT-06,warn,
 send-password-untrusted,CLI-TRU-01,fail
 trust-any-gds,CLI-TRU-02,fail
 ignore-gds-crl,CLI-TRU-03,fail
@@ -49,3 +49,4 @@ reconnect-storm,CLI-FLT-09,warn
 install-partial-trustlist,CLI-FLT-01,fail
 pending-stuck-invalid,CLI-PEN-06,warn
 no-call-timeout,CLI-FLT-07,warn
+install-no-chain,CLI-INS-02,warn

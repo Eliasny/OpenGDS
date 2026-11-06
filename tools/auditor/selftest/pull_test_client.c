@@ -72,7 +72,7 @@ static const char *const mutants[] = {
     "send-password-untrusted", "trust-any-gds",  "ignore-gds-crl",     "accept-expired-gds",
     "no-gds-uri-check",   "use-sign-only",       "prefer-deprecated",  "ignore-crls",
     "parse-garbage",      "no-length-check",     "reconnect-storm",    "install-partial-trustlist",
-    "pending-stuck-invalid", "no-call-timeout"};
+    "pending-stuck-invalid", "no-call-timeout", "install-no-chain"};
 
 static bool is_mutant(const char *name) {
     return mutant && strcmp(mutant, name) == 0;
@@ -286,6 +286,23 @@ static void wipe_dir(const char *pki, const char *sub) {
     closedir(dp);
 }
 
+/* open62541 keeps only the first certificate of localCertificate; put the
+ * whole chain back so it is sent in OpenSecureChannel and CreateSession
+ * (OPC 10000-6 §6.7.2.3 allows a chain there). */
+static void send_chain(UA_Client *c, const gds_buf *sent) {
+    UA_ClientConfig *cc = UA_Client_getConfig(c);
+    for(size_t i = 0; c && i < cc->securityPoliciesSize; i++) {
+        UA_ByteString *lc = &cc->securityPolicies[i].localCertificate;
+        if(!lc->length || lc->length >= sent->len || memcmp(lc->data, sent->data, lc->length) != 0)
+            continue;
+        UA_ByteString full = {sent->len, sent->data}, copy;
+        if(UA_ByteString_copy(&full, &copy) == UA_STATUSCODE_GOOD) {
+            UA_ByteString_clear(lc);
+            *lc = copy;
+        }
+    }
+}
+
 /* Connect to the Auditor's probe server with what is installed: our
  * certificate, and as trust the downloaded TrustedCertificates and CRLs. */
 static int probe_connect(const char *pki, const char *url, const gds_buf *cert, const gds_buf *key,
@@ -308,6 +325,7 @@ static int probe_connect(const char *pki, const char *url, const gds_buf *cert, 
     int rc = 1;
     UA_Client *c = tn ? uac_new_secure(cert, key, trust, tn, crls, cn, appUri) : NULL;
     if(c) {
+        send_chain(c, cert);
         UA_StatusCode r = UA_Client_connect(c, url);
         uac_info("probe connection -> %s", UA_StatusCode_name(r));
         if(r == UA_STATUSCODE_GOOD) {
@@ -322,7 +340,8 @@ static int probe_connect(const char *pki, const char *url, const gds_buf *cert, 
 }
 
 /* Is the issued certificate one we may install? 12 §7.9.5, 4 §6.1.3 */
-static bool acceptable(const ptc *x, const gds_buf *nc, const gds_buf *reqKey) {
+static bool acceptable(const ptc *x, const gds_buf *nc, const gds_buf *reqKey,
+                       const UA_ByteString *issuers, size_t nIssuers) {
     if(!is_mutant("install-wrong-key") && !x509_key_matches(nc, reqKey)) {
         fprintf(stderr, "issued certificate does not match the request's key - refusing it\n");
         return false;
@@ -350,6 +369,16 @@ static bool acceptable(const ptc *x, const gds_buf *nc, const gds_buf *reqKey) {
         chained = x509_signed_by(nc, &cas[i]);
     for(size_t i = 0; i < x->bootN && !chained; i++)
         chained = x509_signed_by(nc, &x->boot[i]);
+    /* Through one intermediate from IssuerCertificates (12 §7.9.5) */
+    for(size_t i = 0; i < nIssuers && !chained; i++) {
+        gds_buf in = {issuers[i].data, issuers[i].length};
+        if(!x509_signed_by(nc, &in) || x509_is_self_signed(&in))
+            continue;
+        for(size_t j = 0; j < n && !chained; j++)
+            chained = x509_signed_by(&in, &cas[j]);
+        for(size_t j = 0; j < x->bootN && !chained; j++)
+            chained = x509_signed_by(&in, &x->boot[j]);
+    }
     free_list(cas, n);
     if(!chained)
         fprintf(stderr, "issued certificate is not from a trusted CA - refusing it\n");
@@ -404,6 +433,39 @@ static void clear_pending(const char *pki) {
         (void)unlink(kp);
 }
 
+/* The intermediates of IssuerCertificates, sent after our certificate so a
+ * peer that trusts only the root can build the chain (4 §6.1.3) */
+static gds_status save_chain(const char *pki, const UA_ByteString *issuers, size_t n) {
+    char p[GDS_MAX_PATH];
+    gds_status r = pki_file(pki, "own/chain.der", p, sizeof(p));
+    if(r != GDS_OK)
+        return r;
+    gds_buf chain = {0};
+    for(size_t i = 0; i < n && r == GDS_OK && !is_mutant("install-no-chain"); i++) {
+        gds_buf c = {issuers[i].data, issuers[i].length};
+        if(!x509_is_self_signed(&c) && issuers[i].length <= GDS_MAX_CERT_SIZE)
+            r = gds_buf_append(&chain, c.data, c.len, GDS_MAX_CHAIN_LEN * GDS_MAX_CERT_SIZE);
+    }
+    if(r == GDS_OK && chain.len)
+        r = gds_file_write_atomic(p, chain.data, chain.len, 0644);
+    else if(r == GDS_OK)
+        (void)unlink(p);
+    gds_buf_free(&chain);
+    return r;
+}
+
+/* Our certificate as sent: the certificate, then the saved intermediates */
+static gds_status presented_chain(const char *pki, const gds_buf *cert, gds_buf *out) {
+    char p[GDS_MAX_PATH];
+    gds_buf chain = {0};
+    gds_status r = gds_buf_dup(cert->data, cert->len, out);
+    if(r == GDS_OK && pki_file(pki, "own/chain.der", p, sizeof(p)) == GDS_OK &&
+       gds_file_read(p, GDS_MAX_CHAIN_LEN * GDS_MAX_CERT_SIZE, &chain) == GDS_OK)
+        r = gds_buf_append(out, chain.data, chain.len, (GDS_MAX_CHAIN_LEN + 1) * GDS_MAX_CERT_SIZE);
+    gds_buf_free(&chain);
+    return r;
+}
+
 typedef enum { FIN_ISSUED, FIN_PENDING, FIN_REJECTED, FIN_ERROR } fin_outcome;
 
 /* Check and install what FinishRequest returned: key first, then the
@@ -426,7 +488,7 @@ static fin_outcome install(const ptc *x, const UA_Variant *out, size_t outN, con
         return FIN_ERROR;
     }
     gds_buf nc = {newCert->data, newCert->length};
-    if(!acceptable(x, &nc, reqKey))
+    if(!acceptable(x, &nc, reqKey, (const UA_ByteString *)issuers, nIssuers))
         return FIN_ERROR;
     if(is_mutant("install-ignored")) {
         uac_info("MUTANT: the issued certificate is not installed");
@@ -451,7 +513,8 @@ static fin_outcome install(const ptc *x, const UA_Variant *out, size_t outN, con
        (gs = pki_file(x->pki, "own/cert.der", cp, sizeof(cp))) != GDS_OK ||
        (gs = gds_file_write_atomic(kp, reqKey->data, reqKey->len, 0600)) != GDS_OK ||
        (gs = gds_file_write_atomic(cp, nc.data, nc.len, 0644)) != GDS_OK ||
-       (gs = saveList(x->pki, "issuer/certs", "der", issuers, nIssuers)) != GDS_OK) {
+       (gs = saveList(x->pki, "issuer/certs", "der", issuers, nIssuers)) != GDS_OK ||
+       (gs = save_chain(x->pki, (const UA_ByteString *)issuers, nIssuers)) != GDS_OK) {
         failg("save certificate", gs);
         return FIN_ERROR;
     }
@@ -642,6 +705,8 @@ static UA_Client *gds_client(const gds_buf *cert, const gds_buf *key, const gds_
         cc->certificateVerification.clear(&cc->certificateVerification);
         UA_CertificateGroup_AcceptAll(&cc->certificateVerification);
     }
+    if(c)
+        send_chain(c, cert);
     if(c && is_mutant("no-call-timeout"))
         UA_Client_getConfig(c)->timeout = 600000; /* MUTANT: wait 10 minutes for any answer */
     if(c) {
@@ -654,7 +719,7 @@ static UA_Client *gds_client(const gds_buf *cert, const gds_buf *key, const gds_
 
 /* What main holds, freed at exit whichever return it took */
 static struct {
-    gds_buf *cert, *key, *newKey, *pendKey, *trust, *crls;
+    gds_buf *cert, *key, *newKey, *pendKey, *trust, *crls, *sent;
     UA_Client **client;
 } held;
 
@@ -666,6 +731,7 @@ static void free_held(void) {
         *held.client = NULL;
     }
     gds_buf_free(held.cert);
+    gds_buf_free(held.sent);
     gds_buf_free_secret(held.key);
     gds_buf_free_secret(held.newKey);
     gds_buf_free_secret(held.pendKey);
@@ -749,17 +815,20 @@ int main(int argc, char **argv) {
     uac_step("Load identity and the explicitly trusted GDS issuer");
     /* static, so that the exit handler can free them on the early error
      * returns as well (LeakSanitizer turns a leak into a crash exit) */
-    static gds_buf cert, key, newKey, pendKey, trust[MAX_TRUST], crls[MAX_TRUST];
+    static gds_buf cert, key, newKey, pendKey, trust[MAX_TRUST], crls[MAX_TRUST], sent;
     held.cert = &cert;
     held.key = &key;
     held.newKey = &newKey;
     held.pendKey = &pendKey;
     held.trust = trust;
     held.crls = crls;
+    held.sent = &sent;
     (void)atexit(free_held);
     gds_status gs = ensureOwnIdentity(pki, &cert, &key);
     if(gs != GDS_OK)
         return failg("own identity", gs);
+    if((gs = presented_chain(pki, &cert, &sent)) != GDS_OK)
+        return failg("own certificate chain", gs);
     for(size_t i = 0; i < trustN; i++)
         if((gs = gds_file_read(trustFiles[i], GDS_MAX_CERT_SIZE, &trust[i])) != GDS_OK)
             return failg(trustFiles[i], gs);
@@ -776,7 +845,7 @@ int main(int argc, char **argv) {
         const char *url = getenv("GDSAUDIT_PROBE_URL");
         if(!url || (mutant && !is_loopback(url)))
             return 2;
-        int rc = probe_connect(pki, url, &cert, &key, trust, trustN);
+        int rc = probe_connect(pki, url, &sent, &key, trust, trustN);
         free_list(trust, trustN);
         free_list(crls, crlN);
         gds_buf_free(&cert);
@@ -801,7 +870,7 @@ int main(int argc, char **argv) {
                  anonymous ? "application identity" : "user credentials");
         if(client)
             UA_Client_delete(client);
-        client = gds_client(&cert, &key, trust, trustN, crls, crlN);
+        client = gds_client(&sent, &key, trust, trustN, crls, crlN);
         if(!client)
             return 1;
         UA_Client_getConfig(client)->customDataTypes = &gdsTypes;

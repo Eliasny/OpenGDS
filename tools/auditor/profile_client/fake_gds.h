@@ -62,7 +62,8 @@ typedef enum {
     FG_ISSUE_WRONG_URI, /* SAN URI of another application */
     FG_ISSUE_EXPIRED,   /* notAfter in the past */
     FG_ISSUE_ROGUE,     /* signed by FG_CA_ROGUE (the rogue GDS hands it out) */
-    FG_ISSUE_BAD_CHAIN  /* recorded only: a good certificate in an over-long answer */
+    FG_ISSUE_BAD_CHAIN, /* recorded only: a good certificate in an over-long answer */
+    FG_ISSUE_INTERMEDIATE /* signed by ca-int, an intermediate under the GDS CA */
 } fg_issue;
 
 /* Content of the trust list the TrustList file serves (CLI-TL-03..06) */
@@ -157,6 +158,8 @@ const fg_session *fg_session_at(size_t i);
 size_t fg_trustlist_size(void);
 
 /* A CA of the fixture (for the probe server's identities) */
+/* ca-int, the intermediate under the GDS CA */
+const testca_t *fg_ca_int(void);
 const testca_t *fg_ca(fg_ca_id which);
 
 /* Files the trigger hands to the client */
