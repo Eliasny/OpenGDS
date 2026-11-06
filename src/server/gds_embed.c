@@ -293,6 +293,8 @@ static UA_StatusCode job_new(const gds_binding *b, const gds_session *ss,
                              const UA_NodeId *sessionId, const UA_NodeId *objectId,
                              size_t inputSize, const UA_Variant *input, size_t outputSize,
                              gds_job **out) {
+    if(!ss)
+        return UA_STATUSCODE_BADSESSIONIDINVALID;
     gds_job *j = calloc(1, sizeof(*j));
     if(!j)
         return UA_STATUSCODE_BADOUTOFMEMORY;
