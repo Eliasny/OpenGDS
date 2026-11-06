@@ -233,7 +233,9 @@ slowOpCallback(UA_Server *s, const UA_NodeId *sessionId, void *sessionContext,
     pthread_mutex_unlock(&qLock);
     if(full) {
         __atomic_add_fetch(&rejectedQueueFull, 1, __ATOMIC_RELAXED);
-        return UA_STATUSCODE_BADTOOMANYOPERATIONS;  /* answer now, do not queue */
+        /* Part 4 v1.05 7.38.2 Table 178: Bad_ServerTooBusy. Bad_TooManyOperations
+         * means the request itself asked for too many operations. */
+        return UA_STATUSCODE_BADSERVERTOOBUSY;      /* answer now, do not queue */
     }
     size_t slot = MAX_INFLIGHT;
     for(size_t i = 0; i < MAX_INFLIGHT; i++)
@@ -442,11 +444,11 @@ main(void) {
         waitAll(c, r, 40, 15000);
         int refused = 0, good = 0;
         for(int i = 0; i < 40; i++) {
-            refused += (r[i].op == UA_STATUSCODE_BADTOOMANYOPERATIONS);
+            refused += (r[i].op == UA_STATUSCODE_BADSERVERTOOBUSY);
             good += (r[i].op == UA_STATUSCODE_GOOD);
         }
         CHECK(refused > 0 && refused + good == 40,
-              "40 concurrent calls, queue cap %d + %d workers: %d Good, %d BadTooManyOperations (server counted %u)",
+              "40 concurrent calls, queue cap %d + %d workers: %d Good, %d BadServerTooBusy (server counted %u)",
               QUEUE_CAP, WORKERS, good, refused, rejectedQueueFull - before);
     }
 

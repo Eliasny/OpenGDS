@@ -1,0 +1,28 @@
+diff --git a/src/server/ua_subscription_alarms_conditions.c b/src/server/ua_subscription_alarms_conditions.c
+index 31c444e..46fc95a 100644
+--- a/src/server/ua_subscription_alarms_conditions.c
++++ b/src/server/ua_subscription_alarms_conditions.c
+@@ -1764,13 +1764,21 @@ refreshLogic(UA_Server *server, UA_Session *session,
+                 if(!isRetained(server, &triggeredNode))
+                     continue;
+ 
+-                UA_ByteString_clear(&branch->lastEventId);
++                /* Part 9 5.5.7: the refreshed Notification keeps the EventId
++                 * of the original Notification. */
++                UA_KeyValuePair idField;
++                idField.key = UA_QUALIFIEDNAME(0, "/EventId");
++                UA_Variant_setScalar(&idField.value, &branch->lastEventId,
++                                     &UA_TYPES[UA_TYPES_BYTESTRING]);
++                UA_KeyValueMap idMap = {1, &idField};
+ 
+                 /* Add the event */
+                 ed.eventInstance = &triggeredNode;
++                ed.eventFields = &idMap;
+                 ed.sourceNode = conditionSource;
+                 ed.eventType = UA_NODEID_NULL; /* overwritten by the EventInstance */
+-                retval = createEvent(server, &ed, &branch->lastEventId);
++                retval = createEvent(server, &ed, NULL);
++                ed.eventFields = NULL;
+                 CONDITION_ASSERT_RETURN_RETVAL(retval, "Events: Could not add the event to a listening node",);
+             }
+         }
