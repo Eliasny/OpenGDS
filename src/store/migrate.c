@@ -14,6 +14,7 @@ static const struct {
     const char *sql;
 } migrations[] = {
     {1, (const char *)gds_sql_001_init},
+    {2, (const char *)gds_sql_002_audit},
 };
 
 int gds_migrate_latest(void) {
