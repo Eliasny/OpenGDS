@@ -30,7 +30,7 @@
 #ifndef OPENGDS_GDS_PLUGIN_H
 #define OPENGDS_GDS_PLUGIN_H
 
-#include <open62541/types.h>
+#include <open62541/server.h>
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -108,6 +108,105 @@ typedef struct {
     void *ctx; /* borrowed: outlives the server */
     gds_status (*grant)(void *ctx, const gds_caller *caller, gds_privilege_set *set);
 } gds_privilege_provider;
+
+/* ---- embedder address space and methods (UASM ask A5, issue #16) ----
+ * An application that embeds OpenGDS adds its own standard address space
+ * next to the GDS (OPC 10000-14 SKS, OPC 10000-21, OPC 10000-100 ...):
+ * namespaces, compiled NodeSets, objects and methods. Every call here is
+ * made before gds_server_run, from the thread that created the server.
+ *
+ * The address space stays read-only to clients (no AddNodes, DeleteNodes
+ * or attribute writes). A method in another namespace than the GDS one is
+ * executable only once it is added or bound here; namespace 0 methods are
+ * offered only when bound. A bound method's callback:
+ *   - runs on the OpenGDS plugin worker pool, never on the network thread;
+ *   - runs only when the caller has one of the method's Roles or one of
+ *     its Privileges (none listed: nobody), and a SecureChannel at least
+ *     as secure as minSecurityMode; otherwise the call returns
+ *     Bad_UserAccessDenied (OPC 10000-4 §7.38.2) and the callback never
+ *     runs. UserExecutable reads false when no Role of the session
+ *     matches and the method has no Privileges;
+ *   - on a STANDBY node (gds_server_set_role) is refused with
+ *     Bad_InvalidState unless the method is GDS_METHOD_READ_ONLY
+ *     (docs/architecture.md, "Plugin API rules");
+ *   - gets its inputs after open62541 has checked their count and types
+ *     against InputArguments (OPC 10000-4 §5.11.2: Bad_ArgumentsMissing,
+ *     Bad_TooManyArguments, Bad_InvalidArgument / Bad_TypeMismatch); the
+ *     callback checks shapes and limits with gds_arg_scalar, gds_arg_array,
+ *     gds_arg_bytes and gds_arg_string (common/ua_args.h);
+ *   - is completed within GDS_PLUGIN_CALL_TIMEOUT_MS or answered with
+ *     Bad_Timeout; when GDS_PLUGIN_QUEUE calls wait, more are answered
+ *     with Bad_ServerTooBusy (OPC 10000-4 §7.38.2, decision G9).
+ * Inputs, outputs and the caller are owned by the call. The callback fills
+ * output[0..outputSize) with values it allocates (UA_Variant_setScalarCopy
+ * and similar); the core frees them, also when the call was cancelled. */
+#define GDS_PLUGIN_QUEUE 256
+#define GDS_PLUGIN_CALL_TIMEOUT_MS 30000
+#define GDS_PLUGIN_WORKERS 4
+#define GDS_MAX_PLUGIN_METHODS 128
+#define GDS_MAX_METHOD_ROLES 16
+#define GDS_MAX_METHOD_ARGS 32
+
+struct gds_server;
+typedef UA_StatusCode (*gds_nodeset_fn)(UA_Server *server);
+
+typedef UA_StatusCode (*gds_method_fn)(void *ctx, const gds_caller *caller,
+                                       const UA_NodeId *objectId, size_t inputSize,
+                                       const UA_Variant *input, size_t outputSize,
+                                       UA_Variant *output);
+
+/* The method changes nothing: allowed on a standby node. */
+#define GDS_METHOD_READ_ONLY 0x1u
+
+typedef struct {
+    uint32_t abi_major;
+    uint32_t abi_minor;
+    size_t struct_size;
+    /* gds_server_add_method: the new node, its parent object and its
+     * BrowseName (in the NodeId's namespace) and DisplayName (NULL: the
+     * BrowseName). gds_server_bind_method: only methodId is used. */
+    UA_NodeId methodId;
+    UA_NodeId parentId;
+    const char *browseName;
+    const char *displayName;
+    const UA_Argument *inputArguments; /* copied */
+    size_t inputArgumentsSize;
+    const UA_Argument *outputArguments; /* copied */
+    size_t outputArgumentsSize;
+    /* Who may call: a caller with any of these Roles or Privileges. Roles
+     * are the well-known Roles a gds_caller can hold. Copied. */
+    const UA_NodeId *roles;
+    size_t rolesSize;
+    const char *const *privileges;
+    size_t privilegesSize;
+    gds_security_mode minSecurityMode; /* INVALID: SIGN_AND_ENCRYPT */
+    uint32_t flags;                    /* GDS_METHOD_* */
+    gds_method_fn fn;
+    void *ctx; /* borrowed: outlives the server */
+} gds_method_def;
+
+/* The namespace's index, adding it if needed. */
+GDS_MUST_CHECK gds_status gds_server_add_namespace(struct gds_server *s, const char *uri,
+                                                   UA_UInt16 *nsIndex);
+/* Runs a NodeSet compiled by open62541's nodeset_compiler (the generated
+ * namespace_<name>_generated function). */
+GDS_MUST_CHECK gds_status gds_server_load_nodeset(struct gds_server *s, gds_nodeset_fn fn);
+/* Adds an object (type BaseObjectType when typeDefinition is null) under
+ * parentId with a HasComponent reference (Organizes under Objects). The
+ * NodeId may be in namespace 0: this open62541 build leaves out standard
+ * nodes of features it does not build, such as PublishSubscribe (i=14443)
+ * and its OPC 10000-14 SKS methods, and the embedder adds them. Never in
+ * the GDS namespace (GDS_EINVAL). */
+GDS_MUST_CHECK gds_status gds_server_add_object(struct gds_server *s, const UA_NodeId *nodeId,
+                                                const UA_NodeId *parentId,
+                                                const char *browseName,
+                                                const UA_NodeId *typeDefinition);
+/* Adds a method node and binds def->fn to it. */
+GDS_MUST_CHECK gds_status gds_server_add_method(struct gds_server *s, const gds_method_def *def);
+/* Binds def->fn to an existing method node (from a NodeSet, or a
+ * namespace 0 method such as the OPC 10000-14 GetSecurityKeys once it is
+ * added). The GDS namespace's own methods cannot be bound (GDS_EDENIED). */
+GDS_MUST_CHECK gds_status gds_server_bind_method(struct gds_server *s, const gds_method_def *def);
 
 #ifdef __cplusplus
 }
