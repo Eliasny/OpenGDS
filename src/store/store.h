@@ -102,13 +102,50 @@ GDS_MUST_CHECK gds_status gds_store_cert_latest(gds_store *s, const UA_Guid *app
                                                 uint32_t groupId, uint32_t certType, gds_buf *der,
                                                 int64_t *notAfter);
 
+/* ---- the audit log (issue #18) ----
+ * Append-only and hash-chained: row n's hash is
+ *   SHA-256(prev_hash || seq (8 bytes, big-endian) || time (8 bytes,
+ *           big-endian, UA_DateTime) || body)
+ * with prev_hash the hash of row n-1, or 32 zero bytes for row 1. Rows
+ * are numbered 1, 2, 3 ... without gaps. The body is opaque to the store
+ * (the server writes the OPC UA binary encoding of the event, see
+ * src/server/gds_audit.c). Every backend computes the chain with
+ * gds_audit_hash, in the same transaction as the row. */
+#define GDS_AUDIT_HASH 32
+#define GDS_MAX_AUDIT_BODY ((size_t)64 * 1024)
+
+typedef struct {
+    int64_t seq;
+    int64_t time;     /* UA_DateTime */
+    gds_buf body;     /* borrowed in a scan callback */
+    uint8_t prevHash[GDS_AUDIT_HASH];
+    uint8_t hash[GDS_AUDIT_HASH];
+} gds_audit_row;
+
+GDS_MUST_CHECK gds_status gds_audit_hash(const uint8_t prev[GDS_AUDIT_HASH], int64_t seq,
+                                         int64_t time, const gds_buf *body,
+                                         uint8_t out[GDS_AUDIT_HASH]);
+
+/* Appends a row (one transaction); *seq gets its number. GDS_ETOOBIG above
+ * GDS_MAX_AUDIT_BODY. May return GDS_ENOTLEADER like every write. */
+GDS_MUST_CHECK gds_status gds_store_audit_append(gds_store *s, int64_t time, const gds_buf *body,
+                                                 int64_t *seq);
+/* Visits rows from fromSeq in order; the callback borrows the row and
+ * returns false to stop. GDS_EUNSUPPORTED for a backend without a log. */
+typedef bool (*gds_audit_scan_cb)(void *ctx, const gds_audit_row *row);
+GDS_MUST_CHECK gds_status gds_store_audit_scan(gds_store *s, int64_t fromSeq,
+                                               gds_audit_scan_cb cb, void *ctx);
+/* Walks the whole log: every hash recomputed, every seq in order.
+ * GDS_OK, or GDS_ESTATE with *badSeq the first row that does not verify. */
+GDS_MUST_CHECK gds_status gds_store_audit_verify(gds_store *s, int64_t *rows, int64_t *badSeq);
+
 /* ---- backends (issue #15) ----
  * A backend implements every operation above with the same contract, on
  * its own context. Every function pointer is required. Each write is one
  * transaction: it commits fully or changes nothing. The core calls a
  * backend from one thread at a time (see "Single-writer" above). */
 #define GDS_STORE_ABI_MAJOR 1u
-#define GDS_STORE_ABI_MINOR 0u
+#define GDS_STORE_ABI_MINOR 1u /* 1: the audit log */
 
 typedef struct {
     uint32_t abi_major;
@@ -133,12 +170,16 @@ typedef struct {
                            int64_t notAfter);
     gds_status (*cert_latest)(void *ctx, const UA_Guid *appId, uint32_t groupId,
                               uint32_t certType, gds_buf *der, int64_t *notAfter);
+    /* minor 1 */
+    gds_status (*audit_append)(void *ctx, int64_t time, const gds_buf *body, int64_t *seq);
+    gds_status (*audit_scan)(void *ctx, int64_t fromSeq, gds_audit_scan_cb cb, void *cbCtx);
 } gds_store_backend;
 
 /* A store on a plugin backend. The vtable is copied; ctx is taken, and
  * gds_store_close passes it to be->close (also when this call fails).
- * GDS_EINVAL for another ABI major, a struct_size too small for this
- * version, or a missing function. */
+ * GDS_EINVAL for another ABI major, a struct_size below the minor 0
+ * fields, or a missing function. A minor 0 backend (no audit log) works;
+ * its audit calls return GDS_EUNSUPPORTED. */
 GDS_MUST_CHECK gds_status gds_store_open_backend(const gds_store_backend *be, void *ctx,
                                                  gds_store **out);
 
