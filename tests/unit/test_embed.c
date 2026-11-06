@@ -196,7 +196,7 @@ static UA_UInt16 setup(gds_server *s) {
     bad.browseName = "Bad";
     bad.parentId = UA_NODEID_NUMERIC(ns, 999);
     CHECK(gds_server_add_method(s, &bad) == GDS_ENOTFOUND);
-    CHECK(gds_embed_find(s, &bad.methodId) == NULL);
+    CHECK(!gds_embed_bound(s, &bad.methodId));
     return ns;
 }
 

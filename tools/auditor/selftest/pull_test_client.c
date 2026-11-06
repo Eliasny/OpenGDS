@@ -29,8 +29,10 @@
  */
 #include <open62541/client_highlevel.h>
 #include <open62541/nodeids_gds.h>
+#include <open62541/plugin/certificategroup_default.h>
 #include <open62541/plugin/create_certificate.h>
 #include <open62541/plugin/log_stdout.h>
+#include <open62541/plugin/securitypolicy_default.h>
 #include <open62541/types_gds_generated.h>
 
 #include <stdio.h>
@@ -52,6 +54,8 @@
 #define MAX_PASSWORD 256
 #define PTC_MAX_URL 256
 
+#define POLICY_BASIC256 "http://opcfoundation.org/UA/SecurityPolicy#Basic256"
+
 static const char *appUri = "urn:opengds:test:pullclient";
 static const char *appName = "OpenGDS Pull Test Client";
 static const char *mutant = NULL; /* --break */
@@ -64,7 +68,9 @@ static const char *const mutants[] = {
     "keep-session-open",  "ignore-update-required", "renew-always",    "renew-with-password",
     "read-one-chunk",     "no-close",            "always-download",    "trustlist-not-installed",
     "trustlist-merge",    "issuers-trusted",     "install-ignored",    "renew-keep-old",
-    "install-unverified", "install-wrong-key",   "install-wrong-uri",  "install-expired"};
+    "install-unverified", "install-wrong-key",   "install-wrong-uri",  "install-expired",
+    "send-password-untrusted", "trust-any-gds",  "ignore-gds-crl",     "accept-expired-gds",
+    "no-gds-uri-check",   "use-sign-only",       "prefer-deprecated"};
 
 static bool is_mutant(const char *name) {
     return mutant && strcmp(mutant, name) == 0;
@@ -333,7 +339,7 @@ static bool acceptable(const ptc *x, const gds_buf *nc, const gds_buf *reqKey) {
         fprintf(stderr, "issued certificate is not valid now - refusing it\n");
         return false;
     }
-    if(is_mutant("install-unverified"))
+    if(is_mutant("install-unverified") || is_mutant("trust-any-gds"))
         return true;
     static gds_buf cas[MAX_DIR_FILES];
     size_t n = load_dir(x->pki, "trusted/certs", cas, MAX_DIR_FILES, GDS_MAX_CERT_SIZE);
@@ -563,6 +569,82 @@ static gds_status save_trustlist_time(const char *pki, UA_DateTime t) {
     return gds_file_write_atomic(p, v, strlen(v), 0644);
 }
 
+/* 4 §6.1.3: the GDS certificate must name the ApplicationUri the GDS
+ * describes itself with; open62541 checks only the chain, so the server
+ * certificate is recorded where the client verifies it. */
+static UA_ByteString gdsCert;
+static UA_StatusCode (*origVerify)(UA_CertificateGroup *, const UA_ByteString *);
+
+static UA_StatusCode record_verify(UA_CertificateGroup *cg, const UA_ByteString *cert) {
+    UA_ByteString_clear(&gdsCert);
+    if(UA_ByteString_copy(cert, &gdsCert) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    return origVerify(cg, cert);
+}
+
+static bool gds_uri_matches(UA_Client *c) {
+    UA_ApplicationDescription d;
+    if(!gdsCert.length ||
+       UA_Client_getConnectionAttribute_scalar(c, UA_QUALIFIEDNAME(0, "serverDescription"),
+                                               &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION],
+                                               &d) != UA_STATUSCODE_GOOD)
+        return false;
+    return UA_CertificateUtils_verifyApplicationUri(&gdsCert, &d.applicationUri) ==
+           UA_STATUSCODE_GOOD;
+}
+
+/* prefer-deprecated: open62541 leaves Basic256 out of the client unless
+ * built with UA_INCLUDE_INSECURE_POLICIES, so the mutant adds it itself. */
+static UA_Client *deprecated_client(const gds_buf *cert, const gds_buf *key, const gds_buf *trust,
+                                    size_t trustN, const gds_buf *crls, size_t crlN) {
+    UA_Client *c = uac_new_secure_mode(cert, key, trust, trustN, crls, crlN, appUri, POLICY_BASIC256,
+                                       UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
+    if(!c)
+        return NULL;
+    UA_ClientConfig *cc = UA_Client_getConfig(c);
+    UA_SecurityPolicy *sp = (UA_SecurityPolicy *)realloc(
+        cc->securityPolicies, (cc->securityPoliciesSize + 1) * sizeof(UA_SecurityPolicy));
+    if(!sp) {
+        UA_Client_delete(c);
+        return NULL;
+    }
+    cc->securityPolicies = sp;
+    UA_ByteString uc = {cert->len, cert->data}, uk = {key->len, key->data};
+    if(UA_SecurityPolicy_Basic256(&sp[cc->securityPoliciesSize], uc, uk, cc->logging) !=
+       UA_STATUSCODE_GOOD) {
+        UA_Client_delete(c);
+        return NULL;
+    }
+    cc->securityPoliciesSize++;
+    return c;
+}
+
+/* The connection to the GDS; the trust mutants weaken it on purpose. */
+static UA_Client *gds_client(const gds_buf *cert, const gds_buf *key, const gds_buf *trust,
+                             size_t trustN, const gds_buf *crls, size_t crlN) {
+    UA_Client *c;
+    if(is_mutant("use-sign-only"))
+        c = uac_new_secure_mode(cert, key, trust, trustN, crls, crlN, appUri, POLICY_RSAPSS,
+                                UA_MESSAGESECURITYMODE_SIGN);
+    else if(is_mutant("prefer-deprecated"))
+        c = deprecated_client(cert, key, trust, trustN, crls, crlN);
+    else
+        c = uac_new_secure(cert, key, trust, trustN, crls,
+                           is_mutant("ignore-gds-crl") ? 0 : crlN, appUri);
+    if(c && (is_mutant("send-password-untrusted") || is_mutant("trust-any-gds") ||
+             is_mutant("accept-expired-gds"))) {
+        UA_ClientConfig *cc = UA_Client_getConfig(c);
+        cc->certificateVerification.clear(&cc->certificateVerification);
+        UA_CertificateGroup_AcceptAll(&cc->certificateVerification);
+    }
+    if(c) {
+        UA_ClientConfig *cc = UA_Client_getConfig(c);
+        origVerify = cc->certificateVerification.verifyCertificate;
+        cc->certificateVerification.verifyCertificate = record_verify;
+    }
+    return c;
+}
+
 /* Self-test main: one linear script of steps, kept in one place on purpose. */
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 int main(int argc, char **argv) {
@@ -672,13 +754,15 @@ int main(int argc, char **argv) {
     UA_StatusCode r = UA_STATUSCODE_BADINTERNALERROR;
     for(int attempt = 0; attempt < 2 && r != UA_STATUSCODE_GOOD; attempt++) {
         bool anonymous = attempt == 0 ? (selfAdmin || !user) : false;
+        if(is_mutant("send-password-untrusted") && user)
+            anonymous = false;
         if(attempt == 1 && (!user || !selfAdmin))
             break;
         uac_step("Connect to the GDS (SignAndEncrypt, %s)",
                  anonymous ? "application identity" : "user credentials");
         if(client)
             UA_Client_delete(client);
-        client = uac_new_secure(&cert, &key, trust, trustN, crls, crlN, appUri);
+        client = gds_client(&cert, &key, trust, trustN, crls, crlN);
         if(!client)
             return 1;
         UA_Client_getConfig(client)->customDataTypes = &gdsTypes;
@@ -688,6 +772,12 @@ int main(int argc, char **argv) {
     OPENSSL_cleanse(password, sizeof(password));
     if(r != UA_STATUSCODE_GOOD)
         return fail("connect", r);
+    if(!is_mutant("no-gds-uri-check") && !gds_uri_matches(client)) {
+        fprintf(stderr, "the GDS certificate does not name the GDS ApplicationUri - not trusted\n");
+        UA_Client_disconnect(client);
+        UA_Client_delete(client);
+        return 1;
+    }
     uac_info("connected");
 
     /* Bind the GDS namespace index at runtime */

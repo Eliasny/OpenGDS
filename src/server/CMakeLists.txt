@@ -8,6 +8,7 @@ add_library(gds_server STATIC
     gds_certmgr.c
     gds_directory.c
     gds_embed.c
+    gds_nodes.c
     gds_policy.c
     gds_server.c
     gds_trustlist.c

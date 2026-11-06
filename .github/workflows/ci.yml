@@ -13,10 +13,11 @@ permissions:
   contents: read
 
 concurrency:
-  # Superseded pull request runs are cancelled (no failure email); every push
-  # to main still runs to the end so each merge commit is tested.
+  # A newer run on the same ref cancels the older one, on main too: only the
+  # latest main commit is tested, which keeps the shared runner queue short
+  # enough for automerge to get a runner.
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   build-test:

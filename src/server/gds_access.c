@@ -550,8 +550,12 @@ static UA_Boolean executable(UA_Server *server, UA_AccessControl *ac, const UA_N
 static UA_Boolean executable_on(UA_Server *server, UA_AccessControl *ac, const UA_NodeId *sid,
                                 void *sctx, const UA_NodeId *methodId, void *mctx,
                                 const UA_NodeId *objectId, void *octx) {
-    (void)ac, (void)sid, (void)mctx, (void)objectId, (void)octx;
-    return gds_method_executable(UA_Server_getConfig(server)->context, sctx, methodId);
+    (void)ac, (void)sid, (void)mctx, (void)octx;
+    struct gds_server *s = UA_Server_getConfig(server)->context;
+    /* RolePermissions of embedder nodes (issue #49): Call on the object
+     * and on the method node */
+    return gds_method_executable(s, sctx, methodId) && gds_node_call_allowed(s, sctx, objectId) &&
+           gds_node_call_allowed(s, sctx, methodId);
 }
 
 void gds_access_uninstall(void) {
