@@ -138,11 +138,36 @@ fi
 echo "=============== 6. listening signer (--listen) ==============="
 LDIR=$(mktemp -d /tmp/ogs-listen.XXXXXX)
 LSOCK="$LDIR/signer.sock"
-# data-listen does not exist yet: opengdsd creates it after the signer starts
-"$SIGNER" --listen "$LSOCK" --store "$W/data-listen/opengds.db" --ca-dir "$W/ca" \
-    --passphrase-file "$W/ca.pw" > "$W/listen.log" 2>&1 &
-LST=$!
 trap 'cleanup; kill "$LST" 2>/dev/null; rm -rf "$LDIR"; true' EXIT INT TERM
+LST=""
+# data-listen does not exist yet: opengdsd creates the store after the
+# signer starts. As root, the signer runs the production way: its own uid
+# (65534) in opengdsd's group (0 here), its own CA directory, and the
+# store mounted read-only (ReadOnlyPaths= in signer@, :ro in compose).
+if [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null && command -v unshare > /dev/null \
+   && unshare -m true 2> /dev/null; then
+    SEP=1
+    mkdir -p "$W/data-listen" "$LDIR/store" "$LDIR/ca"
+    chmod 0750 "$W/data-listen" "$LDIR"
+    cp "$W/ca.pw" "$LDIR/ca.pw"
+    cp -p "$W/ca/"* "$LDIR/ca/" # the same CA, now owned by the signer's user
+    chown -R 65534:0 "$LDIR"
+    chmod 0711 "$W" # opengdsd's work dir: the signer may only traverse it
+    LCA="$LDIR/ca"
+    unshare -m sh -c 'mount --bind "$1" "$2" && mount -o remount,bind,ro "$2" && shift 2 && \
+        exec setpriv --reuid 65534 --regid 0 --clear-groups -- "$@"' sh \
+        "$W/data-listen" "$LDIR/store" \
+        "$SIGNER" --listen "$LSOCK" --store "$LDIR/store/opengds.db" --ca-dir "$LCA" \
+        --passphrase-file "$LDIR/ca.pw" > "$W/listen.log" 2>&1 &
+    LST=$!
+else
+    SEP=0
+    echo "(signer under the same uid: separate-user check needs root, setpriv and unshare)"
+    LCA="$W/ca"
+    "$SIGNER" --listen "$LSOCK" --store "$W/data-listen/opengds.db" --ca-dir "$LCA" \
+        --passphrase-file "$W/ca.pw" > "$W/listen.log" 2>&1 &
+    LST=$!
+fi
 i=0
 until [ -S "$LSOCK" ]; do
     i=$((i + 1)); kill -0 "$LST" 2>/dev/null || { cat "$W/listen.log"; fail "signer --listen exited"; }
@@ -155,13 +180,15 @@ echo "signer_socket = $LSOCK" >> "$W/listen.conf"
 cp "$W/listen.conf" "$W/opengds.conf"
 for n in 1 2; do # the second start is a second connection to the same signer
     start_gds "$W/gds-listen$n.log"
-    "$PULL" --gds "opc.tcp://127.0.0.1:$PORT" --pki "$W/pki-listen$n" --trust "$W/ca/ca.der" \
-        --crl "$W/ca/ca.crl" --user registrar --password-file "$W/registrar.pw" \
+    "$PULL" --gds "opc.tcp://127.0.0.1:$PORT" --pki "$W/pki-listen$n" --trust "$LCA/ca.der" \
+        --crl "$LCA/ca.crl" --user registrar --password-file "$W/registrar.pw" \
         --app-uri "urn:opengds:pull-tracer:listen$n" > "$W/pull-listen$n.log" 2>&1 \
         || { cat "$W/pull-listen$n.log" "$W/listen.log"; fail "pull through signer --listen ($n)"; }
     expect "PULL WORKFLOW COMPLETE" "$W/pull-listen$n.log"
+    [ "$(stat -c %a "$W/data-listen/opengds.db")" = "640" ] || fail "store is not 0640"
     stop_gds
 done
+[ "$SEP" = 1 ] && echo "signer ran as uid 65534 on a read-only store mount"
 kill -0 "$LST" 2>/dev/null || { cat "$W/listen.log"; fail "signer --listen exited after a connection"; }
 kill "$LST" 2>/dev/null
 echo "PULL TRACER PASSED"
