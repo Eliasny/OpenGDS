@@ -71,6 +71,10 @@ static gds_status build_env(trig_env *e, const trig_cfg *cfg, const char *user) 
     if(r == GDS_OK) r = env_add(e, "GDSAUDIT_CLIENT_DIR", cfg->clientDir);
     if(r == GDS_OK) r = env_add(e, "GDSAUDIT_ACTION", cfg->action);
     if(r == GDS_OK && cfg->probeUrl) r = env_add(e, "GDSAUDIT_PROBE_URL", cfg->probeUrl);
+    char rs[24];
+    if(r == GDS_OK && cfg->runSeconds > 0 &&
+       (r = gds_path(rs, sizeof(rs), "%ld", cfg->runSeconds)) == GDS_OK)
+        r = env_add(e, "GDSAUDIT_RUN_SECONDS", rs);
     return r;
 }
 
@@ -145,7 +149,7 @@ gds_status trig_run(const trig_cfg *cfg, const char *user, trig_result *res) {
             r = GDS_EIO;
             break;
         }
-        if(now_ms() - t0 > 1000.0 * cfg->timeoutSeconds) {
+        if(now_ms() - t0 > 1000.0 * ((double)cfg->timeoutSeconds + (double)cfg->runSeconds)) {
             stop_child(pid);
             res->exited = false;
             break;

@@ -144,12 +144,38 @@ static UA_StatusCode touch_trustlist(bool newTime) {
 
 static gds_status switch_identity(fg_identity id);
 
+/* The optional TrustList UpdateFrequency property (12 §7.8.2.1), which the
+ * GDS nodeset does not instantiate; 0 until a test sets it */
+static UA_StatusCode add_update_frequency(void) {
+    UA_VariableAttributes va = UA_VariableAttributes_default;
+    UA_Double zero = 0;
+    UA_Variant_setScalar(&va.value, &zero, &UA_TYPES[UA_TYPES_DURATION]);
+    va.dataType = UA_TYPES[UA_TYPES_DURATION].typeId;
+    va.valueRank = UA_VALUERANK_SCALAR;
+    va.displayName = UA_LOCALIZEDTEXT("", "UpdateFrequency");
+    return UA_Server_addVariableNode(
+        G.server,
+        UA_NODEID_NUMERIC(G.ns, UA_GDSID_DIRECTORY_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_UPDATEFREQUENCY),
+        UA_NODEID_NUMERIC(G.ns, UA_GDSID_DIRECTORY_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY), UA_QUALIFIEDNAME(0, "UpdateFrequency"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_PROPERTYTYPE), va, NULL, NULL);
+}
+
 void fg_set_behaviour(const fg_behaviour *b) {
     G.b = *b;
     if(b->identity != G.identity && switch_identity(b->identity) != GDS_OK)
         fprintf(stderr, "fake GDS: cannot present identity %d\n", (int)b->identity);
     if(b->tlChanged && G.server && touch_trustlist(true) != UA_STATUSCODE_GOOD)
         fprintf(stderr, "fake GDS: cannot set TrustList.LastUpdateTime\n");
+    if(G.server) {
+        UA_Double uf = b->updateFrequencyMs;
+        UA_Variant v;
+        UA_Variant_setScalar(&v, &uf, &UA_TYPES[UA_TYPES_DURATION]);
+        if(UA_Server_writeValue(G.server,
+                                UA_NODEID_NUMERIC(G.ns, UA_GDSID_DIRECTORY_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_UPDATEFREQUENCY),
+                                v) != UA_STATUSCODE_GOOD && uf > 0)
+            fprintf(stderr, "fake GDS: cannot set TrustList.UpdateFrequency\n");
+    }
 }
 
 size_t fg_session_count(void) {
@@ -414,6 +440,21 @@ static gds_status make_expired(const testca_t *ca, gds_buf *cert) {
     return r;
 }
 
+/* A valid certificate that expires `seconds` from now, re-signed */
+static gds_status make_short(const testca_t *ca, gds_buf *cert, long seconds) {
+    X509 *x = x509_parse_cert(cert);
+    if(!x)
+        return GDS_ECRYPTO;
+    gds_status r = GDS_ECRYPTO;
+    if(X509_gmtime_adj(X509_getm_notBefore(x), -60L) &&
+       X509_gmtime_adj(X509_getm_notAfter(x), seconds) && X509_sign(x, ca->key, EVP_sha256()) > 0) {
+        gds_buf_free(cert);
+        r = x509_cert_to_der(x, cert);
+    }
+    X509_free(x);
+    return r;
+}
+
 /* The certificate FinishRequest returns, per G.b.issue */
 static gds_status make_cert(const char *uri, const fg_req *q, gds_buf *cert, const testca_t **by) {
     *by = &G.ca;
@@ -434,6 +475,10 @@ static gds_status make_cert(const char *uri, const fg_req *q, gds_buf *cert, con
     case FG_ISSUE_EXPIRED: {
         gds_status r = testca_sign_csr(&G.ca, &q->csr, uri, TESTCA_MAX_DAYS, cert);
         return r == GDS_OK ? make_expired(&G.ca, cert) : r;
+    }
+    case FG_ISSUE_SHORT: {
+        gds_status r = testca_sign_csr(&G.ca, &q->csr, uri, TESTCA_MAX_DAYS, cert);
+        return r == GDS_OK ? make_short(&G.ca, cert, G.b.issueLifetimeS) : r;
     }
     case FG_ISSUE_ROGUE:
         *by = &G.cas[FG_CA_ROGUE];
@@ -977,6 +1022,8 @@ static gds_status server_up(const gds_buf *cert, const gds_buf *key) {
     r = bind_methods();
     if(r == UA_STATUSCODE_GOOD)
         r = touch_trustlist(false);
+    if(r == UA_STATUSCODE_GOOD)
+        r = add_update_frequency();
     if(r == UA_STATUSCODE_GOOD)
         r = UA_Server_run_startup(G.server);
     if(r != UA_STATUSCODE_GOOD) {

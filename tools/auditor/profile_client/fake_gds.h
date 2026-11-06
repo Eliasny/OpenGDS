@@ -64,7 +64,8 @@ typedef enum {
     FG_ISSUE_EXPIRED,   /* notAfter in the past */
     FG_ISSUE_ROGUE,     /* signed by FG_CA_ROGUE (the rogue GDS hands it out) */
     FG_ISSUE_BAD_CHAIN, /* recorded only: a good certificate in an over-long answer */
-    FG_ISSUE_INTERMEDIATE /* signed by ca-int, an intermediate under the GDS CA */
+    FG_ISSUE_INTERMEDIATE, /* signed by ca-int, an intermediate under the GDS CA */
+    FG_ISSUE_SHORT      /* valid, but expires issueLifetimeS after issue (CLI-REN-03) */
 } fg_issue;
 
 /* Content of the trust list the TrustList file serves (CLI-TL-03..06) */
@@ -129,6 +130,8 @@ typedef struct {
     bool dropAfterSign;         /* after StartSigningRequest: close the session, forget the request */
     bool tlDropAfterRead;       /* close the session after the first TrustList.Read */
     unsigned hangFinishMs;      /* FinishRequest does not answer for this long (or until the client is gone) */
+    double updateFrequencyMs;   /* TrustList UpdateFrequency (12 §7.8.2.1); 0: none */
+    long issueLifetimeS;        /* FG_ISSUE_SHORT: the certificate expires this long after issue */
 } fg_behaviour;
 
 typedef struct {

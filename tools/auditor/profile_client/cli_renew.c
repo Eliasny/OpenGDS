@@ -1,6 +1,6 @@
 /* OpenGDS Auditor client profile - Renewal (CLI-REN-*).
  * Rows of docs/auditor/client-profile.md, "Renewal (cli_renew.c)".
- * CLI-REN-03 (slow) and CLI-REN-04 (probe server) follow.
+ * CLI-REN-04 is in cli_install.c (probe server).
  * SPDX-License-Identifier: MPL-2.0 */
 #include "client_profile.h"
 #include "common/banned.h"
@@ -59,9 +59,40 @@ static void t_ren_identity(ga_ctx *ctx, void *profile) {
                 end - first);
 }
 
+/* CLI-REN-03 (slow): a certificate that expires after 3 cycle periods; the
+ * client's own schedule must renew it in time (12 §7.6 sets no lead time) */
+static void t_ren_expiry(ga_ctx *ctx, void *profile) {
+    cli_profile *p = profile;
+    if(!cli_slow_ready(p, ctx) || !cli_base_cycle(p, ctx))
+        return;
+    p->lifetimeS = 3 * p->period;
+    cli_cycle c;
+    if(!cli_cycle_for(p, FAULT_ISSUE_SHORT, ctx, &c))
+        return;
+    const fg_event *iss = cli_last_issued();
+    if(!iss || iss->issueMode != FG_ISSUE_SHORT || (size_t)(iss - fg_event_at(0)) < c.first) {
+        ga_not_tested(ctx, "the client did not take the short-lived certificate");
+        return;
+    }
+    double expires = iss->tMs + 1000.0 * (double)p->lifetimeS;
+    if(!cli_run_for(p, FAULT_NONE, p->lifetimeS + 5, ctx, &c))
+        return;
+    for(size_t i = c.first; i < c.end; i++) {
+        const fg_event *ev = fg_event_at(i);
+        if(ev->method == FG_M_FINISH && ev->result == UA_STATUSCODE_GOOD && ev->issued.len &&
+           ev->tMs < expires) {
+            ga_pass(ctx, "renewed %.0f s before the certificate expired (lifetime %ld s)",
+                    (expires - ev->tMs) / 1000.0, p->lifetimeS);
+            return;
+        }
+    }
+    ga_warn(ctx, "the certificate (lifetime %ld s) expired without a renewal", p->lifetimeS);
+}
+
 const ga_test cli_renew_tests[] = {
     {"CLI-REN-01", "12 §7.9.10, §7.6", "UpdateRequired TRUE starts a request", false, true, t_ren_required},
     {"CLI-REN-02", "12 §7.9.10, §7.6", "No request while UpdateRequired is FALSE", false, true, t_ren_not_required},
+    {"CLI-REN-03", "12 §7.6", "A certificate is renewed before it expires (slow)", false, true, t_ren_expiry},
     {"CLI-REN-05", "12 Annex G.1, §7.6", "Renewal authenticates with the certificate, not a password", false, true, t_ren_identity},
 };
 const size_t cli_renew_count = GDS_ARRAY_SIZE(cli_renew_tests);

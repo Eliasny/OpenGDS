@@ -2,7 +2,7 @@
 
 `gdsaudit client --listen <port>` checks an OPC UA application that pulls its certificate and trust list from a GDS (OPC 10000-12 §7.3, §7.6, Annex G.1). The Auditor runs `fake_gds.c`, a minimal GDS of its own that breaks the rules on cue, and waits for the client to come to it. Each test starts the client's pull cycle with `--trigger-cmd` or an operator prompt and reports Not tested when neither is available. After a cycle the Auditor checks what the client installed by letting it connect to a probe server (below), so every check stays black-box.
 
-The trigger hook is the program after `--` on the `gdsaudit client` command line. The Auditor runs it once per step with `GDSAUDIT_GDS_URL`, `GDSAUDIT_GDS_CA`, `GDSAUDIT_GDS_CRL`, `GDSAUDIT_GDS_USER`, `GDSAUDIT_GDS_PASSWORD_FILE` and `GDSAUDIT_CLIENT_DIR` set. Without `GDSAUDIT_ACTION` the client does one pull cycle. `GDSAUDIT_ACTION=probe` makes it connect to `GDSAUDIT_PROBE_URL`. `GDSAUDIT_ACTION=restart` restarts the client and exits 0, or exits nonzero when the hook cannot restart it; CLI-PEN-04 and CLI-INS-03 are then Not tested.
+The trigger hook is the program after `--` on the `gdsaudit client` command line. The Auditor runs it once per step with `GDSAUDIT_GDS_URL`, `GDSAUDIT_GDS_CA`, `GDSAUDIT_GDS_CRL`, `GDSAUDIT_GDS_USER`, `GDSAUDIT_GDS_PASSWORD_FILE` and `GDSAUDIT_CLIENT_DIR` set. Without `GDSAUDIT_ACTION` the client does one pull cycle. `GDSAUDIT_ACTION=probe` makes it connect to `GDSAUDIT_PROBE_URL`. `GDSAUDIT_ACTION=restart` restarts the client and exits 0, or exits nonzero when the hook cannot restart it; CLI-PEN-04 and CLI-INS-03 are then Not tested. `GDSAUDIT_ACTION=run` with `GDSAUDIT_RUN_SECONDS=N` lets the client run cycles on its own schedule for N seconds and then exit. The slow tests (CLI-PEN-08, CLI-TL-08, CLI-REN-03) use it; they run only with `--slow --cycle-period S`, where S is the cycle period the client is configured with, and are Not tested otherwise.
 
 Spec: OPC 10000-12 v1.05.07 (2026-04-15) unless the clause names another Part. How to read the columns, verdict words and mutants: [README](README.md#how-to-read-a-catalogue).
 
@@ -74,7 +74,7 @@ RegisterApplication needs the DiscoveryAdmin Role or the ApplicationAdmin Privil
 | CLI-PEN-05 | 12 §7.9.5, §7.6 | O | FinishRequest returns Bad_RequestNotAllowed | The client never calls FinishRequest for that RequestId again | Fail: it polls the rejected RequestId again | `poll-after-reject` |
 | CLI-PEN-06 | 12 §7.9.5 | O | After StartSigningRequest the fake GDS drops the session; FinishRequest then returns Bad_InvalidArgument | The client recovers with GetCertificates or a new request | Warn: stuck | `pending-stuck-invalid` |
 | CLI-PEN-07 | 12 §6.3 | O | Watch sessions between cycles | The client closes its session when a cycle ends and holds none between cycles | Fail: a session stays open into the next cycle, or longer than 60 s after its last call | `keep-session-open` |
-| CLI-PEN-08 | 12 §6.3 | O, slow | Start the client 3 times at the same moment and record when the second cycle begins | The delay varies between runs and lies between 1 % and at least 10 % of the cycle period | Warn: identical delays, or outside the range. Timing on a shared bench makes a Fail unsafe | `no-cycle-jitter` |
+| CLI-PEN-08 | 12 §6.3 | O, slow | Run the client's own schedule 3 times and record when the second cycle begins | The delay after the cycle period is at least 1 % of the period and varies between runs ("between one and at least ten percent of the cycle period") | Warn: under 1 %, or the same in all runs. Timing on a shared bench makes a Fail unsafe | `no-cycle-jitter` |
 
 ## Installation (`cli_install.c`)
 
@@ -97,7 +97,7 @@ The fake GDS serves a 40 KiB trust list and answers each Read with at most 1 KiB
 | CLI-TL-05 | 12 §7.8.2.8; 4 §6.1.3 | O | Next cycle serves a list without CA X; the probe presents a certificate from X | The client refuses | Fail: still trusts X (it merged instead of replacing) | `trustlist-merge` |
 | CLI-TL-06 | 12 §7.8.2.8; 4 §6.1.3 | O | The probe presents a leaf issued by a CA that is only in IssuerCertificates | The client refuses (the issuer list only builds chains) | Fail: connects | `issuers-trusted` |
 | CLI-TL-07 | 12 §7.6 | O | Leave the list unchanged for two cycles | The client reads LastUpdateTime and skips the download | Warn: downloads every cycle | `always-download` |
-| CLI-TL-08 | 12 §7.6, §7.8.2.1 | O, slow | Set UpdateFrequency to 60 s | The client checks for updates within 2 × UpdateFrequency | Warn: it does not | `ignore-update-frequency` |
+| CLI-TL-08 | 12 §7.6, §7.8.2.1 | O, slow | Set UpdateFrequency to a quarter of the cycle period; run the client's own schedule | The client checks for updates within 2 × UpdateFrequency | Warn: it does not | `ignore-update-frequency` |
 
 ## Renewal (`cli_renew.c`)
 
@@ -105,7 +105,7 @@ The fake GDS serves a 40 KiB trust list and answers each Read with at most 1 KiB
 | --- | --- | --- | --- | --- | --- | --- |
 | CLI-REN-01 | 12 §7.9.10, §7.6 | O | GetCertificateStatus returns UpdateRequired TRUE | The client starts a new signing request in the same cycle | Fail: no request | `ignore-update-required` |
 | CLI-REN-02 | 12 §7.9.10, §7.6 | O | GetCertificateStatus returns UpdateRequired FALSE and the certificate is far from expiry | No new request | Warn: requests anyway | `renew-always` |
-| CLI-REN-03 | 12 §7.6 | O, slow | Issue a 10-minute certificate; let cycles run | The client renews before the certificate expires | Warn: it expires. The spec sets no lead time | `no-expiry-renewal` |
+| CLI-REN-03 | 12 §7.6 | O, slow | Issue a certificate that expires after 3 cycle periods; run the client's own schedule | The client renews before the certificate expires | Warn: it expires. The spec sets no lead time | `no-expiry-renewal` |
 | CLI-REN-04 | 12 §7.6 | O | After a renewal, trigger a connection to the probe | The new certificate is presented | Fail: the old one | `renew-keep-old` |
 | CLI-REN-05 | 12 Annex G.1, §7.6 | O | Watch the identity token used for renewal | The client authenticates with its certificate and Anonymous user (ApplicationSelfAdmin) | Warn: it uses UserName credentials while it holds a valid certificate | `renew-with-password` |
 

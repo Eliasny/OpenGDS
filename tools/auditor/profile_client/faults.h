@@ -35,6 +35,8 @@ typedef enum {
     FAULT_FINISH_HANG,    /* a new request; FinishRequest does not answer */
     FAULT_ISSUE_INTERMEDIATE, /* a new request; issued by ca-int, chain ca-int, ca */
     FAULT_PENDING_HOLD,   /* a new request; FinishRequest says Bad_NothingToDo all cycle */
+    FAULT_UPDATE_FREQUENCY, /* TrustList UpdateFrequency set (the run sets the value) */
+    FAULT_ISSUE_SHORT,    /* a new request; a certificate that expires soon (the run sets when) */
     FAULT_COUNT
 } fault_id;
 

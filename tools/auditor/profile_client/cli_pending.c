@@ -1,6 +1,6 @@
 /* OpenGDS Auditor client profile - Pending approval (CLI-PEN-*).
  * Rows of docs/auditor/client-profile.md, "Pending approval (cli_pending.c)".
- * CLI-PEN-08 (slow) follows.
+ * CLI-PEN-08 is slow.
  * SPDX-License-Identifier: MPL-2.0 */
 #include "client_profile.h"
 #include "common/banned.h"
@@ -239,6 +239,51 @@ static void t_pen_restart(ga_ctx *ctx, void *profile) {
     ga_warn(ctx, "after the restart the client did not come back to the pending request");
 }
 
+/* CLI-PEN-08 (slow): the second cycle of the client's own schedule starts
+ * after a random delay of 1 % up to at least 10 % of the period (12 §6.3).
+ * Three runs; the delay is the start-to-start time less the period. */
+#define PEN_JITTER_RUNS 3
+static void t_pen_jitter(ga_ctx *ctx, void *profile) {
+    cli_profile *p = profile;
+    if(!cli_slow_ready(p, ctx) || !cli_base_cycle(p, ctx))
+        return;
+    double periodMs = 1000.0 * (double)p->period, d[PEN_JITTER_RUNS];
+    for(int k = 0; k < PEN_JITTER_RUNS; k++) {
+        cli_cycle c;
+        if(!cli_run_for(p, FAULT_NONE, p->period + p->period / 5 + 10, ctx, &c))
+            return;
+        /* cycle starts: sessions more than half a period apart */
+        double t1 = -1, t2 = -1;
+        for(size_t i = c.sessFirst; i < c.sessEnd && t2 < 0; i++) {
+            const fg_session *s = fg_session_at(i);
+            if(t1 < 0)
+                t1 = s->tOpen;
+            else if(s->tOpen - t1 > periodMs / 2)
+                t2 = s->tOpen;
+        }
+        if(t2 < 0) {
+            ga_not_tested(ctx, "run %d: the client ran no second cycle", k + 1);
+            return;
+        }
+        d[k] = t2 - t1 - periodMs;
+        ga_note(ctx, "run %d: second cycle %.0f ms after the period (%.1f %%)", k + 1, d[k],
+                100.0 * d[k] / periodMs);
+    }
+    double lo = d[0], hi = d[0];
+    for(int k = 1; k < PEN_JITTER_RUNS; k++) {
+        lo = d[k] < lo ? d[k] : lo;
+        hi = d[k] > hi ? d[k] : hi;
+    }
+    if(lo < 0.01 * periodMs)
+        ga_warn(ctx, "a second cycle started %.0f ms after the period, under 1 %% of it", lo);
+    else if(hi - lo < 0.002 * periodMs)
+        ga_warn(ctx, "the delays of %d runs are the same within %.0f ms: not random",
+                PEN_JITTER_RUNS, hi - lo);
+    else
+        ga_pass(ctx, "delays %.1f to %.1f %% of the period", 100.0 * lo / periodMs,
+                100.0 * hi / periodMs);
+}
+
 const ga_test cli_pending_tests[] = {
     {"CLI-PEN-01", "12 §7.9.5, §7.6", "A pending request is completed", false, true, t_pen_complete},
     {"CLI-PEN-02", "12 §7.6, §7.9.5", "FinishRequest is polled with a delay", false, true, t_pen_backoff},
@@ -247,5 +292,6 @@ const ga_test cli_pending_tests[] = {
     {"CLI-PEN-05", "12 §7.9.5, §7.6", "A rejected request is not polled again", false, true, t_pen_reject},
     {"CLI-PEN-06", "12 §7.9.5", "Recovers when the GDS forgot the pending request", false, true, t_pen_recover},
     {"CLI-PEN-07", "12 §6.3", "No session is held between cycles", false, true, t_pen_sessions},
+    {"CLI-PEN-08", "12 §6.3", "The second cycle starts after a random delay (slow)", false, true, t_pen_jitter},
 };
 const size_t cli_pending_count = GDS_ARRAY_SIZE(cli_pending_tests);

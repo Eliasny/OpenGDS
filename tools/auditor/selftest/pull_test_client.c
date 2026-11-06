@@ -22,6 +22,13 @@
  *       --from-env a small Server answers on that URL while gdsaudit runs)
  *   pull_test_client --from-env [--break MUTANT]  (as the trigger of `gdsaudit client`)
  *
+ * GDSAUDIT_ACTION=run with GDSAUDIT_RUN_SECONDS=N runs cycles on the
+ * client's own schedule for N seconds: every --poll-seconds (the cycle
+ * period), or every TrustList UpdateFrequency when that is shorter
+ * (12 §7.6), the second cycle after a random delay of 2 to 10 % of the
+ * period (12 §6.3). A cycle renews a certificate with less than a third of
+ * its lifetime, or less than two periods, left (12 §7.6).
+ *
  * --from-env takes the GDS, its CA and CRL, the user, the password file and
  * the PKI directory from the GDSAUDIT_* variables gdsaudit client sets.
  * --break makes the client wrong in one named way, so that each CLI-* test
@@ -41,12 +48,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <spawn.h>
+#include <sys/wait.h>
 #include <signal.h>
 #include <time.h>
 #include <unistd.h>
 
 #include <openssl/crypto.h>
+#include <openssl/rand.h>
 #include <openssl/x509.h>
 
 #include "common/limits.h"
@@ -78,7 +89,8 @@ static const char *const mutants[] = {
     "no-gds-uri-check",   "use-sign-only",       "prefer-deprecated",  "ignore-crls",
     "parse-garbage",      "no-length-check",     "reconnect-storm",    "install-partial-trustlist",
     "pending-stuck-invalid", "no-call-timeout", "install-no-chain", "install-in-ram",
-    "pending-forget",     "register-bad-url"};
+    "pending-forget",     "register-bad-url",    "no-cycle-jitter",    "ignore-update-frequency",
+    "no-expiry-renewal"};
 
 static bool is_mutant(const char *name) {
     return mutant && strcmp(mutant, name) == 0;
@@ -542,6 +554,98 @@ static void serve_discovery(const char *pki, const char *url, const gds_buf *cer
     exit(serve_child(port, cert, key, watch));
 }
 
+/* ---- Own schedule (GDSAUDIT_ACTION=run) ---------------------------- */
+extern char **environ;
+
+static double mono_s(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+static void sleep_s(double s) {
+    if(s <= 0)
+        return;
+    struct timespec ts = {(time_t)s, (long)((s - (double)(time_t)s) * 1e9)};
+    while(nanosleep(&ts, &ts) != 0 && errno == EINTR) {}
+}
+
+/* TrustList UpdateFrequency in ms as the last cycle read it, 0 if none */
+static long update_frequency_ms(const char *pki) {
+    char p[GDS_MAX_PATH], num[24] = {0};
+    gds_buf b = {0};
+    long ms = 0;
+    if(pki_file(pki, "update-frequency-ms", p, sizeof(p)) == GDS_OK &&
+       gds_file_read(p, sizeof(num) - 1, &b) == GDS_OK && b.len < sizeof(num)) {
+        memcpy(num, b.data, b.len);
+        if(!gds_parse_long(num, 0, 86400000L, &ms))
+            ms = 0;
+    }
+    gds_buf_free(&b);
+    return ms;
+}
+
+/* One cycle: this program again, without GDSAUDIT_ACTION */
+static int run_one_cycle(char **argv) {
+    static char *envp[256];
+    size_t n = 0;
+    for(char **e = environ; *e && n + 1 < GDS_ARRAY_SIZE(envp); e++)
+        if(strncmp(*e, "GDSAUDIT_ACTION=", 16) != 0)
+            envp[n++] = *e;
+    envp[n] = NULL;
+    pid_t pid;
+    if(posix_spawn(&pid, "/proc/self/exe", NULL, NULL, argv, envp) != 0)
+        return -1;
+    int st = 0;
+    while(waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+    return WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st);
+}
+
+static int run_schedule(const char *pki, char **argv, long periodS, long runS) {
+    unsigned char r[2] = {0};
+    double end = mono_s() + (double)runS;
+    double start = mono_s();
+    for(unsigned k = 0;; k++) {
+        printf("cycle %u (period %ld s)\n", k + 1, periodS);
+        fflush(stdout);
+        int rc = run_one_cycle(argv);
+        if(rc != 0)
+            printf("cycle %u ended with %d\n", k + 1, rc);
+        double wait = (double)periodS;
+        long uf = update_frequency_ms(pki);
+        if(uf > 0 && (double)uf / 1000.0 < wait && !is_mutant("ignore-update-frequency"))
+            wait = (double)uf / 1000.0;
+        if(k == 0 && !is_mutant("no-cycle-jitter")) {
+            /* 12 §6.3: the second cycle after a random 2..10 % of the period */
+            if(RAND_bytes(r, sizeof(r)) != 1)
+                return 1;
+            double f = 0.02 + 0.08 * (double)(r[0] | (r[1] << 8)) / 65535.0;
+            wait += f * (double)periodS;
+        }
+        start += wait;
+        if(start > end)
+            return 0;
+        sleep_s(start - mono_s());
+    }
+}
+
+/* Renew before expiry: less than a third of the lifetime, or less than two
+ * cycle periods, left */
+static bool expiring(const gds_buf *cert, long periodS) {
+    X509 *x = x509_parse_cert(cert);
+    if(!x)
+        return false;
+    int dd = 0, ds = 0, ld = 0, ls = 0;
+    bool soon = false;
+    if(ASN1_TIME_diff(&dd, &ds, NULL, X509_get0_notAfter(x)) &&
+       ASN1_TIME_diff(&ld, &ls, X509_get0_notBefore(x), X509_get0_notAfter(x))) {
+        double left = (double)dd * 86400.0 + ds, life = (double)ld * 86400.0 + ls;
+        soon = left < life / 3.0 || left < 2.0 * (double)periodS;
+    }
+    X509_free(x);
+    return soon;
+}
+
 /* install-in-ram: the certificate before the install, as if the new one
  * lived only in memory until a restart */
 static gds_status ram_save(const char *pki) {
@@ -944,7 +1048,6 @@ int main(int argc, char **argv) {
         else if(!strcmp(a, "--break") && known_mutant(v)) mutant = v;
         else goto usage;
     }
-    (void)pollSeconds; /* kept for old scripts: polling is per cycle now (MAX_POLLS) */
     if(mutant && !is_loopback(gds)) {
         fprintf(stderr, "refusing --break %s against %s: mutants only talk to a GDS on this host\n",
                 mutant, gds);
@@ -974,6 +1077,11 @@ int main(int argc, char **argv) {
         const char *act = fromEnv ? getenv("GDSAUDIT_ACTION") : NULL;
         if(act && !strcmp(act, "restart"))
             return restart(pki);
+        long runS = 0;
+        const char *rs = getenv("GDSAUDIT_RUN_SECONDS");
+        if(act && !strcmp(act, "run"))
+            return rs && gds_parse_long(rs, 1, 86400, &runS) ? run_schedule(pki, argv, pollSeconds, runS)
+                                                             : 2;
     }
     printf("OpenGDS pull test client (Auditor self-test target)  app=%s  gds=%s\n", appUri, gds);
 
@@ -1207,6 +1315,11 @@ int main(int argc, char **argv) {
             updateRequired = false;
         if(is_mutant("renew-always"))
             updateRequired = true;
+        if(!updateRequired && !is_mutant("no-expiry-renewal") && !x509_is_self_signed(&cert) &&
+           expiring(&cert, pollSeconds)) {
+            uac_info("the certificate expires soon: renewing");
+            updateRequired = true;
+        }
 
         if(updateRequired && is_mutant("use-newkeypair")) {
             uac_step("StartNewKeyPairRequest (MUTANT: the GDS would make our private key)");
@@ -1284,6 +1397,25 @@ int main(int argc, char **argv) {
             updated = *(const UA_DateTime *)v.data;
         UA_Variant_clear(&v);
         UA_NodeId_clear(&lut);
+        /* 12 §7.8.2.1 UpdateFrequency: how often to check (the own schedule) */
+        long ufMs = 0;
+        char up[GDS_MAX_PATH];
+        if(uac_find_child(client, tlId, "UpdateFrequency", &lut) == UA_STATUSCODE_GOOD &&
+           UA_Client_readValueAttribute(client, lut, &v) == UA_STATUSCODE_GOOD &&
+           (UA_Variant_hasScalarType(&v, &UA_TYPES[UA_TYPES_DURATION]) ||
+            UA_Variant_hasScalarType(&v, &UA_TYPES[UA_TYPES_DOUBLE])) &&
+           *(const UA_Double *)v.data >= 1000.0 && *(const UA_Double *)v.data <= 86400000.0)
+            ufMs = (long)*(const UA_Double *)v.data;
+        UA_Variant_clear(&v);
+        UA_NodeId_clear(&lut);
+        if(pki_file(pki, "update-frequency-ms", up, sizeof(up)) == GDS_OK) {
+            char num[24];
+            int n = snprintf(num, sizeof(num), "%ld", ufMs);
+            if(ufMs == 0)
+                (void)unlink(up);
+            else if(n > 0 && gds_file_write_atomic(up, (const uint8_t *)num, (size_t)n, 0644) != GDS_OK)
+                uac_info("could not keep UpdateFrequency");
+        }
     }
     if(updated && trustlist_unchanged(pki, updated) && !is_mutant("always-download")) {
         uac_info("trust list unchanged since the last download: skipped");
