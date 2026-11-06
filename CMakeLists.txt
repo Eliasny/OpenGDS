@@ -40,6 +40,7 @@ add_subdirectory(src/server)
 add_subdirectory(src/client)
 add_subdirectory(src/push)
 add_subdirectory(tests/unit)
+add_subdirectory(examples)
 
 if(OPENGDS_BUILD_AUDITOR)
     add_subdirectory(tools/auditor)
