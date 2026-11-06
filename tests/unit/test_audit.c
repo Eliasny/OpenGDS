@@ -352,7 +352,7 @@ static void serve(gds_server *s, gds_store *st, UA_ByteString *cert, UA_UInt16 p
     pthread_t loop;
     if(CHECK(pthread_create(&loop, NULL, loop_main, ua) == 0)) {
         char url[64];
-        (void)snprintf(url, sizeof(url), "opc.tcp://localhost:%u", (unsigned)port);
+        (void)snprintf(url, sizeof(url), "opc.tcp://127.0.0.1:%u", (unsigned)port);
         run_clients(s, st, ns, cert, url);
         __atomic_store_n(&running, 0, __ATOMIC_SEQ_CST);
         (void)pthread_join(loop, NULL);
@@ -394,7 +394,6 @@ int main(int argc, char **argv) {
 
     gds_server_config cfg = {0};
     cfg.port = (UA_UInt16)(44000 + getpid() % 2000);
-    cfg.hostname = "localhost";
     cfg.loopbackOnly = true;
     cfg.applicationUri = TEST_URI;
     cfg.productUri = "urn:opengds:test";
