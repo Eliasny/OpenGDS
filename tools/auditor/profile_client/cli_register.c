@@ -1,8 +1,10 @@
 /* OpenGDS Auditor client profile - Registration (CLI-REG-*).
  * Rows of docs/auditor/client-profile.md, "Registration (cli_register.c)".
- * CLI-REG-03 (GetEndpoints on the DiscoveryUrls) and CLI-REG-05 (prompted
- * credentials) come with the probe server and the operator hook.
+ * CLI-REG-05 (prompted credentials) comes with the operator hook.
  * SPDX-License-Identifier: MPL-2.0 */
+#include <open62541/client.h>
+#include <open62541/client_config_default.h>
+
 #include <string.h>
 
 #include "client_profile.h"
@@ -87,9 +89,75 @@ static void t_reg_again(ga_ctx *ctx, void *profile) {
         ga_pass(ctx, "registered again without an error");
 }
 
+/* GetEndpoints on one DiscoveryUrl: the ApplicationUri the Server states
+ * in its endpoints (copied to `uri`), or an error */
+static UA_StatusCode endpoints_uri(const char *url, char *uri, size_t uriLen, size_t *mismatched,
+                                   const char *want) {
+    UA_Client *c = UA_Client_new();
+    if(!c)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    UA_ClientConfig *cc = UA_Client_getConfig(c);
+    cc->timeout = 5000;
+    size_t n = 0;
+    UA_EndpointDescription *eps = NULL;
+    UA_StatusCode r = UA_Client_getEndpoints(c, url, &n, &eps);
+    *mismatched = 0;
+    uri[0] = '\0';
+    for(size_t i = 0; r == UA_STATUSCODE_GOOD && i < n; i++) {
+        const UA_String *u = &eps[i].server.applicationUri;
+        bool same = u->length == strlen(want) && memcmp(u->data, want, u->length) == 0;
+        if(!same && (*mismatched)++ == 0) {
+            size_t k = u->length < uriLen - 1 ? u->length : uriLen - 1;
+            if(k)
+                memcpy(uri, u->data, k);
+            uri[k] = '\0';
+        }
+    }
+    if(r == UA_STATUSCODE_GOOD && n == 0)
+        r = UA_STATUSCODE_BADNOTFOUND;
+    UA_Array_delete(eps, n, &UA_TYPES[UA_TYPES_ENDPOINTDESCRIPTION]);
+    UA_Client_delete(c);
+    return r;
+}
+
+/* CLI-REG-03: every DiscoveryUrl of a ClientAndServer record answers
+ * GetEndpoints with the record's ApplicationUri (12 §6.5.5) */
+static void t_reg_urls(ga_ctx *ctx, void *profile) {
+    const fg_event *ev = base_register(profile, ctx);
+    if(!ev)
+        return;
+    if(ev->appType != UA_APPLICATIONTYPE_CLIENTANDSERVER || ev->discoveryUrlsN == 0) {
+        ga_not_supported(ctx, "registered as %s without a DiscoveryUrl: nothing to call",
+                         type_name(ev->appType));
+        return;
+    }
+    size_t n = ev->discoveryUrlsN < FG_MAX_DURLS ? ev->discoveryUrlsN : FG_MAX_DURLS;
+    if(n < ev->discoveryUrlsN)
+        ga_note(ctx, "%zu DiscoveryUrls; the first %d are called", ev->discoveryUrlsN, FG_MAX_DURLS);
+    size_t silent = 0;
+    for(size_t i = 0; i < n; i++) {
+        char other[FG_MAX_URI];
+        size_t bad = 0;
+        UA_StatusCode r = endpoints_uri(ev->discoveryUrls[i], other, sizeof(other), &bad, ev->appUri);
+        if(r != UA_STATUSCODE_GOOD) {
+            ga_note(ctx, "%s: GetEndpoints -> %s", ev->discoveryUrls[i], UA_StatusCode_name(r));
+            silent++;
+        } else if(bad) {
+            ga_fail(ctx, "%s answers as %s, the record says %s", ev->discoveryUrls[i], other,
+                    ev->appUri);
+            return;
+        }
+    }
+    if(silent)
+        ga_warn(ctx, "%zu of %zu DiscoveryUrl(s) did not answer GetEndpoints", silent, n);
+    else
+        ga_pass(ctx, "%zu DiscoveryUrl(s) answer GetEndpoints as %s", n, ev->appUri);
+}
+
 const ga_test cli_register_tests[] = {
     {"CLI-REG-01", "12 §6.5.5, §6.5.6; 6 §6.2.2", "ApplicationUri of the record matches the certificate", false, true, t_reg_uri},
     {"CLI-REG-02", "12 §6.5.5", "ApplicationType matches what the application is", false, true, t_reg_type},
+    {"CLI-REG-03", "12 §6.5.5", "Every DiscoveryUrl answers with the record's ApplicationUri", false, true, t_reg_urls},
     {"CLI-REG-04", "12 §6.5.4, §6.5.6", "A second cycle copes with the existing record", false, true, t_reg_again},
 };
 const size_t cli_register_count = GDS_ARRAY_SIZE(cli_register_tests);

@@ -2,12 +2,12 @@
 # the verdict. The empty mutant "-" is the good client in a role a mutant
 # needs (registered as ClientAndServer), so the Pass path is pinned too.
 # mutant,test,verdict,extra pull_test_client options
--,CLI-CSR-05,pass,--discovery-url opc.tcp://localhost:4855
+-,CLI-CSR-05,pass,--discovery-url opc.tcp://localhost:4857
 csr-bad-signature,CLI-CSR-01,fail,
 csr-wrong-uri,CLI-CSR-02,fail,
 csr-weak-key,CLI-CSR-03,fail,
 csr-unlisted-type,CLI-CSR-04,fail,
-csr-no-dns,CLI-CSR-05,fail,--discovery-url opc.tcp://localhost:4855
+csr-no-dns,CLI-CSR-05,fail,--discovery-url opc.tcp://localhost:4857
 csr-reuse-key,CLI-CSR-06,warn,
 leak-private-key,CLI-CSR-07,fail,
 csr-retry-storm,CLI-CSR-08,warn,
@@ -52,3 +52,5 @@ no-call-timeout,CLI-FLT-07,warn
 install-no-chain,CLI-INS-02,warn
 install-in-ram,CLI-INS-03,fail
 pending-forget,CLI-PEN-04,warn
+-,CLI-REG-03,pass,--discovery-url opc.tcp://localhost:4857
+register-bad-url,CLI-REG-03,fail,--discovery-url opc.tcp://localhost:4857

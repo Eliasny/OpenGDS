@@ -196,8 +196,8 @@ static void note_app(fg_event *ev, const fg_app *a) {
     copy_uri(ev->appUri, &a->rec.applicationUri);
     ev->appType = a->rec.applicationType;
     ev->discoveryUrlsN = a->rec.discoveryUrlsSize;
-    if(a->rec.discoveryUrlsSize > 0)
-        copy_uri(ev->discoveryUrl0, &a->rec.discoveryUrls[0]);
+    for(size_t i = 0; i < a->rec.discoveryUrlsSize && i < FG_MAX_DURLS; i++)
+        copy_uri(ev->discoveryUrls[i], &a->rec.discoveryUrls[i]);
 }
 
 /* Keep every ByteString and String argument for the private key scan. */

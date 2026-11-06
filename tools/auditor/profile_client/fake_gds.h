@@ -38,6 +38,7 @@ typedef enum {
 const char *fg_method_name(fg_method m);
 
 #define FG_MAX_URI 256
+#define FG_MAX_DURLS 4
 #define FG_NO_SESSION ((size_t)-1)
 
 typedef enum { FG_TOKEN_ANONYMOUS = 0, FG_TOKEN_USERNAME, FG_TOKEN_X509, FG_TOKEN_OTHER } fg_token;
@@ -95,7 +96,7 @@ typedef struct {
     char appUri[FG_MAX_URI]; /* ApplicationUri of the record the call names ("" if none) */
     UA_ApplicationType appType;
     size_t discoveryUrlsN;
-    char discoveryUrl0[FG_MAX_URI];
+    char discoveryUrls[FG_MAX_DURLS][FG_MAX_URI]; /* the first FG_MAX_DURLS of them */
     gds_buf csr;            /* StartSigningRequest: CertificateRequest exactly as sent */
     UA_NodeId group;        /* CertificateGroupId argument (Sign, NewKeyPair) */
     UA_NodeId certType;     /* CertificateTypeId argument (Sign, NewKeyPair) */

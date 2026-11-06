@@ -18,7 +18,8 @@
  *   pull_test_client --gds opc.tcp://localhost:4850 --pki ./pki-pull \
  *       --trust gds-ca.der [--crl gds-ca.crl] --user registrar \
  *       (--password-file FILE | --password P) [--app-uri urn:...] [--poll-seconds 60]
- *       [--discovery-url opc.tcp://host:port]   (register as ClientAndServer)
+ *       [--discovery-url opc.tcp://host:port]   (register as ClientAndServer; with
+ *       --from-env a small Server answers on that URL while gdsaudit runs)
  *   pull_test_client --from-env [--break MUTANT]  (as the trigger of `gdsaudit client`)
  *
  * --from-env takes the GDS, its CA and CRL, the user, the password file and
@@ -33,12 +34,16 @@
 #include <open62541/plugin/create_certificate.h>
 #include <open62541/plugin/log_stdout.h>
 #include <open62541/plugin/securitypolicy_default.h>
+#include <open62541/server_config_default.h>
 #include <open62541/types_gds_generated.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <openssl/crypto.h>
@@ -73,7 +78,7 @@ static const char *const mutants[] = {
     "no-gds-uri-check",   "use-sign-only",       "prefer-deprecated",  "ignore-crls",
     "parse-garbage",      "no-length-check",     "reconnect-storm",    "install-partial-trustlist",
     "pending-stuck-invalid", "no-call-timeout", "install-no-chain", "install-in-ram",
-    "pending-forget"};
+    "pending-forget",     "register-bad-url"};
 
 static bool is_mutant(const char *name) {
     return mutant && strcmp(mutant, name) == 0;
@@ -95,6 +100,22 @@ static void url_host(const char *url, char *out, size_t outLen) {
         n = outLen - 1;
     memcpy(out, h, n);
     out[n] = '\0';
+}
+
+/* The port of "opc.tcp://host:port[/path]", 0 if there is none */
+static long url_port(const char *url) {
+    const char *h = strstr(url, "://");
+    h = h ? h + 3 : url;
+    if(h[0] == '[')
+        h += strcspn(h, "]");
+    const char *c = strchr(h, ':');
+    char num[8] = {0};
+    size_t n = c ? strspn(c + 1, "0123456789") : 0;
+    long port = 0;
+    if(n == 0 || n >= sizeof(num))
+        return 0;
+    memcpy(num, c + 1, n);
+    return gds_parse_long(num, 1, 65535, &port) ? port : 0;
 }
 
 static bool is_loopback(const char *url) {
@@ -435,6 +456,90 @@ static void clear_pending(const char *pki) {
         (void)unlink(ip);
     if(pki_file(pki, "pending/key.der", kp, sizeof(kp)) == GDS_OK)
         (void)unlink(kp);
+}
+
+/* --discovery-url with --from-env: this client also serves. A child
+ * process answers GetEndpoints on the DiscoveryUrl (12 §6.5.5) as long as
+ * gdsaudit (the parent of this trigger) runs, at most 15 minutes. One per
+ * PKI directory; the mutant register-bad-url serves another ApplicationUri. */
+#define SERVE_MAX_SECONDS 900
+static volatile sig_atomic_t serveRunning = true;
+static void serve_stop(int sig) {
+    (void)sig;
+    serveRunning = false;
+}
+
+static int serve_child(long port, const gds_buf *cert, const gds_buf *key, pid_t watch) {
+    UA_Server *srv = UA_Server_new();
+    UA_ServerConfig *c = srv ? UA_Server_getConfig(srv) : NULL;
+    UA_ByteString uc = {cert->len, cert->data}, uk = {key->len, key->data};
+    if(!c || UA_ServerConfig_setDefaultWithSecurityPolicies(c, (UA_UInt16)port, &uc, &uk, NULL, 0,
+                                                            NULL, 0, NULL, 0) != UA_STATUSCODE_GOOD) {
+        UA_Server_delete(srv);
+        return 1;
+    }
+    const char *uri = is_mutant("register-bad-url") ? "urn:opengds:test:another-server" : appUri;
+    UA_String_clear(&c->applicationDescription.applicationUri);
+    c->applicationDescription.applicationUri = UA_STRING_ALLOC(uri);
+    c->applicationDescription.applicationType = UA_APPLICATIONTYPE_CLIENTANDSERVER;
+    for(size_t i = 0; i < c->endpointsSize; i++) {
+        UA_String_clear(&c->endpoints[i].server.applicationUri);
+        (void)UA_String_copy(&c->applicationDescription.applicationUri,
+                             &c->endpoints[i].server.applicationUri);
+    }
+    signal(SIGTERM, serve_stop);
+    signal(SIGINT, serve_stop);
+    time_t end = time(NULL) + SERVE_MAX_SECONDS;
+    UA_StatusCode r = UA_Server_run_startup(srv);
+    while(r == UA_STATUSCODE_GOOD && serveRunning && time(NULL) < end && kill(watch, 0) == 0)
+        UA_Server_run_iterate(srv, true);
+    if(r == UA_STATUSCODE_GOOD)
+        UA_Server_run_shutdown(srv);
+    UA_Server_delete(srv);
+    return r == UA_STATUSCODE_GOOD ? 0 : 1;
+}
+
+static void serve_discovery(const char *pki, const char *url, const gds_buf *cert,
+                            const gds_buf *key) {
+    long port = url_port(url);
+    char pp[GDS_MAX_PATH];
+    if(port == 0 || gds_path(pp, sizeof(pp), "%s/serve.pid", pki) != GDS_OK)
+        return;
+    gds_buf old = {0};
+    long pid = 0;
+    if(gds_file_read(pp, 32, &old) == GDS_OK && old.len < 16) {
+        char num[16] = {0};
+        memcpy(num, old.data, old.len);
+        if(gds_parse_long(num, 2, 0x7fffffffL, &pid) && kill((pid_t)pid, 0) == 0) {
+            gds_buf_free(&old);
+            return; /* already serving */
+        }
+    }
+    gds_buf_free(&old);
+    pid_t watch = getppid();
+    fflush(NULL);
+    pid_t child = fork();
+    if(child < 0)
+        return;
+    if(child > 0) {
+        char num[16];
+        int n = snprintf(num, sizeof(num), "%ld", (long)child);
+        if(n > 0 && gds_file_write_atomic(pp, (const uint8_t *)num, (size_t)n, 0600) != GDS_OK)
+            uac_info("could not record the server process");
+        uac_info("serving %s (pid %ld)", url, (long)child);
+        return;
+    }
+    /* the child: off the trigger's log and process group */
+    (void)setsid();
+    int nul = open("/dev/null", O_RDWR);
+    if(nul >= 0) {
+        (void)dup2(nul, STDIN_FILENO);
+        (void)dup2(nul, STDOUT_FILENO);
+        (void)dup2(nul, STDERR_FILENO);
+        if(nul > STDERR_FILENO)
+            (void)close(nul);
+    }
+    exit(serve_child(port, cert, key, watch));
 }
 
 /* install-in-ram: the certificate before the install, as if the new one
@@ -889,6 +994,8 @@ int main(int argc, char **argv) {
         return failg("own identity", gs);
     if((gs = presented_chain(pki, &cert, &sent)) != GDS_OK)
         return failg("own certificate chain", gs);
+    if(fromEnv && discoveryUrl)
+        serve_discovery(pki, discoveryUrl, &cert, &key);
     for(size_t i = 0; i < trustN; i++)
         if((gs = gds_file_read(trustFiles[i], GDS_MAX_CERT_SIZE, &trust[i])) != GDS_OK)
             return failg(trustFiles[i], gs);
