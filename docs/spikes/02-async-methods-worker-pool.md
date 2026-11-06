@@ -10,7 +10,7 @@ The architecture ([Threads and ownership](../architecture.md#threads-and-ownersh
 
 **The async Call API does what we need, but only with one completion pattern.** The pattern from the upstream tutorial, moved onto a worker thread, deadlocks; the spike reproduces that every time. The safe pattern is: workers never touch open62541 memory and never hold one of our locks while calling into open62541; results are handed back to the server thread, which writes the output and completes the call.
 
-The spike also changes how much needs to be async at all: Part 12 is already asynchronous by protocol (StartSigningRequest / StartNewKeyPairRequest return a request id, FinishRequest returns `Bad_NothingToDo` until the result exists), so signing and key generation do not have to happen inside a method call.
+The spike also changes how much needs to be async at all: Part 12 is already asynchronous by protocol (StartSigningRequest / StartNewKeyPairRequest return a request id, FinishRequest returns `Bad_NothingToDo` until the result exists), so signing and key generation do not have to happen inside a method call. Elias decided (6 Nov 2026) that they run as a background job (G7).
 
 ## What was measured
 
@@ -84,7 +84,7 @@ deadlock:UA_Timer_process
 | `docs/architecture.md`, Threads and ownership | Add: "No lock of ours is held across any call into open62541. Async results are completed on the server thread; workers never see the output pointer. The cancel callback runs under the server lock and takes no lock." |
 | `src/common/threadpool.c` | The handoff pattern above; queue of 256 that refuses with `Bad_ServerTooBusy` (D2); per-job deadline min(`timeoutHint`, 30 s) (D1); shutdown order as above. |
 | `src/server/gds_config.c` | `asyncOperationTimeout = 30000` (D1); `maxAsyncOperationQueueSize = 257` as a backstop above our queue of 256 (D2). |
-| `src/server/gds_certmgr.c` | StartSigningRequest / StartNewKeyPairRequest validate and store the request (synchronous, about a millisecond), return the request id, and queue signing or key generation as a background job, not as an async method call. FinishRequest reads the store. A disconnect then loses nothing, because the result is in the store, and no call ties up a session while the signer works. Async method calls stay for calls that must answer with a slow result (for example UpdateCertificate push work on a managed server). |
+| `src/server/gds_certmgr.c` | Decided (Elias, G7). StartSigningRequest / StartNewKeyPairRequest validate and store the request (synchronous, about a millisecond), return the request id, and queue signing or key generation as a background job, not as an async method call. FinishRequest reads the store. A disconnect then loses nothing, because the result is in the store, and no call ties up a session while the signer works. Async method calls stay for calls that must answer with a slow result (for example UpdateCertificate push work on a managed server). |
 | CI | `tsan.supp` as above for the `tsan` job, with a comment naming the open62541 version, so it is re-checked when the pin moves. |
 | Tests | Timeout, Cancel, disconnect mid-call, queue full and shutdown with calls in flight, each under TSan and ASan. |
 
