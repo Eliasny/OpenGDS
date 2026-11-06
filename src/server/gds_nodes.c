@@ -73,7 +73,8 @@ bool gds_node_call_allowed(gds_server *s, const void *sessionContext, const UA_N
         return true;
     if(!ss)
         return allowed(s, nodeId, 0, true, UA_PERMISSIONTYPE_CALL);
-    return allowed(s, nodeId, ss->roles, ss->anonymous, UA_PERMISSIONTYPE_CALL);
+    return allowed(s, nodeId, gds_session_roles(ss), gds_session_anonymous(ss),
+                   UA_PERMISSIONTYPE_CALL);
 }
 
 bool gds_caller_permitted(gds_server *s, const gds_caller *c, const UA_NodeId *nodeId,

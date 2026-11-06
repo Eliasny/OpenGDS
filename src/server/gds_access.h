@@ -81,6 +81,7 @@ GDS_MUST_CHECK gds_status gds_access_check_users(void);
 #define GDS_PBKDF2_DEFAULT_ITER 100000
 #define GDS_MAX_USERS 64
 #define GDS_MAX_USER_NAME 64
+#define GDS_X509_THUMBPRINT 32 /* SHA-256 of the DER certificate */
 
 typedef struct {
     char name[GDS_MAX_USER_NAME + 1];
@@ -90,6 +91,11 @@ typedef struct {
      * one names no Role. */
     char embedRoles[GDS_MAX_EMBED_ROLES][GDS_MAX_ROLE_NAME + 1];
     size_t nEmbedRoles;
+    /* x509: the user signs in with an X509IdentityToken (UASM ask A11)
+     * whose certificate has this SHA-256 thumbprint, never with a
+     * password. */
+    bool x509;
+    uint8_t thumbprint[GDS_X509_THUMBPRINT];
     uint32_t iterations;
     uint8_t salt[GDS_PBKDF2_SALT];
     uint8_t hash[GDS_PBKDF2_HASH];
@@ -102,6 +108,11 @@ typedef struct {
 
 /* Users file: one user per line, '#' comments:
  *   <name> <Role[,Role...]|-> pbkdf2-sha256:<iterations>:<salt hex>:<hash hex>
+ *   <name> <Role[,Role...]|-> x509-sha256:<thumbprint hex>
+ * The second form is a user certificate (X509IdentityToken, OPC 10000-4
+ * §7.40.5), named by the SHA-256 of its DER encoding: a Thumbprint
+ * identity criterion in the sense of OPC 10000-18 §4.4.4. One certificate
+ * names one user.
  * Roles: the names in gds_role_table (DiscoveryAdmin, SecurityAdmin,
  * SecurityKeyServerAdmin, ...) and embedder Role names, which are checked
  * when the server starts (gds_server_add_role may come after this load).
@@ -113,6 +124,8 @@ GDS_MUST_CHECK gds_status gds_password_hash(const uint8_t *pw, size_t len, uint3
                                             char *out, size_t outLen);
 /* NULL if unknown or wrong; constant time in the password. */
 const gds_user *gds_users_check(const gds_users *u, const UA_String *name, const UA_ByteString *pw);
+/* The x509 user of this DER certificate; NULL if none. */
+const gds_user *gds_users_check_cert(const gds_users *u, const UA_ByteString *certDer);
 
 /* Per-session state, the open62541 session context. */
 #define GDS_SESSION_TL_HANDLES GDS_MAX_TL_HANDLES
@@ -126,6 +139,9 @@ typedef struct {
     bool anonymous;
     char user[GDS_MAX_USER_NAME + 1];
     unsigned roles;
+    /* For an X.509 user: the certificate's notAfter. Once it passes, the
+     * session keeps only the Anonymous Role (OPC 10000-4 §7.40.5). */
+    UA_DateTime notAfter;
     UA_String clientAppUri; /* SAN URI of the channel's client certificate */
     UA_MessageSecurityMode securityMode; /* of the session's endpoint */
     UA_String securityPolicyUri;
@@ -133,20 +149,32 @@ typedef struct {
 } gds_session;
 
 /* Replace config->accessControl: anonymous and user name tokens over
- * encrypted channels only; sessionContext becomes a gds_session. The users
- * table must outlive the server. caCertDer is the GDS CA: only a client
+ * encrypted channels only, and X509IdentityTokens when x509Users is set
+ * (config->sessionPKI then validates the user certificates); sessionContext
+ * becomes a gds_session. The users table must outlive the server. caCertDer is the GDS CA: only a client
  * certificate it issued gives a session the application's own rights.
  * One GDS server per process. */
 GDS_MUST_CHECK gds_status gds_access_install(UA_ServerConfig *config, const gds_users *users,
-                                             const gds_buf *caCertDer);
+                                             const gds_buf *caCertDer, bool x509Users);
 void gds_access_uninstall(void);
 
 static inline const gds_session *gds_session_get(const void *sessionContext) {
     return (const gds_session *)sessionContext;
 }
+/* The user token has expired (an X.509 user past its notAfter): the
+ * session counts as anonymous. */
+static inline bool gds_session_expired(const gds_session *s) {
+    return s && s->notAfter != 0 && UA_DateTime_now() > s->notAfter;
+}
+static inline bool gds_session_anonymous(const gds_session *s) {
+    return !s || s->anonymous || gds_session_expired(s);
+}
+/* The granted Roles that are in force now. */
+static inline unsigned gds_session_roles(const gds_session *s) {
+    return gds_session_anonymous(s) ? 0u : s->roles;
+}
 static inline bool gds_session_has(const void *sessionContext, unsigned roles) {
-    const gds_session *s = sessionContext;
-    return s && (s->roles & roles) != 0;
+    return (gds_session_roles(sessionContext) & roles) != 0;
 }
 /* The application itself (ApplicationSelfAdmin, OPC 10000-12 §7.2): the
  * session's client certificate carries this ApplicationUri. */
