@@ -2,7 +2,7 @@
  * privilege"). opengdsd fills it with ca_ipc (forwarding to opengds-signer);
  * the signer fills it with ca_openssl or a plugin (UASM ceremony CA, HSM).
  *
- * Rules every backend keeps (decision G5, OPC 10000-12 §7.9.4):
+ * Rules every backend keeps (decision G5, OPC 10000-12 §7.9.3):
  * - every certificate field comes from the registered record; the CSR gives
  *   only its public key, after its signature (proof of possession) checks;
  * - the CA private key never leaves the backend.

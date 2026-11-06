@@ -83,7 +83,7 @@ jobs:
         if: always()
         run: |
           for f in reference.tap verdicts.csv server.log; do
-            echo "::group::$f"; cat "${{ runner.temp }}/ref-run/$f" 2>/dev/null; echo "::endgroup::"
+            echo "::group::$f"; cat "${{ runner.temp }}/ref-run/$f" 2>/dev/null || true; echo "::endgroup::"
           done
       - name: Upload the verdicts
         if: always()

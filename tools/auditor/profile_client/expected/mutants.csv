@@ -35,3 +35,10 @@ install-unverified,CLI-FLT-03,fail,
 install-wrong-key,CLI-FLT-04,fail,
 install-wrong-uri,CLI-FLT-05,fail,
 install-expired,CLI-FLT-06,fail,
+send-password-untrusted,CLI-TRU-01,fail
+trust-any-gds,CLI-TRU-02,fail
+ignore-gds-crl,CLI-TRU-03,fail
+accept-expired-gds,CLI-TRU-04,warn
+no-gds-uri-check,CLI-TRU-05,fail
+use-sign-only,CLI-TRU-06,fail
+prefer-deprecated,CLI-TRU-07,warn

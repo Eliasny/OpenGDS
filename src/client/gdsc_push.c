@@ -270,6 +270,18 @@ static bool tl_within_limits(const UA_TrustListDataType *t) {
            t->issuerCrlsSize <= GDS_MAX_TRUSTLIST_ENTRIES;
 }
 
+UA_StatusCode gdsc_trustlist_decode(const UA_ByteString *file, UA_TrustListDataType *out) {
+    UA_TrustListDataType_init(out);
+    if(file->length > GDS_MAX_TRUSTLIST_SIZE)
+        return UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
+    UA_StatusCode r = UA_decodeBinary(file, out, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], NULL);
+    if(r == UA_STATUSCODE_GOOD && !tl_within_limits(out))
+        r = UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
+    if(r != UA_STATUSCODE_GOOD)
+        UA_TrustListDataType_clear(out);
+    return r;
+}
+
 UA_StatusCode gdsc_trustlist_read(UA_Client *c, const UA_NodeId *trustList,
                                   UA_TrustListDataType *out) {
     UA_TrustListDataType_init(out);
@@ -286,11 +298,7 @@ UA_StatusCode gdsc_trustlist_read(UA_Client *c, const UA_NodeId *trustList,
     }
     if(r == UA_STATUSCODE_GOOD) {
         UA_ByteString file = {acc.len, acc.data};
-        r = UA_decodeBinary(&file, out, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], NULL);
-        if(r == UA_STATUSCODE_GOOD && !tl_within_limits(out))
-            r = UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
-        if(r != UA_STATUSCODE_GOOD)
-            UA_TrustListDataType_clear(out);
+        r = gdsc_trustlist_decode(&file, out);
     }
     gds_buf_free(&acc);
     tl_methods_clear(&m);

@@ -11,9 +11,23 @@ target_link_libraries(test_signer PRIVATE gds_signer gds_ca_ipc)
 add_test(NAME unit_signer COMMAND test_signer "${CMAKE_CURRENT_BINARY_DIR}/signer-run")
 add_test(NAME signer_refuses_bad_args COMMAND opengds-signer --fd 0)
 set_tests_properties(signer_refuses_bad_args PROPERTIES WILL_FAIL TRUE)
+# --fd and --listen are exclusive; --listen takes an absolute path
+add_test(NAME signer_refuses_fd_and_listen
+         COMMAND opengds-signer --fd 0 --listen /tmp/x.sock --store /x --ca-dir /x)
+add_test(NAME signer_refuses_relative_listen
+         COMMAND opengds-signer --listen x.sock --store /x --ca-dir /x)
+set_tests_properties(signer_refuses_fd_and_listen signer_refuses_relative_listen
+                     PROPERTIES PASS_REGULAR_EXPRESSION "usage: opengds-signer")
 add_executable(test_server test_server.c)
 target_link_libraries(test_server PRIVATE gds_server)
 add_test(NAME unit_server COMMAND test_server "${CMAKE_CURRENT_BINARY_DIR}/server-run")
+add_executable(test_daemon_config test_daemon_config.c)
+target_link_libraries(test_daemon_config PRIVATE gds_daemon)
+add_test(NAME unit_daemon_config COMMAND test_daemon_config)
+add_test(NAME gdsadm_refuses_bad_args COMMAND gdsadm apps list)
+set_tests_properties(gdsadm_refuses_bad_args PROPERTIES WILL_FAIL TRUE)
+add_test(NAME opengdsd_refuses_bad_args COMMAND opengdsd)
+set_tests_properties(opengdsd_refuses_bad_args PROPERTIES WILL_FAIL TRUE)
 add_executable(test_plugin_abi test_plugin_abi.c)
 target_link_libraries(test_plugin_abi PRIVATE gds_server)
 add_test(NAME unit_plugin_abi COMMAND test_plugin_abi "${CMAKE_CURRENT_BINARY_DIR}/plugin-run")
@@ -27,3 +41,12 @@ add_test(NAME unit_embed COMMAND test_embed "${CMAKE_CURRENT_BINARY_DIR}/embed-r
 add_executable(test_store_slot test_store_slot.c)
 target_link_libraries(test_store_slot PRIVATE gds_server)
 add_test(NAME unit_store_slot COMMAND test_store_slot "${CMAKE_CURRENT_BINARY_DIR}/slot-run")
+
+add_executable(test_audit test_audit.c)
+target_link_libraries(test_audit PRIVATE gds_server)
+add_test(NAME unit_audit COMMAND test_audit "${CMAKE_CURRENT_BINARY_DIR}/audit-run")
+set_tests_properties(unit_audit PROPERTIES TIMEOUT 120)
+
+add_executable(test_runtime_nodes test_runtime_nodes.c)
+target_link_libraries(test_runtime_nodes PRIVATE gds_server)
+add_test(NAME unit_runtime_nodes COMMAND test_runtime_nodes "${CMAKE_CURRENT_BINARY_DIR}/runtime-run")
