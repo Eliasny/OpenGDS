@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "common/limits.h"
 #include "common/banned.h"
 
 struct gds_ca {
@@ -69,4 +70,12 @@ gds_status gds_ca_get_ca_cert(gds_ca *ca, gds_buf *out) {
 gds_status gds_ca_get_crl(gds_ca *ca, gds_buf *out) {
     memset(out, 0, sizeof(*out));
     return ca->b.get_crl(ca->ctx, out);
+}
+
+gds_status gds_ca_revoke(gds_ca *ca, const gds_buf *serial) {
+    if(!serial || !serial->data || serial->len == 0 || serial->len > GDS_MAX_SERIAL_SIZE)
+        return GDS_EINVAL;
+    if(!ca->b.revoke)
+        return GDS_EUNSUPPORTED;
+    return ca->b.revoke(ca->ctx, serial);
 }

@@ -3,6 +3,7 @@
  * applications can check revocation (OPC 10000-12 TrustList, OPC 10000-4
  * certificate validation).
  * SPDX-License-Identifier: MPL-2.0 */
+#include <openssl/bn.h>
 #include <openssl/x509v3.h>
 
 #include <string.h>
@@ -37,8 +38,47 @@ static gds_status crl_extensions(ossl_ca *c, X509_CRL *crl, long number) {
     return r;
 }
 
-/* A new CRL with number `number`; revoked entries are added in T2 (REVOKE). */
-static gds_status issue_crl(ossl_ca *c, long number, X509_CRL **out) {
+/* A revoked entry for serial, dated now. */
+static gds_status new_entry(const gds_buf *serial, time_t now, X509_REVOKED **out) {
+    *out = NULL;
+    X509_REVOKED *e = X509_REVOKED_new();
+    BIGNUM *bn = BN_bin2bn(serial->data, (int)serial->len, NULL);
+    ASN1_INTEGER *num = bn ? BN_to_ASN1_INTEGER(bn, NULL) : NULL;
+    ASN1_TIME *when = ASN1_TIME_new();
+    gds_status r = GDS_ECRYPTO;
+    if(e && num && when && ASN1_TIME_set(when, now) &&
+       X509_REVOKED_set_serialNumber(e, num) == 1 &&
+       X509_REVOKED_set_revocationDate(e, when) == 1) {
+        *out = e;
+        e = NULL;
+        r = GDS_OK;
+    }
+    X509_REVOKED_free(e);
+    BN_free(bn);
+    ASN1_INTEGER_free(num);
+    ASN1_TIME_free(when);
+    return r;
+}
+
+/* Copy every entry of prev (if any) into crl. Entries are kept until the
+ * CA is replaced: a revoked certificate stays on the CRL for its lifetime,
+ * and the CA does not know when each one expires. */
+static gds_status copy_entries(X509_CRL *crl, X509_CRL *prev) {
+    STACK_OF(X509_REVOKED) *old = prev ? X509_CRL_get_REVOKED(prev) : NULL;
+    for(int i = 0; i < sk_X509_REVOKED_num(old); i++) {
+        X509_REVOKED *e = X509_REVOKED_dup(sk_X509_REVOKED_value(old, i));
+        if(!e || X509_CRL_add0_revoked(crl, e) != 1) {
+            X509_REVOKED_free(e);
+            return GDS_ECRYPTO;
+        }
+    }
+    return GDS_OK;
+}
+
+/* A new CRL with number `number`, the entries of prev, and add (if not
+ * NULL) as a new entry. */
+static gds_status issue_crl(ossl_ca *c, long number, X509_CRL *prev, X509_REVOKED *add,
+                            X509_CRL **out) {
     *out = NULL;
     X509_CRL *crl = X509_CRL_new();
     ASN1_TIME *last = ASN1_TIME_new(), *next = ASN1_TIME_new();
@@ -49,6 +89,15 @@ static gds_status issue_crl(ossl_ca *c, long number, X509_CRL **out) {
        ASN1_TIME_set(last, now) && ASN1_TIME_set(next, now + (time_t)c->crlDays * DAY_SECONDS) &&
        X509_CRL_set1_lastUpdate(crl, last) == 1 && X509_CRL_set1_nextUpdate(crl, next) == 1)
         r = crl_extensions(c, crl, number);
+    if(r == GDS_OK)
+        r = copy_entries(crl, prev);
+    if(r == GDS_OK && add) {
+        X509_REVOKED *e = X509_REVOKED_dup(add);
+        if(!e || X509_CRL_add0_revoked(crl, e) != 1) {
+            X509_REVOKED_free(e);
+            r = GDS_ECRYPTO;
+        }
+    }
     if(r == GDS_OK && (X509_CRL_sort(crl) != 1 || X509_CRL_sign(crl, c->key, EVP_sha256()) <= 0))
         r = GDS_ECRYPTO;
     ASN1_TIME_free(last);
@@ -61,12 +110,14 @@ static gds_status issue_crl(ossl_ca *c, long number, X509_CRL **out) {
     return GDS_OK;
 }
 
-static gds_status replace_crl(ossl_ca *c, long number) {
+static gds_status replace_crl(ossl_ca *c, long number, X509_REVOKED *add) {
     X509_CRL *crl = NULL;
-    gds_status r = issue_crl(c, number, &crl);
+    gds_status r = issue_crl(c, number, c->crl, add, &crl);
     gds_buf der = {0};
     if(r == GDS_OK)
         r = cax_crl_der(crl, &der);
+    if(r == GDS_OK && der.len > GDS_MAX_CRL_SIZE)
+        r = GDS_ETOOBIG;
     if(r == GDS_OK)
         r = gds_file_write_atomic(c->crlPath, der.data, der.len, 0644);
     gds_buf_free(&der);
@@ -102,7 +153,7 @@ static gds_status load_crl(ossl_ca *c) {
 gds_status ca_ossl_load_or_issue_crl(ossl_ca *c) {
     gds_status r = load_crl(c);
     if(r == GDS_ENOTFOUND)
-        return replace_crl(c, 1);
+        return replace_crl(c, 1, NULL);
     return r;
 }
 
@@ -111,9 +162,25 @@ gds_status ca_ossl_get_crl(void *ctx, gds_buf *out) {
     time_t soon = time(NULL) + DAY_SECONDS;
     const ASN1_TIME *next = X509_CRL_get0_nextUpdate(c->crl);
     if(!next || X509_cmp_time(next, &soon) <= 0) {
-        gds_status r = replace_crl(c, crl_number(c->crl) + 1);
+        gds_status r = replace_crl(c, crl_number(c->crl) + 1, NULL);
         if(r != GDS_OK)
             return r;
     }
     return cax_crl_der(c->crl, out);
+}
+
+gds_status ca_ossl_revoke(void *ctx, const gds_buf *serial) {
+    ossl_ca *c = ctx;
+    X509_REVOKED *e = NULL;
+    gds_status r = new_entry(serial, time(NULL), &e);
+    if(r != GDS_OK)
+        return r;
+    X509_REVOKED *found = NULL;
+    /* already listed: nothing to change (the retry after a failed call) */
+    if(X509_CRL_get0_by_serial(c->crl, &found, X509_REVOKED_get0_serialNumber(e)) == 1)
+        r = GDS_OK;
+    else
+        r = replace_crl(c, crl_number(c->crl) + 1, e);
+    X509_REVOKED_free(e);
+    return r;
 }

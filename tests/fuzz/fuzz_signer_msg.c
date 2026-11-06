@@ -93,17 +93,26 @@ static bool same(const gds_buf *b, const uint8_t *data, size_t size) {
     return b->len == size && (size == 0 || memcmp(b->data, data, size) == 0);
 }
 
+/* A request that decodes re-encodes to the same bytes; *op is the op the
+ * reply carries (SIGN_CSR for a malformed request). */
+static void request_round_trip(const uint8_t *msg, size_t len, gds_sigp_op *op) {
+    UA_Guid id;
+    gds_buf serial = {0}, again = {0};
+    if(gds_sigp_decode_request_ex(msg, len, op, &id, &serial) != GDS_OK) {
+        GDS_ASSERT(!serial.data);
+        *op = GDS_SIGP_SIGN_CSR;
+        return;
+    }
+    GDS_ASSERT((*op == GDS_SIGP_REVOKE ? gds_sigp_encode_revoke(&serial, &again)
+                                       : gds_sigp_encode_request(*op, &id, &again)) == GDS_OK);
+    GDS_ASSERT(same(&again, msg, len));
+    gds_buf_free(&again);
+    gds_buf_free(&serial);
+}
+
 static void fuzz_request(const uint8_t *msg, size_t len) {
     gds_sigp_op op = GDS_SIGP_SIGN_CSR;
-    UA_Guid id;
-    if(gds_sigp_decode_request(msg, len, &op, &id) == GDS_OK) {
-        gds_buf again = {0};
-        GDS_ASSERT(gds_sigp_encode_request(op, &id, &again) == GDS_OK);
-        GDS_ASSERT(same(&again, msg, len));
-        gds_buf_free(&again);
-    } else {
-        op = GDS_SIGP_SIGN_CSR; /* malformed requests are answered as SIGN_CSR */
-    }
+    request_round_trip(msg, len, &op);
     gds_buf reply = {0};
     GDS_ASSERT(gds_signer_handle(&signer, msg, len, &reply) == GDS_OK);
     gds_status st = GDS_OK;
@@ -133,7 +142,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if(size == 0 || size - 1 > GDS_SIGP_MAX_MSG + 1)
         return 0;
     static const gds_sigp_op ops[] = {GDS_SIGP_SIGN_CSR, GDS_SIGP_GET_CHAIN, GDS_SIGP_ISSUE_CRL,
-                                      GDS_SIGP_SIGN_CSR};
+                                      GDS_SIGP_REVOKE};
     if(data[0] & 1u)
         fuzz_reply(ops[(data[0] >> 1) & 3u], data + 1, size - 1);
     else

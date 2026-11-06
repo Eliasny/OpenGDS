@@ -111,6 +111,20 @@ static gds_status rf_req_scan(void *ctx, gds_req_state st, gds_store_req_cb cb, 
     return gds_store_req_scan(R(ctx)->inner, st, cb, cbCtx);
 }
 
+static gds_status rf_cert_revoke(void *ctx, const UA_Guid *appId, const gds_buf *der,
+                                 gds_buf *serial) {
+    return flag(&R(ctx)->refuse) ? no(R(ctx))
+                                 : gds_store_cert_revoke(R(ctx)->inner, appId, der, serial);
+}
+static gds_status rf_cert_revoke_app(void *ctx, const UA_Guid *appId, gds_store_serial_cb cb,
+                                     void *cbCtx) {
+    return flag(&R(ctx)->refuse) ? no(R(ctx))
+                                 : gds_store_cert_revoke_app(R(ctx)->inner, appId, cb, cbCtx);
+}
+static gds_status rf_cert_is_revoked(void *ctx, const gds_buf *serial, bool *revoked) {
+    return gds_store_cert_is_revoked(R(ctx)->inner, serial, revoked);
+}
+
 static const gds_store_backend refusingBackend = {
     GDS_STORE_ABI_MAJOR, GDS_STORE_ABI_MINOR, sizeof(gds_store_backend),
     rf_close, rf_version, rf_app_insert, rf_app_get, rf_app_find_uri, rf_app_update,
@@ -118,6 +132,7 @@ static const gds_store_backend refusingBackend = {
     rf_cert_add, rf_cert_latest,
     NULL, NULL, /* no audit log */
     rf_req_scan,
+    rf_cert_revoke, rf_cert_revoke_app, rf_cert_is_revoked,
 };
 
 static void test_open_backend(void) {

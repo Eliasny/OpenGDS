@@ -336,6 +336,7 @@ static const gds_ca_backend ossl_backend = {
     .get_ca_cert = ossl_get_ca_cert,
     .get_crl = ca_ossl_get_crl,
     .destroy = ossl_destroy,
+    .revoke = ca_ossl_revoke,
 };
 
 gds_status gds_ca_openssl_open(const gds_ca_config *cfg, gds_ca **out) {
