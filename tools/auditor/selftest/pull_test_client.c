@@ -72,7 +72,8 @@ static const char *const mutants[] = {
     "send-password-untrusted", "trust-any-gds",  "ignore-gds-crl",     "accept-expired-gds",
     "no-gds-uri-check",   "use-sign-only",       "prefer-deprecated",  "ignore-crls",
     "parse-garbage",      "no-length-check",     "reconnect-storm",    "install-partial-trustlist",
-    "pending-stuck-invalid", "no-call-timeout", "install-no-chain"};
+    "pending-stuck-invalid", "no-call-timeout", "install-no-chain", "install-in-ram",
+    "pending-forget"};
 
 static bool is_mutant(const char *name) {
     return mutant && strcmp(mutant, name) == 0;
@@ -436,6 +437,53 @@ static void clear_pending(const char *pki) {
         (void)unlink(kp);
 }
 
+/* install-in-ram: the certificate before the install, as if the new one
+ * lived only in memory until a restart */
+static gds_status ram_save(const char *pki) {
+    char d[GDS_MAX_PATH], src[GDS_MAX_PATH], dst[GDS_MAX_PATH];
+    static const char *const files[][2] = {{"own/cert.der", "ram/cert.der"},
+                                           {"own/private/key.der", "ram/key.der"}};
+    gds_status r = pki_file(pki, "ram", d, sizeof(d));
+    if(r == GDS_OK)
+        r = gds_mkdirs(d, 0700);
+    for(size_t i = 0; i < 2 && r == GDS_OK; i++) {
+        gds_buf b = {0};
+        if((r = pki_file(pki, files[i][0], src, sizeof(src))) == GDS_OK &&
+           (r = pki_file(pki, files[i][1], dst, sizeof(dst))) == GDS_OK &&
+           (r = gds_file_read(src, GDS_MAX_CERT_SIZE + GDS_MAX_KEY_SIZE, &b)) == GDS_OK)
+            r = gds_file_write_atomic(dst, b.data, b.len, 0600);
+        gds_buf_free_secret(&b);
+    }
+    return r;
+}
+
+/* GDSAUDIT_ACTION=restart: this client keeps nothing in memory between
+ * runs, so a restart is a no-op; the mutants lose state on it */
+static int restart(const char *pki) {
+    if(is_mutant("pending-forget")) {
+        uac_info("MUTANT: the pending request is lost on restart");
+        clear_pending(pki);
+    }
+    if(is_mutant("install-in-ram")) {
+        static const char *const files[][2] = {{"ram/cert.der", "own/cert.der"},
+                                               {"ram/key.der", "own/private/key.der"}};
+        char src[GDS_MAX_PATH], dst[GDS_MAX_PATH], cp[GDS_MAX_PATH];
+        for(size_t i = 0; i < 2; i++) {
+            gds_buf b = {0};
+            if(pki_file(pki, files[i][0], src, sizeof(src)) == GDS_OK &&
+               pki_file(pki, files[i][1], dst, sizeof(dst)) == GDS_OK &&
+               gds_file_read(src, GDS_MAX_CERT_SIZE + GDS_MAX_KEY_SIZE, &b) == GDS_OK &&
+               gds_file_write_atomic(dst, b.data, b.len, 0600) == GDS_OK)
+                uac_info("MUTANT: %s reverted on restart", files[i][1]);
+            gds_buf_free_secret(&b);
+        }
+        if(pki_file(pki, "own/chain.der", cp, sizeof(cp)) == GDS_OK)
+            (void)unlink(cp);
+    }
+    printf("restarted\n");
+    return 0;
+}
+
 /* The intermediates of IssuerCertificates, sent after our certificate so a
  * peer that trusts only the root can build the chain (4 §6.1.3) */
 static gds_status save_chain(const char *pki, const UA_ByteString *issuers, size_t n) {
@@ -511,6 +559,10 @@ static fin_outcome install(const ptc *x, const UA_Variant *out, size_t outN, con
     char d[512], tp[X509_THUMBPRINT_LEN], cp[GDS_MAX_PATH], kp[GDS_MAX_PATH];
     x509_describe(&nc, d, sizeof(d));
     gds_status gs;
+    if(is_mutant("install-in-ram") && (gs = ram_save(x->pki)) != GDS_OK) {
+        failg("keep the previous certificate", gs);
+        return FIN_ERROR;
+    }
     if((gs = x509_thumbprint(&nc, tp)) != GDS_OK ||
        (gs = pki_file(x->pki, "own/private/key.der", kp, sizeof(kp))) != GDS_OK ||
        (gs = pki_file(x->pki, "own/cert.der", cp, sizeof(cp))) != GDS_OK ||
@@ -813,6 +865,11 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    {
+        const char *act = fromEnv ? getenv("GDSAUDIT_ACTION") : NULL;
+        if(act && !strcmp(act, "restart"))
+            return restart(pki);
+    }
     printf("OpenGDS pull test client (Auditor self-test target)  app=%s  gds=%s\n", appUri, gds);
 
     uac_step("Load identity and the explicitly trusted GDS issuer");

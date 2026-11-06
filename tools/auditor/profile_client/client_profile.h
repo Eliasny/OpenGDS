@@ -61,6 +61,8 @@ GDS_MUST_CHECK bool cli_probe_identity(cli_profile *p, const gds_buf *cert, cons
 void cli_probe_clear(cli_probe_result *r);
 /* The trigger ended by itself and did not crash */
 bool cli_survived(const trig_result *r);
+/* Restart the client through the trigger hook; Not tested when it cannot */
+GDS_MUST_CHECK bool cli_restart(cli_profile *p, ga_ctx *ctx);
 /* true if `presented` (a chain as sent) begins with exactly `cert` */
 bool cli_cert_is(const gds_buf *presented, const gds_buf *cert);
 /* The last valid certificate the fake GDS issued (FinishRequest Good), or NULL */

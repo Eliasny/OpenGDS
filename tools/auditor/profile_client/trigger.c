@@ -70,7 +70,7 @@ static gds_status build_env(trig_env *e, const trig_cfg *cfg, const char *user) 
     if(r == GDS_OK) r = env_add(e, "GDSAUDIT_GDS_PASSWORD_FILE", fg_password_path());
     if(r == GDS_OK) r = env_add(e, "GDSAUDIT_CLIENT_DIR", cfg->clientDir);
     if(r == GDS_OK) r = env_add(e, "GDSAUDIT_ACTION", cfg->action);
-    if(r == GDS_OK && cfg->action) r = env_add(e, "GDSAUDIT_PROBE_URL", cfg->probeUrl);
+    if(r == GDS_OK && cfg->probeUrl) r = env_add(e, "GDSAUDIT_PROBE_URL", cfg->probeUrl);
     return r;
 }
 

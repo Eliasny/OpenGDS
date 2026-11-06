@@ -146,6 +146,26 @@ bool cli_probe_identity(cli_profile *p, const gds_buf *cert, const gds_buf *key,
     return probe_run(p, label, ctx, out);
 }
 
+/* Restart the client through the trigger hook (GDSAUDIT_ACTION=restart) */
+bool cli_restart(cli_profile *p, ga_ctx *ctx) {
+    p->trig.action = "restart";
+    printf("#   restart the client\n");
+    fflush(stdout);
+    trig_result run;
+    gds_status r = trig_run(&p->trig, p->user, &run);
+    p->trig.action = NULL;
+    if(r != GDS_OK) {
+        ga_not_tested(ctx, "the trigger could not be started for a restart: %s", gds_status_name(r));
+        return false;
+    }
+    if(!run.exited || run.exitStatus != 0) {
+        ga_not_tested(ctx, "the trigger hook did not restart the client (exit %d)", run.exitStatus);
+        return false;
+    }
+    ga_note(ctx, "restart: trigger exit 0 after %.0f ms", run.ms);
+    return true;
+}
+
 /* Did the trigger end on its own, without a crash? */
 bool cli_survived(const trig_result *r) {
     return r->exited && r->exitStatus >= 0 && r->exitStatus < 128;

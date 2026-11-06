@@ -1,7 +1,6 @@
 /* OpenGDS Auditor client profile - Installation (CLI-INS-*) and CLI-REN-04.
  * Rows of docs/auditor/client-profile.md, "Installation (cli_install.c)" and
  * "Renewal". The probe server shows what the client really presents.
- * CLI-INS-02 (intermediate CA) and CLI-INS-03 (restart hook) follow.
  * SPDX-License-Identifier: MPL-2.0 */
 #include <string.h>
 
@@ -53,6 +52,21 @@ static void t_ren_presented(ga_ctx *ctx, void *profile) {
     presents(p, ctx, ev, "renewed");
 }
 
+/* CLI-INS-03: the installed certificate survives a restart of the client */
+static void t_ins_restart(ga_ctx *ctx, void *profile) {
+    cli_profile *p = profile;
+    if(!cli_base_cycle(p, ctx))
+        return;
+    const fg_event *ev = cli_last_issued();
+    if(!ev) {
+        ga_not_tested(ctx, "no certificate was issued to the client");
+        return;
+    }
+    if(!cli_restart(p, ctx))
+        return;
+    presents(p, ctx, ev, "issued (after a restart)");
+}
+
 /* CLI-INS-02: a certificate from the intermediate ca-int; the client must
  * send ca-int after it so a peer that trusts only ca can build the chain */
 static void t_ins_chain(ga_ctx *ctx, void *profile) {
@@ -96,6 +110,7 @@ static void t_ins_chain(ga_ctx *ctx, void *profile) {
 const ga_test cli_install_tests[] = {
     {"CLI-INS-01", "12 Annex G.1, §7.6", "The issued certificate is the one presented", false, true, t_ins_presented},
     {"CLI-INS-02", "12 §7.9.5; 4 §6.1.3", "A certificate from an intermediate CA is sent with its chain", false, true, t_ins_chain},
+    {"CLI-INS-03", "12 §7.6", "The installed certificate survives a restart", false, true, t_ins_restart},
     {"CLI-REN-04", "12 §7.6", "After a renewal the new certificate is presented", false, true, t_ren_presented},
 };
 const size_t cli_install_count = GDS_ARRAY_SIZE(cli_install_tests);

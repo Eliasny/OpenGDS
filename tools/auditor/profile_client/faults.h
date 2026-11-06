@@ -34,6 +34,7 @@ typedef enum {
     FAULT_TL_DROP,        /* the trust list changed; the session is closed after the first Read */
     FAULT_FINISH_HANG,    /* a new request; FinishRequest does not answer */
     FAULT_ISSUE_INTERMEDIATE, /* a new request; issued by ca-int, chain ca-int, ca */
+    FAULT_PENDING_HOLD,   /* a new request; FinishRequest says Bad_NothingToDo all cycle */
     FAULT_COUNT
 } fault_id;
 

@@ -50,3 +50,5 @@ install-partial-trustlist,CLI-FLT-01,fail
 pending-stuck-invalid,CLI-PEN-06,warn
 no-call-timeout,CLI-FLT-07,warn
 install-no-chain,CLI-INS-02,warn
+install-in-ram,CLI-INS-03,fail
+pending-forget,CLI-PEN-04,warn

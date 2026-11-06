@@ -2,6 +2,8 @@
 
 `gdsaudit client --listen <port>` checks an OPC UA application that pulls its certificate and trust list from a GDS (OPC 10000-12 §7.3, §7.6, Annex G.1). The Auditor runs `fake_gds.c`, a minimal GDS of its own that breaks the rules on cue, and waits for the client to come to it. Each test starts the client's pull cycle with `--trigger-cmd` or an operator prompt and reports Not tested when neither is available. After a cycle the Auditor checks what the client installed by letting it connect to a probe server (below), so every check stays black-box.
 
+The trigger hook is the program after `--` on the `gdsaudit client` command line. The Auditor runs it once per step with `GDSAUDIT_GDS_URL`, `GDSAUDIT_GDS_CA`, `GDSAUDIT_GDS_CRL`, `GDSAUDIT_GDS_USER`, `GDSAUDIT_GDS_PASSWORD_FILE` and `GDSAUDIT_CLIENT_DIR` set. Without `GDSAUDIT_ACTION` the client does one pull cycle. `GDSAUDIT_ACTION=probe` makes it connect to `GDSAUDIT_PROBE_URL`. `GDSAUDIT_ACTION=restart` restarts the client and exits 0, or exits nonzero when the hook cannot restart it; CLI-PEN-04 and CLI-INS-03 are then Not tested.
+
 Spec: OPC 10000-12 v1.05.07 (2026-04-15) unless the clause names another Part. How to read the columns, verdict words and mutants: [README](README.md#how-to-read-a-catalogue).
 
 ## ConformanceUnits

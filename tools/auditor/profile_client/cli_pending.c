@@ -1,6 +1,6 @@
 /* OpenGDS Auditor client profile - Pending approval (CLI-PEN-*).
  * Rows of docs/auditor/client-profile.md, "Pending approval (cli_pending.c)".
- * CLI-PEN-04 (restart hook), -06 (session drop) and -08 (slow) follow.
+ * CLI-PEN-08 (slow) follows.
  * SPDX-License-Identifier: MPL-2.0 */
 #include "client_profile.h"
 #include "common/banned.h"
@@ -201,10 +201,49 @@ static void t_pen_recover(ga_ctx *ctx, void *profile) {
                  "Bad_InvalidArgument)", invalid);
 }
 
+/* CLI-PEN-04: the client restarts while a request is pending; it must
+ * resume the persisted RequestId (12 §7.6) */
+static void t_pen_restart(ga_ctx *ctx, void *profile) {
+    cli_profile *p = profile;
+    if(!cli_base_cycle(p, ctx))
+        return;
+    cli_cycle c;
+    if(!cli_cycle_for(p, FAULT_PENDING_HOLD, ctx, &c))
+        return;
+    const fg_event *sign = NULL;
+    for(size_t i = c.first; i < c.end; i++)
+        if((fg_event_at(i)->method == FG_M_SIGN || fg_event_at(i)->method == FG_M_NEWKEYPAIR) &&
+           fg_event_at(i)->result == UA_STATUSCODE_GOOD)
+            sign = fg_event_at(i);
+    if(!sign) {
+        ga_not_tested(ctx, "the client made no request in the pending cycle");
+        return;
+    }
+    if(!cli_restart(p, ctx) || !cli_cycle_for(p, FAULT_NONE, ctx, &c))
+        return;
+    for(size_t i = c.first; i < c.end; i++) {
+        const fg_event *ev = fg_event_at(i);
+        if(ev->method == FG_M_SIGN || ev->method == FG_M_NEWKEYPAIR) {
+            ga_warn(ctx, "after the restart the client made a new %s instead of resuming the "
+                         "pending request", fg_method_name(ev->method));
+            return;
+        }
+        if(ev->method == FG_M_FINISH) {
+            if(UA_NodeId_equal(&ev->requestId, &sign->requestId))
+                ga_pass(ctx, "after the restart the client resumed the pending RequestId");
+            else
+                ga_warn(ctx, "after the restart the client polled another RequestId");
+            return;
+        }
+    }
+    ga_warn(ctx, "after the restart the client did not come back to the pending request");
+}
+
 const ga_test cli_pending_tests[] = {
     {"CLI-PEN-01", "12 §7.9.5, §7.6", "A pending request is completed", false, true, t_pen_complete},
     {"CLI-PEN-02", "12 §7.6, §7.9.5", "FinishRequest is polled with a delay", false, true, t_pen_backoff},
     {"CLI-PEN-03", "12 §7.6", "The next cycle resumes the pending request", false, true, t_pen_resume},
+    {"CLI-PEN-04", "12 §7.6", "A pending request survives a restart", false, true, t_pen_restart},
     {"CLI-PEN-05", "12 §7.9.5, §7.6", "A rejected request is not polled again", false, true, t_pen_reject},
     {"CLI-PEN-06", "12 §7.9.5", "Recovers when the GDS forgot the pending request", false, true, t_pen_recover},
     {"CLI-PEN-07", "12 §6.3", "No session is held between cycles", false, true, t_pen_sessions},

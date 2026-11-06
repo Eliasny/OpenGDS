@@ -10,7 +10,7 @@ static const char *const names[FAULT_COUNT] = {"none", "renew", "sign-uri-invali
     "tl-with-x", "tl-main", "tl-issuer-y", "issue-untrusted", "issue-wrong-key", "issue-wrong-uri",
     "issue-expired", "gds-rogue", "gds-revoked", "gds-expired", "gds-wronguri",
     "tl-revoking", "tl-garbage", "huge-issuers", "tl-over-read", "close-sessions",
-    "drop-after-sign", "tl-drop", "finish-hang", "issue-intermediate"};
+    "drop-after-sign", "tl-drop", "finish-hang", "issue-intermediate", "pending-hold"};
 
 const char *fault_name(fault_id f) {
     return (unsigned)f < FAULT_COUNT ? names[f] : "?";
@@ -117,6 +117,10 @@ fg_behaviour fault_behaviour(fault_id f) {
     case FAULT_ISSUE_INTERMEDIATE:
         b.forceUpdateRequired = true;
         b.issue = FG_ISSUE_INTERMEDIATE;
+        break;
+    case FAULT_PENDING_HOLD:
+        b.forceUpdateRequired = true;
+        b.approveAfter = 1000;
         break;
     case FAULT_NONE:
     case FAULT_COUNT:
