@@ -35,9 +35,9 @@ void avm_discovery_free(AvmDiscovery *d) {
 }
 
 static int mode_rank(const char *mode) {
-    if(!strcmp(mode, "signandencrypt"))
+    if(!g_strcmp0(mode, "signandencrypt"))
         return 2;
-    return !strcmp(mode, "sign") ? 1 : 0;
+    return !g_strcmp0(mode, "sign") ? 1 : 0;
 }
 
 static gint by_strength(gconstpointer a, gconstpointer b) {
@@ -49,8 +49,8 @@ static gint by_strength(gconstpointer a, gconstpointer b) {
 }
 
 static gboolean same_endpoint(const AvmEndpoint *a, const AvmEndpoint *b) {
-    return !strcmp(a->url, b->url) && !strcmp(a->policyUri, b->policyUri) &&
-           !strcmp(a->mode, b->mode);
+    return !g_strcmp0(a->url, b->url) && !g_strcmp0(a->policyUri, b->policyUri) &&
+           !g_strcmp0(a->mode, b->mode);
 }
 
 static void add_endpoint(AvmDiscovery *d, char **f) {
