@@ -66,12 +66,16 @@ typedef bool (*gds_store_scan_cb)(void *ctx, int64_t recordId,
 GDS_MUST_CHECK gds_status gds_store_app_scan(gds_store *s, int64_t fromRecordId,
                                              gds_store_scan_cb cb, void *ctx);
 
-/* Certificate requests: Received -> Issued -> Delivered (or Failed). */
+/* Certificate requests: [Pending ->] Received -> Issued -> Delivered, or
+ * Failed. Pending waits for an administrator (gds_approvals.c); Received
+ * is approved and waits for the signer; a rejected request is Failed with
+ * Bad_RequestNotAllowed. */
 typedef enum {
     GDS_REQ_RECEIVED = 1,
     GDS_REQ_ISSUED = 2,
     GDS_REQ_DELIVERED = 3,
-    GDS_REQ_FAILED = 4
+    GDS_REQ_FAILED = 4,
+    GDS_REQ_PENDING = 5
 } gds_req_state;
 
 typedef struct {
@@ -92,6 +96,11 @@ GDS_MUST_CHECK gds_status gds_store_req_next_received(gds_store *s, gds_request 
 GDS_MUST_CHECK gds_status gds_store_req_set_state(gds_store *s, const UA_Guid *id,
                                                   gds_req_state state, const gds_buf *cert,
                                                   UA_StatusCode error);
+/* Visit the requests in one state, oldest first. The callback borrows r
+ * and returns false to stop. */
+typedef bool (*gds_store_req_cb)(void *ctx, const gds_request *r);
+GDS_MUST_CHECK gds_status gds_store_req_scan(gds_store *s, gds_req_state state,
+                                             gds_store_req_cb cb, void *ctx);
 
 /* Issued certificates. */
 GDS_MUST_CHECK gds_status gds_store_cert_add(gds_store *s, const UA_Guid *appId, uint32_t groupId,
@@ -109,7 +118,7 @@ GDS_MUST_CHECK gds_status gds_store_cert_latest(gds_store *s, const UA_Guid *app
  * transaction: it commits fully or changes nothing. The core calls a
  * backend from one thread at a time (see "Single-writer" above). */
 #define GDS_STORE_ABI_MAJOR 1u
-#define GDS_STORE_ABI_MINOR 0u
+#define GDS_STORE_ABI_MINOR 1u /* 1.1: req_scan */
 
 typedef struct {
     uint32_t abi_major;
@@ -134,6 +143,7 @@ typedef struct {
                            int64_t notAfter);
     gds_status (*cert_latest)(void *ctx, const UA_Guid *appId, uint32_t groupId,
                               uint32_t certType, gds_buf *der, int64_t *notAfter);
+    gds_status (*req_scan)(void *ctx, gds_req_state state, gds_store_req_cb cb, void *cbCtx);
 } gds_store_backend;
 
 /* A store on a plugin backend. The vtable is copied; ctx is taken, and

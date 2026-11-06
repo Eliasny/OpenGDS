@@ -118,7 +118,9 @@ static inline bool gds_session_has(const void *sessionContext, unsigned roles) {
 bool gds_session_is_app(const void *sessionContext, const UA_String *applicationUri);
 
 /* getUserExecutable: may this session call this method? Namespace 0:
- * the open methods, and the ServerConfiguration methods for SecurityAdmin.
+ * the open methods, the ServerConfiguration methods for SecurityAdmin, and
+ * DialogConditionType Respond/Respond2 (approvals) for
+ * RegistrationAuthorityAdmin.
  * The GDS namespace: yes, its methods check rights themselves. Methods
  * that an embedder bound (gds_plugin.h): their Roles and security mode.
  * Any other method: no. */

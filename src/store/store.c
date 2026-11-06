@@ -19,7 +19,7 @@ static bool complete(const gds_store_backend *be) {
     return be->close && be->schema_version && be->app_insert && be->app_get &&
            be->app_find_uri && be->app_update && be->app_delete && be->app_scan &&
            be->req_insert && be->req_get && be->req_next_received && be->req_set_state &&
-           be->cert_add && be->cert_latest;
+           be->cert_add && be->cert_latest && be->req_scan;
 }
 
 gds_status gds_store_open_backend(const gds_store_backend *be, void *ctx, gds_store **out) {
@@ -108,6 +108,11 @@ gds_status gds_store_req_get(gds_store *s, const UA_Guid *id, gds_request *out) 
 
 gds_status gds_store_req_next_received(gds_store *s, gds_request *out) {
     return s->be.req_next_received(s->ctx, out);
+}
+
+gds_status gds_store_req_scan(gds_store *s, gds_req_state state, gds_store_req_cb cb,
+                              void *ctx) {
+    return s->be.req_scan(s->ctx, state, cb, ctx);
 }
 
 gds_status gds_store_req_set_state(gds_store *s, const UA_Guid *id, gds_req_state state,

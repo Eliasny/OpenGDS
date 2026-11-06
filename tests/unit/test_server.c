@@ -210,7 +210,7 @@ int main(int argc, char **argv) {
     cfg.store = st;
     cfg.ca = ca;
     cfg.users = &users;
-    cfg.autoApprove = true;
+    cfg.approval = GDS_APPROVE_ALL;
 
     gds_server *s = NULL;
     gds_server_config bad = cfg;
