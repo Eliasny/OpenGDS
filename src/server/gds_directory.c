@@ -51,6 +51,8 @@ static GDS_METHOD(find_applications) {
 static GDS_METHOD(register_application) {
     GDS_METHOD_UNUSED;
     gds_server *s = gds_ctx(methodContext);
+    if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINVALIDSTATE;
     if(!gds_session_has(sessionContext, GDS_ROLE_DISCOVERY_ADMIN))
         return UA_STATUSCODE_BADUSERACCESSDENIED;
     const UA_ApplicationRecordDataType *rec = NULL;
@@ -75,6 +77,8 @@ static GDS_METHOD(update_application) {
     GDS_METHOD_UNUSED;
     (void)output;
     gds_server *s = gds_ctx(methodContext);
+    if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINVALIDSTATE;
     if(!gds_session_has(sessionContext, GDS_ROLE_DISCOVERY_ADMIN))
         return UA_STATUSCODE_BADUSERACCESSDENIED;
     const UA_ApplicationRecordDataType *rec = NULL;
@@ -96,6 +100,8 @@ static GDS_METHOD(unregister_application) {
     GDS_METHOD_UNUSED;
     (void)output;
     gds_server *s = gds_ctx(methodContext);
+    if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINVALIDSTATE;
     if(!gds_session_has(sessionContext, GDS_ROLE_DISCOVERY_ADMIN))
         return UA_STATUSCODE_BADUSERACCESSDENIED;
     UA_Guid id;
