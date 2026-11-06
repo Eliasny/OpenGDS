@@ -40,34 +40,9 @@ fail() {
 }
 expect() { grep -q "$1" "$2" || { cat "$2"; fail "'$1' not found in $2"; }; }
 
-echo "=============== 1. the .NET Server (push target) ==============="
-dotnet publish "$SAMPLES/Samples/GDS/ConsoleServer/NetCoreGlobalDiscoveryServer.csproj" \
-    -c Release -p:AppTargetFramework="$TFM" -o "$W/dotnet" > "$W/dotnet-build.log" 2>&1 ||
-    fail ".NET server build"
-# Its command loop quits on end of input: stdin is a FIFO held open
-mkfifo "$W/stdin"
-sleep infinity > "$W/stdin" &
-HOLD=$!
-(cd "$W/dotnet" && exec dotnet NetCoreGlobalDiscoveryServer.dll < "$W/stdin" > "$W/dotnet.log" 2>&1) &
-DEV=$!
-for _ in $(seq 1 120); do
-    grep -q 'OPC UA server listening at' "$W/dotnet.log" 2>/dev/null && break
-    kill -0 "$DEV" 2>/dev/null || fail ".NET server exited during start"
-    sleep 1
-done
-grep -q 'OPC UA server listening at' "$W/dotnet.log" || fail ".NET server never reported listening"
-sleep 2
-DEV_CERT=$(ls "$DATA"/pki/own/certs/*.der 2>/dev/null | head -1)
-[ -n "$DEV_CERT" ] || fail "no .NET server certificate in $DATA/pki/own/certs"
-# Its ApplicationUri is the SAN URI of its certificate (OPC 10000-6 §6.2.2)
-DEV_URI=$(openssl x509 -inform der -in "$DEV_CERT" -noout -ext subjectAltName |
-    grep -o 'URI:[^,]*' | head -1 | cut -c5-)
-[ -n "$DEV_URI" ] || fail "no SAN URI in $DEV_CERT"
-echo "device $DEV_URI"
-printf 'demo\n' > "$W/sysadmin.pw"
-
-echo "=============== 2. opengdsd, and gdsadm's own certificate ==============="
+echo "=============== 1. opengdsd, and gdsadm's own certificate ==============="
 printf 'secret\n' > "$W/admin.pw"
+printf 'demo\n' > "$W/sysadmin.pw"
 printf 'push-dotnet-ca-passphrase\n' > "$W/ca.pw"
 chmod 600 "$W/admin.pw" "$W/ca.pw" "$W/sysadmin.pw"
 CRED=$("$GDSADM" hash-password < "$W/admin.pw") || fail "gdsadm hash-password"
@@ -97,6 +72,37 @@ GDS="opc.tcp://127.0.0.1:$PORT"
     > "$W/adm-cert.txt" 2>&1 || { cat "$W/adm-cert.txt"; fail "gdsadm certificate"; }
 CONN=(--gds "$GDS" --cert "$W/pki-adm/own/cert.der" --key "$W/pki-adm/own/private/key.der"
       --trust "$W/ca/ca.der" --crl "$W/ca/ca.crl" --user admin --password-file "$W/admin.pw")
+
+echo "=============== 2. the .NET Server (push target), trusting the OpenGDS CA ==============="
+# The device must trust gdsadm before the first push (OPC 10000-12 §7.4,
+# Annex G.3): out of band, put the OpenGDS CA and its CRL in its trusted store
+# (.NET DirectoryCertificateStore layout: certs/ and crl/)
+mkdir -p "$DATA/pki/trusted/certs" "$DATA/pki/trusted/crl"
+cp "$W/ca/ca.der" "$DATA/pki/trusted/certs/opengds-ca.der"
+cp "$W/ca/ca.crl" "$DATA/pki/trusted/crl/opengds-ca.crl"
+dotnet publish "$SAMPLES/Samples/GDS/ConsoleServer/NetCoreGlobalDiscoveryServer.csproj" \
+    -c Release -p:AppTargetFramework="$TFM" -o "$W/dotnet" > "$W/dotnet-build.log" 2>&1 ||
+    fail ".NET server build"
+# Its command loop quits on end of input: stdin is a FIFO held open
+mkfifo "$W/stdin"
+sleep infinity > "$W/stdin" &
+HOLD=$!
+(cd "$W/dotnet" && exec dotnet NetCoreGlobalDiscoveryServer.dll < "$W/stdin" > "$W/dotnet.log" 2>&1) &
+DEV=$!
+for _ in $(seq 1 120); do
+    grep -q 'OPC UA server listening at' "$W/dotnet.log" 2>/dev/null && break
+    kill -0 "$DEV" 2>/dev/null || fail ".NET server exited during start"
+    sleep 1
+done
+grep -q 'OPC UA server listening at' "$W/dotnet.log" || fail ".NET server never reported listening"
+sleep 2
+DEV_CERT=$(ls "$DATA"/pki/own/certs/*.der 2>/dev/null | head -1)
+[ -n "$DEV_CERT" ] || fail "no .NET server certificate in $DATA/pki/own/certs"
+# Its ApplicationUri is the SAN URI of its certificate (OPC 10000-6 §6.2.2)
+DEV_URI=$(openssl x509 -inform der -in "$DEV_CERT" -noout -ext subjectAltName |
+    grep -o 'URI:[^,]*' | head -1 | cut -c5-)
+[ -n "$DEV_URI" ] || fail "no SAN URI in $DEV_CERT"
+echo "device $DEV_URI"
 
 echo "=============== 3. register the device ==============="
 "$GDSADM" apps register --uri "$DEV_URI" --name "OPC Foundation .NET Server" --type Server \
