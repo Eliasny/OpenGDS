@@ -82,3 +82,7 @@ add_executable(test_registrar test_registrar.c)
 target_link_libraries(test_registrar PRIVATE gds_server)
 add_test(NAME unit_registrar COMMAND test_registrar "${CMAKE_CURRENT_BINARY_DIR}/registrar-run")
 set_tests_properties(unit_registrar PROPERTIES TIMEOUT 120)
+
+add_executable(test_peers test_peers.c)
+target_link_libraries(test_peers PRIVATE gds_server)
+add_test(NAME unit_peers COMMAND test_peers "${CMAKE_CURRENT_BINARY_DIR}/peers-run")

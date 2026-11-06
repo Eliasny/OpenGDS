@@ -74,6 +74,11 @@ struct gds_server {
     pthread_mutex_t holdLock;
     UA_Guid *holds;
     size_t nHolds, capHolds;
+    /* FindServers peers (gds_server.c, UASM ask A15); peerLock is a leaf
+     * lock, taken under open62541's service mutex */
+    pthread_mutex_t peerLock;
+    UA_ApplicationDescription *peers;
+    size_t nPeers;
 };
 
 /* ---- caller views (gds_caller.c, issue #17) ---- */
