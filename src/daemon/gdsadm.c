@@ -4,7 +4,11 @@
  *   gdsadm apps list --store PATH           registered applications (read-only)
  *   gdsadm certs status --store PATH        latest certificate of each application
  *
- * Passwords are read from stdin, never argv. The store is opened read-only
+ * Over OPC UA, as a standard Administration Component (gdsadm_push.c):
+ *   gdsadm apps register ...                RegisterApplication on the GDS
+ *   gdsadm push now URI ...                 push trust list + certificate to a device
+ *
+ * Passwords are read from stdin or a file, never argv. The store is opened read-only
  * and may be read while opengdsd runs.
  * SPDX-License-Identifier: MPL-2.0 */
 #include <open62541/nodeids.h>
@@ -19,6 +23,7 @@
 
 #include "common/safeint.h"
 #include "gds_access.h"
+#include "gdsadm_push.h"
 #include "store.h"
 #include "common/banned.h"
 
@@ -28,7 +33,12 @@
 static int usage(void) {
     fprintf(stderr, "usage: gdsadm hash-password [--iterations N]\n"
                     "       gdsadm apps list --store PATH\n"
-                    "       gdsadm certs status --store PATH\n");
+                    "       gdsadm certs status --store PATH\n"
+                    "       gdsadm apps register --uri URI --name NAME --type TYPE ... CONNECTION\n"
+                    "       gdsadm push now URI [--server-url URL] [--server-cert DER]\n"
+                    "                       [--device-user NAME --device-password-file FILE] CONNECTION\n"
+                    "  CONNECTION: --gds URL --cert DER --key DER --trust DER... [--crl DER]...\n"
+                    "              --user NAME --password-file FILE\n");
     return 2;
 }
 
@@ -147,6 +157,10 @@ int main(int argc, char **argv) {
         return hash_password(argc, argv);
     if(argc >= 3 && strcmp(argv[1], "apps") == 0 && strcmp(argv[2], "list") == 0)
         return store_cmd(argc, argv, list_cb, false);
+    if(argc >= 3 && strcmp(argv[1], "apps") == 0 && strcmp(argv[2], "register") == 0)
+        return gdsadm_apps_register(argc, argv);
+    if(argc >= 3 && strcmp(argv[1], "push") == 0 && strcmp(argv[2], "now") == 0)
+        return gdsadm_push_now(argc, argv);
     if(argc >= 3 && strcmp(argv[1], "certs") == 0 && strcmp(argv[2], "status") == 0)
         return store_cmd(argc, argv, status_cb, true);
     return usage();
