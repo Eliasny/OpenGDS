@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sched.h>
+#include <sys/ioctl.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -114,6 +116,15 @@ static gds_status apply_landlock(const gds_sandbox *sb, int *abiOut) {
     gds_status r = GDS_OK;
     for(size_t i = 0; r == GDS_OK && i < sb->nPaths; i++)
         r = ll_add((int)rs, &sb->paths[i], attr.fs);
+    if(r == GDS_OK && abi >= 4 && sb->tcpBindPort) {
+        struct landlock_net_port_attr np = {.allowed_access = LANDLOCK_ACCESS_NET_BIND_TCP,
+                                            .port = sb->tcpBindPort};
+        if(syscall(SYS_landlock_add_rule, rs, LANDLOCK_RULE_NET_PORT, &np, 0) != 0) {
+            fprintf(stderr, "opengds: sandbox: Landlock TCP port %u: %s\n", sb->tcpBindPort,
+                    strerror(errno));
+            r = GDS_EIO;
+        }
+    }
     if(r == GDS_OK && syscall(SYS_landlock_restrict_self, rs, 0) != 0) {
         fprintf(stderr, "opengds: sandbox: Landlock restrict: %s\n", strerror(errno));
         r = GDS_EIO;
@@ -139,6 +150,16 @@ static const char *const signerAllow[] = {
     "sigaltstack", "getpid", "gettid", "getuid", "geteuid", "getgid", "getegid", "tgkill",
     "sched_yield", "uname", "sysinfo", "prlimit64", "restart_syscall", "flock", "dup", "dup3",
     "getdents64",
+};
+
+/* The daemon: the signer's list plus a threaded OPC UA server. */
+static const char *const daemonAllow[] = {
+    "socket", "connect", "bind", "listen", "setsockopt", "getsockname", "getpeername",
+    "sendmmsg", "recvmmsg", "epoll_create1", "epoll_ctl", "epoll_wait", "epoll_pwait",
+    "epoll_pwait2", "select", "pselect6", "eventfd2", "pipe2", "timerfd_create",
+    "timerfd_settime", "timerfd_gettime", "set_robust_list", "rseq", "sched_getaffinity",
+    "preadv", "pwritev", "fallocate", "fstatfs", "statfs", "wait4", "futex_waitv",
+    "clock_getres", "getppid", "tkill",
 };
 
 /* Never needed; their use means the process was taken over. */
@@ -174,22 +195,48 @@ static gds_status add_noexec(scmp_filter_ctx ctx) {
     return rc == 0 ? GDS_OK : GDS_EIO;
 }
 
+/* Threads only: clone with CLONE_THREAD; clone3 answers ENOSYS (glibc then
+ * falls back to clone, whose flags the filter can read). */
+static gds_status add_threads(scmp_filter_ctx ctx) {
+    int rc = seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(clone), 1,
+                              SCMP_A0(SCMP_CMP_MASKED_EQ, CLONE_THREAD, CLONE_THREAD));
+    if(rc == 0)
+        rc = seccomp_rule_add(ctx, SCMP_ACT_ERRNO(ENOSYS), SCMP_SYS(clone3), 0);
+    return rc == 0 ? GDS_OK : GDS_EIO;
+}
+
+/* ioctl: only FIONBIO and FIONREAD (non-blocking sockets, bytes waiting). */
+static gds_status add_ioctl(scmp_filter_ctx ctx) {
+    int rc = seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(ioctl), 1,
+                              SCMP_A1(SCMP_CMP_EQ, FIONBIO, 0));
+    if(rc == 0)
+        rc = seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(ioctl), 1,
+                              SCMP_A1(SCMP_CMP_EQ, FIONREAD, 0));
+    return rc == 0 ? GDS_OK : GDS_EIO;
+}
+
+#define COUNT(a) (sizeof(a) / sizeof((a)[0]))
+
 static gds_status apply_seccomp(const gds_sandbox *sb) {
-    if(sb->profile != GDS_SB_SIGNER)
+    if(sb->profile != GDS_SB_SIGNER && sb->profile != GDS_SB_DAEMON)
         return GDS_EINVAL;
+    bool daemon = sb->profile == GDS_SB_DAEMON;
     scmp_filter_ctx ctx = seccomp_init(SCMP_ACT_ERRNO(EPERM));
     if(!ctx)
         return GDS_ENOMEM;
-    gds_status r = add_names(ctx, SCMP_ACT_ALLOW, signerAllow,
-                             sizeof(signerAllow) / sizeof(signerAllow[0]));
+    gds_status r = add_names(ctx, SCMP_ACT_ALLOW, signerAllow, COUNT(signerAllow));
     if(r == GDS_OK)
         r = add_noexec(ctx);
     if(r == GDS_OK)
-        r = add_names(ctx, SCMP_ACT_KILL_PROCESS, killAlways,
-                      sizeof(killAlways) / sizeof(killAlways[0]));
-    if(r == GDS_OK)
-        r = add_names(ctx, SCMP_ACT_KILL_PROCESS, signerKill,
-                      sizeof(signerKill) / sizeof(signerKill[0]));
+        r = add_names(ctx, SCMP_ACT_KILL_PROCESS, killAlways, COUNT(killAlways));
+    if(r == GDS_OK && daemon)
+        r = add_names(ctx, SCMP_ACT_ALLOW, daemonAllow, COUNT(daemonAllow));
+    if(r == GDS_OK && daemon)
+        r = add_threads(ctx);
+    if(r == GDS_OK && daemon)
+        r = add_ioctl(ctx);
+    if(r == GDS_OK && !daemon)
+        r = add_names(ctx, SCMP_ACT_KILL_PROCESS, signerKill, COUNT(signerKill));
     if(r == GDS_OK && seccomp_load(ctx) != 0) {
         fprintf(stderr, "opengds: sandbox: loading the seccomp filter failed\n");
         r = GDS_EIO;
