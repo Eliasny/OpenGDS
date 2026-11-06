@@ -8,8 +8,15 @@
 #include "client/gdsc_push.h"
 #include "common/banned.h"
 
-void push_report_clear(push_report *r) {
+static void free_issued(push_report *r) {
     gds_buf_free(&r->issued);
+    for(size_t i = 0; i < r->issuersN && i < GDS_MAX_CHAIN_LEN; i++)
+        gds_buf_free(&r->issuers[i]);
+    r->issuersN = 0;
+}
+
+void push_report_clear(push_report *r) {
+    free_issued(r);
     memset(r, 0, sizeof(*r));
 }
 
@@ -56,17 +63,21 @@ static gds_status run_certificate(UA_Client *c, const push_job *job, push_report
         gdsc_create_signing_request(c, &job->certificateGroup, &job->certificateType, &csr);
     if(r != UA_STATUSCODE_GOOD)
         return failed(rep, PUSH_STEP_CSR, r);
-    gds_status s = job->sign(job->signCtx, &csr, &rep->issued);
+    gds_status s = job->sign(job->signCtx, &csr, &rep->issued, rep->issuers, &rep->issuersN);
     gds_buf_free(&csr);
+    if(s == GDS_OK && rep->issuersN > GDS_MAX_CHAIN_LEN)
+        s = GDS_ETOOBIG;
     if(s != GDS_OK) {
         rep->failedStep = PUSH_STEP_SIGN;
         rep->failedCode = UA_STATUSCODE_GOOD; /* nothing was refused remotely */
-        gds_buf_free(&rep->issued);
+        free_issued(rep);
         return s;
     }
+    const gds_buf *iss = rep->issuersN ? rep->issuers : job->issuers;
+    size_t issN = rep->issuersN ? rep->issuersN : job->issuersN;
     bool a = false;
     r = gdsc_update_certificate(c, &job->certificateGroup, &job->certificateType, &rep->issued,
-                                job->issuers, job->issuersN, &a);
+                                iss, issN, &a);
     if(r != UA_STATUSCODE_GOOD)
         return failed(rep, PUSH_STEP_UPDATE_CERT, r);
     rep->certificateUpdated = true;

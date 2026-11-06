@@ -645,6 +645,108 @@ static gds_status sq_app_scan(void *ctx_, int64_t fromRecordId, gds_store_scan_c
     return r;
 }
 
+/* --- audit log (issue #18) ---------------------------------------------- */
+
+static gds_status last_audit(sq_store *s, int64_t *seq, uint8_t hash[GDS_AUDIT_HASH]) {
+    *seq = 0;
+    memset(hash, 0, GDS_AUDIT_HASH);
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db, "SELECT seq, hash FROM audit ORDER BY seq DESC LIMIT 1",
+                                -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_step(st);
+    gds_status r = GDS_OK;
+    if(rc == SQLITE_ROW) {
+        *seq = sqlite3_column_int64(st, 0);
+        if(sqlite3_column_bytes(st, 1) == GDS_AUDIT_HASH)
+            memcpy(hash, sqlite3_column_blob(st, 1), GDS_AUDIT_HASH);
+        else
+            r = GDS_ESTATE;
+    } else if(rc != SQLITE_DONE) {
+        r = db_err(s, "audit tail", rc);
+    }
+    sqlite3_finalize(st);
+    return r;
+}
+
+static gds_status sq_audit_append(void *ctx_, int64_t time, const gds_buf *body, int64_t *seq) {
+    sq_store *s = ctx_;
+    int rc = sqlite3_exec(s->db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+    if(rc != SQLITE_OK)
+        return db_err(s, "begin", rc);
+    int64_t last = 0;
+    uint8_t prev[GDS_AUDIT_HASH], hash[GDS_AUDIT_HASH];
+    gds_status r = last_audit(s, &last, prev);
+    if(r == GDS_OK)
+        r = gds_audit_hash(prev, last + 1, time, body, hash);
+    sqlite3_stmt *st = NULL;
+    if(r == GDS_OK) {
+        rc = sqlite3_prepare_v2(s->db,
+                                "INSERT INTO audit(seq, time, body, prev_hash, hash) "
+                                "VALUES(?1, ?2, ?3, ?4, ?5)",
+                                -1, &st, NULL);
+        if(rc == SQLITE_OK)
+            rc = sqlite3_bind_int64(st, 1, last + 1);
+        if(rc == SQLITE_OK)
+            rc = sqlite3_bind_int64(st, 2, time);
+        if(rc == SQLITE_OK)
+            rc = bind_buf(st, 3, body);
+        if(rc == SQLITE_OK)
+            rc = sqlite3_bind_blob(st, 4, prev, GDS_AUDIT_HASH, SQLITE_STATIC);
+        if(rc == SQLITE_OK)
+            rc = sqlite3_bind_blob(st, 5, hash, GDS_AUDIT_HASH, SQLITE_STATIC);
+        if(rc == SQLITE_OK && (rc = sqlite3_step(st)) == SQLITE_DONE)
+            rc = SQLITE_OK;
+        if(rc != SQLITE_OK)
+            r = db_err(s, "append audit", rc);
+        sqlite3_finalize(st);
+    }
+    if(r == GDS_OK && (rc = sqlite3_exec(s->db, "COMMIT", NULL, NULL, NULL)) != SQLITE_OK)
+        r = db_err(s, "commit", rc);
+    if(r != GDS_OK) {
+        (void)sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL);
+        return r;
+    }
+    *seq = last + 1;
+    return GDS_OK;
+}
+
+static gds_status sq_audit_scan(void *ctx_, int64_t fromSeq, gds_audit_scan_cb cb, void *cbCtx) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "SELECT seq, time, body, prev_hash, hash FROM audit "
+                                "WHERE seq >= ?1 ORDER BY seq",
+                                -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(st, 1, fromSeq);
+    gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "scan audit", rc);
+    while(r == GDS_OK && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+        gds_audit_row row;
+        memset(&row, 0, sizeof(row));
+        row.seq = sqlite3_column_int64(st, 0);
+        row.time = sqlite3_column_int64(st, 1);
+        int n = sqlite3_column_bytes(st, 2);
+        row.body.data = (uint8_t *)(uintptr_t)sqlite3_column_blob(st, 2);
+        row.body.len = n > 0 ? (size_t)n : 0;
+        if(sqlite3_column_bytes(st, 3) != GDS_AUDIT_HASH ||
+           sqlite3_column_bytes(st, 4) != GDS_AUDIT_HASH) {
+            r = GDS_ESTATE;
+            break;
+        }
+        memcpy(row.prevHash, sqlite3_column_blob(st, 3), GDS_AUDIT_HASH);
+        memcpy(row.hash, sqlite3_column_blob(st, 4), GDS_AUDIT_HASH);
+        if(!cb(cbCtx, &row)) {
+            rc = SQLITE_DONE;
+            break;
+        }
+    }
+    if(r == GDS_OK && rc != SQLITE_DONE)
+        r = db_err(s, "scan audit", rc);
+    sqlite3_finalize(st);
+    return r;
+}
+
 /* --- the built-in backend ---------------------------------------------- */
 
 const gds_store_backend gds_store_sqlite_backend = {
@@ -665,6 +767,8 @@ const gds_store_backend gds_store_sqlite_backend = {
     .req_set_state = sq_req_set_state,
     .cert_add = sq_cert_add,
     .cert_latest = sq_cert_latest,
+    .audit_append = sq_audit_append,
+    .audit_scan = sq_audit_scan,
 };
 
 gds_status gds_store_sqlite_open(const char *path, bool readonly, void **ctx) {

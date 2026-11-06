@@ -112,8 +112,10 @@ typedef struct {
 /* ---- embedder address space and methods (UASM ask A5, issue #16) ----
  * An application that embeds OpenGDS adds its own standard address space
  * next to the GDS (OPC 10000-14 SKS, OPC 10000-21, OPC 10000-100 ...):
- * namespaces, compiled NodeSets, objects and methods. Every call here is
- * made before gds_server_run, from the thread that created the server.
+ * namespaces, compiled NodeSets, objects and methods. Namespaces and
+ * NodeSets are added before gds_server_run, from the thread that created
+ * the server; objects and methods may also change while it runs (A9,
+ * below).
  *
  * The address space stays read-only to clients (no AddNodes, DeleteNodes
  * or attribute writes). A method in another namespace than the GDS one is
@@ -143,7 +145,7 @@ typedef struct {
 #define GDS_PLUGIN_QUEUE 256
 #define GDS_PLUGIN_CALL_TIMEOUT_MS 30000
 #define GDS_PLUGIN_WORKERS 4
-#define GDS_MAX_PLUGIN_METHODS 128
+#define GDS_MAX_PLUGIN_METHODS 1024
 #define GDS_MAX_METHOD_ROLES 16
 #define GDS_MAX_METHOD_ARGS 32
 
@@ -207,6 +209,90 @@ GDS_MUST_CHECK gds_status gds_server_add_method(struct gds_server *s, const gds_
  * namespace 0 method such as the OPC 10000-14 GetSecurityKeys once it is
  * added). The GDS namespace's own methods cannot be bound (GDS_EDENIED). */
 GDS_MUST_CHECK gds_status gds_server_bind_method(struct gds_server *s, const gds_method_def *def);
+
+/* ---- runtime changes (UASM ask A9, issue #49) ----
+ * gds_server_add_object, gds_server_add_method, gds_server_bind_method,
+ * gds_server_set_role_permissions and gds_server_remove_node may be called
+ * while the server runs, from any thread, including the plugin worker that
+ * runs a method callback (for example AddSecurityGroup creating one
+ * SecurityGroupType object, OPC 10000-14 §8.3). A call that is running
+ * when its method is removed finishes normally; later calls fail with
+ * Bad_NodeIdUnknown or Bad_MethodInvalid. */
+
+/* RolePermissions of a node (OPC 10000-3 §5.2.9, §8.55 PermissionType):
+ * which Roles get which permissions. Enforced by OpenGDS for Call: a
+ * method called on an object (or a method node) that has RolePermissions
+ * runs only for a session that holds a Role granted UA_PERMISSIONTYPE_CALL
+ * there, in addition to the method's own Roles and Privileges. Other
+ * permissions are kept for the plugin to check with gds_caller_permitted. */
+#define GDS_MAX_ROLE_PERMISSIONS 16
+
+typedef struct {
+    UA_NodeId roleId;     /* a Role a gds_caller can hold, as for gds_method_def */
+    uint32_t permissions; /* UA_PERMISSIONTYPE_* bits */
+} gds_role_permission;
+
+/* Replaces the node's RolePermissions; n == 0 removes them (the node then
+ * has none, and only the method checks apply). The node must exist and
+ * must not be in the GDS namespace. */
+GDS_MUST_CHECK gds_status gds_server_set_role_permissions(struct gds_server *s,
+                                                          const UA_NodeId *nodeId,
+                                                          const gds_role_permission *perms,
+                                                          size_t n);
+/* True when the caller holds a Role granted all of `permissions` on the
+ * node, or when the node has no RolePermissions. */
+bool gds_caller_permitted(struct gds_server *s, const gds_caller *caller,
+                          const UA_NodeId *nodeId, uint32_t permissions);
+/* Deletes an embedder node with its references and the children open62541
+ * deletes with it, unbinds the plugin methods among them and drops their
+ * RolePermissions. Namespace 0 and the GDS namespace: GDS_EDENIED. */
+GDS_MUST_CHECK gds_status gds_server_remove_node(struct gds_server *s, const UA_NodeId *nodeId);
+
+/* ---- audit events of other parts (UASM ask A7, issue #18) ----
+ * gds_server_raise_audit_event appends the event to the store's
+ * hash-chained audit log (store.h) and then, only once that committed,
+ * raises it as an OPC UA event on its source node, delivered only to the
+ * sessions that hold one of visibleTo (for example SecurityAdmin, as
+ * OPC 10000-21 §9.2.13 requires for its audit events). A refused commit
+ * (GDS_ENOTLEADER) raises nothing.
+ *
+ * The event type must be a subtype of AuditEventType (i=2052) already in
+ * the address space (load its NodeSet first). The core fills the
+ * AuditEventType fields of OPC 10000-5 §6.4.3: ActionTimeStamp (now),
+ * Status, ServerId (the GDS's ApplicationUri) and ClientUserId (the
+ * caller's user name; empty when anonymous or without a caller); fields
+ * adds the type's own fields by BrowseName. Values are copied. Safe from
+ * any thread; the plugin worker that runs a method callback may call it. */
+#define GDS_MAX_AUDIT_FIELDS 32
+
+typedef struct {
+    UA_UInt16 nsIndex; /* of the field's BrowseName */
+    const char *name;  /* BrowseName, a direct child of the event type */
+    UA_Variant value;
+} gds_event_field;
+
+typedef struct {
+    uint32_t abi_major;
+    uint32_t abi_minor;
+    size_t struct_size;
+    UA_NodeId eventType;
+    UA_NodeId sourceNode; /* null: the Server object */
+    UA_UInt16 severity;   /* 1 (lowest) .. 1000 */
+    const char *message;  /* UTF-8, NULL for none */
+    bool status;          /* AuditEventType.Status: the action succeeded */
+    const gds_event_field *fields;
+    size_t fieldsSize;
+    /* Roles whose sessions receive the event; at least one. */
+    const UA_NodeId *visibleTo;
+    size_t visibleToSize;
+} gds_audit_event;
+
+/* *seq (may be NULL) gets the event's place in the audit log. GDS_EINVAL
+ * for a type that is not an AuditEventType, a bad field or no visibleTo;
+ * GDS_EUNSUPPORTED when the store backend has no audit log. */
+GDS_MUST_CHECK gds_status gds_server_raise_audit_event(struct gds_server *s,
+                                                       const gds_caller *caller,
+                                                       const gds_audit_event *ev, int64_t *seq);
 
 #ifdef __cplusplus
 }
