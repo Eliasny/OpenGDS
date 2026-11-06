@@ -2,10 +2,20 @@
 # SPDX-License-Identifier: MPL-2.0
 add_library(gdsaudit_profile_gds STATIC
     gds_target.c
+    gds_tl.c
     test_spec_access.c
     test_spec_directory.c
     test_spec_certmgr.c
-    test_spec_trustlist.c)
+    test_spec_trustlist.c
+    test_spec_query.c
+    test_spec_revoke.c
+    test_spec_keypair.c
+    test_spec_tlwrite.c
+    test_spec_keycred.c
+    test_spec_authz.c
+    test_spec_events.c
+    test_spec_roles.c
+    test_spec_model.c)
 target_include_directories(gdsaudit_profile_gds PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(gdsaudit_profile_gds PUBLIC gdsaudit_core)
 

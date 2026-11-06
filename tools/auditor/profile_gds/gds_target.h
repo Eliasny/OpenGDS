@@ -63,11 +63,53 @@ void gt_record(UA_ApplicationRecordDataType *rec, const char *uri, UA_Applicatio
 GDS_MUST_CHECK UA_StatusCode gt_register(gds_target *t, UA_ApplicationType type, char *uriOut,
                                          size_t uriLen, UA_NodeId *appId);
 
+/* RegisterApplication with a caller-built record; *appId owned by caller. */
+GDS_MUST_CHECK UA_StatusCode gt_register_record(gds_target *t, const UA_ApplicationRecordDataType *rec,
+                                                UA_NodeId *appId);
+
+/* Call obj.method with explicit NodeIds (objects other than the Directory).
+ * Same result contract as gt_call. */
+GDS_MUST_CHECK UA_StatusCode gt_call_obj(gds_target *t, UA_NodeId obj, UA_NodeId method,
+                                         size_t inN, const UA_Variant *in, size_t minOut,
+                                         size_t *outN, UA_Variant **out);
+
+/* Resolve parent/<ns>:<name> with TranslateBrowsePathsToNodeIds. */
+GDS_MUST_CHECK UA_StatusCode gt_find(UA_Client *c, UA_NodeId parent, UA_UInt16 ns,
+                                     const char *name, UA_NodeId *out);
+
+/* A connected session with the Auditor's application certificate and no
+ * user (anonymous identity), or NULL with *r set. The caller deletes it
+ * with gt_drop. */
+UA_Client *gt_anon_session(gds_target *t, UA_StatusCode *r);
+void gt_drop(UA_Client *c);
+
+/* A session as the configured admin user over a Sign-only SecureChannel
+ * (Basic256Sha256, then Aes128_Sha256_RsaOaep), or NULL with *r set when the
+ * GDS offers no such endpoint. */
+UA_Client *gt_sign_only_session(gds_target *t, UA_StatusCode *r);
+
+/* Setup helper: register a fresh Client application and get it an RSA
+ * certificate through the signing flow. On Good the caller owns *appId,
+ * *cert and *issuer. */
+GDS_MUST_CHECK UA_StatusCode gt_issue(gds_target *t, ga_ctx *ctx, char *uri, size_t uriLen,
+                                      UA_NodeId *appId, gds_buf *cert, gds_buf *issuer);
+
 /* StartSigningRequest + FinishRequest polling. On Good, certOut/issuers are
  * owned by the caller; privKeyLen reports whether a private key came back. */
 GDS_MUST_CHECK UA_StatusCode gt_sign(gds_target *t, const UA_NodeId *appId, const gds_buf *csr,
                                      ga_ctx *ctx, gds_buf *certOut, gds_buf *issuerOut,
                                      size_t *privKeyLen);
+
+/* The first Object organized or contained by folder that has a child
+ * <GDS ns>:<method> (e.g. a KeyCredentialService under
+ * KeyCredentialManagement). Bad_NotFound when there is none. */
+GDS_MUST_CHECK UA_StatusCode gt_service(gds_target *t, UA_NodeId folder, const char *method,
+                                        UA_NodeId *obj);
+
+/* r says the method is not there (BadMethodInvalid, BadNotImplemented,
+ * BadNodeIdUnknown). Then it records the verdict: Not supported for an
+ * Optional method, Fail for a Mandatory one, and returns true. */
+bool gt_absent(ga_ctx *ctx, UA_StatusCode r, bool optional, const char *method);
 
 /* The DefaultApplicationGroup NodeId and RsaSha256ApplicationCertificateType */
 UA_NodeId gt_default_group(const gds_target *t);

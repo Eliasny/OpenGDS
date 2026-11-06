@@ -37,7 +37,7 @@
 #include "common/banned.h"
 
 #define APP_URI "urn:opengds:auditor"
-#define MAX_TESTS 64
+#define MAX_TESTS 160
 #define MAX_SERVER_TESTS 128
 
 static int usage(const char *argv0) {
@@ -115,7 +115,16 @@ static size_t collect(ga_test *all) {
     } sets[] = {{spec_access_tests, spec_access_count},
                 {spec_directory_tests, spec_directory_count},
                 {spec_certmgr_tests, spec_certmgr_count},
-                {spec_trustlist_tests, spec_trustlist_count}};
+                {spec_trustlist_tests, spec_trustlist_count},
+                {spec_query_tests, spec_query_count},
+                {spec_revoke_tests, spec_revoke_count},
+                {spec_keypair_tests, spec_keypair_count},
+                {spec_tlwrite_tests, spec_tlwrite_count},
+                {spec_keycred_tests, spec_keycred_count},
+                {spec_authz_tests, spec_authz_count},
+                {spec_events_tests, spec_events_count},
+                {spec_roles_tests, spec_roles_count},
+                {spec_model_tests, spec_model_count}};
     size_t n = 0;
     for(size_t s = 0; s < GDS_ARRAY_SIZE(sets); s++)
         for(size_t i = 0; i < sets[s].n && n < MAX_TESTS; i++)

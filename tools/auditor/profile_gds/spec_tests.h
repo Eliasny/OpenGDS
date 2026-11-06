@@ -13,5 +13,23 @@ extern const ga_test spec_certmgr_tests[];
 extern const size_t spec_certmgr_count;
 extern const ga_test spec_trustlist_tests[];
 extern const size_t spec_trustlist_count;
+extern const ga_test spec_query_tests[];
+extern const size_t spec_query_count;
+extern const ga_test spec_revoke_tests[];
+extern const size_t spec_revoke_count;
+extern const ga_test spec_keypair_tests[];
+extern const size_t spec_keypair_count;
+extern const ga_test spec_tlwrite_tests[];
+extern const size_t spec_tlwrite_count;
+extern const ga_test spec_keycred_tests[];
+extern const size_t spec_keycred_count;
+extern const ga_test spec_authz_tests[];
+extern const size_t spec_authz_count;
+extern const ga_test spec_events_tests[];
+extern const size_t spec_events_count;
+extern const ga_test spec_roles_tests[];
+extern const size_t spec_roles_count;
+extern const ga_test spec_model_tests[];
+extern const size_t spec_model_count;
 
 #endif
