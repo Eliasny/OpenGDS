@@ -1,0 +1,4 @@
+ApplicationUri,ApplicationName,ApplicationType,DiscoveryUrls,ServerCapabilities,ProductUri,ApplicationNameLocale
+urn:a,"Press, ""1""",Server,opc.tcp://a:4840 opc.tcp://b:4840,DA LDS,urn:p,de
+
+urn:b,B,Client,,,,

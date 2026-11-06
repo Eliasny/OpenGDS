@@ -248,6 +248,7 @@ Release builds also use LTO and are reproducible (`-ffile-prefix-map`, `SOURCE_D
 - `fuzz_signer_msg.c`: the signer protocol, both sides (`gds_signer_handle` and the reply decoder).
 - `fuzz_daemon_config.c`: the daemon config parser.
 - `fuzz_users.c`: the users file parser.
+- `fuzz_import.c`: `gdsadm apps import` CSV and JSON files.
 - `fuzz_auditor_responses.c`: the Auditor's handling of hostile method results.
 
 ## Run-time containment
