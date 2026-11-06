@@ -5,6 +5,8 @@
  * libseccomp, nothing in sanitizer builds).
  * SPDX-License-Identifier: MPL-2.0 */
 #include <errno.h>
+#include <netinet/in.h>
+#include <pthread.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -23,7 +25,9 @@
 
 static char roDir[1024], rwDir[1024], outside[1024];
 
-typedef enum { FILES, SOCKET, EXEC } action;
+typedef enum { FILES, SOCKET, EXEC, DAEMON, DAEMON_EXEC } action;
+
+#define BIND_PORT 47101 /* the daemon profile's port */
 
 static bool can_open(const char *path, int flags) {
     int fd = open(path, flags | O_CLOEXEC, 0600);
@@ -65,6 +69,66 @@ static int files_case(const gds_sandbox_report *rep) {
     return 0;
 }
 
+static void *thread_main(void *arg) {
+    return arg;
+}
+
+/* 0: bound, else the errno */
+static int try_bind(int s, unsigned short port) {
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_port = htons(port);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    return bind(s, (const struct sockaddr *)&a, sizeof(a)) == 0 ? 0 : errno;
+}
+
+/* bind on its own port only, and no TCP connect (with Landlock ABI 4+) */
+static int net_case(bool net) {
+    int s1 = socket(AF_INET, SOCK_STREAM, 0);
+    int s2 = socket(AF_INET, SOCK_STREAM, 0);
+    int s3 = socket(AF_INET, SOCK_STREAM, 0);
+    int rc = 0;
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_port = htons(BIND_PORT);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if(s1 < 0 || s2 < 0 || s3 < 0 || try_bind(s1, BIND_PORT) != 0 || listen(s1, 1) != 0)
+        rc = 12; /* its own port */
+    else if(net && try_bind(s2, BIND_PORT + 1) == 0)
+        rc = 13; /* any other port */
+    else if(net && connect(s3, (const struct sockaddr *)&a, sizeof(a)) == 0)
+        rc = 14; /* no TCP connect, not even to itself */
+    if(s1 >= 0)
+        (void)close(s1);
+    if(s2 >= 0)
+        (void)close(s2);
+    if(s3 >= 0)
+        (void)close(s3);
+    return rc;
+}
+
+/* In the child, under the daemon profile: 0 when every rule held. */
+static int daemon_case(const gds_sandbox_report *rep) {
+    bool net = !rep->skipped && rep->landlockAbi >= 4;
+    bool sc = !rep->skipped && rep->seccomp;
+    static int marker;
+    pthread_t t;
+    void *ret = NULL;
+    if(pthread_create(&t, NULL, thread_main, &marker) != 0 || pthread_join(t, &ret) != 0 ||
+       ret != &marker)
+        return 10; /* threads work */
+    pid_t pid = fork();
+    if(pid == 0)
+        _exit(0);
+    if(pid > 0)
+        (void)waitpid(pid, NULL, 0);
+    if(sc && pid >= 0)
+        return 11; /* no processes */
+    return net_case(net);
+}
+
 /* Fork a child that sandboxes itself, reports, and runs `a`. */
 static bool run(action a, gds_sandbox_report *rep, int *status) {
     int fds[2];
@@ -79,7 +143,9 @@ static bool run(action a, gds_sandbox_report *rep, int *status) {
     if(pid == 0) {
         (void)close(fds[0]);
         gds_sb_path paths[] = {{roDir, GDS_SB_READ}, {rwDir, GDS_SB_CREATE}};
-        gds_sandbox sb = {GDS_SB_SIGNER, paths, 2};
+        bool daemon = a == DAEMON || a == DAEMON_EXEC;
+        gds_sandbox sb = {.profile = daemon ? GDS_SB_DAEMON : GDS_SB_SIGNER, .paths = paths,
+                          .nPaths = 2, .tcpBindPort = daemon ? BIND_PORT : 0};
         gds_sandbox_report r;
         if(gds_sandbox_apply(&sb, &r) != GDS_OK)
             _exit(90);
@@ -88,6 +154,8 @@ static bool run(action a, gds_sandbox_report *rep, int *status) {
         (void)close(fds[1]);
         if(a == FILES)
             _exit(files_case(&r));
+        if(a == DAEMON)
+            _exit(daemon_case(&r));
         if(a == SOCKET) {
             int s = socket(AF_INET, SOCK_STREAM, 0);
             _exit(s >= 0 ? 0 : 92);
@@ -143,8 +211,11 @@ int main(int argc, char **argv) {
     }
     check_killed(SOCKET);
     check_killed(EXEC);
+    if(CHECK(run(DAEMON, &rep, &status)))
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    check_killed(DAEMON_EXEC);
 
-    gds_sandbox bad = {GDS_SB_SIGNER, NULL, 1};
+    gds_sandbox bad = {.profile = GDS_SB_SIGNER, .paths = NULL, .nPaths = 1};
     CHECK(gds_sandbox_apply(&bad, NULL) == GDS_EINVAL);
     return CHECK_DONE();
 }
