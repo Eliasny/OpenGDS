@@ -269,7 +269,7 @@ static gds_status sandbox(const options *o) {
     /* OpenSSL reads its configuration once, before the file rules apply */
     if(OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CONFIG, NULL) != 1)
         return GDS_ECRYPTO;
-    gds_sandbox sb = {GDS_SB_SIGNER, paths, n};
+    gds_sandbox sb = {.profile = GDS_SB_SIGNER, .paths = paths, .nPaths = n};
     gds_sandbox_report rep;
     r = gds_sandbox_apply(&sb, &rep);
     if(r != GDS_OK)
