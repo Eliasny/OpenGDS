@@ -37,6 +37,7 @@ add_subdirectory(src/store)
 add_subdirectory(src/ca)
 add_subdirectory(src/signer)
 add_subdirectory(src/server)
+add_subdirectory(src/daemon)
 add_subdirectory(src/client)
 add_subdirectory(src/push)
 add_subdirectory(tests/unit)
@@ -44,6 +45,7 @@ add_subdirectory(examples)
 
 if(OPENGDS_BUILD_AUDITOR)
     add_subdirectory(tools/auditor)
-    # The push tracer gate drives the Auditor's push_test_server
+    # The push tracer gate drives the Auditor's push_test_server; the pull
+    # tracer drives gdsaudit and pull_test_client against opengdsd
     add_subdirectory(tests/integration)
 endif()

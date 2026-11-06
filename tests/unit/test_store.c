@@ -212,7 +212,7 @@ int main(int argc, char **argv) {
         return CHECK_DONE();
     CHECK_EQ_INT(gds_store_schema_version(s), 2);
     struct stat sb;
-    CHECK(stat(path, &sb) == 0 && (sb.st_mode & 0777) == 0600);
+    CHECK(stat(path, &sb) == 0 && (sb.st_mode & 0777) == 0640); /* group read: the signer */
 
     UA_Guid id = rnd_guid(), id2 = rnd_guid();
     test_apps(s, &id, &id2);
@@ -220,7 +220,17 @@ int main(int argc, char **argv) {
     test_certs(s, &id, &id2);
     test_update_delete(s);
     test_audit(s, path);
+    {
+        char wal[1040];
+        CHECK(gds_path(wal, sizeof(wal), "%s-wal", path) == GDS_OK);
+        CHECK(stat(wal, &sb) == 0 && (sb.st_mode & 0777) == 0640); /* SQLite copies the mode */
+    }
     gds_store_close(s);
+    /* the mode is enforced on every open, not only at creation */
+    CHECK(chmod(path, 0600) == 0);
+    if(CHECK(gds_store_open(path, &s) == GDS_OK) && s)
+        gds_store_close(s);
+    CHECK(stat(path, &sb) == 0 && (sb.st_mode & 0777) == 0640);
 
     /* everything survives a reopen */
     if(CHECK(gds_store_open(path, &s) == GDS_OK) && s) {
