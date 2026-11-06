@@ -37,7 +37,6 @@ struct gds_server {
     gds_buf caCert; /* issuer certificate for FinishRequest, read once at start */
     gds_approval_policy approval;
     size_t pendingApprovals; /* live dialogs; server thread only */
-    bool started; /* gds_server_run was called (__atomic) */
     UA_DateTime counterReset; /* QueryApplications lastCounterResetTime */
     /* node role (gds_server.c); roleLock is a leaf lock */
     pthread_mutex_t roleLock;
@@ -51,6 +50,7 @@ struct gds_server {
     pthread_cond_t workCond;
     bool workPending, workStop;
     bool plugStop; /* plugin workers stop (plugLock); here for packing */
+    bool started;  /* gds_server_run was called (__atomic); here for packing */
     /* plugin privilege providers, fixed before the server runs */
     gds_privilege_provider privProviders[GDS_MAX_PRIVILEGE_PROVIDERS];
     size_t nPrivProviders;
