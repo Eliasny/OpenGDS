@@ -23,6 +23,14 @@ UA_Client *uac_new_secure(const gds_buf *cert, const gds_buf *key,
                           const gds_buf *crls, size_t crlN,
                           const char *applicationUri);
 
+/* As uac_new_secure, with the SecurityPolicy URI and mode chosen by the
+ * caller (the server profile opens a channel on every endpoint). */
+UA_Client *uac_new_secure_mode(const gds_buf *cert, const gds_buf *key,
+                               const gds_buf *trust, size_t trustN,
+                               const gds_buf *crls, size_t crlN,
+                               const char *applicationUri, const char *policyUri,
+                               UA_MessageSecurityMode mode);
+
 /* GetEndpoints over the discovery-only None channel and return the server
  * certificate of the first SignAndEncrypt endpoint (trust on first use in
  * test setups only, Annex G.2). *out is owned by the caller. */

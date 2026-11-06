@@ -1,0 +1,8 @@
+# Verdicts of the server profile against the good selftest/push_test_server.
+# A verdict that changes (also to pass) fails CI, so this file is the
+# conformance record of the self-test target.
+SRV-TL-02,pass
+SRV-UPD-01,pass
+SRV-TXN-03,pass
+SRV-WIRE-01,pass
+SRV-RESTORE,pass

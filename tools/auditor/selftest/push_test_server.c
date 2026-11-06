@@ -5,20 +5,26 @@
  * Part 12 PushManagement (OPC 10000-12 §7.7, §7.10). TEST TARGET, NOT A
  * PRODUCT: it exists so the Auditor's server profile has a reference to
  * pass against (and, from AT1, --break mutants to fail against).
- *   - ServerConfiguration: CreateSigningRequest, UpdateCertificate,
- *     ApplyChanges, GetRejectedList (from open62541's push support)
- *   - DefaultApplicationGroup TrustList: Open/Read/Write/CloseAndUpdate,
- *     AddCertificate/RemoveCertificate
+ *   - ServerConfiguration: CreateSigningRequest and GetRejectedList from
+ *     open62541's push support; UpdateCertificate, ApplyChanges and
+ *     CancelChanges from push_mgmt.c (spec transaction rules)
+ *   - DefaultApplicationGroup TrustList: the FileType methods and
+ *     OpenWithMasks/CloseAndUpdate from push_mgmt.c; AddCertificate and
+ *     RemoveCertificate from open62541
  * Added around the library:
  *   - SignAndEncrypt sessions only; None for GetEndpoints only
  *   - only SecurityAdmin may call ServerConfiguration/TrustList methods
  *     (an admin user, or the GDS's application certificate per Annex G.3)
  *   - an Annex F.1 directory PKI, so pushed state survives a restart
+ *   - --break <mutant>: one deliberate fault, named in the Auditor's server
+ *     catalogue (docs/auditor/server-profile.md, Mutant column). With a
+ *     mutant active the server listens on 127.0.0.1 only.
  *
  * Usage:
  *   push_test_server --port 4841 --pki ./pki-push \
  *       [--trust ca.der]... [--crl ca.crl]... \
  *       [--admin user:password]... [--admin-cert gds.der]... [--no-anonymous]
+ *       [--break <mutant>] [--list-mutants]
  */
 #include <open62541/plugin/accesscontrol_default.h>
 #include <open62541/plugin/create_certificate.h>
@@ -37,6 +43,7 @@
 
 #include "common/limits.h"
 #include "common/safeint.h"
+#include "push_mgmt.h"
 #include "x509util.h"
 #include "common/banned.h"
 
@@ -44,6 +51,8 @@
 #define MAX_ADMINS 16
 #define MAX_CRED 64
 #define MAX_SEED 16
+
+static const char *brk = NULL; /* active --break mutant (push_mgmt.c), set while parsing */
 
 /* ---------------- Admin policy (SecurityAdmin) ---------------- */
 
@@ -140,6 +149,7 @@ activateSession( // NOLINT(readability-function-cognitive-complexity)
 
 static void closeSession(UA_Server *server, UA_AccessControl *ac, const UA_NodeId *sessionId,
                          void *sessionContext) {
+    pm_session_closed(sessionId); /* its transaction ends with it (12 §7.10.2) */
     SessionFlag **pp = &sessionFlags;
     while(*pp) {
         if(UA_NodeId_equal(&(*pp)->sessionId, sessionId)) {
@@ -281,7 +291,8 @@ static gds_status addFileToStore(const char *pki, const char *sub, const char *s
 static int usage(const char *argv0) {
     fprintf(stderr,
             "usage: %s [--port N] [--pki DIR] [--trust cert.der]... [--crl x.crl]...\n"
-            "          [--admin user:password]... [--admin-cert gds.der]... [--no-anonymous]\n",
+            "          [--admin user:password]... [--admin-cert gds.der]... [--no-anonymous]\n"
+            "          [--break MUTANT] [--list-mutants]\n",
             argv0);
     return 2;
 }
@@ -302,12 +313,22 @@ int main(int argc, char **argv) {
             allowAnonymous = false;
             continue;
         }
+        if(!strcmp(a, "--list-mutants")) {
+            pm_mutant_list();
+            return 0;
+        }
         if(!v)
             return usage(argv[0]);
         i++;
         if(!strcmp(a, "--port")) {
             if(!gds_parse_long(v, 1, 65535, &port))
                 return usage(argv[0]);
+        } else if(!strcmp(a, "--break")) {
+            if(!pm_mutant_known(v)) {
+                fprintf(stderr, "unknown mutant '%s' (see --list-mutants)\n", v);
+                return 2;
+            }
+            brk = v;
         } else if(!strcmp(a, "--pki")) {
             pki = v;
         } else if(!strcmp(a, "--trust") && trustN < MAX_SEED) {
@@ -340,6 +361,8 @@ int main(int argc, char **argv) {
         }
     }
     printf("push_test_server: OpenGDS Auditor self-test target, not a product\n");
+    if(brk)
+        printf("push_test_server: MUTANT '%s' active, listening on 127.0.0.1 only\n", brk);
 
     /* Seed the trust store from the command line (initial out-of-band trust) */
     for(size_t i = 0; i < trustN; i++)
@@ -385,7 +408,9 @@ int main(int argc, char **argv) {
     UA_ServerConfig *config = UA_Server_getConfig(server);
     UA_StatusCode res = UA_ServerConfig_setDefaultWithFilestore(
         config, (UA_UInt16)port, &cert, &key, UA_STRING((char *)(uintptr_t)pki));
-    /* the config holds its own copies now; wipe ours */
+    /* the config holds its own copies now; wipe ours (the wire-old-cert
+     * mutant keeps one in push_mgmt.c) */
+    res |= pm_install(server, brk, &key);
     gds_buf kb = {key.data, key.length}, cb = {cert.data, cert.length};
     gds_buf_free_secret(&kb);
     gds_buf_free(&cb);
@@ -393,6 +418,25 @@ int main(int argc, char **argv) {
         fprintf(stderr, "server config failed: %s\n", UA_StatusCode_name(res));
         UA_Server_delete(server);
         return 1;
+    }
+
+    /* A mutant never listens beyond loopback (docs/architecture.md, "The
+     * Auditor under these rules") */
+    if(brk) {
+        char u[64];
+        if(gds_path(u, sizeof(u), "opc.tcp://127.0.0.1:%ld", port) != GDS_OK) {
+            UA_Server_delete(server);
+            return 1;
+        }
+        UA_Array_delete(config->serverUrls, config->serverUrlsSize, &UA_TYPES[UA_TYPES_STRING]);
+        config->serverUrls = UA_String_new();
+        config->serverUrlsSize = 0;
+        if(!config->serverUrls) {
+            UA_Server_delete(server);
+            return 1;
+        }
+        *config->serverUrls = UA_STRING_ALLOC(u);
+        config->serverUrlsSize = 1;
     }
 
     /* Identity */
@@ -430,6 +474,7 @@ int main(int argc, char **argv) {
                 port, pki, adminUsersSize, adminThumbsSize);
     res = UA_Server_runUntilInterrupt(server);
     UA_Server_delete(server);
+    pm_clear();
     while(sessionFlags) {
         SessionFlag *n = sessionFlags->next;
         UA_NodeId_clear(&sessionFlags->sessionId);
