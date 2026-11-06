@@ -1,16 +1,16 @@
 /* OpenGDS spec tests: certificates of an application and their revocation
  * (OPC 10000-12 §7.9.6 RevokeCertificate, §7.9.8 GetCertificates,
  * §7.9.11 CheckRevocationStatus).
- * Revocation on UnregisterApplication (§7.9.6) is gds.dir.unregister_revokes
+ * Revocation on UnregisterApplication (§6.5.8) is gds.dir.unregister_revokes
  * in test_spec_directory.c.
  * SPDX-License-Identifier: MPL-2.0 */
 #include <open62541/nodeids_gds.h>
-#include <openssl/x509.h>
 
 #include <string.h>
 
 #include "common/limits.h"
 #include "gds_target.h"
+#include "gds_tl.h"
 #include "spec_tests.h"
 #include "common/banned.h"
 
@@ -103,39 +103,6 @@ static UA_StatusCode check_status(gds_target *t, const gds_buf *cert, UA_StatusC
     return r;
 }
 
-/* Is cert listed in one of the CRLs of the trust list? */
-static bool crl_lists(const UA_TrustListDataType *tl, const gds_buf *certDer) {
-    X509 *x = x509_parse_cert(certDer);
-    if(!x)
-        return false;
-    bool hit = false;
-    const UA_ByteString *lists[2] = {tl->trustedCrls, tl->issuerCrls};
-    size_t sizes[2] = {tl->trustedCrlsSize, tl->issuerCrlsSize};
-    for(size_t l = 0; l < 2 && !hit; l++) {
-        for(size_t i = 0; i < sizes[l] && !hit; i++) {
-            const unsigned char *pp = lists[l][i].data;
-            X509_CRL *crl = d2i_X509_CRL(NULL, &pp, (long)lists[l][i].length);
-            if(!crl)
-                continue;
-            X509_REVOKED *rev = NULL;
-            hit = X509_CRL_get0_by_cert(crl, &rev, x) == 1;
-            X509_CRL_free(crl);
-        }
-    }
-    X509_free(x);
-    return hit;
-}
-
-static UA_StatusCode read_group_tl(gds_target *t, UA_TrustListDataType *tl) {
-    UA_TrustListDataType_init(tl);
-    UA_StatusCode r = gt_session(t);
-    if(r != UA_STATUSCODE_GOOD)
-        return r;
-    return uac_read_trustlist(
-        t->client, gt_node(t, UA_GDSID_DIRECTORY_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST),
-        tl);
-}
-
 static void t_get_certificates(ga_ctx *ctx, void *p) {
     gds_target *t = p;
     issued a;
@@ -221,13 +188,13 @@ static void t_revoke(ga_ctx *ctx, void *p) {
         return;
     }
     UA_TrustListDataType tl;
-    r = read_group_tl(t, &tl);
+    r = gtl_read_group(t, &tl);
     size_t nT = 0, nC = 0;
     bool still = false;
     UA_StatusCode rg = get_certs(t, &a.id, NULL, &nT, &nC, &a.cert, &still);
     if(r != UA_STATUSCODE_GOOD)
         ga_fail(ctx, "reading the group trust list after revocation -> %s", UA_StatusCode_name(r));
-    else if(!crl_lists(&tl, &a.cert))
+    else if(!gtl_crl_lists(&tl, &a.cert))
         ga_fail(ctx, "the revoked certificate is in no CRL of the group trust list");
     else if(rg == UA_STATUSCODE_GOOD && still)
         ga_fail(ctx, "GetCertificates still returns the revoked certificate");

@@ -18,6 +18,7 @@ gds.dir.get_application,pass
 gds.dir.get_unknown,pass
 gds.dir.update_application,pass
 gds.dir.unregister,pass
+gds.dir.unregister_revokes,pass
 gds.dir.query_by_uri,pass
 gds.cm.groups,pass
 gds.cm.groups_unknown,pass
