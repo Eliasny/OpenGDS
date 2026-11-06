@@ -244,7 +244,7 @@ static gds_server *new_server(fixture *f, gds_users *users, UA_UInt16 port, cons
     cfg.store = f->store;
     cfg.ca = f->ca;
     cfg.users = users;
-    cfg.autoApprove = true;
+    cfg.approval = GDS_APPROVE_ALL;
     gds_server *s = NULL;
     return CHECK(gds_server_new(&cfg, &s) == GDS_OK) ? s : NULL;
 }
