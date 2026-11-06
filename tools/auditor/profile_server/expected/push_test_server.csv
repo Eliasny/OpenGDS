@@ -59,6 +59,16 @@ SRV-UPD-10,not_supported
 SRV-UPD-11,pass
 SRV-UPD-12,pass
 SRV-UPD-13,pass
+SRV-TXN-01,pass
+SRV-TXN-02,pass
 SRV-TXN-03,pass
+SRV-TXN-04,pass
+SRV-TXN-05,pass
+SRV-TXN-06,pass
+SRV-TXN-07,pass
+SRV-TXN-08,pass
+SRV-TXN-09,pass
+SRV-TXN-10,pass
+SRV-TXN-11,pass
 SRV-WIRE-01,pass
 SRV-RESTORE,pass

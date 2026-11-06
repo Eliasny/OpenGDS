@@ -125,6 +125,34 @@ static void test_ipc_sign(gds_ca *ipc, gds_store *w, const UA_Guid *reqId,
     CHECK(gds_ca_sign_csr(ipc, &subj, &junkCsr, &out) == GDS_ENOTFOUND);
 }
 
+/* What test_ipc_sign left in the journal: the issuance, then the two
+ * refusals, in order and with a verified chain. */
+typedef struct {
+    gds_journal_entry e[3];
+    int n;
+} journal_seen;
+
+static bool keep_entry(void *ctx, const gds_journal_entry *e) {
+    journal_seen *js = ctx;
+    js->e[js->n++] = *e;
+    return js->n < 3;
+}
+
+static void test_journal(const char *path, const UA_Guid *reqId) {
+    journal_seen js;
+    memset(&js, 0, sizeof(js));
+    int64_t bad = -1;
+    CHECK(gds_journal_read(path, keep_entry, &js, &bad) == GDS_OK);
+    CHECK_EQ_INT(bad, 0);
+    if(!CHECK_EQ_INT(js.n, 3))
+        return;
+    CHECK(js.e[0].seq == 1 && js.e[0].issued && js.e[0].serialLen == 20 && js.e[0].status == 0);
+    CHECK(UA_Guid_equal(&js.e[0].requestId, reqId));
+    CHECK(!js.e[1].issued && js.e[1].status == (int)GDS_ESTATE);
+    CHECK(UA_Guid_equal(&js.e[1].requestId, reqId));
+    CHECK(!js.e[2].issued && js.e[2].status == (int)GDS_ENOTFOUND);
+}
+
 static int crl_entries(gds_ca *ca) {
     gds_buf der = {0};
     CHECK(gds_ca_get_crl(ca, &der) == GDS_OK);
@@ -263,8 +291,14 @@ int main(int argc, char **argv) {
     UA_Guid appId, reqId;
     seed_store(w, &appId, &reqId);
 
-    gds_signer s = {NULL, open_direct_ca(caDir)};
+    char jpath[1100];
+    CHECK(gds_path(jpath, sizeof(jpath), "%s/" GDS_JOURNAL_FILE, caDir) == GDS_OK);
+    (void)unlink(jpath);
+    gds_signer s = {NULL, open_direct_ca(caDir), NULL};
     CHECK(gds_store_open_readonly(db, &s.store) == GDS_OK);
+    CHECK(gds_journal_open(jpath, &s.journal) == GDS_OK);
+    gds_journal *second = NULL;
+    CHECK(gds_journal_open(jpath, &second) == GDS_EEXISTS); /* one signer per journal */
     int sv[2];
     if(!CHECK(s.store && s.ca && socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv) == 0))
         return CHECK_DONE();
@@ -287,8 +321,10 @@ int main(int argc, char **argv) {
     CHECK(arg.result == GDS_OK);
     close(sv[1]);
 
+    test_journal(jpath, &reqId);
     test_malformed(&s, &reqId);
     test_revoke_proto();
+    gds_journal_close(s.journal);
     gds_ca_close(s.ca);
     gds_store_close(s.store);
     gds_store_close(w);

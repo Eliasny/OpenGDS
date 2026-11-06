@@ -113,6 +113,18 @@ static const struct {
     {"selfsigned-overwrite", "SRV-UPD-12",
      "CreateSelfSignedCertificate returns Good on the occupied slot"},
     {"delete-in-use", "SRV-UPD-13", "DeleteCertificate returns Good on the certificate in use"},
+    {"apply-required-false", "SRV-TXN-01", "CloseAndUpdate returns ApplyChangesRequired FALSE"},
+    {"apply-early", "SRV-TXN-02", "CloseAndUpdate puts the trust list in use before ApplyChanges"},
+    {"cancel-keeps-trustlist", "SRV-TXN-04", "CancelChanges puts the queued trust list in use"},
+    {"txn-survives-session", "SRV-TXN-05",
+     "a transaction outlives its Session and the next Session may apply it"},
+    {"txn-interleave", "SRV-TXN-06", "another Session may join a transaction in progress"},
+    {"apply-any-session", "SRV-TXN-07", "any Session may apply or cancel a transaction"},
+    {"apply-while-open", "SRV-TXN-08", "ApplyChanges ignores a TrustList open for writing"},
+    {"apply-nothing-good", "SRV-TXN-09", "ApplyChanges with no transaction returns Good"},
+    {"fail-aborts-txn", "SRV-TXN-10", "a failed UpdateCertificate discards the transaction"},
+    {"apply-partial", "SRV-TXN-11",
+     "ApplyChanges puts the trust list in use and then fails on the certificate"},
     {"update-ignore-key", "SRV-UPD-09",
      "with --accept-keys: UpdateCertificate accepts a private key and keeps the old one"},
     {"update-accept-bad-key", "SRV-UPD-10",
@@ -220,9 +232,12 @@ static void txn_clear(void) {
 /* Join or start the caller's transaction; Bad_TransactionPending if another
  * Session holds one (§7.8.2.2, §7.10.5). */
 static UA_StatusCode txn_join(const UA_NodeId *session) {
+    if(P.txn && UA_NodeId_isNull(&P.owner)) /* txn-survives-session: adopted */
+        return UA_NodeId_copy(session, &P.owner);
     if(P.txn)
-        return UA_NodeId_equal(&P.owner, session) ? UA_STATUSCODE_GOOD
-                                                  : UA_STATUSCODE_BADTRANSACTIONPENDING;
+        return UA_NodeId_equal(&P.owner, session) || breaking("txn-interleave")
+                   ? UA_STATUSCODE_GOOD
+                   : UA_STATUSCODE_BADTRANSACTIONPENDING;
     UA_StatusCode r = UA_NodeId_copy(session, &P.owner);
     if(r == UA_STATUSCODE_GOOD)
         P.txn = true;
@@ -270,6 +285,10 @@ void pm_session_closed(const UA_NodeId *sessionId) {
         if(P.files[i].used && UA_NodeId_equal(&P.files[i].session, sessionId))
             file_free(&P.files[i]);
     if(P.txn && UA_NodeId_equal(&P.owner, sessionId)) {
+        if(breaking("txn-survives-session")) { /* kept for whoever comes next */
+            UA_NodeId_clear(&P.owner);
+            return;
+        }
         UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND,
                     "Session with a transaction ended: transaction discarded");
         txn_clear();
@@ -379,6 +398,8 @@ static UA_StatusCode replace(UA_ByteString **dst, size_t *dstN, const UA_ByteStr
 
 /* The queued list = (queued or current) with the masked lists replaced
  * (§7.8.2.5, §7.8.2.9). */
+static UA_StatusCode install_list(const UA_TrustListDataType *l);
+
 static UA_StatusCode queue_list(const UA_TrustListDataType *in) {
     UA_TrustListDataType base;
     UA_StatusCode r = P.hasList ? UA_TrustListDataType_copy(&P.list, &base) : current_list(&base);
@@ -479,7 +500,8 @@ static UA_StatusCode tlOpen(METHOD_ARGS) {
         mode = PM_MODE_WRITE_ERASE;
     if(mode != PM_MODE_WRITE_ERASE)
         return UA_STATUSCODE_BADNOTSUPPORTED; /* §7.8.2.2 */
-    if(P.txn && !UA_NodeId_equal(&P.owner, sessionId))
+    if(P.txn && !UA_NodeId_isNull(&P.owner) && !UA_NodeId_equal(&P.owner, sessionId) &&
+       !breaking("txn-interleave"))
         return UA_STATUSCODE_BADTRANSACTIONPENDING;
     if(write_open())
         return UA_STATUSCODE_BADNOTWRITABLE;
@@ -578,6 +600,8 @@ static UA_StatusCode close_and_update(const UA_NodeId *sessionId, pm_file *f) {
         r = txn_join(sessionId);
     if(r == UA_STATUSCODE_GOOD)
         r = queue_list(&in);
+    if(r == UA_STATUSCODE_GOOD && breaking("apply-early"))
+        r = install_list(&P.list); /* in use before ApplyChanges */
     UA_TrustListDataType_clear(&in);
     return r;
 }
@@ -615,7 +639,7 @@ static UA_StatusCode tlCloseAndUpdate(METHOD_ARGS) {
     UA_StatusCode r = close_and_update(sessionId, f);
     if(r != UA_STATUSCODE_GOOD)
         return r;
-    UA_Boolean applyRequired = true;
+    UA_Boolean applyRequired = !breaking("apply-required-false");
     return UA_Variant_setScalarCopy(&output[0], &applyRequired, &UA_TYPES[UA_TYPES_BOOLEAN]);
 }
 
@@ -823,6 +847,9 @@ static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
             secret_clear(&ck);
     } /* else accept-key-unadvertised: the key is ignored */
     X509_free(x);
+    if(r != UA_STATUSCODE_GOOD && breaking("fail-aborts-txn") && P.txn && P.hasList &&
+       UA_NodeId_equal(&P.owner, sessionId))
+        txn_clear(); /* §7.10.2: a failed call must leave the transaction as it was */
     if(r != UA_STATUSCODE_GOOD)
         return r;
     if((r = txn_join(sessionId)) != UA_STATUSCODE_GOOD) {
@@ -845,8 +872,10 @@ static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
 
 static UA_StatusCode txn_owner_check(const UA_NodeId *sessionId) {
     if(!P.txn)
-        return UA_STATUSCODE_BADNOTHINGTODO;
-    if(!UA_NodeId_equal(&P.owner, sessionId))
+        return breaking("apply-nothing-good") ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNOTHINGTODO;
+    if(UA_NodeId_isNull(&P.owner)) /* txn-survives-session */
+        return UA_NodeId_copy(sessionId, &P.owner);
+    if(!UA_NodeId_equal(&P.owner, sessionId) && !breaking("apply-any-session"))
         return UA_STATUSCODE_BADSESSIONIDINVALID; /* §7.10.9, decision D5 */
     return UA_STATUSCODE_GOOD;
 }
@@ -879,6 +908,21 @@ static UA_StatusCode install_list(const UA_TrustListDataType *l) {
     return r;
 }
 
+static bool issuer_among(X509 *x, const UA_ByteString *l, size_t n, bool *sigOk);
+
+/* apply-partial: does the queued certificate chain to the queued list? */
+static bool chains_to_queued(void) {
+    gds_buf b = {P.cert.data, P.cert.length};
+    X509 *x = x509_parse_cert(&b);
+    bool sig = false;
+    bool found = x && (X509_check_issued(x, x) == X509_V_OK ||
+                       issuer_among(x, P.list.trustedCertificates, P.list.trustedCertificatesSize, &sig) ||
+                       issuer_among(x, P.list.issuerCertificates, P.list.issuerCertificatesSize, &sig));
+    X509_free(x);
+    ERR_clear_error();
+    return found;
+}
+
 static UA_StatusCode apply(void) {
     UA_StatusCode r = UA_STATUSCODE_GOOD;
     if(P.hasList) {
@@ -886,6 +930,8 @@ static UA_StatusCode apply(void) {
         if(r != UA_STATUSCODE_GOOD)
             return r;
     }
+    if(P.hasCert && P.hasList && breaking("apply-partial") && !chains_to_queued())
+        return UA_STATUSCODE_BADCERTIFICATEINVALID; /* the list is already in use */
     if(P.hasCert) {
         UA_SecurityPolicy *sp = breaking("wire-old-cert") ? stale_policy() : NULL;
         UA_ByteString old = UA_BYTESTRING_NULL;
@@ -920,7 +966,7 @@ static UA_StatusCode scApplyChanges(METHOD_ARGS) {
     UA_StatusCode r = txn_owner_check(sessionId);
     if(r != UA_STATUSCODE_GOOD)
         return r;
-    for(size_t i = 0; i < PM_MAX_FILES; i++)
+    for(size_t i = 0; i < PM_MAX_FILES && !breaking("apply-while-open"); i++)
         if(P.files[i].used && P.files[i].mode == PM_MODE_WRITE_ERASE &&
            UA_NodeId_equal(&P.files[i].session, sessionId))
             return UA_STATUSCODE_BADINVALIDSTATE; /* §7.10.9: a TrustList is still open */
@@ -942,6 +988,8 @@ static UA_StatusCode scCancelChanges(METHOD_ARGS) {
     (void)output;
     (void)outputSize;
     UA_StatusCode r = txn_owner_check(sessionId);
+    if(r == UA_STATUSCODE_GOOD && breaking("cancel-keeps-trustlist") && P.hasList)
+        r = install_list(&P.list);
     if(r == UA_STATUSCODE_GOOD)
         txn_clear();
     return r;
@@ -1071,7 +1119,8 @@ static UA_StatusCode scGetRejectedList(METHOD_ARGS) {
 static UA_StatusCode list_change_allowed(void) {
     if(write_open())
         return UA_STATUSCODE_BADINVALIDSTATE;
-    return P.txn ? UA_STATUSCODE_BADTRANSACTIONPENDING : UA_STATUSCODE_GOOD;
+    return P.txn && !breaking("txn-interleave") ? UA_STATUSCODE_BADTRANSACTIONPENDING
+                                                : UA_STATUSCODE_GOOD;
 }
 
 /* The CA in `l` (trusted or issuer) whose signature verifies x. */
@@ -1123,8 +1172,12 @@ static UA_StatusCode chain_check(X509 *x, const UA_Variant *issuers) {
         sigOk = pk && X509_verify(x, pk) == 1;
         ERR_clear_error();
     } else {
+        /* the trust list it will be validated with: a queued one if any
+         * (§7.10.2 applies both together; SRV-TXN-11) */
         UA_TrustListDataType cur;
-        UA_StatusCode r = current_list(&cur);
+        UA_StatusCode r = P.hasList && !breaking("apply-partial")
+                              ? UA_TrustListDataType_copy(&P.list, &cur)
+                              : current_list(&cur);
         if(r != UA_STATUSCODE_GOOD)
             return r;
         found = issuer_among(x, cur.trustedCertificates, cur.trustedCertificatesSize, &sigOk);
