@@ -10,6 +10,7 @@
 #include <openssl/rand.h>
 #include <openssl/x509v3.h>
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -259,6 +260,65 @@ const gds_user *gds_users_check(const gds_users *u, const UA_String *name, const
 
 /* ---- sessions ---- */
 
+/* Activated sessions, for audit event visibility (gds_audit.c). Written on
+ * the server thread (activate, close), read from workers; sessLock is a
+ * leaf lock and never held across a call into open62541. */
+#define MAX_LIVE_SESSIONS 1024
+typedef struct {
+    UA_NodeId id;
+    bool anonymous;
+    unsigned roles;
+} live_session;
+static live_session live[MAX_LIVE_SESSIONS];
+static size_t nLive;
+static pthread_mutex_t sessLock = PTHREAD_MUTEX_INITIALIZER;
+
+static void live_remove(const UA_NodeId *id) {
+    pthread_mutex_lock(&sessLock);
+    for(size_t i = 0; i < nLive; i++) {
+        if(!UA_NodeId_equal(&live[i].id, id))
+            continue;
+        UA_NodeId_clear(&live[i].id);
+        live[i] = live[--nLive];
+        memset(&live[nLive], 0, sizeof(live[nLive]));
+        break;
+    }
+    pthread_mutex_unlock(&sessLock);
+}
+
+static void live_set(const UA_NodeId *id, const gds_session *s) {
+    live_remove(id);
+    pthread_mutex_lock(&sessLock);
+    if(nLive < MAX_LIVE_SESSIONS && UA_NodeId_copy(id, &live[nLive].id) == UA_STATUSCODE_GOOD) {
+        live[nLive].anonymous = s->anonymous;
+        live[nLive].roles = s->roles;
+        nLive++;
+    }
+    pthread_mutex_unlock(&sessLock);
+}
+
+size_t gds_access_sessions_with(unsigned roles, bool anonymous, bool authenticated,
+                                UA_NodeId *out, size_t max) {
+    size_t n = 0;
+    pthread_mutex_lock(&sessLock);
+    for(size_t i = 0; i < nLive && n < max; i++) {
+        const live_session *l = &live[i];
+        bool match = anonymous || (authenticated && !l->anonymous) || (l->roles & roles) != 0;
+        if(match && UA_NodeId_copy(&l->id, &out[n]) == UA_STATUSCODE_GOOD)
+            n++;
+    }
+    pthread_mutex_unlock(&sessLock);
+    return n;
+}
+
+static void live_clear(void) {
+    pthread_mutex_lock(&sessLock);
+    for(size_t i = 0; i < nLive; i++)
+        UA_NodeId_clear(&live[i].id);
+    nLive = 0;
+    pthread_mutex_unlock(&sessLock);
+}
+
 static void session_free(gds_session *s) {
     if(!s)
         return;
@@ -372,12 +432,16 @@ static UA_StatusCode activate(UA_Server *server, UA_AccessControl *ac,
         if(UA_String_copy(&ep->securityPolicyUri, &s->securityPolicyUri) != UA_STATUSCODE_GOOD)
             s->securityPolicyUri = UA_STRING_NULL;
     }
+    if(s && sessionId)
+        live_set(sessionId, s);
     return UA_STATUSCODE_GOOD;
 }
 
 static void close_session(UA_Server *server, UA_AccessControl *ac, const UA_NodeId *sessionId,
                           void *sessionContext) {
-    (void)server, (void)ac, (void)sessionId;
+    (void)server, (void)ac;
+    if(sessionId)
+        live_remove(sessionId);
     session_free(sessionContext);
 }
 
@@ -488,6 +552,7 @@ static UA_Boolean executable_on(UA_Server *server, UA_AccessControl *ac, const U
 }
 
 void gds_access_uninstall(void) {
+    live_clear();
     X509_free(gdsCa);
     gdsCa = NULL;
 }

@@ -439,7 +439,7 @@ UA_StatusCode st_update_cert(const srv_target *t, UA_Client *c, const gds_buf *c
     return st_update_cert_key(t, c, cert, issuers, issuersN, NULL, NULL, applyRequired);
 }
 
-UA_StatusCode st_update_cert_key(const srv_target *t, UA_Client *c, const gds_buf *cert,
+static UA_StatusCode update_call(UA_Client *c, UA_NodeId type, const gds_buf *cert,
                                  const gds_buf *issuers, size_t issuersN, const char *keyFormat,
                                  const gds_buf *key, bool *applyRequired) {
     *applyRequired = false;
@@ -451,7 +451,6 @@ UA_StatusCode st_update_cert_key(const srv_target *t, UA_Client *c, const gds_bu
         iss[i].length = issuers[i].len;
     }
     UA_NodeId group = ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
-    UA_NodeId type = t->certType;
     UA_ByteString cb = {cert->len, cert->data};
     UA_String fmt = keyFormat ? UA_STRING((char *)(uintptr_t)keyFormat) : UA_STRING_NULL;
     UA_ByteString pk = UA_BYTESTRING_NULL;
@@ -481,6 +480,17 @@ UA_StatusCode st_update_cert_key(const srv_target *t, UA_Client *c, const gds_bu
         r = UA_STATUSCODE_BADUNEXPECTEDERROR;
     free_out(out, outN);
     return r;
+}
+
+UA_StatusCode st_update_cert_key(const srv_target *t, UA_Client *c, const gds_buf *cert,
+                                 const gds_buf *issuers, size_t issuersN, const char *keyFormat,
+                                 const gds_buf *key, bool *applyRequired) {
+    return update_call(c, t->certType, cert, issuers, issuersN, keyFormat, key, applyRequired);
+}
+
+UA_StatusCode st_update_cert_as(UA_Client *c, UA_NodeId type, const gds_buf *cert,
+                                bool *applyRequired) {
+    return update_call(c, type, cert, NULL, 0, NULL, NULL, applyRequired);
 }
 
 void st_supports_transactions(UA_Client *c, bool *present, bool *value) {
@@ -779,6 +789,30 @@ static bool cert_body(X509 *x, const testca_t *issuer, EVP_PKEY *key, const char
 
 gds_status st_make_cert(const testca_t *issuer, EVP_PKEY *key, const char *cn, long fromSec,
                         long toSec, bool isCa, size_t pad, gds_buf *out) {
+    return st_make_leaf(issuer, key, cn, NULL, fromSec, toSec, isCa, pad, out);
+}
+
+static bool add_uri(X509 *x, const char *uri) {
+    GENERAL_NAMES *gens = sk_GENERAL_NAME_new_null();
+    GENERAL_NAME *g = GENERAL_NAME_new();
+    ASN1_IA5STRING *u = ASN1_IA5STRING_new();
+    bool ok = gens && g && u && ASN1_STRING_set(u, uri, -1) == 1;
+    if(ok) {
+        GENERAL_NAME_set0_value(g, GEN_URI, u);
+        u = NULL;
+        ok = sk_GENERAL_NAME_push(gens, g) > 0;
+        if(ok)
+            g = NULL;
+    }
+    ok = ok && X509_add1_ext_i2d(x, NID_subject_alt_name, gens, 0, 0) == 1;
+    ASN1_IA5STRING_free(u);
+    GENERAL_NAME_free(g);
+    GENERAL_NAMES_free(gens);
+    return ok;
+}
+
+gds_status st_make_leaf(const testca_t *issuer, EVP_PKEY *key, const char *cn, const char *uri,
+                        long fromSec, long toSec, bool isCa, size_t pad, gds_buf *out) {
     out->data = NULL;
     out->len = 0;
     if(toSec > (long)TESTCA_MAX_DAYS * 86400L)
@@ -786,7 +820,7 @@ gds_status st_make_cert(const testca_t *issuer, EVP_PKEY *key, const char *cn, l
     X509 *x = X509_new();
     unsigned char *der = NULL;
     int len = -1;
-    if(x && cert_body(x, issuer, key, cn, fromSec, toSec, isCa, pad) &&
+    if(x && cert_body(x, issuer, key, cn, fromSec, toSec, isCa, pad) && (!uri || add_uri(x, uri)) &&
        X509_sign(x, issuer ? issuer->key : key, EVP_sha256()) > 0)
         len = i2d_X509(x, &der);
     gds_status s = len > 0 ? gds_buf_dup(der, (size_t)len, out) : GDS_ECRYPTO;

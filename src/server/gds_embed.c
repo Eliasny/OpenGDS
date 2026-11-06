@@ -340,32 +340,33 @@ int gds_embed_decide(const gds_server *s, const void *sessionContext, const UA_N
 
 /* ---- registration (before gds_server_run) ---- */
 
-static gds_status role_bits(const gds_server *s, const gds_method_def *d, gds_binding *b) {
-    if(d->rolesSize > GDS_MAX_METHOD_ROLES || (d->rolesSize && !d->roles))
+gds_status gds_role_bits(const gds_server *s, const UA_NodeId *roles, size_t n, unsigned *bits,
+                         bool *anonymous, bool *authenticated) {
+    if(n > GDS_MAX_METHOD_ROLES || (n && !roles))
         return GDS_EINVAL;
-    size_t n = 0;
-    const gds_role_info *t = gds_role_table(&n);
-    for(size_t i = 0; i < d->rolesSize; i++) {
-        const UA_NodeId *r = &d->roles[i];
+    size_t nt = 0;
+    const gds_role_info *t = gds_role_table(&nt);
+    for(size_t i = 0; i < n; i++) {
+        const UA_NodeId *r = &roles[i];
         if(r->identifierType != UA_NODEIDTYPE_NUMERIC)
             return GDS_EINVAL;
         if(r->namespaceIndex == 0 && r->identifier.numeric == UA_NS0ID_WELLKNOWNROLE_ANONYMOUS) {
-            b->anonymous = true;
+            *anonymous = true;
             continue;
         }
         if(r->namespaceIndex == 0 &&
            r->identifier.numeric == UA_NS0ID_WELLKNOWNROLE_AUTHENTICATEDUSER) {
-            b->authenticated = true;
+            *authenticated = true;
             continue;
         }
         unsigned bit = 0;
-        for(size_t k = 0; k < n && !bit; k++)
+        for(size_t k = 0; k < nt && !bit; k++)
             if(r->namespaceIndex == (t[k].gdsNamespace ? s->ns : 0) &&
                r->identifier.numeric == t[k].id)
                 bit = t[k].bit;
         if(!bit)
             return GDS_EINVAL; /* no session can hold it */
-        b->roleBits |= bit;
+        *bits |= bit;
     }
     return GDS_OK;
 }
@@ -394,7 +395,8 @@ static gds_status new_binding(gds_server *s, const gds_method_def *d, gds_bindin
     b->minMode = d->minSecurityMode == GDS_SECURITY_MODE_INVALID
                      ? GDS_SECURITY_MODE_SIGN_AND_ENCRYPT
                      : d->minSecurityMode;
-    gds_status st = role_bits(s, d, b);
+    gds_status st = gds_role_bits(s, d->roles, d->rolesSize, &b->roleBits, &b->anonymous,
+                                  &b->authenticated);
     if(st == GDS_OK && UA_NodeId_copy(&d->methodId, &b->methodId) != UA_STATUSCODE_GOOD)
         st = GDS_ENOMEM;
     gds_privilege_set ps = {{0}, 0};
