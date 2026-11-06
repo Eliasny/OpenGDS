@@ -19,6 +19,8 @@ typedef struct {
     const char *logPath; /* stdout and stderr of the hook are appended here */
     const char *clientDir; /* GDSAUDIT_CLIENT_DIR: state the client keeps between cycles */
     unsigned timeoutSeconds;
+    const char *action;   /* GDSAUDIT_ACTION: NULL (a pull cycle) or "probe" */
+    const char *probeUrl; /* GDSAUDIT_PROBE_URL with action "probe" */
 } trig_cfg;
 
 typedef struct {
@@ -29,7 +31,8 @@ typedef struct {
 
 /* Run the hook once while serving the fake GDS (fg_iterate) until it ends.
  * The hook sees GDSAUDIT_GDS_URL, GDSAUDIT_GDS_CA, GDSAUDIT_GDS_CRL,
- * GDSAUDIT_GDS_USER, GDSAUDIT_GDS_PASSWORD_FILE and GDSAUDIT_CLIENT_DIR. */
+ * GDSAUDIT_GDS_USER, GDSAUDIT_GDS_PASSWORD_FILE and GDSAUDIT_CLIENT_DIR, and
+ * for a probe connection GDSAUDIT_ACTION=probe and GDSAUDIT_PROBE_URL. */
 GDS_MUST_CHECK gds_status trig_run(const trig_cfg *cfg, const char *user, trig_result *res);
 
 #endif
