@@ -45,7 +45,7 @@ extern "C" {
 #endif
 
 #define GDS_PLUGIN_ABI_MAJOR 1u
-#define GDS_PLUGIN_ABI_MINOR 0u
+#define GDS_PLUGIN_ABI_MINOR 1u /* 1: gds_caller.clientCertificate (A14) */
 
 /* The values of MessageSecurityMode (OPC 10000-4 §7.20). */
 typedef enum {
@@ -82,6 +82,13 @@ typedef struct {
     size_t privilegesSize;
     gds_security_mode securityMode;
     const char *securityPolicyUri; /* NUL-terminated */
+    /* minor 1 (UASM ask A14): the SecureChannel's client certificate
+     * (DER), whoever issued it, for every Sign or SignAndEncrypt session;
+     * NULL and 0 otherwise. A privilege provider can recognise e.g. an
+     * OPC 10000-21 DeviceIdentity certificate by it. Check struct_size
+     * before reading. */
+    const uint8_t *clientCertificate;
+    size_t clientCertificateSize;
 } gds_caller;
 
 bool gds_caller_has_role(const gds_caller *c, const UA_NodeId *role);
@@ -382,6 +389,27 @@ GDS_MUST_CHECK gds_status gds_server_sign_request(struct gds_server *s, const ch
  * (OPC 10000-12 §7.9.9, §7.8.2.1): every list, a deep copy. */
 GDS_MUST_CHECK gds_status gds_server_get_trust_list(struct gds_server *s, const UA_NodeId *groupId,
                                                     UA_TrustListDataType *out);
+
+
+/* ---- CertificateManager rights for embedders (UASM ask A14, issue #87) ----
+ * may_manage answers one question: may this caller act for this
+ * ApplicationId in the CertificateManager methods (StartSigningRequest,
+ * FinishRequest, GetCertificateGroups, GetTrustList,
+ * GetCertificateStatus; OPC 10000-12 §7.9)? For example a device with the
+ * OPC 10000-21 DCA Privilege (§4.2.6 Table 4, §9.2.6) acting for its own
+ * ApplicationId over its DeviceIdentity channel.
+ * The core asks only after its own checks refused the call
+ * (CertificateAuthorityAdmin, or the application itself through a
+ * certificate the GDS CA issued, §7.2), so the hook can only add rights;
+ * every other check stays (the application must exist, the certificate
+ * still carries the record's ApplicationUri). It runs on a plugin worker,
+ * the call completing asynchronously; it must not block for long. With no
+ * hook the core keeps its own answer. Set it before gds_server_run;
+ * GDS_ESTATE after. */
+typedef bool (*gds_may_manage_fn)(void *ctx, const gds_caller *caller,
+                                  const UA_NodeId *applicationId);
+GDS_MUST_CHECK gds_status gds_server_set_application_rights_hook(struct gds_server *s,
+                                                                 gds_may_manage_fn fn, void *ctx);
 
 #ifdef __cplusplus
 }
