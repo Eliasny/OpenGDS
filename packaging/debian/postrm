@@ -1,0 +1,9 @@
+#!/bin/sh
+# opengds postrm. /var/lib/opengds and /var/lib/opengds-signer hold the store
+# and the CA key: they are never deleted by the package, not even on purge.
+# SPDX-License-Identifier: MPL-2.0
+set -e
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+fi
+exit 0
