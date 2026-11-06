@@ -160,6 +160,15 @@ static const struct {
      "with --accept-keys: UpdateCertificate accepts a private key and keeps the old one"},
     {"update-accept-bad-key", "SRV-UPD-10",
      "with --accept-keys: UpdateCertificate accepts a private key of another certificate"},
+    /* push_setup.c (push_test_server --setup) */
+    {"setup-state-running", "SRV-SET-01", "in application setup ServerStatus.State is Running"},
+    {"setup-no-cert", "SRV-SET-02", "in application setup the endpoints present no certificate"},
+    {"setup-exit-no-role", "SRV-SET-03",
+     "ApplyChanges ends application setup without a SecurityAdmin identity"},
+    {"setup-sticky", "SRV-SET-04", "AddIdentity to SecurityAdmin does not end application setup"},
+    {"setup-open-after", "SRV-SET-05",
+     "after application setup every client certificate is still accepted"},
+    {"reset-no-shutdown", "SRV-SET-06", "ResetToServerDefaults returns Good and does nothing"},
 };
 
 bool pm_mutant_known(const char *name) {
@@ -213,9 +222,14 @@ static struct {
 
 static bool acceptKeys; /* set before pm_install */
 static void (*onListInstalled)(void);
+static void (*onApplied)(void);
 
 void pm_on_list_installed(void (*fn)(void)) {
     onListInstalled = fn;
+}
+
+void pm_on_applied(void (*fn)(void)) {
+    onApplied = fn;
 }
 static UA_CertificateGroup startupPki; /* wire-trustlist-not-loaded */
 static bool hasStartupPki;
@@ -1115,7 +1129,10 @@ static UA_StatusCode apply(bool closeNow) {
 }
 
 static UA_StatusCode apply_done(UA_StatusCode r) {
+    bool applied = r == UA_STATUSCODE_GOOD && P.txn;
     txn_clear();
+    if(applied && onApplied)
+        onApplied();
     if(!breaking("diag-stale"))
         diag_end(r);
     UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "ApplyChanges -> %s",

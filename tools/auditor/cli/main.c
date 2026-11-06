@@ -11,6 +11,7 @@
  *                [--admin-cert C --admin-key K | --admin-user U --admin-password-file F]
  *                [--user U --user-password-file F] [--work DIR]
  *                [--allow-changes] [--only PREFIX] [--expect FILE.csv] [--list]
+ *                [--restart-cmd CMD] [--setup-cmd CMD] [--allow-reset]
  *
  * Every subcommand also takes, before any "--":
  *   --events FILE  the engine's event stream as JSON Lines (engine.h)
@@ -34,6 +35,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "common/limits.h"
 #include "common/safeint.h"
@@ -59,7 +61,7 @@ static int usage(const char *argv0) {
             "       [--user U --user-password-file F] [--work DIR] [--allow-changes] [--only PREFIX]\n"
             "       [--target-trust CA.der]... [--target-crl CRL]...\n"
             "       [--expect FILE.csv] [--list] [--init-only] [--slow] [--stop-after ID]\n"
-            "       [--settle-timeout S] [--restart-cmd CMD]\n"
+            "       [--settle-timeout S] [--restart-cmd CMD] [--setup-cmd CMD] [--allow-reset]\n"
             "       %s client --help\n"
             "Every subcommand also takes --events FILE (JSON Lines) and --report DIR.\n",
             argv0, argv0, argv0);
@@ -235,6 +237,7 @@ static size_t collect_server(ga_test *all) {
                 {srv_wire_tests, srv_wire_count},
                 {srv_rejected_tests, srv_rejected_count},
                 {srv_persistence_tests, srv_persistence_count},
+                {srv_setup_tests, srv_setup_count}, /* only with --only SRV-SET */
                 {srv_restore_tests, srv_restore_count}}; /* restore stays last */
     size_t n = 0;
     for(size_t s = 0; s < GDS_ARRAY_SIZE(sets); s++)
@@ -278,6 +281,10 @@ static int server_main(int argc, char **argv) {
         }
         if(!strcmp(a, "--tofu")) {
             tofu = true;
+            continue;
+        }
+        if(!strcmp(a, "--allow-reset")) { /* SRV-SET-06 may call ResetToServerDefaults */
+            t.allowReset = true;
             continue;
         }
         if(!strcmp(a, "--slow")) { /* run the tests flagged slow (catalogue Flags) */
@@ -333,10 +340,13 @@ static int server_main(int argc, char **argv) {
                 return usage(argv[0]);
             t.settleSec = sec;
         } else if(!strcmp(a, "--restart-cmd")) t.restartCmd = v; /* SRV-PER-* */
+        else if(!strcmp(a, "--setup-cmd")) t.setupCmd = v; /* SRV-SET-* */
         else return usage(argv[0]);
     }
     if(t.settleSec == 0)
         t.settleSec = 300;
+    /* the setup tests (O) need the target reset: by --setup-cmd or a person */
+    opt.operatorAvailable = t.setupCmd || isatty(STDIN_FILENO);
     if(!initOnly && (!t.url || (!serverCert == !tofu))) {
         fprintf(stderr, "--url and one of --server-cert or --tofu (test setups only) are needed\n");
         goto cleanup;

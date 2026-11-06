@@ -59,7 +59,7 @@ Client profile: nothing on the client is written by the Auditor except through t
 
 ## Verification against the spec
 
-Every clause was checked on the OPC Foundation online reference ([reference.opcfoundation.org/specs/OPC-10000-12](https://reference.opcfoundation.org/specs/OPC-10000-12), v1.05.07, 2026-04-15) on 6 Nov 2026, the same way as the UASM catalogues. `verified` in catalogue.csv is `ref` when every clause of the row was read there, and `todo` when the row cites a clause from outside Part 12 or Annex D that was not read: 6 rows (SRV-SEC-08, SRV-SEC-09, SRV-CAP-04, SRV-SET-04, CLI-TRU-07, CLI-FLT-08). They are read before their code is written.
+Every clause was checked on the OPC Foundation online reference ([reference.opcfoundation.org/specs/OPC-10000-12](https://reference.opcfoundation.org/specs/OPC-10000-12), v1.05.07, 2026-04-15) on 6 Nov 2026, the same way as the UASM catalogues. `verified` in catalogue.csv is `ref` when every clause of the row was read there, and `todo` when the row cites a clause from outside Part 12 or Annex D that was not read: 5 rows (SRV-SEC-08, SRV-SEC-09, SRV-CAP-04, CLI-TRU-07, CLI-FLT-08). They are read before their code is written. SRV-SET-04 was read when its code was written (OPC 10000-18 §4.4.3 and §4.4.5, the same online reference, 6 Nov 2026).
 
 The clause numbers in the plan's catalogue were correct at the level of clause it used (§7.8.2, §7.9, §7.10, §6.5, Annex G); this catalogue cites the subclause of each method instead. The only wrong citation was Annex F for persistence: F.1 is a recommended directory layout (mandatory only for the Local Discovery Server) and says nothing about restarts.
 

@@ -24,6 +24,8 @@ extern const ga_test srv_rejected_tests[];
 extern const size_t srv_rejected_count;
 extern const ga_test srv_persistence_tests[];
 extern const size_t srv_persistence_count;
+extern const ga_test srv_setup_tests[];
+extern const size_t srv_setup_count;
 extern const ga_test srv_restore_tests[];
 extern const size_t srv_restore_count;
 

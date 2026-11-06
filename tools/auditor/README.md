@@ -73,3 +73,17 @@ gdsaudit server --url opc.tcp://host:4840 --server-cert srv.der \
 Both options repeat for an intermediate. They are trusted wherever the pinned
 certificate is, never in the checks that a new certificate from the test CA is
 in use.
+
+The push setup tests (SRV-SET-*, 12 Annex G.2) need the target in its
+application setup state. They run only when selected, after `--setup-cmd`
+(or the operator at a terminal) has reset it; ResetToServerDefaults is called
+only with `--allow-reset`:
+
+```sh
+gdsaudit server --url opc.tcp://host:4840 --server-cert srv.der --work ./w \
+    --allow-changes --only SRV-SET --setup-cmd ./factory-reset.sh --allow-reset
+```
+
+`push_test_server --setup` is the self-test's target for them: InApplicationSetup
+until the SecurityAdmin Role has an identity (AddIdentity), and a
+ResetToServerDefaults that starts it again from its defaults.

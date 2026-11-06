@@ -1,0 +1,9 @@
+# Verdicts against push_test_server --setup (application setup state), run
+# with --only SRV-SET --allow-reset and a --setup-cmd that restarts it with
+# a fresh trust store (run_vs_push.sh).
+SRV-SET-01,pass
+SRV-SET-02,pass
+SRV-SET-03,pass
+SRV-SET-04,pass
+SRV-SET-05,pass
+SRV-SET-06,pass

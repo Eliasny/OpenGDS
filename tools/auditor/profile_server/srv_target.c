@@ -1028,16 +1028,19 @@ static UA_StatusCode run_restart_cmd(const char *cmd) {
                                                   : UA_STATUSCODE_BADINTERNALERROR;
 }
 
-UA_StatusCode st_restart(srv_target *t, ga_ctx *ctx) {
+/* Run cmd (or, without one, ask the operator at a terminal to do what
+ * prompt says), then wait for GetEndpoints within the settle timeout. */
+static UA_StatusCode hook(srv_target *t, const char *cmd, const char *option, const char *prompt,
+                          ga_ctx *ctx) {
     st_close(t);
     UA_StatusCode r;
-    if(t->restartCmd) {
-        r = run_restart_cmd(t->restartCmd);
-        ga_note(ctx, "--restart-cmd -> %s", r == UA_STATUSCODE_GOOD ? "exit 0" : "failed");
+    if(cmd) {
+        r = run_restart_cmd(cmd);
+        ga_note(ctx, "%s -> %s", option, r == UA_STATUSCODE_GOOD ? "exit 0" : "failed");
         if(r != UA_STATUSCODE_GOOD)
             return r;
     } else if(isatty(STDIN_FILENO)) {
-        fprintf(stderr, "Restart the target now, then press Enter: ");
+        fprintf(stderr, "%s, then press Enter: ", prompt);
         int ch;
         while((ch = getchar()) != EOF && ch != '\n')
             ;
@@ -1058,4 +1061,17 @@ UA_StatusCode st_restart(srv_target *t, ga_ctx *ctx) {
     ga_note(ctx, "target back after %ld s (GetEndpoints -> %s)", (long)(time(NULL) - start),
             UA_StatusCode_name(r));
     return r;
+}
+
+UA_StatusCode st_restart(srv_target *t, ga_ctx *ctx) {
+    return hook(t, t->restartCmd, "--restart-cmd", "Restart the target now", ctx);
+}
+
+UA_StatusCode st_setup_hook(srv_target *t, ga_ctx *ctx) {
+    if(t->setupPrepared)
+        return UA_STATUSCODE_GOOD;
+    t->setupPrepared = true;
+    UA_StatusCode r = hook(t, t->setupCmd, "--setup-cmd",
+                           "Reset the target to its application setup state now", ctx);
+    return r == UA_STATUSCODE_BADNOTSUPPORTED ? UA_STATUSCODE_GOOD : r; /* reset beforehand */
 }

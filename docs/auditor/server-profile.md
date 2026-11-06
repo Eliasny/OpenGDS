@@ -190,14 +190,14 @@ ConformanceUnit: Push Model for Global Certificate and TrustList Management.
 
 ConformanceUnit: Push Model for Global Certificate and TrustList Management.
 
-These tests need the target in its application setup state, so an operator (or `--setup-cmd`) has to reset it first. They run only when selected with `--only setup` and are not in any preset.
+These tests need the target in its application setup state, so an operator (or `--setup-cmd`) has to reset it first. They run only when selected with `--only SRV-SET` and are not in any preset. Before the first of them `gdsaudit` runs `--setup-cmd` (or, at a terminal, asks the operator to reset the target) and waits for GetEndpoints; without either it takes the target as already reset. The Auditor connects with its usual admin identity, which the target's setup credentials must map to SecurityAdmin (12 §7.5). SRV-SET-04 adds that same identity to the SecurityAdmin Role: a UserName rule with `--admin-user`, else an Application rule with the ApplicationUri of the admin certificate (OPC 10000-18 §4.4.3; Bad_AlreadyExists counts as added, §4.4.5). SRV-SET-06 needs `--allow-reset`; after the Shutdown it waits up to the settle timeout for the target to come back by itself, then uses `--restart-cmd` (or the operator). The self-test runs these against `push_test_server --setup`.
 
 | ID | Clause | Flags | Check | Pass when | Fail / Warn / Not supported | Mutant |
 | --- | --- | --- | --- | --- | --- | --- |
 | SRV-SET-01 | 12 Annex G.2 | O | With InApplicationSetup TRUE, read ServerStatus.State | NoConfiguration | Fail: another state. Not supported: InApplicationSetup absent | `setup-state-running` |
 | SRV-SET-02 | 12 Annex G.2 | O | In setup state, GetEndpoints | Every secure endpoint presents a certificate (the default certificate) | Fail: no certificate | `setup-no-cert` |
 | SRV-SET-03 | 12 Annex G.2 | W, O | Push a trust list and `t-good`, apply, but do not configure the SecurityAdmin Role | InApplicationSetup is still TRUE | Fail: the server left setup without a configured SecurityAdmin Role | `setup-exit-no-role` |
-| SRV-SET-04 | 12 Annex G.2; OPC 10000-18 (role management) | W, O | Add the Auditor's identity to the SecurityAdmin Role (Part 18 AddIdentity) after SRV-SET-03 | InApplicationSetup FALSE and State Running | Fail: still in setup | `setup-sticky` |
+| SRV-SET-04 | 12 Annex G.2; OPC 10000-18 §4.4.3, §4.4.5 | W, O | Add the Auditor's identity to the SecurityAdmin Role (Part 18 AddIdentity) after SRV-SET-03 | InApplicationSetup FALSE and State Running | Fail: still in setup | `setup-sticky` |
 | SRV-SET-05 | 12 §7.5 | W, O | After SRV-SET-04, connect with `peer-unknown` | Refused | Warn: accepted (the server should restrict access once it has a trust list) | `setup-open-after` |
 | SRV-SET-06 | 12 §7.10.13 | W, O | If ResetToServerDefaults exists and `--allow-reset` is given, call it and watch ServerStatus | State goes to Shutdown with a localized ShutdownReason; after the restart InApplicationSetup is TRUE | Fail: neither happens. Not supported: method absent. Not tested: no `--allow-reset` | `reset-no-shutdown` |
 

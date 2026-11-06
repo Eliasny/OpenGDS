@@ -44,6 +44,11 @@ start_server() {
         echo '#!/bin/sh'
         echo "pid=\$(cat '$W/server.pid')"
         echo 'kill "$pid"; while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done'
+        # fresh: back to the factory state, keeping the self-signed certificate
+        echo "if [ \"\${1:-}\" = fresh ]; then"
+        echo "  cd '$W/pki-$name' && rm -rf push ApplCerts/trusted ApplCerts/issuer ApplCerts/rejected"
+        echo "  find ApplCerts/own -type f ! -name 'selfsigned\\[*' -exec rm -f {} +; cd /"
+        echo "fi"
         printf "'%s' " "$B/push_test_server" --port "$PORT" --pki "$W/pki-$name" \
             --trust "$W/auditor-plain.der" --trust "$W/auditor-admin.der" \
             --admin-cert "$W/auditor-admin.der" --user operator:operator "$@"
@@ -74,7 +79,15 @@ stop_server() {
 audit() { # audit <name> [args]: run the profile, TAP into $W/<name>.tap
     name=$1
     shift
-    "$B/gdsaudit" server --url "opc.tcp://127.0.0.1:$PORT" --tofu --work "$W/auditor" \
+    # the target's certificate: from its first GetEndpoints, or (PIN=pki:
+    # the setup tests, whose setup-no-cert mutant presents none) the
+    # self-signed one in its PKI
+    if [ "$PIN" = pki ]; then
+        set -- --server-cert "$(ls "$W/pki-$NAME"/ApplCerts/own/certs/selfsigned*.der | head -1)" "$@"
+    else
+        set -- --tofu "$@"
+    fi
+    "$B/gdsaudit" server --url "opc.tcp://127.0.0.1:$PORT" --work "$W/auditor" \
         --user operator --user-password-file "$W/user.pw" --allow-changes --settle-timeout 40 \
         --restart-cmd "sh '$W/restart-$NAME.sh'" "$@" \
         > "$W/$name.tap" 2>&1
@@ -82,6 +95,9 @@ audit() { # audit <name> [args]: run the profile, TAP into $W/<name>.tap
 
 RC=0
 SLOW_TESTS="SRV-TL-18"
+# the setup tests: push_test_server --setup, selected with --only SRV-SET
+SETUP_ARGS="--only SRV-SET --allow-reset"
+PIN=tofu
 if { [ -z "$ONLY" ] && $FIRST; } || [ "$ONLY" = good ]; then
     echo "=== good push_test_server"
     start_server good
@@ -115,25 +131,51 @@ if { [ -z "$ONLY" ] && $FIRST; } || [ "$ONLY" = good ]; then
     done
 fi
 
+# Push setup (SRV-SET-*): the target starts in application setup
+if { [ -z "$ONLY" ] && $FIRST; } || [ "$ONLY" = good ]; then
+    echo "=== good push_test_server --setup, SRV-SET"
+    start_server setup --setup
+    PIN=pki
+    audit setup $SETUP_ARGS --setup-cmd "sh '$W/restart-setup.sh' fresh" \
+        --expect "$E/push_test_server_setup.csv"
+    G=$?
+    PIN=tofu
+    stop_server
+    cat "$W/setup.tap"
+    if [ $G -ne 0 ]; then
+        echo "FAILED: SRV-SET against push_test_server --setup differs from push_test_server_setup.csv"
+        tail -40 "$W/server-setup.log"
+        RC=1
+    fi
+fi
+
 IDX=0
 while IFS=, read -r mutant test want; do
     case "$mutant" in ''|\#*) continue ;; esac
     IDX=$((IDX + 1))
     [ -n "$ONLY" ] && [ "$ONLY" != "$mutant" ] && continue
     [ -z "$ONLY" ] && [ $(( (IDX - 1) % SN + 1 )) -ne "$SK" ] && continue
-    case " $KEY_TESTS " in
-    *" $test "*)
-        start_server "$mutant" --break "$mutant" --accept-keys
-        audit "$mutant" --only "$test"
+    case "$test" in
+    SRV-SET-*)
+        start_server "$mutant" --setup --break "$mutant"
+        PIN=pki
+        audit "$mutant" $SETUP_ARGS --setup-cmd "sh '$W/restart-$mutant.sh' fresh" \
+            --stop-after "$test"
+        PIN=tofu
         ;;
     *)
-        start_server "$mutant" --break "$mutant"
-        # tests flagged slow in the catalogue run only for their own mutant;
-        # the tests after the one that must catch the mutant are not run
-        case " $SLOW_TESTS " in
-        *" $test "*) audit "$mutant" --slow --stop-after "$test" ;;
-        *) audit "$mutant" --stop-after "$test" ;;
-        esac
+        if case " $KEY_TESTS " in *" $test "*) true ;; *) false ;; esac; then
+            start_server "$mutant" --break "$mutant" --accept-keys
+            audit "$mutant" --only "$test"
+        else
+            start_server "$mutant" --break "$mutant"
+            # tests flagged slow in the catalogue run only for their own mutant;
+            # the tests after the one that must catch the mutant are not run
+            case " $SLOW_TESTS " in
+            *" $test "*) audit "$mutant" --slow --stop-after "$test" ;;
+            *) audit "$mutant" --stop-after "$test" ;;
+            esac
+        fi
         ;;
     esac
     stop_server

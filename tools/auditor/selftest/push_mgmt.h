@@ -41,6 +41,9 @@ void pm_session_closed(const UA_NodeId *sessionId);
 /* Called after a trust list is put in use (ApplyChanges, AddCertificate,
  * RemoveCertificate), with the server lock held. */
 void pm_on_list_installed(void (*fn)(void));
+/* Called after an ApplyChanges that applied a transaction, with the server
+ * lock held. */
+void pm_on_applied(void (*fn)(void));
 void pm_clear(void);
 
 bool pm_mutant_known(const char *name);
