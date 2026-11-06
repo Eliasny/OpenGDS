@@ -64,6 +64,12 @@ A waiting request has state Pending. FinishRequest answers Bad_NothingToDo until
 
 Each waiting request is a standard Part 9 DialogCondition under the `Approvals` object (`ns=1;s=Approvals`), with NodeId `ns=1;g=<RequestId>`. Its ResponseOptionSet is Approve (0) and Reject (1). A session with the RegistrationAuthorityAdmin role answers with Respond2 (or Respond), and every answer emits an AuditConditionRespondEventType. Subscribe to events on the Server object and call ConditionRefresh to see every waiting request. The store holds the truth: the dialogs are raised again when `opengdsd` restarts. At most 10,000 requests wait at once; beyond that StartSigningRequest answers Bad_ServerTooBusy.
 
+## Revoking certificates
+
+A session with the CertificateAuthorityAdmin role calls RevokeCertificate (OPC 10000-12 §7.9.6) on the Directory object with the ApplicationId and the certificate. Bad_NotFound means the application is not registered; Bad_InvalidArgument means this GDS did not issue that certificate to that application. UnregisterApplication revokes every certificate of the application before it deletes the record (§6.5.8).
+
+The store marks the certificate revoked first. Then `opengds-signer` puts its serial on a new CRL (CRL number + 1), and only if the store marks that serial revoked, so `opengdsd` cannot revoke a certificate on its own. Every trust list of the group carries the CA's CRL, so applications see the revocation at their next trust list update. Revoking again succeeds and changes nothing, so a call that failed at the signer can simply be repeated. A revoked certificate stays on the CRL; GetCertificateStatus then answers that an update is required.
+
 ## Inspecting a running GDS
 
 ```sh

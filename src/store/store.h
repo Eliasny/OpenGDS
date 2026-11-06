@@ -111,6 +111,21 @@ GDS_MUST_CHECK gds_status gds_store_cert_add(gds_store *s, const UA_Guid *appId,
 GDS_MUST_CHECK gds_status gds_store_cert_latest(gds_store *s, const UA_Guid *appId,
                                                 uint32_t groupId, uint32_t certType, gds_buf *der,
                                                 int64_t *notAfter);
+/* Mark the certificate `der` of application appId revoked and return its
+ * serial. Idempotent: revoking it again succeeds. GDS_ENOTFOUND if appId
+ * holds no such certificate (OPC 10000-12 §7.9.6 Bad_InvalidArgument). */
+GDS_MUST_CHECK gds_status gds_store_cert_revoke(gds_store *s, const UA_Guid *appId,
+                                                const gds_buf *der, gds_buf *serial);
+/* Mark every certificate of appId revoked, then visit the serial of every
+ * revoked one (also those revoked before), so a caller that failed half way
+ * can call it again. The callback borrows serial and returns false to stop. */
+typedef bool (*gds_store_serial_cb)(void *ctx, const gds_buf *serial);
+GDS_MUST_CHECK gds_status gds_store_cert_revoke_app(gds_store *s, const UA_Guid *appId,
+                                                    gds_store_serial_cb cb, void *ctx);
+/* *revoked is true only if a certificate with this serial exists and is
+ * marked revoked; GDS_OK in both cases. */
+GDS_MUST_CHECK gds_status gds_store_cert_is_revoked(gds_store *s, const gds_buf *serial,
+                                                    bool *revoked);
 
 /* ---- the audit log (issue #18) ----
  * Append-only and hash-chained: row n's hash is
@@ -155,7 +170,7 @@ GDS_MUST_CHECK gds_status gds_store_audit_verify(gds_store *s, int64_t *rows, in
  * transaction: it commits fully or changes nothing. The core calls a
  * backend from one thread at a time (see "Single-writer" above). */
 #define GDS_STORE_ABI_MAJOR 1u
-#define GDS_STORE_ABI_MINOR 2u /* 1: the audit log; 2: req_scan */
+#define GDS_STORE_ABI_MINOR 3u /* 1: the audit log; 2: req_scan; 3: cert_revoke, cert_revoke_app, cert_is_revoked */
 
 typedef struct {
     uint32_t abi_major;
@@ -185,6 +200,12 @@ typedef struct {
     gds_status (*audit_scan)(void *ctx, int64_t fromSeq, gds_audit_scan_cb cb, void *cbCtx);
     /* minor 2 */
     gds_status (*req_scan)(void *ctx, gds_req_state state, gds_store_req_cb cb, void *cbCtx);
+    /* minor 3 */
+    gds_status (*cert_revoke)(void *ctx, const UA_Guid *appId, const gds_buf *der,
+                              gds_buf *serial);
+    gds_status (*cert_revoke_app)(void *ctx, const UA_Guid *appId, gds_store_serial_cb cb,
+                                  void *cbCtx);
+    gds_status (*cert_is_revoked)(void *ctx, const gds_buf *serial, bool *revoked);
 } gds_store_backend;
 
 /* A store on a plugin backend. The vtable is copied; ctx is taken, and
@@ -193,7 +214,9 @@ typedef struct {
  * fields, or a missing function. A minor 0 backend (no audit log) works;
  * its audit calls return GDS_EUNSUPPORTED. Before minor 2 (or with req_scan
  * NULL) gds_store_req_scan returns GDS_EUNSUPPORTED, and the server then
- * starts only with approval policy GDS_APPROVE_ALL. */
+ * starts only with approval policy GDS_APPROVE_ALL. Before minor 3 the
+ * cert_revoke calls return GDS_EUNSUPPORTED, so RevokeCertificate and
+ * UnregisterApplication answer Bad_NotSupported. */
 GDS_MUST_CHECK gds_status gds_store_open_backend(const gds_store_backend *be, void *ctx,
                                                  gds_store **out);
 

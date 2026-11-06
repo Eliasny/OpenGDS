@@ -124,7 +124,7 @@ static gds_status seeds_app_record(void) {
     return r;
 }
 
-/* ---- fuzz_signer_msg: first byte 0 = request, 1/3/5 = reply ---- */
+/* ---- fuzz_signer_msg: first byte 0 = request, 1/3/5/7 = reply ---- */
 
 static const uint8_t SIDE_REQUEST[1] = {0};
 
@@ -139,7 +139,10 @@ static gds_status put_request(const char *name, gds_sigp_op op, const UA_Guid *i
 
 static gds_status put_reply(const char *name, gds_sigp_op op, gds_status st,
                             const gds_ca_issued *issued, const gds_buf *der) {
-    uint8_t side = op == GDS_SIGP_SIGN_CSR ? 1u : op == GDS_SIGP_GET_CHAIN ? 3u : 5u;
+    uint8_t side = op == GDS_SIGP_SIGN_CSR    ? 1u
+                   : op == GDS_SIGP_GET_CHAIN ? 3u
+                   : op == GDS_SIGP_REVOKE    ? 7u
+                                              : 5u;
     gds_buf m = {0};
     gds_status r = gds_sigp_encode_reply(op, st, issued, der, &m);
     if(r == GDS_OK)
@@ -172,6 +175,14 @@ static gds_status seeds_signer_msg(void) {
         r = put_reply("reply-chain-ok.bin", GDS_SIGP_GET_CHAIN, GDS_OK, NULL, &der);
     if(r == GDS_OK)
         r = put_reply("reply-crl-ok.bin", GDS_SIGP_ISSUE_CRL, GDS_OK, NULL, &der);
+    if(r == GDS_OK)
+        r = put_reply("reply-revoke-ok.bin", GDS_SIGP_REVOKE, GDS_OK, NULL, &der);
+    gds_buf ser = {serial, sizeof(serial)}, m = {0};
+    if(r == GDS_OK)
+        r = gds_sigp_encode_revoke(&ser, &m);
+    if(r == GDS_OK) /* not marked revoked in the fixture store: refused */
+        r = put("fuzz_signer_msg", "req-revoke.bin", SIDE_REQUEST, 1, m.data, m.len);
+    gds_buf_free(&m);
     return r;
 }
 
