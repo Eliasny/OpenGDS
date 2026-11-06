@@ -1,6 +1,17 @@
 # OpenGDS Auditor (gdsaudit) - build
 # SPDX-License-Identifier: MPL-2.0
 
+# Engine API and result list: events as JSON Lines, HTML and JUnit reports.
+# libc only, so the desktop UI links it without open62541.
+add_library(gdsaudit_report STATIC
+    report/results.c
+    report/jsonl.c
+    report/report.c)
+target_include_directories(gdsaudit_report PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/report"
+    PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(gdsaudit_report PRIVATE gds_hardening)
+
 # Engine core shared by every profile and self-test target
 add_library(gdsaudit_core STATIC
     core/x509util.c
@@ -8,7 +19,7 @@ add_library(gdsaudit_core STATIC
     core/uaclient.c
     core/harness.c)
 target_include_directories(gdsaudit_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/core")
-target_link_libraries(gdsaudit_core PUBLIC gds_common)
+target_link_libraries(gdsaudit_core PUBLIC gds_common gdsaudit_report)
 
 # Self-test targets: known-good reference implementations (Auditor plan, selftest/)
 add_executable(push_test_server selftest/push_test_server.c selftest/push_mgmt.c)
@@ -32,3 +43,30 @@ add_subdirectory(profile_client)
 add_subdirectory(profile_gds)
 add_subdirectory(profile_server)
 target_link_libraries(gdsaudit PRIVATE gdsaudit_profile_server)
+
+# The event stream round trip, the parser's refusals and the report writers
+add_executable(test_report report/test_report.c)
+target_include_directories(test_report PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(test_report PRIVATE gdsaudit_report gds_hardening)
+add_test(NAME auditor_report_events COMMAND test_report)
+
+# Desktop UI (GTK4): view-model in avm/, window in ui/. Built when GTK 4.12+
+# is found (AUTO), always (ON) or never (OFF); the headless gdsaudit never
+# depends on it.
+set(OPENGDS_BUILD_AUDITOR_GUI AUTO CACHE STRING "Build gdsaudit-gui (AUTO, ON, OFF)")
+set_property(CACHE OPENGDS_BUILD_AUDITOR_GUI PROPERTY STRINGS AUTO ON OFF)
+if(NOT OPENGDS_BUILD_AUDITOR_GUI STREQUAL "OFF")
+    find_package(PkgConfig)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(GDSAUDIT_GTK4 IMPORTED_TARGET gtk4>=4.12)
+        pkg_check_modules(GDSAUDIT_GIO IMPORTED_TARGET gio-unix-2.0>=2.76)
+    endif()
+    if(GDSAUDIT_GTK4_FOUND AND GDSAUDIT_GIO_FOUND)
+        add_subdirectory(avm)
+        add_subdirectory(ui)
+    elseif(OPENGDS_BUILD_AUDITOR_GUI STREQUAL "ON")
+        message(FATAL_ERROR "gdsaudit-gui needs gtk4 >= 4.12 and gio-unix-2.0 (libgtk-4-dev)")
+    else()
+        message(STATUS "gdsaudit-gui: gtk4 not found, desktop UI not built")
+    endif()
+endif()

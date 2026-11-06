@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <time.h>
 
 #include "common/buf.h"
@@ -16,28 +17,57 @@
 #define GA_MAX_EXPECT 512
 
 struct ga_ctx {
+    size_t n; /* test number in this run, for note events */
     bool decided;
     ga_verdict verdict;
     char evidence[GA_EVIDENCE];
 };
 
-static const char *const verdictNames[] = {"pass", "fail", "warn", "not_supported",
-                                           "not_tested"};
+/* Event sinks (include/gdsaudit/engine.h) */
+static struct {
+    ga_event_fn fn;
+    void *user;
+} sinks[GA_MAX_SINKS];
+static size_t nSinks;
+static const char *runProfile = "", *runTarget = "";
+static volatile sig_atomic_t abortRequested;
 
-const char *ga_verdict_name(ga_verdict v) {
-    if((size_t)v < GDS_ARRAY_SIZE(verdictNames))
-        return verdictNames[v];
-    return "invalid";
+bool ga_add_event_sink(ga_event_fn fn, void *user) {
+    if(!fn || nSinks >= GA_MAX_SINKS)
+        return false;
+    sinks[nSinks].fn = fn;
+    sinks[nSinks].user = user;
+    nSinks++;
+    return true;
 }
 
-bool ga_verdict_parse(const char *s, ga_verdict *out) {
-    for(size_t i = 0; i < GDS_ARRAY_SIZE(verdictNames); i++) {
-        if(strcmp(s, verdictNames[i]) == 0) {
-            *out = (ga_verdict)i;
-            return true;
-        }
-    }
-    return false;
+void ga_clear_event_sinks(void) {
+    nSinks = 0;
+}
+
+void ga_set_run_info(const char *profile, const char *target) {
+    runProfile = profile ? profile : "";
+    runTarget = target ? target : "";
+}
+
+void ga_request_abort(void) {
+    abortRequested = 1;
+}
+
+bool ga_abort_requested(void) {
+    return abortRequested != 0;
+}
+
+static void emit(const ga_event *ev) {
+    for(size_t i = 0; i < nSinks; i++)
+        sinks[i].fn(ev, sinks[i].user);
+}
+
+static void utc_now(char *out, size_t len) {
+    time_t t = time(NULL);
+    struct tm tm;
+    if(!gmtime_r(&t, &tm) || strftime(out, len, "%Y-%m-%dT%H:%M:%SZ", &tm) == 0)
+        out[0] = '\0';
 }
 
 /* Evidence must stay on one TAP line: replace control characters. */
@@ -72,7 +102,6 @@ DECIDER(ga_not_supported, GA_NOT_SUPPORTED)
 DECIDER(ga_not_tested, GA_NOT_TESTED)
 
 void ga_note(ga_ctx *ctx, const char *fmt, ...) {
-    (void)ctx;
     char line[GA_EVIDENCE];
     va_list ap;
     va_start(ap, fmt);
@@ -80,6 +109,10 @@ void ga_note(ga_ctx *ctx, const char *fmt, ...) {
     va_end(ap);
     sanitize(line);
     printf("#   %s\n", line);
+    if(ctx) { /* NULL outside a test, e.g. the final restore: TAP only */
+        ga_event ev = {.kind = GA_EV_NOTE, .n = ctx->n, .text = line};
+        emit(&ev);
+    }
 }
 
 bool ga_decided(const ga_ctx *ctx) {
@@ -152,8 +185,15 @@ static bool selected(const ga_test *t, const ga_run_options *opt) {
 static ga_verdict run_one(const ga_test *t, size_t k, void *profile, const ga_run_options *opt) {
     ga_ctx ctx;
     memset(&ctx, 0, sizeof(ctx));
+    ctx.n = k;
+    ga_event start = {.kind = GA_EV_TEST_STARTED, .n = k, .id = t->id, .clause = t->clause,
+                      .title = t->title, .needsWrite = t->needsWrite,
+                      .needsOperator = t->needsOperator};
+    emit(&start);
     double t0 = now_ms();
-    if(t->needsWrite && !opt->allowChanges)
+    if(ga_abort_requested())
+        ga_not_tested(&ctx, "run aborted");
+    else if(t->needsWrite && !opt->allowChanges)
         ga_not_tested(&ctx, "changes the target; run with --allow-changes");
     else if(t->needsOperator && !opt->operatorAvailable)
         ga_not_tested(&ctx, "needs an operator or hook (not available in this run)");
@@ -168,6 +208,9 @@ static ga_verdict run_one(const ga_test *t, size_t k, void *profile, const ga_ru
     printf("%s %zu - %s [%s] %s%s\n", ctx.verdict == GA_FAIL ? "not ok" : "ok", k, t->id,
            t->clause, t->title, directive);
     printf("#   verdict: %s (%.0f ms) %s\n", ga_verdict_name(ctx.verdict), ms, ctx.evidence);
+    ga_event done = {.kind = GA_EV_VERDICT, .n = k, .id = t->id, .text = ctx.evidence,
+                     .verdict = ctx.verdict, .ms = ms};
+    emit(&done);
     return ctx.verdict;
 }
 
@@ -188,7 +231,23 @@ static bool check_expect(const ga_test *t, ga_verdict v, expect_line *expect, lo
     return true;
 }
 
+static int run_tests(const ga_test *tests, size_t n, void *profile, const ga_run_options *opt,
+                     size_t counts[GA_VERDICT_COUNT]);
+
 int ga_run(const ga_test *tests, size_t n, void *profile, const ga_run_options *opt) {
+    size_t counts[GA_VERDICT_COUNT] = {0};
+    int rc = run_tests(tests, n, profile, opt, counts);
+    char when[32];
+    utc_now(when, sizeof(when));
+    ga_event finished = {.kind = GA_EV_RUN_FINISHED, .exitCode = rc,
+                         .aborted = ga_abort_requested(), .time = when};
+    memcpy(finished.counts, counts, sizeof(finished.counts));
+    emit(&finished);
+    return rc;
+}
+
+static int run_tests(const ga_test *tests, size_t n, void *profile, const ga_run_options *opt,
+                     size_t counts[GA_VERDICT_COUNT]) {
     static expect_line expect[GA_MAX_EXPECT];
     long nExpect = 0;
     if(opt->expectCsv) {
@@ -198,12 +257,16 @@ int ga_run(const ga_test *tests, size_t n, void *profile, const ga_run_options *
             return 2;
         }
     }
-    size_t counts[5] = {0};
     size_t mismatches = 0, planned = 0, k = 0;
     for(size_t i = 0; i < n; i++)
         planned += selected(&tests[i], opt);
     printf("TAP version 13\n1..%zu\n", planned);
     printf("# OpenGDS Auditor: self-test, not OPC Foundation certification\n");
+    char when[32];
+    utc_now(when, sizeof(when));
+    ga_event started = {.kind = GA_EV_RUN_STARTED, .profile = runProfile, .target = runTarget,
+                        .allowChanges = opt->allowChanges, .planned = planned, .time = when};
+    emit(&started);
     for(size_t i = 0; i < n; i++) {
         if(!selected(&tests[i], opt))
             continue;

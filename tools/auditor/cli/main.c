@@ -11,6 +11,12 @@
  *                [--user admin --password-file FILE] [--work DIR]
  *                [--allow-changes] [--only PREFIX] [--expect FILE.csv] [--list]
  *
+ * Every subcommand also takes, before any "--":
+ *   --events FILE  the engine's event stream as JSON Lines (engine.h)
+ *   --report DIR   DIR/report.html and DIR/junit.xml at the end of the run
+ * SIGINT and SIGTERM abort the run: later tests are Not tested and the
+ * server profile still restores the target; a second signal kills.
+ *
  * gds runs the GDS profile (the T0 spec tests) against a GDS; server runs
  * the server profile (docs/auditor/server-profile.md) against a push-managed
  * Server, playing its CertificateManager. Both print TAP.
@@ -23,6 +29,7 @@
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
 
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -30,6 +37,7 @@
 #include "common/safeint.h"
 #include "client_profile.h"
 #include "gds_target.h"
+#include "results.h"
 #include "spec_tests.h"
 #include "srv_target.h"
 #include "srv_tests.h"
@@ -47,7 +55,8 @@ static int usage(const char *argv0) {
             "   or: %s server --url URL (--server-cert SRV.der | --tofu) [--user U\n"
             "       --password-file F] [--work DIR] [--allow-changes] [--only PREFIX]\n"
             "       [--expect FILE.csv] [--list] [--init-only]\n"
-            "       %s client --help\n",
+            "       %s client --help\n"
+            "Every subcommand also takes --events FILE (JSON Lines) and --report DIR.\n",
             argv0, argv0, argv0);
     return 2;
 }
@@ -326,12 +335,116 @@ cleanup:
     return rc;
 }
 
+/* Front-end options every subcommand takes (engine.h): taken out of argv
+ * before the subcommand parses the rest. */
+typedef struct {
+    const char *events, *report, *target;
+    FILE *eventsFile;
+    ga_results results;
+} front_end;
+
+static bool take_front_end_options(int *argc, char **argv, front_end *fe) {
+    int out = 1;
+    bool ok = true, rest = false;
+    for(int i = 1; i < *argc; i++) {
+        const char *a = argv[i];
+        if(rest || !strcmp(a, "--")) {
+            rest = true;
+            argv[out++] = argv[i];
+            continue;
+        }
+        bool ev = !strcmp(a, "--events"), rep = !strcmp(a, "--report");
+        if(ev || rep) {
+            if(i + 1 >= *argc) {
+                fprintf(stderr, "%s needs a value\n", a);
+                ok = false;
+                break;
+            }
+            *(ev ? &fe->events : &fe->report) = argv[++i];
+            continue;
+        }
+        if((!strcmp(a, "--url") || !strcmp(a, "--listen")) && i + 1 < *argc)
+            fe->target = argv[i + 1];
+        argv[out++] = argv[i];
+    }
+    argv[out] = NULL;
+    *argc = out;
+    return ok;
+}
+
+static void on_signal(int sig) {
+    (void)sig;
+    ga_request_abort();
+}
+
+static void install_abort_handler(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_signal;
+    sa.sa_flags = (int)SA_RESETHAND; /* a second signal kills */
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+}
+
+static bool start_front_end(front_end *fe, const char *profile) {
+    char listen[64];
+    const char *target = fe->target;
+    if(!strcmp(profile, "client")) {
+        snprintf(listen, sizeof(listen), "fake GDS on port %s", target ? target : "4850");
+        target = listen;
+    }
+    ga_set_run_info(profile, target);
+    if(fe->events) {
+        fe->eventsFile = fopen(fe->events, "we"); /* e: not inherited by triggers */
+        if(!fe->eventsFile) {
+            perror(fe->events);
+            return false;
+        }
+        (void)ga_add_event_sink(ga_jsonl_sink, fe->eventsFile);
+    }
+    if(fe->report)
+        (void)ga_add_event_sink(ga_results_sink, &fe->results);
+    install_abort_handler();
+    return true;
+}
+
+/* Reports after the run; a failed report makes the run unfinished (2). */
+static int finish_front_end(front_end *fe, int rc) {
+    if(fe->eventsFile && fclose(fe->eventsFile) != 0) {
+        fprintf(stderr, "%s: write failed\n", fe->events);
+        rc = 2;
+    }
+    if(fe->report && fe->results.profile) {
+        char err[512];
+        if(ga_report_write_dir(fe->report, &fe->results, err, sizeof(err)))
+            printf("# report: %s/report.html, %s/junit.xml\n", fe->report, fe->report);
+        else {
+            fprintf(stderr, "report: %s\n", err);
+            rc = 2;
+        }
+    }
+    ga_results_free(&fe->results);
+    ga_clear_event_sinks();
+    return rc;
+}
+
 int main(int argc, char **argv) {
-    if(argc >= 2 && strcmp(argv[1], "client") == 0)
-        return gdsaudit_client_main(argc - 1, argv + 1);
-    if(argc >= 2 && strcmp(argv[1], "gds") == 0)
-        return gds_main(argc, argv);
-    if(argc >= 2 && strcmp(argv[1], "server") == 0)
-        return server_main(argc, argv);
-    return usage(argv[0]);
+    static front_end fe;
+    if(argc < 2)
+        return usage(argv[0]);
+    const char *profile = argv[1];
+    if(strcmp(profile, "client") != 0 && strcmp(profile, "gds") != 0 &&
+       strcmp(profile, "server") != 0)
+        return usage(argv[0]);
+    if(!take_front_end_options(&argc, argv, &fe) || !start_front_end(&fe, profile))
+        return 2;
+    int rc;
+    if(strcmp(profile, "client") == 0)
+        rc = gdsaudit_client_main(argc - 1, argv + 1);
+    else if(strcmp(profile, "gds") == 0)
+        rc = gds_main(argc, argv);
+    else
+        rc = server_main(argc, argv);
+    return finish_front_end(&fe, rc);
 }
