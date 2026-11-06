@@ -1,0 +1,161 @@
+From 433deb03f66e75141fc47f2a276126d4ae676d54 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Elias=20Nyk=C3=A4nen?=
+ <61413159+Eliasny@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 05:29:14 +0000
+Subject: [PATCH] fix(server): keep the EventId of conditions in
+ ConditionRefresh
+
+Part 9, 5.5.7 requires that "the EventId for such a refreshed Notification
+shall be identical to the one for the original Notification". refreshLogic
+cleared the last EventId of each retained branch and created the refreshed
+event with a new one. A refresh by one Client therefore invalidated the
+EventId that every other Client holds, and their Acknowledge, Confirm or
+AddComment calls failed with BadEventIdUnknown.
+
+Pass the stored EventId through the event fields of the refreshed event and
+keep it as the branch's last EventId. Add a test that refreshes twice and
+checks the EventId and that AddComment still accepts the original EventId.
+---
+ drivers/alarms_conditions.c                  | 12 ++-
+ tests/server/check_server_alarmsconditions.c | 90 ++++++++++++++++++++
+ 2 files changed, 100 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/alarms_conditions.c b/drivers/alarms_conditions.c
+index 17daf121..02983074 100644
+--- a/drivers/alarms_conditions.c
++++ b/drivers/alarms_conditions.c
+@@ -1917,13 +1917,21 @@ refreshLogic(UA_Server *server, AlarmsConditionsDriver *acd,
+                 if(!isRetained(server, &triggeredNode))
+                     continue;
+ 
+-                UA_ByteString_clear(&branch->lastEventId);
++                /* Part 9, 5.5.7: the refreshed Notification carries the
++                 * EventId of the original Notification */
++                UA_KeyValuePair eventIdField;
++                eventIdField.key = UA_QUALIFIEDNAME(0, "/EventId");
++                UA_Variant_setScalar(&eventIdField.value, &branch->lastEventId,
++                                     &UA_TYPES[UA_TYPES_BYTESTRING]);
++                UA_KeyValueMap eventIdMap = {1, &eventIdField};
+ 
+                 /* Add the event */
+                 ed.eventInstance = &triggeredNode;
++                ed.eventFields = &eventIdMap;
+                 ed.sourceNode = conditionSource;
+                 ed.eventType = UA_NODEID_NULL; /* overwritten by the EventInstance */
+-                res = UA_Server_createEventEx(server, &ed, &branch->lastEventId);
++                res = UA_Server_createEventEx(server, &ed, NULL);
++                ed.eventFields = NULL;
+                 CONDITION_ASSERT_RETURN_RETVAL_ACD(acd, res, "Events: Could not add the event to a listening node",);
+             }
+         }
+diff --git a/tests/server/check_server_alarmsconditions.c b/tests/server/check_server_alarmsconditions.c
+index 610b9d46..f8549006 100644
+--- a/tests/server/check_server_alarmsconditions.c
++++ b/tests/server/check_server_alarmsconditions.c
+@@ -2306,6 +2306,95 @@ START_TEST(conditionRefreshMethods_targetsAndRetention) {
+ }
+ END_TEST
+ 
++typedef struct {
++    size_t count;
++    UA_UInt32 eventTypes[8];
++    UA_ByteString eventIds[8];
++} RefreshEventIds;
++
++static void
++recordRefreshEventId(UA_Server *server, UA_UInt32 monitoredItemId,
++                     void *context, const UA_KeyValueMap fields) {
++    RefreshEventIds *events = (RefreshEventIds *)context;
++    if(fields.mapSize != 2 || events->count >= 8)
++        return;
++    if(UA_Variant_hasScalarType(&fields.map[0].value, &UA_TYPES[UA_TYPES_NODEID]))
++        events->eventTypes[events->count] =
++            ((UA_NodeId *)fields.map[0].value.data)->identifier.numeric;
++    if(UA_Variant_hasScalarType(&fields.map[1].value, &UA_TYPES[UA_TYPES_BYTESTRING]))
++        UA_ByteString_copy((UA_ByteString *)fields.map[1].value.data,
++                           &events->eventIds[events->count]);
++    events->count++;
++}
++
++/* Part 9, 5.5.7: "the EventId for such a refreshed Notification shall be
++ * identical to the one for the original Notification". A Client that
++ * acknowledges with the EventId it already holds must not be invalidated by
++ * another Client's refresh. */
++START_TEST(conditionRefresh_keepsEventId) {
++    UA_EventLoop *el = UA_Server_getConfig(server_ac)->eventLoop;
++    ck_assert_uint_eq(el->start(el), UA_STATUSCODE_GOOD);
++    UA_NodeId condition = createMethodCondition();
++    setMethodConditionState(condition, "EnabledState", true);
++    setMethodConditionRetain(condition, true);
++    UA_ByteString original = triggerMethodCondition(condition);
++    ck_assert_uint_gt(original.length, 0);
++
++    UA_SimpleAttributeOperand fields[2];
++    UA_SimpleAttributeOperand_init(&fields[0]);
++    UA_SimpleAttributeOperand_init(&fields[1]);
++    ck_assert_uint_eq(UA_SimpleAttributeOperand_parse(&fields[0], UA_STRING("/EventType")),
++                      UA_STATUSCODE_GOOD);
++    ck_assert_uint_eq(UA_SimpleAttributeOperand_parse(&fields[1], UA_STRING("/EventId")),
++                      UA_STATUSCODE_GOOD);
++    UA_EventFilter filter;
++    UA_EventFilter_init(&filter);
++    filter.selectClauses = fields;
++    filter.selectClausesSize = 2;
++    RefreshEventIds events;
++    memset(&events, 0, sizeof(events));
++    UA_MonitoredItemCreateResult mon = UA_Server_createEventMonitoredItem(
++        server_ac, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER), filter, &events,
++        recordRefreshEventId);
++    ck_assert_uint_eq(mon.statusCode, UA_STATUSCODE_GOOD);
++
++    /* Refresh twice: both refreshed Notifications carry the original EventId */
++    UA_UInt32 subscriptionId = 0; /* Local MonitoredItems use the admin subscription. */
++    UA_Variant input;
++    UA_Variant_setScalar(&input, &subscriptionId, &UA_TYPES[UA_TYPES_UINT32]);
++    for(size_t round = 0; round < 2; round++) {
++        ck_assert_uint_eq(callConditionRefreshMethod(UA_NS0ID_CONDITIONTYPE_CONDITIONREFRESH,
++                                                      1, &input), UA_STATUSCODE_GOOD);
++        UA_Server_run_iterate(server_ac, false);
++    }
++    ck_assert_uint_eq(events.count, 6);
++    for(size_t i = 0; i < events.count; i++) {
++        if(events.eventTypes[i] == UA_NS0ID_REFRESHSTARTEVENTTYPE ||
++           events.eventTypes[i] == UA_NS0ID_REFRESHENDEVENTTYPE)
++            continue;
++        ck_assert(UA_ByteString_equal(&events.eventIds[i], &original));
++    }
++
++    /* The original EventId is still accepted by the condition methods */
++    UA_LocalizedText comment = UA_LOCALIZEDTEXT("en", "after refresh");
++    UA_Variant in[2];
++    UA_Variant_setScalar(&in[0], &original, &UA_TYPES[UA_TYPES_BYTESTRING]);
++    UA_Variant_setScalar(&in[1], &comment, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
++    ck_assert_uint_eq(callConditionMethod(condition, UA_NS0ID_CONDITIONTYPE_ADDCOMMENT, 2, in),
++                      UA_STATUSCODE_GOOD);
++
++    ck_assert_uint_eq(UA_Server_deleteMonitoredItem(server_ac, mon.monitoredItemId),
++                      UA_STATUSCODE_GOOD);
++    UA_MonitoredItemCreateResult_clear(&mon);
++    for(size_t i = 0; i < events.count; i++)
++        UA_ByteString_clear(&events.eventIds[i]);
++    UA_SimpleAttributeOperand_clear(&fields[0]);
++    UA_SimpleAttributeOperand_clear(&fields[1]);
++    UA_ByteString_clear(&original);
++    UA_NodeId_clear(&condition);
++}
++END_TEST
++
+ START_TEST(conditionRefresh_acceptsIntegerId) {
+     UA_EventLoop *el = UA_Server_getConfig(server_ac)->eventLoop;
+     ck_assert_uint_eq(el->start(el), UA_STATUSCODE_GOOD);
+@@ -2380,6 +2469,7 @@ int main(void) {
+ #ifdef UA_TEST_ENABLE_ALARMS_CONDITIONS
+     tcase_add_loop_test(tc_refresh, conditionRefreshMethods_targetsAndRetention, 0, 3);
+     tcase_add_test(tc_refresh, conditionRefresh_callbackValidation);
++    tcase_add_test(tc_refresh, conditionRefresh_keepsEventId);
+ #endif
+     tcase_add_checked_fixture(tc_refresh, setup, teardown);
+     suite_add_tcase(s, tc_refresh);
+-- 
+2.43.0
+

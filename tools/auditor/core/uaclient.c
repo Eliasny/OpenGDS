@@ -64,6 +64,14 @@ static UA_ByteString *borrow_list(const gds_buf *items, size_t n) {
 UA_Client *uac_new_secure(const gds_buf *cert, const gds_buf *key, const gds_buf *trust,
                           size_t trustN, const gds_buf *crls, size_t crlN,
                           const char *applicationUri) {
+    return uac_new_secure_mode(cert, key, trust, trustN, crls, crlN, applicationUri,
+                               POLICY_RSAPSS, UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
+}
+
+UA_Client *uac_new_secure_mode(const gds_buf *cert, const gds_buf *key, const gds_buf *trust,
+                               size_t trustN, const gds_buf *crls, size_t crlN,
+                               const char *applicationUri, const char *policyUri,
+                               UA_MessageSecurityMode mode) {
     UA_ClientConfig cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.logging = UA_Log_Stdout_new(uac_log_level());
@@ -81,9 +89,9 @@ UA_Client *uac_new_secure(const gds_buf *cert, const gds_buf *key, const gds_buf
     free(tl);
     free(rl);
     if(r == UA_STATUSCODE_GOOD) {
-        cfg.securityMode = UA_MESSAGESECURITYMODE_SIGNANDENCRYPT;
+        cfg.securityMode = mode;
         UA_String_clear(&cfg.securityPolicyUri);
-        cfg.securityPolicyUri = UA_STRING_ALLOC(POLICY_RSAPSS);
+        cfg.securityPolicyUri = UA_STRING_ALLOC(policyUri);
         UA_String_clear(&cfg.clientDescription.applicationUri);
         cfg.clientDescription.applicationUri = UA_STRING_ALLOC(applicationUri);
         if(!cfg.securityPolicyUri.data || !cfg.clientDescription.applicationUri.data)
@@ -194,6 +202,9 @@ const void *uac_out_scalar(const UA_Variant *out, size_t outSize, size_t i,
     return p;
 }
 
+/* 4 MiB in chunks of at least 1 KiB */
+#define UAC_MAX_TL_READS ((size_t)4096)
+
 UA_StatusCode uac_read_trustlist(UA_Client *c, const UA_NodeId tl, UA_TrustListDataType *out) {
     UA_TrustListDataType_init(out);
     UA_NodeId mOpen, mRead, mClose;
@@ -227,7 +238,13 @@ UA_StatusCode uac_read_trustlist(UA_Client *c, const UA_NodeId tl, UA_TrustListD
     UA_Array_delete(outV, outN, &UA_TYPES[UA_TYPES_VARIANT]);
     outV = NULL;
 
-    for(;;) {
+    /* OPC 10000-20 §4.2.4: a Server may return less than Length; only an
+     * empty ByteString means end of file. Bounded by size and Read count. */
+    for(size_t reads = 0;; reads++) {
+        if(reads == UAC_MAX_TL_READS) {
+            r = UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
+            break;
+        }
         UA_Int32 len = 16384;
         UA_Variant rin[2];
         UA_Variant_setScalar(&rin[0], &handle, &UA_TYPES[UA_TYPES_UINT32]);
@@ -249,7 +266,7 @@ UA_StatusCode uac_read_trustlist(UA_Client *c, const UA_NodeId tl, UA_TrustListD
             r = gds_status_to_ua(s);
             break;
         }
-        if(got < (size_t)len)
+        if(got == 0)
             break;
     }
     uac_info("TrustList.Read             -> %zu bytes", acc.len);

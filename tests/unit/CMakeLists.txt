@@ -17,3 +17,7 @@ add_test(NAME unit_server COMMAND test_server "${CMAKE_CURRENT_BINARY_DIR}/serve
 add_executable(test_plugin_abi test_plugin_abi.c)
 target_link_libraries(test_plugin_abi PRIVATE gds_server)
 add_test(NAME unit_plugin_abi COMMAND test_plugin_abi "${CMAKE_CURRENT_BINARY_DIR}/plugin-run")
+
+add_executable(test_push_select test_push_select.c)
+target_link_libraries(test_push_select PRIVATE gds_push)
+add_test(NAME unit_push_select COMMAND test_push_select)

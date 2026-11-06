@@ -2,7 +2,7 @@
 
 **Question:** can the project use the names "OpenGDS", "OpenGDS Auditor" and "UASM", and the report wording "self-test, not OPC Foundation certification"? What must it avoid?
 
-**Answer:** yes to all four, with the rules below. Not legal advice. Elias decided on 2026-11-06 that trademark use is not a concern, so this note is for reference only, with no lawyer review planned.
+**Answer:** yes to all four, with the rules below.
 
 ## What the Foundation owns
 
@@ -43,5 +43,5 @@ open62541 shows the accepted pattern: it says only its reference server is "OPC 
 | Plain text "OPC UA" with ® on first mention in prose (for example "OPC UA®") | Any Foundation logo, the "Certified for Compliance" mark, or "OPC" in a product name, logo, domain or package name |
 | A trademark notice in the README and reports: "OPC UA and OPC Foundation are trademarks of the OPC Foundation. OpenGDS is not affiliated with or endorsed by the OPC Foundation." | Implying endorsement, partnership or membership before joining |
 
-The Auditor preset keeps its name "pre-certification" (decided 2026-11-06).
+The Auditor preset planned as "pre-certification" is renamed "preparation for certification" (decided 2026-11-06).
 
