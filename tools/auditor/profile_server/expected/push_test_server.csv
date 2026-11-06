@@ -54,6 +54,11 @@ SRV-UPD-05,pass
 SRV-UPD-06,pass
 SRV-UPD-07,pass
 SRV-UPD-08,pass
+SRV-UPD-09,not_supported   # no SupportedPrivateKeyFormats; push_test_server_keys.csv covers it
+SRV-UPD-10,not_supported
+SRV-UPD-11,pass
+SRV-UPD-12,pass
+SRV-UPD-13,pass
 SRV-TXN-03,pass
 SRV-WIRE-01,pass
 SRV-RESTORE,pass

@@ -283,7 +283,7 @@ static int server_main(int argc, char **argv) {
         else if(!strcmp(a, "--user-password-file")) userPwFile = v;
         else if(!strcmp(a, "--server-cert")) serverCert = v;
         else if(!strcmp(a, "--work")) work = v;
-        else if(!strcmp(a, "--only")) opt.only = v;
+        else if(!strcmp(a, "--only")) opt.only = t.only = v;
         else if(!strcmp(a, "--expect")) opt.expectCsv = v;
         else return usage(argv[0]);
     }
@@ -357,7 +357,7 @@ static int server_main(int argc, char **argv) {
     if(t.snapTaken && !t.restored) {
         char why[384];
         if(st_restore(&t, why, sizeof(why)) == UA_STATUSCODE_GOOD) {
-            printf("# restore: snapshot pushed back and applied\n");
+            printf("# restore: %s\n", why[0] ? why : "snapshot pushed back and applied");
         } else {
             printf("# restore FAILED: %s\n", why);
             rc = 1;
