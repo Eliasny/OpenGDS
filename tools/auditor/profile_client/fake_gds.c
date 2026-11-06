@@ -24,6 +24,7 @@
 #include "common/limits.h"
 #include "common/ua_args.h"
 #include "test_ca.h"
+#include "x509util.h"
 #include "common/banned.h"
 
 #define GDS_NS_URI "http://opcfoundation.org/UA/GDS/"
@@ -32,6 +33,7 @@
 #define FG_MAX_REQS 64
 #define FG_MAX_EVENTS 2048
 #define FG_MAX_ARGS_BYTES ((size_t)64 * 1024)
+#define FG_MAX_SESSIONS 256
 
 typedef struct {
     UA_ApplicationRecordDataType rec;
@@ -42,7 +44,7 @@ typedef struct {
     UA_NodeId requestId, appId;
     gds_buf csr;
     long polls;
-    bool done;
+    bool done, rejected;
 } fg_req;
 
 /* Single instance; touched only from the Auditor thread (method callbacks
@@ -61,7 +63,14 @@ static struct {
     UA_ByteString tlFile;
     size_t tlPos;
     UA_UInt32 tlHandle;
+    size_t tlSession; /* the session that holds tlHandle */
     gds_buf cert, key;
+    fg_session sess[FG_MAX_SESSIONS];
+    size_t sessN;
+    UA_StatusCode (*origActivate)(UA_Server *, UA_AccessControl *, const UA_EndpointDescription *,
+                                  const UA_ByteString *, const UA_NodeId *,
+                                  const UA_ExtensionObject *, void **);
+    void (*origClose)(UA_Server *, UA_AccessControl *, const UA_NodeId *, void *);
     char url[64], caPath[GDS_MAX_PATH], crlPath[GDS_MAX_PATH], pwPath[GDS_MAX_PATH];
 } G;
 
@@ -97,8 +106,35 @@ const char *fg_ca_path(void) { return G.caPath; }
 const char *fg_crl_path(void) { return G.crlPath; }
 const char *fg_password_path(void) { return G.pwPath; }
 
+static UA_StatusCode touch_trustlist(void) {
+    UA_DateTime t = UA_DateTime_now();
+    UA_Variant v;
+    UA_Variant_setScalar(&v, &t, &UA_TYPES[UA_TYPES_DATETIME]);
+    return UA_Server_writeValue(
+        G.server,
+        UA_NODEID_NUMERIC(G.ns, UA_GDSID_DIRECTORY_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_LASTUPDATETIME),
+        v);
+}
+
 void fg_set_behaviour(const fg_behaviour *b) {
     G.b = *b;
+    if(b->tlChanged && G.server && touch_trustlist() != UA_STATUSCODE_GOOD)
+        fprintf(stderr, "fake GDS: cannot set TrustList.LastUpdateTime\n");
+}
+
+size_t fg_session_count(void) {
+    return G.sessN;
+}
+
+const fg_session *fg_session_at(size_t i) {
+    return i < G.sessN ? &G.sess[i] : NULL;
+}
+
+static size_t find_session(const UA_NodeId *id) {
+    for(size_t i = G.sessN; id && i-- > 0;)
+        if(UA_NodeId_equal(&G.sess[i].id, id))
+            return i;
+    return FG_NO_SESSION;
 }
 
 size_t fg_event_count(void) {
@@ -151,14 +187,15 @@ static void capture_args(fg_event *ev, size_t inN, const UA_Variant *in) {
 typedef UA_StatusCode (*fg_handler)(fg_event *ev, size_t inN, const UA_Variant *in,
                                     UA_Variant *out);
 
-static UA_StatusCode dispatch(fg_method m, fg_handler h, size_t inN, const UA_Variant *in,
-                              UA_Variant *out) {
+static UA_StatusCode dispatch(fg_method m, fg_handler h, const UA_NodeId *sessionId, size_t inN,
+                              const UA_Variant *in, UA_Variant *out) {
     if(G.evN == FG_MAX_EVENTS)
         return UA_STATUSCODE_BADRESOURCEUNAVAILABLE;
     fg_event *ev = &G.ev[G.evN++];
     memset(ev, 0, sizeof(*ev));
     ev->method = m;
     ev->tMs = now_ms();
+    ev->session = find_session(sessionId);
     capture_args(ev, inN, in);
     ev->result = h(ev, inN, in, out);
     return ev->result;
@@ -264,7 +301,8 @@ static UA_StatusCode note_group_type(fg_event *ev, const UA_Variant *in) {
     return r;
 }
 
-static UA_StatusCode new_request(const UA_NodeId *appId, const gds_buf *csr, UA_Variant *out) {
+static UA_StatusCode new_request(const UA_NodeId *appId, const gds_buf *csr, UA_NodeId *idOut,
+                                 UA_Variant *out) {
     if(G.reqsN == FG_MAX_REQS)
         return UA_STATUSCODE_BADRESOURCEUNAVAILABLE;
     fg_req *q = &G.reqs[G.reqsN];
@@ -277,6 +315,8 @@ static UA_StatusCode new_request(const UA_NodeId *appId, const gds_buf *csr, UA_
     }
     q->requestId = UA_NODEID_GUID(G.ns, UA_Guid_random());
     UA_StatusCode r = UA_Variant_setScalarCopy(&out[0], &q->requestId, &UA_TYPES[UA_TYPES_NODEID]);
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_NodeId_copy(&q->requestId, idOut);
     if(r != UA_STATUSCODE_GOOD) {
         gds_buf_free(&q->csr);
         UA_NodeId_clear(&q->appId);
@@ -301,7 +341,7 @@ static UA_StatusCode h_sign(fg_event *ev, size_t inN, const UA_Variant *in, UA_V
         return G.b.signResult; /* fault on cue */
     if(csr->length == 0)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
-    return new_request(&a->rec.applicationId, &ev->csr, out);
+    return new_request(&a->rec.applicationId, &ev->csr, &ev->requestId, out);
 }
 
 /* The fake GDS issues certificates only from CSRs (12 §7.9.4 allows a
@@ -351,7 +391,8 @@ static UA_StatusCode h_finish(fg_event *ev, size_t inN, const UA_Variant *in, UA
     if(r != UA_STATUSCODE_GOOD)
         return r;
     const void *rid = NULL;
-    if((r = gds_arg_scalar(&in[1], &UA_TYPES[UA_TYPES_NODEID], &rid)) != UA_STATUSCODE_GOOD)
+    if((r = gds_arg_scalar(&in[1], &UA_TYPES[UA_TYPES_NODEID], &rid)) != UA_STATUSCODE_GOOD ||
+       (r = UA_NodeId_copy(rid, &ev->requestId)) != UA_STATUSCODE_GOOD)
         return r;
     fg_req *q = NULL;
     for(size_t i = 0; i < G.reqsN && !q; i++)
@@ -362,6 +403,12 @@ static UA_StatusCode h_finish(fg_event *ev, size_t inN, const UA_Variant *in, UA
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     if(q->done)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(q->rejected)
+        return UA_STATUSCODE_BADREQUESTNOTALLOWED;
+    if(G.b.finishResult != UA_STATUSCODE_GOOD) {
+        q->rejected = true; /* the CertificateManager rejected it (12 §7.9.5) */
+        return G.b.finishResult;
+    }
     if(q->polls < G.b.approveAfter) {
         q->polls++;
         return UA_STATUSCODE_BADNOTHINGTODO;
@@ -404,8 +451,13 @@ static UA_StatusCode encode_trustlist(void) {
     return r;
 }
 
+size_t fg_trustlist_size(void) {
+    if(G.tlFile.length == 0 && encode_trustlist() != UA_STATUSCODE_GOOD)
+        return 0;
+    return G.tlFile.length;
+}
+
 static UA_StatusCode h_tl_open(fg_event *ev, size_t inN, const UA_Variant *in, UA_Variant *out) {
-    (void)ev;
     if(inN < 1)
         return UA_STATUSCODE_BADARGUMENTSMISSING;
     const void *mode = NULL;
@@ -414,7 +466,9 @@ static UA_StatusCode h_tl_open(fg_event *ev, size_t inN, const UA_Variant *in, U
         return r;
     if(*(const UA_Byte *)mode != 0x01)
         return UA_STATUSCODE_BADNOTWRITABLE;
-    if(G.tlHandle)
+    /* One open handle per session; a handle left open by a session that
+     * has ended (CLI-TL-02) does not block the next cycle. */
+    if(G.tlHandle && G.tlSession == ev->session)
         return UA_STATUSCODE_BADINVALIDSTATE;
     if((r = encode_trustlist()) != UA_STATUSCODE_GOOD)
         return r;
@@ -424,11 +478,11 @@ static UA_StatusCode h_tl_open(fg_event *ev, size_t inN, const UA_Variant *in, U
             return UA_STATUSCODE_BADINTERNALERROR;
     G.tlPos = 0;
     G.tlHandle = h;
+    G.tlSession = ev->session;
     return UA_Variant_setScalarCopy(&out[0], &G.tlHandle, &UA_TYPES[UA_TYPES_UINT32]);
 }
 
 static UA_StatusCode h_tl_read(fg_event *ev, size_t inN, const UA_Variant *in, UA_Variant *out) {
-    (void)ev;
     if(inN < 2)
         return UA_STATUSCODE_BADARGUMENTSMISSING;
     const void *hp = NULL, *lp = NULL;
@@ -443,6 +497,9 @@ static UA_StatusCode h_tl_read(fg_event *ev, size_t inN, const UA_Variant *in, U
     size_t n = G.tlFile.length - G.tlPos;
     if((size_t)len < n)
         n = (size_t)len;
+    if(G.b.tlReadMax && n > G.b.tlReadMax)
+        n = G.b.tlReadMax; /* allowed: OPC 10000-20 §4.2.4 */
+    ev->bytes = n;
     UA_ByteString chunk = {n, n ? G.tlFile.data + G.tlPos : NULL};
     r = UA_Variant_setScalarCopy(&out[0], &chunk, &UA_TYPES[UA_TYPES_BYTESTRING]);
     if(r == UA_STATUSCODE_GOOD)
@@ -475,9 +532,9 @@ static UA_StatusCode h_tl_close(fg_event *ev, size_t inN, const UA_Variant *in,
                               void *objectContext, size_t inputSize,                        \
                               const UA_Variant *input, size_t outputSize,                   \
                               UA_Variant *output) {                                         \
-        (void)server; (void)sessionId; (void)sessionContext; (void)methodId;                \
+        (void)server; (void)sessionContext; (void)methodId;                \
         (void)methodContext; (void)objectId; (void)objectContext; (void)outputSize;         \
-        return dispatch(m, h, inputSize, input, output);                                    \
+        return dispatch(m, h, sessionId, inputSize, input, output);                                    \
     }
 CALLBACK(cb_find, FG_M_FIND, h_find)
 CALLBACK(cb_register, FG_M_REGISTER, h_register)
@@ -511,6 +568,57 @@ static gds_status write_files(const fg_config *cfg) {
         r = testca_identity(&G.ca, caDir, "fakegds", "OpenGDS Auditor TEST fake GDS", FG_APP_URI,
                             &G.cert, &G.key);
     return r;
+}
+
+static fg_token token_type(const UA_ExtensionObject *t) {
+    if(!t || t->encoding == UA_EXTENSIONOBJECT_ENCODED_NOBODY)
+        return FG_TOKEN_ANONYMOUS;
+    if(t->encoding < UA_EXTENSIONOBJECT_DECODED)
+        return FG_TOKEN_OTHER;
+    const UA_DataType *ty = t->content.decoded.type;
+    if(ty == &UA_TYPES[UA_TYPES_ANONYMOUSIDENTITYTOKEN])
+        return FG_TOKEN_ANONYMOUS;
+    if(ty == &UA_TYPES[UA_TYPES_USERNAMEIDENTITYTOKEN])
+        return FG_TOKEN_USERNAME;
+    if(ty == &UA_TYPES[UA_TYPES_X509IDENTITYTOKEN])
+        return FG_TOKEN_X509;
+    return FG_TOKEN_OTHER;
+}
+
+/* Record every activated session: its channel security, its client
+ * certificate and the kind of identity token (Annex G.1, 12 §6.3). */
+static UA_StatusCode fg_activate(UA_Server *server, UA_AccessControl *ac,
+                                 const UA_EndpointDescription *ep, const UA_ByteString *cert,
+                                 const UA_NodeId *sessionId, const UA_ExtensionObject *token,
+                                 void **sessionContext) {
+    UA_StatusCode r = G.origActivate(server, ac, ep, cert, sessionId, token, sessionContext);
+    if(r != UA_STATUSCODE_GOOD || find_session(sessionId) != FG_NO_SESSION ||
+       G.sessN == FG_MAX_SESSIONS)
+        return r;
+    fg_session *s = &G.sess[G.sessN];
+    memset(s, 0, sizeof(*s));
+    if(UA_NodeId_copy(sessionId, &s->id) != UA_STATUSCODE_GOOD)
+        return r;
+    s->mode = ep ? ep->securityMode : UA_MESSAGESECURITYMODE_INVALID;
+    s->token = token_type(token);
+    s->tOpen = now_ms();
+    if(cert && cert->length && cert->length <= GDS_MAX_CERT_SIZE) {
+        gds_buf c = {cert->data, cert->length};
+        if(x509_san_uri(&c, s->certUri, sizeof(s->certUri)) != GDS_OK)
+            s->certUri[0] = '\0';
+    }
+    G.sessN++;
+    return r;
+}
+
+static void fg_close(UA_Server *server, UA_AccessControl *ac, const UA_NodeId *sessionId,
+                     void *sessionContext) {
+    size_t i = find_session(sessionId);
+    if(i != FG_NO_SESSION && !G.sess[i].closed) {
+        G.sess[i].closed = true;
+        G.sess[i].tClose = now_ms();
+    }
+    G.origClose(server, ac, sessionId, sessionContext);
 }
 
 static UA_StatusCode configure(UA_ServerConfig *config, const fg_config *cfg) {
@@ -547,7 +655,16 @@ static UA_StatusCode configure(UA_ServerConfig *config, const fg_config *cfg) {
                                       UA_STRING((char *)(uintptr_t)cfg->password)};
     config->accessControl.clear(&config->accessControl);
     UA_String policy = UA_STRING_STATIC("http://opcfoundation.org/UA/SecurityPolicy#Aes256_Sha256_RsaPss");
-    return UA_AccessControl_default(config, false, &policy, 1, &login);
+    /* Anonymous too: a client that holds its certificate renews as
+     * ApplicationSelfAdmin (Annex G.1) */
+    UA_StatusCode r2 = UA_AccessControl_default(config, true, &policy, 1, &login);
+    if(r2 != UA_STATUSCODE_GOOD)
+        return r2;
+    G.origActivate = config->accessControl.activateSession;
+    G.origClose = config->accessControl.closeSession;
+    config->accessControl.activateSession = fg_activate;
+    config->accessControl.closeSession = fg_close;
+    return UA_STATUSCODE_GOOD;
 }
 
 static UA_StatusCode bind_methods(void) {
@@ -625,6 +742,8 @@ gds_status fg_start(const fg_config *cfg) {
     if(r == UA_STATUSCODE_GOOD) {
         G.ns = UA_Server_addNamespace(G.server, GDS_NS_URI);
         r = bind_methods();
+        if(r == UA_STATUSCODE_GOOD)
+            r = touch_trustlist();
     }
     if(r == UA_STATUSCODE_GOOD)
         r = UA_Server_run_startup(G.server);
@@ -660,8 +779,11 @@ void fg_stop(void) {
         gds_buf_free(&G.ev[i].args);
         UA_NodeId_clear(&G.ev[i].group);
         UA_NodeId_clear(&G.ev[i].certType);
+        UA_NodeId_clear(&G.ev[i].requestId);
     }
-    G.appsN = G.reqsN = G.evN = 0;
+    for(size_t i = 0; i < G.sessN; i++)
+        UA_NodeId_clear(&G.sess[i].id);
+    G.appsN = G.reqsN = G.evN = G.sessN = 0;
     gds_buf_free(&G.cert);
     gds_buf_free_secret(&G.key);
     testca_free(&G.ca);
