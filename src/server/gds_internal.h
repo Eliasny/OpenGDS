@@ -100,6 +100,10 @@ void gds_embed_stop(gds_server *s);
 /* Frees jobs and bindings; after UA_Server_delete. */
 void gds_embed_free(gds_server *s);
 const gds_binding *gds_embed_find(const gds_server *s, const UA_NodeId *methodId);
+/* Role NodeIds to gds_role bits, plus the implicit Anonymous and
+ * AuthenticatedUser; GDS_EINVAL for a Role no session can hold. */
+GDS_MUST_CHECK gds_status gds_role_bits(const gds_server *s, const UA_NodeId *roles, size_t n,
+                                        unsigned *bits, bool *anonymous, bool *authenticated);
 /* The session-level part of the access check (Roles, security mode). */
 bool gds_embed_executable(const gds_binding *b, const void *sessionContext);
 

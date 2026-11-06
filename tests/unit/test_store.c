@@ -1,5 +1,7 @@
 /* OpenGDS unit test: SQLite store (src/store).
  * SPDX-License-Identifier: MPL-2.0 */
+#include <sqlite3.h>
+
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -112,6 +114,56 @@ static bool count_cb(void *ctx, int64_t id, const UA_ApplicationRecordDataType *
     return true;
 }
 
+/* ---- the audit log (issue #18) ---- */
+
+typedef struct {
+    int n;
+    int64_t lastSeq;
+} audit_count;
+
+static bool count_row(void *ctx, const gds_audit_row *row) {
+    audit_count *c = ctx;
+    c->n++;
+    c->lastSeq = row->seq;
+    return true;
+}
+
+static void test_audit(gds_store *s, const char *path) {
+    static uint8_t b1[] = "first", b2[] = "second", b3[] = "third";
+    gds_buf body1 = {b1, sizeof(b1)}, body2 = {b2, sizeof(b2)}, body3 = {b3, sizeof(b3)};
+    int64_t seq = 0, rows = 0, bad = 0;
+    CHECK(gds_store_audit_verify(s, &rows, &bad) == GDS_OK && rows == 0); /* empty log */
+    CHECK(gds_store_audit_append(s, 1000, &body1, &seq) == GDS_OK && seq == 1);
+    CHECK(gds_store_audit_append(s, 2000, &body2, &seq) == GDS_OK && seq == 2);
+    CHECK(gds_store_audit_append(s, 3000, &body3, &seq) == GDS_OK && seq == 3);
+    gds_buf empty = {NULL, 0};
+    CHECK(gds_store_audit_append(s, 1, &empty, &seq) == GDS_EINVAL);
+    gds_buf huge = {b1, GDS_MAX_AUDIT_BODY + 1};
+    CHECK(gds_store_audit_append(s, 1, &huge, &seq) == GDS_ETOOBIG);
+    audit_count c = {0, 0};
+    CHECK(gds_store_audit_scan(s, 2, count_row, &c) == GDS_OK && c.n == 2 && c.lastSeq == 3);
+    CHECK(gds_store_audit_verify(s, &rows, &bad) == GDS_OK && rows == 3);
+
+    /* the chain by hand: row 1 hashes over 32 zero bytes */
+    uint8_t zero[GDS_AUDIT_HASH] = {0}, h1[GDS_AUDIT_HASH], h1b[GDS_AUDIT_HASH];
+    CHECK(gds_audit_hash(zero, 1, 1000, &body1, h1) == GDS_OK);
+    CHECK(gds_audit_hash(zero, 1, 1001, &body1, h1b) == GDS_OK);
+    CHECK(memcmp(h1, h1b, sizeof(h1)) != 0); /* the time is covered */
+
+    /* append-only: the store refuses to change a row */
+    sqlite3 *db = NULL;
+    if(!CHECK(sqlite3_open(path, &db) == SQLITE_OK))
+        return;
+    CHECK(sqlite3_exec(db, "UPDATE audit SET time = 5 WHERE seq = 2", NULL, NULL, NULL) != SQLITE_OK);
+    CHECK(sqlite3_exec(db, "DELETE FROM audit WHERE seq = 3", NULL, NULL, NULL) != SQLITE_OK);
+    /* someone who drops the triggers and edits a row is found */
+    CHECK(sqlite3_exec(db, "DROP TRIGGER audit_no_update; "
+                           "UPDATE audit SET body = x'00' WHERE seq = 2",
+                       NULL, NULL, NULL) == SQLITE_OK);
+    sqlite3_close(db);
+    CHECK(gds_store_audit_verify(s, &rows, &bad) == GDS_ESTATE && bad == 2 && rows == 1);
+}
+
 static void test_update_delete(gds_store *s) {
     UA_ApplicationRecordDataType rec;
     UA_LocalizedText name;
@@ -158,7 +210,7 @@ int main(int argc, char **argv) {
     gds_store *s = NULL;
     if(!CHECK(gds_store_open(path, &s) == GDS_OK) || !s)
         return CHECK_DONE();
-    CHECK_EQ_INT(gds_store_schema_version(s), 1);
+    CHECK_EQ_INT(gds_store_schema_version(s), 2);
     struct stat sb;
     CHECK(stat(path, &sb) == 0 && (sb.st_mode & 0777) == 0640); /* group read: the signer */
 
@@ -167,6 +219,7 @@ int main(int argc, char **argv) {
     test_requests(s, &id);
     test_certs(s, &id, &id2);
     test_update_delete(s);
+    test_audit(s, path);
     {
         char wal[1040];
         CHECK(gds_path(wal, sizeof(wal), "%s-wal", path) == GDS_OK);
