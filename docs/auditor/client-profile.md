@@ -13,8 +13,8 @@ The reference site lists only the CertificateManager-side ConformanceUnits (GDS 
 | Fixture | What it is |
 | --- | --- |
 | `gds-trusted` | The fake GDS's certificate, issued by the Auditor test CA `ca`. Before the run the operator, or `--setup-cmd`, makes the client trust it (the out-of-band step of Annex G.1) |
-| `gds-rogue` | A self-signed certificate with the same ApplicationUri and host name as `gds-trusted`, never given to the client |
-| `gds-revoked` | Issued by `ca` and listed in the CRL the client already holds |
+| `gds-rogue` | Issued by `ca-rogue` (which the client never got), with the same ApplicationUri and host name as `gds-trusted` |
+| `gds-revoked` | Issued by `ca` and listed in the CRL of `ca` that the Auditor hands the client (`GDSAUDIT_GDS_CRL`, rewritten before the cycle) |
 | `gds-expired` | Issued by `ca`, validity ended yesterday |
 | `gds-wronguri` | Issued by `ca`, SAN URI differs from the ApplicationUri in the fake GDS's endpoints |
 | Rogue CA | `ca-rogue`, the issuer the fake GDS uses when it plays `gds-rogue` |

@@ -15,6 +15,7 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -67,7 +68,11 @@ static struct {
     size_t tlPos;
     UA_UInt32 tlHandle;
     size_t tlSession; /* the session that holds tlHandle */
-    gds_buf cert, key;
+    UA_DateTime tlTime; /* TrustList.LastUpdateTime */
+    gds_buf cert, key;          /* FG_ID_MAIN */
+    gds_buf idCert[FG_ID_COUNT], idKey[FG_ID_COUNT]; /* the others, made on first use */
+    fg_identity identity;       /* the one the running server presents */
+    fg_config cfg;
     fg_session sess[FG_MAX_SESSIONS];
     size_t sessN;
     UA_StatusCode (*origActivate)(UA_Server *, UA_AccessControl *, const UA_EndpointDescription *,
@@ -115,8 +120,10 @@ const char *fg_ca_path(void) { return G.caPath; }
 const char *fg_crl_path(void) { return G.crlPath; }
 const char *fg_password_path(void) { return G.pwPath; }
 
-static UA_StatusCode touch_trustlist(void) {
-    UA_DateTime t = UA_DateTime_now();
+static UA_StatusCode touch_trustlist(bool newTime) {
+    if(newTime || !G.tlTime)
+        G.tlTime = UA_DateTime_now();
+    UA_DateTime t = G.tlTime;
     UA_Variant v;
     UA_Variant_setScalar(&v, &t, &UA_TYPES[UA_TYPES_DATETIME]);
     return UA_Server_writeValue(
@@ -125,9 +132,13 @@ static UA_StatusCode touch_trustlist(void) {
         v);
 }
 
+static gds_status switch_identity(fg_identity id);
+
 void fg_set_behaviour(const fg_behaviour *b) {
     G.b = *b;
-    if(b->tlChanged && G.server && touch_trustlist() != UA_STATUSCODE_GOOD)
+    if(b->identity != G.identity && switch_identity(b->identity) != GDS_OK)
+        fprintf(stderr, "fake GDS: cannot present identity %d\n", (int)b->identity);
+    if(b->tlChanged && G.server && touch_trustlist(true) != UA_STATUSCODE_GOOD)
         fprintf(stderr, "fake GDS: cannot set TrustList.LastUpdateTime\n");
 }
 
@@ -402,6 +413,9 @@ static gds_status make_cert(const char *uri, const fg_req *q, gds_buf *cert, con
         gds_status r = testca_sign_csr(&G.ca, &q->csr, uri, TESTCA_MAX_DAYS, cert);
         return r == GDS_OK ? make_expired(&G.ca, cert) : r;
     }
+    case FG_ISSUE_ROGUE:
+        *by = &G.cas[FG_CA_ROGUE];
+        return testca_sign_csr(*by, &q->csr, uri, TESTCA_MAX_DAYS, cert);
     case FG_ISSUE_GOOD:
     default:
         return testca_sign_csr(&G.ca, &q->csr, uri, TESTCA_MAX_DAYS, cert);
@@ -516,6 +530,12 @@ static UA_StatusCode encode_trustlist(void) {
         s = add_ca(&G.cas[FG_CA_X], tc, &tcN, tl, &tlN);
     if(s == GDS_OK && G.b.tl == FG_TL_ISSUER_Y)
         s = add_ca(&G.cas[FG_CA_Y], ic, &icN, il, &ilN);
+    if(s == GDS_OK && G.b.tl == FG_TL_ROGUE) { /* the rogue CA instead of the GDS CA */
+        free_bs(&tc[0]);
+        free_bs(&tl[0]);
+        tcN = tlN = 0;
+        s = add_ca(&G.cas[FG_CA_ROGUE], tc, &tcN, tl, &tlN);
+    }
     UA_StatusCode r = UA_STATUSCODE_BADINTERNALERROR;
     if(s == GDS_OK) {
         UA_TrustListDataType t;
@@ -656,7 +676,7 @@ static gds_status write_files(const fg_config *cfg) {
     gds_buf_free(&crl);
     if(r == GDS_OK)
         r = gds_file_write_atomic(G.pwPath, cfg->password, strlen(cfg->password), 0600);
-    static const char *const extra[FG_CA_COUNT] = {NULL, "ca-x", "ca-y", "ca-other"};
+    static const char *const extra[FG_CA_COUNT] = {NULL, "ca-x", "ca-y", "ca-other", "ca-rogue"};
     for(size_t i = 1; i < FG_CA_COUNT && r == GDS_OK; i++) {
         char d[GDS_MAX_PATH], cn[128];
         if((r = gds_path(d, sizeof(d), "%s/%s", cfg->workDir, extra[i])) == GDS_OK &&
@@ -699,6 +719,10 @@ static UA_StatusCode fg_activate(UA_Server *server, UA_AccessControl *ac,
     if(UA_NodeId_copy(sessionId, &s->id) != UA_STATUSCODE_GOOD)
         return r;
     s->mode = ep ? ep->securityMode : UA_MESSAGESECURITYMODE_INVALID;
+    if(ep && ep->securityPolicyUri.length < sizeof(s->policy) && ep->securityPolicyUri.length) {
+        memcpy(s->policy, ep->securityPolicyUri.data, ep->securityPolicyUri.length);
+        s->policy[ep->securityPolicyUri.length] = '\0';
+    }
     s->token = token_type(token);
     s->tOpen = now_ms();
     if(cert && cert->length && cert->length <= GDS_MAX_CERT_SIZE) {
@@ -720,8 +744,9 @@ static void fg_close(UA_Server *server, UA_AccessControl *ac, const UA_NodeId *s
     G.origClose(server, ac, sessionId, sessionContext);
 }
 
-static UA_StatusCode configure(UA_ServerConfig *config, const fg_config *cfg) {
-    UA_ByteString c = {G.cert.len, G.cert.data}, k = {G.key.len, G.key.data};
+static UA_StatusCode configure(UA_ServerConfig *config, const fg_config *cfg, const gds_buf *cert,
+                               const gds_buf *key) {
+    UA_ByteString c = {cert->len, cert->data}, k = {key->len, key->data};
     UA_StatusCode r = UA_ServerConfig_setDefaultWithSecureSecurityPolicies(
         config, (UA_UInt16)cfg->port, &c, &k, NULL, 0, NULL, 0, NULL, 0);
     if(r != UA_STATUSCODE_GOOD)
@@ -740,6 +765,12 @@ static UA_StatusCode configure(UA_ServerConfig *config, const fg_config *cfg) {
     if((r = UA_ServerConfig_addSecurityPolicyNone(config, &c)) != UA_STATUSCODE_GOOD)
         return r;
     config->securityPolicyNoneDiscoveryOnly = true;
+    /* A deprecated policy next to the current ones (CLI-TRU-07) */
+    if((r = UA_ServerConfig_addSecurityPolicyBasic256(config, &c, &k)) != UA_STATUSCODE_GOOD)
+        return r;
+    if((r = UA_ServerConfig_addEndpoint(config, UA_STRING("http://opcfoundation.org/UA/SecurityPolicy#Basic256"),
+                                        UA_MESSAGESECURITYMODE_SIGNANDENCRYPT)) != UA_STATUSCODE_GOOD)
+        return r;
     config->allowNonePolicyPassword = false;
     UA_String_clear(&config->applicationDescription.applicationUri);
     config->applicationDescription.applicationUri = UA_STRING_ALLOC(FG_APP_URI);
@@ -818,18 +849,14 @@ UA_Server *fg_new_server_quietly(UA_ServerConfig *sc) {
     return server;
 }
 
-gds_status fg_start(const fg_config *cfg) {
-    memset(&G, 0, sizeof(G));
-    gds_status s = write_files(cfg);
-    if(s != GDS_OK)
-        return s;
+static gds_status server_up(const gds_buf *cert, const gds_buf *key) {
     /* Quiet logger: stdout carries the TAP report */
     UA_ServerConfig sc;
     memset(&sc, 0, sizeof(sc));
     sc.logging = UA_Log_Stdout_new(UA_LOGLEVEL_FATAL);
     if(!sc.logging)
         return GDS_ENOMEM;
-    UA_StatusCode r = configure(&sc, cfg);
+    UA_StatusCode r = configure(&sc, &G.cfg, cert, key);
     if(r != UA_STATUSCODE_GOOD) {
         UA_ServerConfig_clear(&sc);
         fprintf(stderr, "fake GDS config: %s\n", UA_StatusCode_name(r));
@@ -838,20 +865,110 @@ gds_status fg_start(const fg_config *cfg) {
     G.server = fg_new_server_quietly(&sc);
     if(!G.server)
         return GDS_ENOMEM;
-    if(r == UA_STATUSCODE_GOOD) {
-        G.ns = UA_Server_addNamespace(G.server, GDS_NS_URI);
-        r = bind_methods();
-        if(r == UA_STATUSCODE_GOOD)
-            r = touch_trustlist();
-    }
+    G.ns = UA_Server_addNamespace(G.server, GDS_NS_URI);
+    r = bind_methods();
+    if(r == UA_STATUSCODE_GOOD)
+        r = touch_trustlist(false);
     if(r == UA_STATUSCODE_GOOD)
         r = UA_Server_run_startup(G.server);
     if(r != UA_STATUSCODE_GOOD) {
         fprintf(stderr, "fake GDS: %s\n", UA_StatusCode_name(r));
-        fg_stop();
         return GDS_EREMOTE;
     }
     return GDS_OK;
+}
+
+static void server_down(void) {
+    if(G.server) {
+        (void)UA_Server_run_shutdown(G.server);
+        UA_Server_delete(G.server);
+        G.server = NULL;
+    }
+    G.tlHandle = 0;
+}
+
+/* A CRL of the GDS CA that revokes `cert` */
+static gds_status write_revoking_crl(const gds_buf *cert) {
+    X509 *x = x509_parse_cert(cert);
+    X509_CRL *crl = X509_CRL_new();
+    X509_REVOKED *rv = X509_REVOKED_new();
+    ASN1_TIME *now = ASN1_TIME_new(), *next = ASN1_TIME_new();
+    gds_status r = GDS_ECRYPTO;
+    unsigned char *der = NULL;
+    if(x && crl && rv && now && next && X509_CRL_set_version(crl, 1) &&
+       X509_CRL_set_issuer_name(crl, X509_get_subject_name(G.ca.cert)) &&
+       X509_gmtime_adj(now, 0) && X509_gmtime_adj(next, 30L * 86400) &&
+       X509_CRL_set1_lastUpdate(crl, now) && X509_CRL_set1_nextUpdate(crl, next) &&
+       X509_REVOKED_set_serialNumber(rv, X509_get_serialNumber(x)) &&
+       X509_REVOKED_set_revocationDate(rv, now) && X509_CRL_add0_revoked(crl, rv)) {
+        rv = NULL; /* owned by the CRL */
+        int n = 0;
+        X509V3_CTX v3;
+        X509V3_set_ctx_nodb(&v3);
+        X509V3_set_ctx(&v3, G.ca.cert, NULL, NULL, crl, 0);
+        X509_EXTENSION *aki = X509V3_EXT_conf_nid(NULL, &v3, NID_authority_key_identifier, "keyid:always");
+        bool akiOk = aki && X509_CRL_add_ext(crl, aki, -1) == 1;
+        X509_EXTENSION_free(aki);
+        if(akiOk && X509_CRL_sort(crl) && X509_CRL_sign(crl, G.ca.key, EVP_sha256()) > 0 &&
+           (n = i2d_X509_CRL(crl, &der)) > 0)
+            r = gds_file_write_atomic(G.crlPath, der, (size_t)n, 0644);
+    }
+    OPENSSL_free(der);
+    X509_REVOKED_free(rv);
+    X509_CRL_free(crl);
+    X509_free(x);
+    ASN1_TIME_free(now);
+    ASN1_TIME_free(next);
+    return r;
+}
+
+static gds_status make_identity(fg_identity id) {
+    gds_buf *c = &G.idCert[id], *k = &G.idKey[id];
+    if(c->len)
+        return GDS_OK;
+    const char *cn = "OpenGDS Auditor TEST fake GDS";
+    gds_status r;
+    switch(id) {
+    case FG_ID_ROGUE:
+        return testca_issue(&G.cas[FG_CA_ROGUE], "OpenGDS Auditor TEST rogue GDS", FG_APP_URI,
+                            "localhost", 1, c, k);
+    case FG_ID_REVOKED:
+        r = testca_issue(&G.ca, cn, FG_APP_URI, "localhost", 1, c, k);
+        return r == GDS_OK ? write_revoking_crl(c) : r;
+    case FG_ID_EXPIRED:
+        r = testca_issue(&G.ca, cn, FG_APP_URI, "localhost", 1, c, k);
+        return r == GDS_OK ? make_expired(&G.ca, c) : r;
+    case FG_ID_WRONGURI:
+        return testca_issue(&G.ca, cn, "urn:opengds:auditor:not-the-gds", "localhost", 1, c, k);
+    case FG_ID_MAIN:
+    case FG_ID_COUNT:
+    default:
+        return GDS_EINVAL;
+    }
+}
+
+/* Restart the server on the same port with another certificate; the
+ * records, requests and events stay. */
+static gds_status switch_identity(fg_identity id) {
+    if((size_t)id >= FG_ID_COUNT)
+        return GDS_EINVAL;
+    gds_status r = id == FG_ID_MAIN ? GDS_OK : make_identity(id);
+    if(r != GDS_OK)
+        return r;
+    server_down();
+    G.identity = id;
+    return id == FG_ID_MAIN ? server_up(&G.cert, &G.key) : server_up(&G.idCert[id], &G.idKey[id]);
+}
+
+gds_status fg_start(const fg_config *cfg) {
+    memset(&G, 0, sizeof(G));
+    G.cfg = *cfg;
+    gds_status s = write_files(cfg);
+    if(s == GDS_OK)
+        s = server_up(&G.cert, &G.key);
+    if(s != GDS_OK)
+        fg_stop();
+    return s;
 }
 
 void fg_iterate(void) {
@@ -860,10 +977,10 @@ void fg_iterate(void) {
 }
 
 void fg_stop(void) {
-    if(G.server) {
-        (void)UA_Server_run_shutdown(G.server);
-        UA_Server_delete(G.server);
-        G.server = NULL;
+    server_down();
+    for(size_t i = 0; i < FG_ID_COUNT; i++) {
+        gds_buf_free(&G.idCert[i]);
+        gds_buf_free_secret(&G.idKey[i]);
     }
     UA_ByteString_clear(&G.tlFile);
     for(size_t i = 0; i < G.appsN; i++)
