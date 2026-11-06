@@ -34,7 +34,8 @@ static void test_ok(void) {
     CHECK(parse(BASE "approval = auto\n", &c, &line) == GDS_OK && c.approval == GDSD_APPROVE_AUTO);
 }
 
-static void test_refused(void) {
+/* Values a key does not accept. */
+static void test_bad_values(void) {
     gdsd_config c;
     unsigned line = 0;
     CHECK(parse(BASE "colour = blue\n", &c, &line) == GDS_EINVAL && line == 5);
@@ -43,6 +44,11 @@ static void test_refused(void) {
     CHECK(parse(BASE "auto_approve = true\n", &c, &line) == GDS_EINVAL); /* the T1 key is gone */
     CHECK(parse(BASE "port = 12x\n", &c, &line) == GDS_EINVAL);
     CHECK(parse(BASE "loopback_only = yes\n", &c, &line) == GDS_EINVAL);
+}
+
+static void test_refused(void) {
+    gdsd_config c;
+    unsigned line = 0;
     CHECK(parse(BASE "signer = relative/path\n", &c, &line) == GDS_EINVAL);
     CHECK(parse(BASE "data_dir = /again\n", &c, &line) == GDS_EINVAL && line == 5);
     CHECK(parse(BASE "hostname =\n", &c, &line) == GDS_EINVAL);
@@ -66,6 +72,7 @@ static void test_refused(void) {
 
 int main(void) {
     test_ok();
+    test_bad_values();
     test_refused();
     return CHECK_DONE();
 }
