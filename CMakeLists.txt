@@ -13,9 +13,18 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 option(OPENGDS_WERROR "Treat warnings as errors" ON)
-option(OPENGDS_BUILD_AUDITOR "Build the OpenGDS Auditor (tools/auditor)" ON)
+# An embedder (UASM) may build OpenGDS as a subproject with add_subdirectory:
+# it then gets the libraries and the signer, without OpenGDS's tests,
+# examples and Auditor unless it asks for them.
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    set(_gds_top ON)
+else()
+    set(_gds_top OFF)
+endif()
+option(OPENGDS_BUILD_TESTS "Build OpenGDS's tests and examples" ${_gds_top})
+option(OPENGDS_BUILD_AUDITOR "Build the OpenGDS Auditor (tools/auditor)" ${_gds_top})
 
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(sanitizers)
 include(hardening)
 include(open62541)
@@ -29,7 +38,7 @@ add_library(gds_common STATIC
     src/common/ids.c
     src/common/safeint.c
     src/common/ua_args.c)
-target_include_directories(gds_common PUBLIC "${CMAKE_SOURCE_DIR}/src")
+target_include_directories(gds_common PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_compile_definitions(gds_common PUBLIC _DEFAULT_SOURCE)
 target_link_libraries(gds_common PUBLIC gds_hardening open62541::open62541)
 
@@ -40,8 +49,10 @@ add_subdirectory(src/server)
 add_subdirectory(src/daemon)
 add_subdirectory(src/client)
 add_subdirectory(src/push)
-add_subdirectory(tests/unit)
-add_subdirectory(examples)
+if(OPENGDS_BUILD_TESTS)
+    add_subdirectory(tests/unit)
+    add_subdirectory(examples)
+endif()
 
 if(OPENGDS_BUILD_AUDITOR)
     add_subdirectory(tools/auditor)
