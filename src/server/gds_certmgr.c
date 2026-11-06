@@ -87,6 +87,8 @@ static bool csr_ok(const UA_ByteString *csr) {
 static GDS_METHOD(start_signing_request) {
     GDS_METHOD_UNUSED;
     gds_server *s = gds_ctx(methodContext);
+    if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINVALIDSTATE;
     UA_Guid appId;
     UA_UInt32 group = 0, type = 0;
     const UA_ByteString *csr = NULL;
@@ -141,6 +143,8 @@ static UA_StatusCode finish_outputs(gds_server *s, const gds_request *q, UA_Vari
 static GDS_METHOD(finish_request) {
     GDS_METHOD_UNUSED;
     gds_server *s = gds_ctx(methodContext);
+    if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINVALIDSTATE;
     UA_Guid appId, reqId;
     UA_StatusCode r = gds_in_guid(s, inputSize, input, 0, &appId);
     if(r == UA_STATUSCODE_GOOD)

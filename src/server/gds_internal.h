@@ -124,6 +124,14 @@ static inline void gds_unlock(gds_server *s) {
     pthread_mutex_unlock(&s->storeLock);
 }
 
+/* A STANDBY node refuses every state-changing GDS method with
+ * Bad_InvalidState before it touches the store or a plugin
+ * (docs/architecture.md, "Plugin API rules"; issue #15). */
+static inline UA_StatusCode gds_refuse_on_standby(gds_server *s) {
+    return gds_server_role(s) == GDS_NODE_STANDBY ? UA_STATUSCODE_BADINVALIDSTATE
+                                                  : UA_STATUSCODE_GOOD;
+}
+
 /* Inputs: the count first, then each argument's type and shape. */
 GDS_MUST_CHECK UA_StatusCode gds_in_nodeid(size_t inputSize, const UA_Variant *input, size_t i,
                                            const UA_NodeId **out);
