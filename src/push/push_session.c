@@ -3,8 +3,10 @@
 #include "push_session.h"
 
 #include <open62541/client_config_default.h>
+#include <open62541/plugin/certificategroup.h>
 #include <open62541/plugin/log_stdout.h>
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -15,8 +17,21 @@
 #define DEFAULT_TIMEOUT_MS 10000u
 #define POLICY_PREFIX "http://opcfoundation.org/UA/SecurityPolicy#"
 
+/* The Server certificate as the client verified it on the SecureChannel.
+ * open62541 v1.5.10 checks the chain but not that the certificate names the
+ * Server's ApplicationUri, which OPC 10000-4 §6.1.3 (Table 100, "URI": "This
+ * error may not be suppressed") and §5.7.2.1 require of a Client. So the
+ * session wraps the client's CertificateGroup to record the certificate, and
+ * push_session_open checks the URI itself (docs/upstream/04-client-server-
+ * applicationuri.md). Owned by the client config: freed by its clear. */
+typedef struct {
+    UA_CertificateGroup inner;
+    UA_ByteString seen;
+} cert_tap;
+
 struct push_session {
     UA_Client *client;
+    cert_tap *tap; /* borrowed from the client config */
     UA_String policy;
 };
 
@@ -119,8 +134,89 @@ static UA_StatusCode config_identity(UA_ClientConfig *cfg, const push_session_cf
     return UA_STATUSCODE_BADINVALIDARGUMENT;
 }
 
+static cert_tap *tap_of(UA_CertificateGroup *cg) {
+    return (cert_tap *)cg->context;
+}
+
+static UA_StatusCode tap_verify(UA_CertificateGroup *cg, const UA_ByteString *cert) {
+    cert_tap *t = tap_of(cg);
+    UA_ByteString_clear(&t->seen);
+    if(UA_ByteString_copy(cert, &t->seen) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    return t->inner.verifyCertificate(&t->inner, cert);
+}
+
+static UA_StatusCode tap_get_trust(UA_CertificateGroup *cg, UA_TrustListDataType *tl) {
+    cert_tap *t = tap_of(cg);
+    return t->inner.getTrustList ? t->inner.getTrustList(&t->inner, tl)
+                                 : UA_STATUSCODE_BADNOTSUPPORTED;
+}
+
+static UA_StatusCode tap_set_trust(UA_CertificateGroup *cg, const UA_TrustListDataType *tl) {
+    cert_tap *t = tap_of(cg);
+    return t->inner.setTrustList ? t->inner.setTrustList(&t->inner, tl)
+                                 : UA_STATUSCODE_BADNOTSUPPORTED;
+}
+
+static UA_StatusCode tap_add_trust(UA_CertificateGroup *cg, const UA_TrustListDataType *tl) {
+    cert_tap *t = tap_of(cg);
+    return t->inner.addToTrustList ? t->inner.addToTrustList(&t->inner, tl)
+                                   : UA_STATUSCODE_BADNOTSUPPORTED;
+}
+
+static UA_StatusCode tap_remove_trust(UA_CertificateGroup *cg, const UA_TrustListDataType *tl) {
+    cert_tap *t = tap_of(cg);
+    return t->inner.removeFromTrustList ? t->inner.removeFromTrustList(&t->inner, tl)
+                                        : UA_STATUSCODE_BADNOTSUPPORTED;
+}
+
+static UA_StatusCode tap_rejected(UA_CertificateGroup *cg, UA_ByteString **l, size_t *n) {
+    cert_tap *t = tap_of(cg);
+    return t->inner.getRejectedList ? t->inner.getRejectedList(&t->inner, l, n)
+                                    : UA_STATUSCODE_BADNOTSUPPORTED;
+}
+
+static UA_StatusCode tap_crls(UA_CertificateGroup *cg, const UA_ByteString *cert,
+                              const UA_Boolean isTrusted, UA_ByteString **crls, size_t *n) {
+    cert_tap *t = tap_of(cg);
+    return t->inner.getCertificateCrls
+               ? t->inner.getCertificateCrls(&t->inner, cert, isTrusted, crls, n)
+               : UA_STATUSCODE_BADNOTSUPPORTED;
+}
+
+static void tap_clear(UA_CertificateGroup *cg) {
+    cert_tap *t = tap_of(cg);
+    if(!t)
+        return;
+    if(t->inner.clear)
+        t->inner.clear(&t->inner);
+    UA_ByteString_clear(&t->seen);
+    free(t);
+    cg->context = NULL;
+}
+
+/* Wrap cg (already set up) so that the verified certificate is recorded */
+static cert_tap *tap_install(UA_CertificateGroup *cg) {
+    if(!cg->verifyCertificate)
+        return NULL;
+    cert_tap *t = calloc(1, sizeof(*t));
+    if(!t)
+        return NULL;
+    t->inner = *cg;
+    cg->context = t;
+    cg->getTrustList = tap_get_trust;
+    cg->setTrustList = tap_set_trust;
+    cg->addToTrustList = tap_add_trust;
+    cg->removeFromTrustList = tap_remove_trust;
+    cg->getRejectedList = tap_rejected;
+    cg->getCertificateCrls = tap_crls;
+    cg->verifyCertificate = tap_verify;
+    cg->clear = tap_clear;
+    return t;
+}
+
 /* Client with our certificate, the explicit trust list and SignAndEncrypt */
-static UA_Client *client_new(const push_session_cfg *pc) {
+static UA_Client *client_new(const push_session_cfg *pc, cert_tap **tap) {
     UA_ClientConfig cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.logging = UA_Log_Stdout_new(UA_LOGLEVEL_WARNING);
@@ -139,6 +235,8 @@ static UA_Client *client_new(const push_session_cfg *pc) {
     free(rl);
     if(r == UA_STATUSCODE_GOOD)
         r = config_identity(&cfg, pc);
+    if(r == UA_STATUSCODE_GOOD && !(*tap = tap_install(&cfg.certificateVerification)))
+        r = UA_STATUSCODE_BADOUTOFMEMORY;
     if(r == UA_STATUSCODE_GOOD) {
         cfg.securityMode = UA_MESSAGESECURITYMODE_SIGNANDENCRYPT;
         cfg.timeout = pc->timeoutMs ? pc->timeoutMs : DEFAULT_TIMEOUT_MS;
@@ -197,6 +295,31 @@ static UA_StatusCode choose_policy(UA_Client *c, const push_session_cfg *pc, UA_
     return r;
 }
 
+/* After connect: the Server describes itself with the expected ApplicationUri
+ * (when one is configured), and the certificate it presented on the
+ * SecureChannel names that ApplicationUri (4 §6.1.3 Table 100, "URI";
+ * §5.7.2.1). Bad_ServerUriInvalid or Bad_CertificateUriInvalid otherwise. */
+static UA_StatusCode check_server_identity(push_session *s, const push_session_cfg *pc) {
+    UA_ApplicationDescription ad; /* borrowed from the client */
+    UA_StatusCode r = UA_Client_getConnectionAttribute_scalar(
+        s->client, UA_QUALIFIEDNAME(0, "serverDescription"),
+        &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION], &ad);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    if(pc->serverUri) {
+        UA_String want = UA_STRING((char *)(uintptr_t)pc->serverUri);
+        if(!UA_String_equal(&want, &ad.applicationUri))
+            return UA_STATUSCODE_BADSERVERURIINVALID;
+    }
+    if(s->tap->seen.length == 0)
+        return UA_STATUSCODE_BADCERTIFICATEINVALID; /* SignAndEncrypt always verifies */
+    if(ad.applicationUri.length == 0 ||
+       UA_CertificateUtils_verifyApplicationUri(&s->tap->seen, &ad.applicationUri) !=
+           UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADCERTIFICATEURIINVALID;
+    return UA_STATUSCODE_GOOD;
+}
+
 UA_StatusCode push_session_open(const push_session_cfg *pc, push_session **out) {
     *out = NULL;
     if(!cfg_valid(pc))
@@ -205,7 +328,7 @@ UA_StatusCode push_session_open(const push_session_cfg *pc, push_session **out) 
     if(!s)
         return UA_STATUSCODE_BADOUTOFMEMORY;
     UA_StatusCode r = UA_STATUSCODE_BADOUTOFMEMORY;
-    s->client = client_new(pc);
+    s->client = client_new(pc, &s->tap);
     if(s->client)
         r = choose_policy(s->client, pc, &s->policy);
     if(r == UA_STATUSCODE_GOOD) {
@@ -213,8 +336,12 @@ UA_StatusCode push_session_open(const push_session_cfg *pc, push_session **out) 
         UA_String_clear(&cc->securityPolicyUri);
         r = UA_String_copy(&s->policy, &cc->securityPolicyUri);
     }
-    if(r == UA_STATUSCODE_GOOD)
+    if(r == UA_STATUSCODE_GOOD) {
+        UA_ByteString_clear(&s->tap->seen);
         r = UA_Client_connect(s->client, pc->endpointUrl);
+    }
+    if(r == UA_STATUSCODE_GOOD)
+        r = check_server_identity(s, pc);
     if(r != UA_STATUSCODE_GOOD) {
         push_session_close(s);
         return r;
