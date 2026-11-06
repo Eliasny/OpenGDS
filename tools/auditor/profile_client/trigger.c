@@ -94,6 +94,18 @@ static gds_status spawn(const trig_cfg *cfg, char *const *envp, pid_t *pid) {
     return GDS_OK;
 }
 
+static pid_t current; /* the hook trig_run waits for, 0 if none */
+
+bool trig_child_running(void) {
+    if(current <= 0)
+        return false;
+    siginfo_t si;
+    memset(&si, 0, sizeof(si));
+    if(waitid(P_PID, (id_t)current, &si, WEXITED | WNOHANG | WNOWAIT) != 0)
+        return false;
+    return si.si_pid == 0;
+}
+
 /* SIGTERM, then SIGKILL after 2 s; reaps the child. */
 static void stop_child(pid_t pid) {
     int st = 0;
@@ -120,6 +132,7 @@ gds_status trig_run(const trig_cfg *cfg, const char *user, trig_result *res) {
     double t0 = now_ms();
     if((r = spawn(cfg, env.envp, &pid)) != GDS_OK)
         return r;
+    current = pid;
     for(;;) {
         int st = 0;
         pid_t w = waitpid(pid, &st, WNOHANG);
@@ -139,6 +152,7 @@ gds_status trig_run(const trig_cfg *cfg, const char *user, trig_result *res) {
         }
         serve();
     }
+    current = 0;
     /* Serve what the client sent just before it exited (CloseSession) */
     for(int i = 0; i < 5; i++)
         serve();

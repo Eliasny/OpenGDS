@@ -59,7 +59,10 @@ static bool cycle_usable(const cli_cycle *c, gds_status r, ga_ctx *ctx) {
         ga_not_tested(ctx, "the trigger could not be started: %s", gds_status_name(r));
         return false;
     }
-    if(!c->run.exited)
+    if(!c->run.exited && c->run.exitStatus >= 128)
+        ga_note(ctx, "cycle %s: the trigger ended on signal %d", fault_name(c->fault),
+                c->run.exitStatus - 128);
+    else if(!c->run.exited)
         ga_note(ctx, "cycle %s: the trigger was killed after the timeout", fault_name(c->fault));
     else
         ga_note(ctx, "cycle %s: trigger exit %d after %.0f ms, %zu calls", fault_name(c->fault),

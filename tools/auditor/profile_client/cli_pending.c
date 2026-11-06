@@ -172,11 +172,41 @@ static void t_pen_sessions(ga_ctx *ctx, void *profile) {
         ga_pass(ctx, "all %zu session(s) closed when the cycle ended", end - first);
 }
 
+/* CLI-PEN-06: the session drops after StartSigningRequest and the GDS has
+ * forgotten the request; the client must recover in a later cycle. */
+static void t_pen_recover(ga_ctx *ctx, void *profile) {
+    cli_profile *p = profile;
+    if(!cli_base_cycle(p, ctx))
+        return;
+    cli_cycle c;
+    if(!cli_cycle_for(p, FAULT_DROP_AFTER_SIGN, ctx, &c))
+        return;
+    if(!cli_count(&c, FG_M_SIGN)) {
+        ga_not_tested(ctx, "the client made no signing request in the faulty cycle");
+        return;
+    }
+    size_t invalid = 0;
+    for(int k = 0; k < 2; k++) {
+        if(!cli_cycle_for(p, FAULT_RENEW, ctx, &c))
+            return;
+        if(cli_count(&c, FG_M_SIGN) || cli_count(&c, FG_M_NEWKEYPAIR)) {
+            ga_pass(ctx, "a new request in cycle %d after the forgotten one", k + 2);
+            return;
+        }
+        for(size_t i = c.first; i < c.end; i++)
+            invalid += fg_event_at(i)->method == FG_M_FINISH &&
+                       fg_event_at(i)->result == UA_STATUSCODE_BADINVALIDARGUMENT;
+    }
+    ga_warn(ctx, "stuck: no new request in 2 cycles (%zu FinishRequest calls answered "
+                 "Bad_InvalidArgument)", invalid);
+}
+
 const ga_test cli_pending_tests[] = {
     {"CLI-PEN-01", "12 §7.9.5, §7.6", "A pending request is completed", false, true, t_pen_complete},
     {"CLI-PEN-02", "12 §7.6, §7.9.5", "FinishRequest is polled with a delay", false, true, t_pen_backoff},
     {"CLI-PEN-03", "12 §7.6", "The next cycle resumes the pending request", false, true, t_pen_resume},
     {"CLI-PEN-05", "12 §7.9.5, §7.6", "A rejected request is not polled again", false, true, t_pen_reject},
+    {"CLI-PEN-06", "12 §7.9.5", "Recovers when the GDS forgot the pending request", false, true, t_pen_recover},
     {"CLI-PEN-07", "12 §6.3", "No session is held between cycles", false, true, t_pen_sessions},
 };
 const size_t cli_pending_count = GDS_ARRAY_SIZE(cli_pending_tests);

@@ -103,6 +103,8 @@ typedef struct {
     UA_NodeId requestId;    /* StartSigningRequest result, FinishRequest argument */
     size_t bytes;           /* TrustList.Read: bytes returned */
     gds_buf issued;         /* FinishRequest Good: the certificate returned */
+    double hungMs;          /* FinishRequest held back this long (hangFinishMs) */
+    bool clientGone;        /* the client process ended while the call was held back */
     fg_issue issueMode;     /* how it was made (FG_ISSUE_GOOD: a valid one) */
 } fg_event;
 
@@ -122,6 +124,9 @@ typedef struct {
     bool tlOverRead;            /* Read returns more than Length: another (rogue) list */
     size_t hugeIssuers;         /* not 0: FinishRequest IssuerCertificates has this many entries */
     bool closeSessions;         /* each session is closed by the GDS after its first call */
+    bool dropAfterSign;         /* after StartSigningRequest: close the session, forget the request */
+    bool tlDropAfterRead;       /* close the session after the first TrustList.Read */
+    unsigned hangFinishMs;      /* FinishRequest does not answer for this long (or until the client is gone) */
 } fg_behaviour;
 
 typedef struct {

@@ -46,3 +46,6 @@ ignore-crls,CLI-TL-04,fail
 parse-garbage,CLI-FLT-02,fail
 no-length-check,CLI-FLT-08,fail
 reconnect-storm,CLI-FLT-09,warn
+install-partial-trustlist,CLI-FLT-01,fail
+pending-stuck-invalid,CLI-PEN-06,warn
+no-call-timeout,CLI-FLT-07,warn

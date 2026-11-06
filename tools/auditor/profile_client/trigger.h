@@ -34,5 +34,7 @@ typedef struct {
  * GDSAUDIT_GDS_USER, GDSAUDIT_GDS_PASSWORD_FILE and GDSAUDIT_CLIENT_DIR, and
  * for a probe connection GDSAUDIT_ACTION=probe and GDSAUDIT_PROBE_URL. */
 GDS_MUST_CHECK gds_status trig_run(const trig_cfg *cfg, const char *user, trig_result *res);
+/* Is the hook of the running trig_run still alive? (does not reap it) */
+bool trig_child_running(void);
 
 #endif

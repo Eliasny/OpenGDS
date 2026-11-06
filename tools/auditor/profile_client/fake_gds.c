@@ -27,6 +27,7 @@
 #include "common/limits.h"
 #include "common/ua_args.h"
 #include "test_ca.h"
+#include "trigger.h"
 #include "x509util.h"
 #include "common/banned.h"
 
@@ -222,7 +223,14 @@ static UA_StatusCode dispatch(fg_method m, fg_handler h, const UA_NodeId *sessio
     ev->session = find_session(sessionId);
     capture_args(ev, inN, in);
     ev->result = h(ev, inN, in, out);
-    if(G.b.closeSessions && ev->session != FG_NO_SESSION && !G.sess[ev->session].killed &&
+    if(m == FG_M_SIGN && G.b.dropAfterSign && ev->result == UA_STATUSCODE_GOOD) {
+        for(size_t i = 0; i < G.reqsN; i++)
+            if(UA_NodeId_equal(&G.reqs[i].requestId, &ev->requestId))
+                G.reqs[i].done = true; /* forgotten: FinishRequest says Bad_InvalidArgument */
+    }
+    bool drop = G.b.closeSessions || (m == FG_M_SIGN && G.b.dropAfterSign) ||
+                (m == FG_M_TL_READ && G.b.tlDropAfterRead);
+    if(drop && ev->session != FG_NO_SESSION && !G.sess[ev->session].killed &&
        !G.closePending && UA_NodeId_copy(sessionId, &G.toClose) == UA_STATUSCODE_GOOD) {
         G.sess[ev->session].killed = true; /* closed after this call returns */
         G.closePending = true;
@@ -501,6 +509,16 @@ static UA_StatusCode h_finish(fg_event *ev, size_t inN, const UA_Variant *in, UA
     if(G.b.finishResult != UA_STATUSCODE_GOOD) {
         q->rejected = true; /* the CertificateManager rejected it (12 §7.9.5) */
         return G.b.finishResult;
+    }
+    if(G.b.hangFinishMs) {
+        /* Hold the answer back (CLI-FLT-07); stop once the client gave up */
+        double t0 = now_ms();
+        struct timespec step = {0, 100 * 1000 * 1000};
+        while(now_ms() - t0 < (double)G.b.hangFinishMs && trig_child_running())
+            (void)nanosleep(&step, NULL);
+        ev->hungMs = now_ms() - t0;
+        ev->clientGone = !trig_child_running();
+        return UA_STATUSCODE_BADTIMEOUT;
     }
     if(q->polls < G.b.approveAfter) {
         q->polls++;

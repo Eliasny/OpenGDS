@@ -71,7 +71,8 @@ static const char *const mutants[] = {
     "install-unverified", "install-wrong-key",   "install-wrong-uri",  "install-expired",
     "send-password-untrusted", "trust-any-gds",  "ignore-gds-crl",     "accept-expired-gds",
     "no-gds-uri-check",   "use-sign-only",       "prefer-deprecated",  "ignore-crls",
-    "parse-garbage",      "no-length-check",     "reconnect-storm"};
+    "parse-garbage",      "no-length-check",     "reconnect-storm",    "install-partial-trustlist",
+    "pending-stuck-invalid", "no-call-timeout"};
 
 static bool is_mutant(const char *name) {
     return mutant && strcmp(mutant, name) == 0;
@@ -491,7 +492,9 @@ static fin_outcome finish(const ptc *x, const UA_NodeId *appId, const UA_NodeId 
         }
     } else if(r != UA_STATUSCODE_GOOD) {
         uac_info("the request was not granted: %s; it is not polled again", UA_StatusCode_name(r));
-        if(!is_mutant("poll-after-reject"))
+        if(is_mutant("pending-stuck-invalid") && r != UA_STATUSCODE_BADREQUESTNOTALLOWED)
+            uac_info("MUTANT: the pending request is kept");
+        else if(!is_mutant("poll-after-reject"))
             clear_pending(x->pki);
         o = FIN_REJECTED;
     } else {
@@ -639,6 +642,8 @@ static UA_Client *gds_client(const gds_buf *cert, const gds_buf *key, const gds_
         cc->certificateVerification.clear(&cc->certificateVerification);
         UA_CertificateGroup_AcceptAll(&cc->certificateVerification);
     }
+    if(c && is_mutant("no-call-timeout"))
+        UA_Client_getConfig(c)->timeout = 600000; /* MUTANT: wait 10 minutes for any answer */
     if(c) {
         UA_ClientConfig *cc = UA_Client_getConfig(c);
         origVerify = cc->certificateVerification.verifyCertificate;
@@ -1048,6 +1053,11 @@ int main(int argc, char **argv) {
         uac_info("trust list unchanged since the last download: skipped");
     } else {
         UA_TrustListDataType tl;
+        if(is_mutant("install-partial-trustlist")) {
+            uac_info("MUTANT: the old trust list is dropped before the download");
+            wipe_dir(pki, "trusted/certs");
+            wipe_dir(pki, "trusted/crl");
+        }
         r = (is_mutant("read-one-chunk") || is_mutant("no-close") || is_mutant("no-length-check"))
                 ? mutant_read_trustlist(client, tlId, &tl)
                 : uac_read_trustlist(client, tlId, &tl);

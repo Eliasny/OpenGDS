@@ -30,6 +30,9 @@ typedef enum {
     FAULT_HUGE_ISSUERS,   /* a new request; FinishRequest returns 10 000 IssuerCertificates */
     FAULT_TL_OVER_READ,   /* the trust list changed; Read returns more than Length (a rogue list) */
     FAULT_CLOSE_SESSIONS, /* the GDS closes each session after its first call */
+    FAULT_DROP_AFTER_SIGN, /* a new request; then the session is closed and the request forgotten */
+    FAULT_TL_DROP,        /* the trust list changed; the session is closed after the first Read */
+    FAULT_FINISH_HANG,    /* a new request; FinishRequest does not answer */
     FAULT_COUNT
 } fault_id;
 
