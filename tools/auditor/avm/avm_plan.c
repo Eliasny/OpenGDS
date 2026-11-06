@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: MPL-2.0 */
 #include "avm_plan.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #include "common/banned.h"
@@ -234,4 +235,104 @@ char *avm_plan_thumbprint(const AvmPlan *p) {
     }
     g_free(data);
     return hex;
+}
+
+/* ---- saved form ---- */
+
+#define GROUP "plan"
+
+typedef struct {
+    const char *key;
+    size_t offset; /* of the char * field in AvmPlan */
+} string_key;
+
+static const string_key stringKeys[] = {
+    {"work", offsetof(AvmPlan, workDir)},
+    {"url", offsetof(AvmPlan, url)},
+    {"user", offsetof(AvmPlan, user)},
+    {"password_file", offsetof(AvmPlan, passwordFile)},
+    {"server_cert", offsetof(AvmPlan, serverCert)},
+    {"admin_cert", offsetof(AvmPlan, adminCert)},
+    {"admin_key", offsetof(AvmPlan, adminKey)},
+    {"admin_user", offsetof(AvmPlan, adminUser)},
+    {"admin_password_file", offsetof(AvmPlan, adminPasswordFile)},
+    {"trust", offsetof(AvmPlan, trustFiles)},
+    {"crl", offsetof(AvmPlan, crlFile)},
+    {"trigger", offsetof(AvmPlan, triggerCmd)},
+    {"client_user", offsetof(AvmPlan, clientUser)},
+};
+
+static char **field(AvmPlan *p, size_t offset) {
+    return (char **)(void *)((char *)p + offset);
+}
+
+static const char *field_value(const AvmPlan *p, size_t offset) {
+    return *(char *const *)(const void *)((const char *)p + offset);
+}
+
+gboolean avm_plan_save(const AvmPlan *p, const char *path, GError **error) {
+    GKeyFile *k = g_key_file_new();
+    g_key_file_set_string(k, GROUP, "profile", avm_profile_name(p->profile));
+    g_key_file_set_integer(k, GROUP, "preset", (gint)p->preset);
+    g_key_file_set_boolean(k, GROUP, "allow_changes", p->allowChanges);
+    g_key_file_set_boolean(k, GROUP, "tofu", p->tofu);
+    g_key_file_set_integer(k, GROUP, "listen_port", (gint)p->listenPort);
+    for(size_t i = 0; i < G_N_ELEMENTS(stringKeys); i++) {
+        const char *v = field_value(p, stringKeys[i].offset);
+        g_key_file_set_string(k, GROUP, stringKeys[i].key, v ? v : "");
+    }
+    char *dir = g_path_get_dirname(path);
+    gboolean ok = g_mkdir_with_parents(dir, 0700) == 0 &&
+                  g_key_file_save_to_file(k, path, error);
+    if(!ok && error && !*error)
+        g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "cannot create %s", dir);
+    g_free(dir);
+    g_key_file_unref(k);
+    return ok;
+}
+
+static void load_numbers(AvmPlan *p, GKeyFile *k) {
+    GError *e = NULL;
+    gint preset = g_key_file_get_integer(k, GROUP, "preset", &e);
+    if(!e && preset >= 0 && preset < AVM_PRESET_COUNT)
+        avm_plan_apply_preset(p, (AvmPreset)preset);
+    g_clear_error(&e);
+    gboolean b = g_key_file_get_boolean(k, GROUP, "allow_changes", &e);
+    if(!e)
+        p->allowChanges = b;
+    g_clear_error(&e);
+    b = g_key_file_get_boolean(k, GROUP, "tofu", &e);
+    if(!e)
+        p->tofu = b;
+    g_clear_error(&e);
+    gint port = g_key_file_get_integer(k, GROUP, "listen_port", &e);
+    if(!e && port > 0 && port <= 65535)
+        p->listenPort = (guint)port;
+    g_clear_error(&e);
+}
+
+gboolean avm_plan_load(AvmPlan *p, const char *path, GError **error) {
+    GKeyFile *k = g_key_file_new();
+    if(!g_key_file_load_from_file(k, path, G_KEY_FILE_NONE, error)) {
+        g_key_file_unref(k);
+        return FALSE;
+    }
+    char *profile = g_key_file_get_string(k, GROUP, "profile", NULL);
+    for(int i = 0; profile && i < 3; i++)
+        if(!strcmp(profile, avm_profile_name((AvmProfile)i)))
+            p->profile = (AvmProfile)i;
+    g_free(profile);
+    load_numbers(p, k);
+    for(size_t i = 0; i < G_N_ELEMENTS(stringKeys); i++) {
+        char *v = g_key_file_get_string(k, GROUP, stringKeys[i].key, NULL);
+        if(v)
+            avm_plan_set(field(p, stringKeys[i].offset), v);
+        g_free(v);
+    }
+    g_key_file_unref(k);
+    return TRUE;
+}
+
+char *avm_plan_default_path(void) {
+    return g_build_filename(g_get_user_config_dir(), "gdsaudit", "last-plan.ini", NULL);
 }

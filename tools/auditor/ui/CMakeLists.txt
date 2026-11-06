@@ -15,7 +15,7 @@ find_program(XVFB_RUN xvfb-run)
 if(XVFB_RUN AND NOT OPENGDS_SANITIZE MATCHES "thread")
     add_test(NAME gui_smoke COMMAND "${XVFB_RUN}" -a "$<TARGET_FILE:gdsaudit-gui>" --smoke)
     set_tests_properties(gui_smoke PROPERTIES TIMEOUT 60
-                         ENVIRONMENT "GSETTINGS_BACKEND=memory;GTK_A11Y=none;NO_AT_BRIDGE=1;LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp:print_suppressions=0")
+                         ENVIRONMENT "XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/smoke-config;XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/smoke-data;GSETTINGS_BACKEND=memory;GTK_A11Y=none;NO_AT_BRIDGE=1;LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp:print_suppressions=0")
 else()
     message(STATUS "gdsaudit-gui: xvfb-run not found, gui_smoke test skipped")
 endif()

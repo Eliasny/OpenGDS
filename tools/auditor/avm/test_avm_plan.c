@@ -167,6 +167,49 @@ static void test_thumbprint(void) {
     avm_plan_clear(&p);
 }
 
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): flat checks
+static void test_save_load(void) {
+    char *dir = g_dir_make_tmp("avm-plan-XXXXXX", NULL);
+    char *path = g_build_filename(dir, "sub", "plan.ini", NULL);
+    AvmPlan p;
+    avm_plan_init(&p);
+    p.profile = AVM_PROFILE_GDS;
+    avm_plan_apply_preset(&p, AVM_PRESET_CERT);
+    p.listenPort = 4999;
+    avm_plan_set(&p.url, "opc.tcp://gds:58810");
+    avm_plan_set(&p.trustFiles, "/a/ca1.der;/a/ca2.der");
+    avm_plan_set(&p.triggerCmd, "./start 'two words'");
+    GError *e = NULL;
+    g_assert_true(avm_plan_save(&p, path, &e));
+    g_assert_no_error(e);
+    AvmPlan q;
+    avm_plan_init(&q);
+    g_assert_true(avm_plan_load(&q, path, &e));
+    g_assert_true(q.profile == AVM_PROFILE_GDS && q.preset == AVM_PRESET_CERT);
+    g_assert_true(q.allowChanges && q.slow && q.listenPort == 4999);
+    eq_str(q.url, "opc.tcp://gds:58810");
+    eq_str(q.trustFiles, "/a/ca1.der;/a/ca2.der");
+    eq_str(q.triggerCmd, "./start 'two words'");
+    eq_str(q.clientUser, "registrar");
+    avm_plan_clear(&q);
+    /* missing keys and nonsense keep the defaults */
+    g_assert_true(g_file_set_contents(path, "[plan]\npreset=7\nlisten_port=99999\nprofile=x\n",
+                                      -1, NULL));
+    avm_plan_init(&q);
+    g_assert_true(avm_plan_load(&q, path, &e));
+    g_assert_true(q.profile == AVM_PROFILE_SERVER && q.preset == AVM_PRESET_QUICK);
+    g_assert_true(!q.allowChanges && q.listenPort == 4850);
+    avm_plan_clear(&q);
+    avm_plan_init(&q);
+    g_assert_false(avm_plan_load(&q, "/nonexistent/plan.ini", &e));
+    g_clear_error(&e);
+    avm_plan_clear(&q);
+    avm_plan_clear(&p);
+    g_unlink(path);
+    g_free(path);
+    g_free(dir);
+}
+
 int main(int argc, char **argv) {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/avm/plan/presets", test_presets);
@@ -174,5 +217,6 @@ int main(int argc, char **argv) {
     g_test_add_func("/avm/plan/gds", test_gds);
     g_test_add_func("/avm/plan/client", test_client);
     g_test_add_func("/avm/plan/thumbprint", test_thumbprint);
+    g_test_add_func("/avm/plan/save-load", test_save_load);
     return g_test_run();
 }

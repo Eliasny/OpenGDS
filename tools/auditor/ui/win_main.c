@@ -667,6 +667,12 @@ static void on_run(GtkButton *b, gpointer data) {
         g_free(problem);
         return;
     }
+    char *saved = avm_plan_default_path();
+    GError *e = NULL;
+    if(!avm_plan_save(&w->plan, saved, &e))
+        g_warning("cannot keep the form in %s: %s", saved, e ? e->message : "");
+    g_clear_error(&e);
+    g_free(saved);
     if(w->plan.allowChanges && w->plan.profile != AVM_PROFILE_CLIENT) {
         char *thumb = avm_plan_thumbprint(&w->plan);
         dlg_allow_changes_run(w->win, w->plan.url, thumb, w->plan.tofu, on_allowed, w);
@@ -837,6 +843,9 @@ GtkWindow *win_main_new(GtkApplication *app) {
     Win *w = g_new0(Win, 1);
     w->rows = g_ptr_array_new_with_free_func(vrow_free);
     avm_plan_init(&w->plan);
+    char *saved = avm_plan_default_path();
+    (void)avm_plan_load(&w->plan, saved, NULL); /* the form as the user left it, if any */
+    g_free(saved);
     w->win = GTK_WINDOW(gtk_application_window_new(app));
     gtk_window_set_title(w->win, "OpenGDS Auditor");
     gtk_window_set_default_size(w->win, 1100, 720);
