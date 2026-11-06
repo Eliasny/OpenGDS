@@ -182,6 +182,14 @@ GDS_MUST_CHECK gds_status st_make_cert(const testca_t *issuer, EVP_PKEY *key, co
 GDS_MUST_CHECK gds_status st_make_leaf(const testca_t *issuer, EVP_PKEY *key, const char *cn,
                                        const char *uri, long fromSec, long toSec, bool isCa,
                                        size_t pad, gds_buf *out);
+/* An anonymous session over SignAndEncrypt (Aes256_Sha256_RsaPss) with the
+ * application identity cert/key, trusting the test CA and the pinned
+ * certificate. *out is NULL unless the session is activated. */
+GDS_MUST_CHECK UA_StatusCode st_peer_connect(const srv_target *t, const gds_buf *cert,
+                                             const gds_buf *key, UA_Client **out);
+/* A refusal that names the certificate or hides it (Part 4 §6.1.3, Part 6
+ * §6.7.5), or a closed connection. */
+bool st_cert_refusal(UA_StatusCode r);
 /* The public key of t->tGood (the key the target uses), or NULL. */
 EVP_PKEY *st_tgood_key(const srv_target *t);
 /* t-withkey: a certificate for the target from the test CA, with a key the

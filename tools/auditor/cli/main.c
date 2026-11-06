@@ -232,6 +232,7 @@ static size_t collect_server(ga_test *all) {
                 {srv_update_tests, srv_update_count},
                 {srv_transaction_tests, srv_transaction_count},
                 {srv_wire_tests, srv_wire_count},
+                {srv_rejected_tests, srv_rejected_count},
                 {srv_restore_tests, srv_restore_count}}; /* restore stays last */
     size_t n = 0;
     for(size_t s = 0; s < GDS_ARRAY_SIZE(sets); s++)

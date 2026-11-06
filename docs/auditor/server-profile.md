@@ -17,7 +17,7 @@ Spec: OPC 10000-12 v1.05.07 (2026-04-15) unless the clause names another Part. H
 | `ch-none` | A None SecureChannel with a session, when the target offers one |
 | Test CA | `ca` (root, subject contains "OpenGDS Auditor TEST", at most 30 days valid), `ca-int` (intermediate under `ca`), `ca2` (unrelated root), CRLs for each |
 | Target certificates | `t-good` (from `ca` for the target's ApplicationUri and the key of the target's CSR), `t-wrongkey`, `t-wronguri`, `t-badsig`, `t-expired`, `t-otherca` (from `ca2`), `t-ecc` (an ECC certificate for an RSA slot), `t-withkey` (certificate plus a private key the Auditor generated) |
-| Peer certificates | `peer-good` (client certificate from `ca`), `peer-revoked` (from `ca`, listed in `ca`'s CRL), `peer-unknown` (self-signed, never trusted), `peer-int` (from `ca-int`), `peer-badsig` (from `ca`, signature broken) |
+| Peer certificates | `peer-good` (client certificate from `ca`), `peer-revoked` (from `ca`, listed in `ca`'s CRL), `peer-unknown` (self-signed, never trusted), `peer-int` (from `ca-int`), `peer-badsig` (self-signed, signature broken: a server can see the error without trusting any CA, so SRV-REJ-02 also works in a read-only run) |
 | Big list | A TrustListDataType one byte larger than MaxTrustListSize: the snapshot plus filler certificates from `ca` in TrustedCertificates (distinct, valid, sized with an nsComment padding so the encoding hits the size exactly). Built only for MaxTrustListSize below 4 MiB (`GDS_MAX_TRUSTLIST_SIZE`); above that SRV-CAP-07 is Not tested |
 | Settle timeout | `--settle-timeout`, default 300 s: how long the Auditor waits for asynchronous effects (channels re-keyed, sessions closed) before a Fail |
 
@@ -181,8 +181,8 @@ ConformanceUnit: Push Model for Global Certificate and TrustList Management.
 
 | ID | Clause | Flags | Check | Pass when | Fail / Warn / Not supported | Mutant |
 | --- | --- | --- | --- | --- | --- | --- |
-| SRV-REJ-01 | 12 §7.10.12 | — | Connect as `peer-unknown` (refused, SRV-WIRE-06), then GetRejectedList as `admin` | `peer-unknown` is in the list | Warn: missing. Adding rejected certificates is only recommended | `rejected-not-recorded` |
-| SRV-REJ-02 | 12 §7.8.3.2, §7.10.12 | — | Connect with a client certificate that has a bad signature (an unsuppressible error), then GetRejectedList | It is not in the list (only valid but untrusted certificates are added) | Fail: it is in the list | `rejected-records-invalid` |
+| SRV-REJ-01 | 12 §7.10.12 | — | Connect as a fresh self-signed `peer-unknown` (refused, as in SRV-WIRE-06), then GetRejectedList as `admin` | `peer-unknown` is in the list | Warn: missing. Adding rejected certificates is only recommended | `rejected-not-recorded` |
+| SRV-REJ-02 | 12 §7.8.3.2, §7.10.12 | — | Connect with `peer-badsig`, a self-signed client certificate with one signature bit flipped (an unsuppressible error, 4 §6.1.3), then GetRejectedList | It is not in the list (only valid but untrusted certificates are added) | Fail: it is in the list | `rejected-records-invalid` |
 | SRV-REJ-03 | 12 §7.10.12 | — | Decode every entry GetRejectedList returns | Every entry is a DER certificate | Fail: an entry does not decode | `rejected-garbage` |
 | SRV-REJ-04 | 12 §7.8.3.1, §7.8.3.2 | — | If a CertificateGroup has its own GetRejectedList, call it as `admin` | Good, and every entry decodes | Fail: Bad code or an entry that does not decode. Not supported: no group-level method | `group-rejected-broken` |
 

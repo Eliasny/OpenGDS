@@ -342,48 +342,6 @@ static void t_wire_notice(ga_ctx *ctx, void *p) {
 #define PEER_REVOKED_URI "urn:opengds:auditor:peer-revoked"
 #define PEER_UNKNOWN_URI "urn:opengds:auditor:peer-unknown"
 
-/* An anonymous session over SignAndEncrypt with the application identity
- * cert/key, trusting the test CA (which issues t-good) and the pinned
- * certificate. *out is NULL unless the session is activated. */
-static UA_StatusCode peer_connect(const srv_target *t, const gds_buf *cert, const gds_buf *key,
-                                  UA_Client **out) {
-    *out = NULL;
-    char uri[256];
-    if(x509_san_uri(cert, uri, sizeof(uri)) != GDS_OK)
-        return UA_STATUSCODE_BADINTERNALERROR;
-    gds_buf trust[2];
-    size_t n = 0;
-    trust[n++] = t->caDer;
-    if(t->pinned.len)
-        trust[n++] = t->pinned;
-    UA_Client *c = uac_new_secure_mode(cert, key, trust, n, &t->caCrl, 1, uri, POLICY_RSAPSS,
-                                       UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
-    if(!c)
-        return UA_STATUSCODE_BADOUTOFMEMORY;
-    UA_StatusCode r = UA_Client_connect(c, t->url);
-    if(r == UA_STATUSCODE_GOOD)
-        *out = c;
-    else
-        st_client_free(c);
-    return r;
-}
-
-/* A refusal that names the certificate, or hides it (Part 4 §6.1.3,
- * Part 6 §6.7.5: Bad_SecurityChecksFailed may stand for any of them).
- * Closed connections are how a server can end an OpenSecureChannel. */
-static bool cert_refusal(UA_StatusCode r) {
-    static const UA_StatusCode codes[] = {
-        UA_STATUSCODE_BADSECURITYCHECKSFAILED,       UA_STATUSCODE_BADCERTIFICATEUNTRUSTED,
-        UA_STATUSCODE_BADCERTIFICATEREVOKED,         UA_STATUSCODE_BADCERTIFICATEINVALID,
-        UA_STATUSCODE_BADCERTIFICATECHAININCOMPLETE, UA_STATUSCODE_BADCERTIFICATEREVOCATIONUNKNOWN,
-        UA_STATUSCODE_BADCONNECTIONCLOSED,           UA_STATUSCODE_BADSECURECHANNELCLOSED,
-    };
-    for(size_t i = 0; i < GDS_ARRAY_SIZE(codes); i++)
-        if(r == codes[i])
-            return true;
-    return false;
-}
-
 /* SRV-WIRE-04: with ca in the applied trust list (SRV-TXN-03), peer-good
  * gets a session. */
 static void t_wire_peer_good(ga_ctx *ctx, void *p) {
@@ -393,11 +351,11 @@ static void t_wire_peer_good(ga_ctx *ctx, void *p) {
         return;
     }
     UA_Client *c = NULL;
-    UA_StatusCode r = peer_connect(t, &t->peerCert, &t->peerKey, &c);
+    UA_StatusCode r = st_peer_connect(t, &t->peerCert, &t->peerKey, &c);
     st_client_free(c);
     if(r == UA_STATUSCODE_GOOD)
         ga_pass(ctx, "session created as peer-good (issued by ca)");
-    else if(cert_refusal(r))
+    else if(st_cert_refusal(r))
         ga_fail(ctx, "peer-good refused although ca is in the applied trust list: %s",
                 UA_StatusCode_name(r));
     else
@@ -503,13 +461,13 @@ static void t_wire_revoked(ga_ctx *ctx, void *p) {
         return;
     }
     UA_Client *c = NULL;
-    r = peer_connect(t, &cert, &key, &c);
+    r = st_peer_connect(t, &cert, &key, &c);
     st_client_free(c);
     gds_buf_free(&cert);
     gds_buf_free_secret(&key);
     if(r == UA_STATUSCODE_GOOD)
         ga_fail(ctx, "session created as peer-revoked although ca's applied CRL lists it");
-    else if(cert_refusal(r))
+    else if(st_cert_refusal(r))
         ga_pass(ctx, "peer-revoked refused: %s", UA_StatusCode_name(r));
     else
         ga_not_tested(ctx, "peer-revoked session -> %s (not a certificate refusal)",
@@ -534,13 +492,13 @@ static void t_wire_unknown(ga_ctx *ctx, void *p) {
         return;
     }
     UA_Client *c = NULL;
-    UA_StatusCode r = peer_connect(t, &cert, &key, &c);
+    UA_StatusCode r = st_peer_connect(t, &cert, &key, &c);
     st_client_free(c);
     gds_buf_free(&cert);
     gds_buf_free_secret(&key);
     if(r == UA_STATUSCODE_GOOD)
         ga_fail(ctx, "session created as peer-unknown (self-signed, never trusted)");
-    else if(cert_refusal(r))
+    else if(st_cert_refusal(r))
         ga_pass(ctx, "peer-unknown refused: %s", UA_StatusCode_name(r));
     else
         ga_not_tested(ctx, "peer-unknown session -> %s (not a certificate refusal)",
@@ -639,7 +597,7 @@ static void t_wire_removed(ga_ctx *ctx, void *p) {
     UA_TrustListDataType_clear(&l);
     UA_Client *c = NULL;
     if(r == UA_STATUSCODE_GOOD)
-        r = peer_connect(t, &t->peerCert, &t->peerKey, &c);
+        r = st_peer_connect(t, &t->peerCert, &t->peerKey, &c);
     UA_StatusCode rm = r == UA_STATUSCODE_GOOD ? remove_trusted(t->client, &t->peerCert) : r;
     UA_StatusCode ra = rm == UA_STATUSCODE_GOOD ? st_apply(t->client) : rm;
     if(ra == UA_STATUSCODE_BADNOTHINGTODO)
@@ -669,7 +627,7 @@ static void t_wire_crl_session(ga_ctx *ctx, void *p) {
     UA_Client *c = NULL;
     UA_StatusCode r = push_apply(t, &t->pushed, ctx);
     if(r == UA_STATUSCODE_GOOD)
-        r = peer_connect(t, &t->peerCert, &t->peerKey, &c);
+        r = st_peer_connect(t, &t->peerCert, &t->peerKey, &c);
     if(r == UA_STATUSCODE_GOOD)
         r = gds_status_to_ua(revoking_crl(&t->ca, &t->peerCert, &crl));
     if(r == UA_STATUSCODE_GOOD)
