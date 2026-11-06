@@ -206,6 +206,7 @@ static size_t collect_server(ga_test *all) {
         const ga_test *t;
         size_t n;
     } sets[] = {{srv_security_tests, srv_security_count},
+                {srv_capabilities_tests, srv_capabilities_count},
                 {srv_trustlist_tests, srv_trustlist_count},
                 {srv_update_tests, srv_update_count},
                 {srv_transaction_tests, srv_transaction_count},

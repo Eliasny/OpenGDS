@@ -90,10 +90,18 @@ GDS_MUST_CHECK UA_StatusCode st_apply(UA_Client *c);
 /* CreateSigningRequest on the DefaultApplicationGroup for t->certType. */
 GDS_MUST_CHECK UA_StatusCode st_csr(const srv_target *t, UA_Client *c, bool regen,
                                     const UA_ByteString *nonce, gds_buf *csr);
+/* CreateSigningRequest(group, type, no subject, regen, nonce). */
+GDS_MUST_CHECK UA_StatusCode st_csr_for(UA_Client *c, UA_NodeId group, UA_NodeId type, bool regen,
+                                        const UA_ByteString *nonce, gds_buf *csr);
 /* UpdateCertificate(DefaultApplicationGroup, t->certType, cert, issuers). */
 GDS_MUST_CHECK UA_StatusCode st_update_cert(const srv_target *t, UA_Client *c,
                                             const gds_buf *cert, const gds_buf *issuers,
                                             size_t issuersN, bool *applyRequired);
+/* st_update_cert with a PrivateKeyFormat and PrivateKey (NULL: none). */
+GDS_MUST_CHECK UA_StatusCode st_update_cert_key(const srv_target *t, UA_Client *c,
+                                                const gds_buf *cert, const gds_buf *issuers,
+                                                size_t issuersN, const char *keyFormat,
+                                                const gds_buf *key, bool *applyRequired);
 /* Read ServerConfiguration.SupportsTransactions; *present false if absent. */
 void st_supports_transactions(UA_Client *c, bool *present, bool *value);
 
