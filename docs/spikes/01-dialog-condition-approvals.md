@@ -53,11 +53,11 @@ The spike runs one server and one client in one process, against open62541 v1.5.
 
 These were open choices in the first version of this note. The OPC UA specifications settle them.
 
-**D1. Event queue and pending approvals.** Part 4 v1.05 §5.13.1.5: for Event MonitoredItems "the queue size is the maximum value supported by the Server", the Server "is responsible for the Event buffer", and when an Event is discarded an EventQueueOverflowEventType Event is added on top of the queue. Part 9 v1.05 §5.5.7: ConditionRefresh issues Event Notifications of *any* Retained Conditions. Part 12 sets no limit on pending requests. So OpenGDS sets no cap of its own on pending approvals; it grants the queue size the Client asks for up to a configured Server maximum (`queueSizeLimits.max`, configurable, so an operator can match it to the expected number of pending items), and when the queue does overflow it relies on the overflow Event the spec requires, which open62541 already sends (the spike sees it). A Client that gets the overflow Event knows its view is incomplete and refreshes with a larger queue.
+**D1. Event queue and pending approvals (Elias's decision, 6 Nov 2026).** Pending approvals are capped at **10,000**, and the event queue maximum (`queueSizeLimits.max`) is raised to match, so one ConditionRefresh can carry every pending dialog. The specs set no such cap (Part 12 has no limit on pending requests), so this is a resource decision, not a protocol one. A request that would exceed the cap is refused with `Bad_ServerTooBusy` (Part 4 v1.05 §7.38.2 Table 178: "the Server does not have the resources to process the request at this time"). The Part 4 v1.05 §5.13.1.5 overflow Event stays as the safety net: if a Client asks for a smaller queue and Events are discarded, the Server adds an EventQueueOverflowEventType Event (open62541 already does; the spike sees it), and the Client knows to refresh with a larger queue. Part 9 v1.05 §5.5.7 still applies: ConditionRefresh issues Event Notifications of any Retained Conditions.
 
 **D2. Comment handling in Respond2.** Part 9 v1.05 §5.6.4: a NULL Comment (locale and text empty) "shall be ignored and any existing comments will remain unchanged"; an empty text with a locale resets the comment; a Comment that is too long or invalid gives `Bad_InvalidArgument`. The spike now does this (limit 1,024 characters there; the real limit goes with the store's column size).
 
-**D3. Respond (1.04).** Part 9 v1.05 §5.6.2 Table 24: Respond is Mandatory on DialogConditionType and Respond2 is Optional. OpenGDS implements both with one handler; Respond behaves as Respond2 with a NULL Comment (§5.6.4: "For other functionality see the Respond Method definition").
+**D3. Respond (1.04), confirmed by Elias.** Part 9 v1.05 §5.6.2 Table 24: Respond is Mandatory on DialogConditionType and Respond2 is Optional. OpenGDS implements both with one handler; Respond behaves as Respond2 with a NULL Comment (§5.6.4: "For other functionality see the Respond Method definition").
 
 **D4. Auditing.** Part 9 v1.05 §5.6.3: "If Auditing is supported, this Method shall generate an Event of AuditConditionRespondEventType for all invocations of the Method", so failed calls are audited too, with Status false. The spike now does this.
 
@@ -67,9 +67,9 @@ These were open choices in the first version of this note. The OPC UA specificat
 |---|---|
 | 01 Risks, "A&C experimental" | Downgrade to low. Keep `gds_approvals.c` as the only file that touches A&C. The hand-rolled event fallback is not needed. |
 | `src/server/gds_approvals.c` | Workarounds 1 to 3 above; D2 to D4; rebuild from the store at start-up; store first, then condition; delete when decided. |
-| `src/server/gds_config.c` | `queueSizeLimits.max` as a configuration setting (D1); no cap on pending approvals. |
+| `src/server/gds_config.c` | Pending-approval cap 10,000 and `queueSizeLimits.max = 10000` (D1, Elias's decision); a request over the cap gets `Bad_ServerTooBusy`. |
 | `tests/spec/test_spec_events.c` | Add: refresh after restart shows the pending dialogs; Respond and Respond2 both work; NULL comment keeps the comment; failed Respond2 is audited; second answer gives `Bad_DialogNotActive`; wrong role gives `Bad_UserAccessDenied`; overflow Event when pending dialogs exceed the queue; refreshed EventId equals the original (fails on unpatched v1.5.10, finding 5). |
-| Upstream | Patches worth offering to open62541: methods in `addConditionOptionalField`, arrays in `setConditionField`, and the refresh EventId fix (finding 5). |
+| Upstream | Offer open62541 the patches for methods in `addConditionOptionalField` and arrays in `setConditionField` later, off the critical path (Elias's decision, 6 Nov 2026). How to handle the refresh EventId fix (finding 5) is still open with Elias. |
 
 ## How to run it
 
