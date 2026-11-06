@@ -20,6 +20,8 @@ Group=opengds
 StateDirectory=opengds
 StateDirectoryMode=0750
 ConfigurationDirectory=opengds
+# root:opengds 0750, as the package's post-install script creates it
+ConfigurationDirectoryMode=0750
 UMask=0027
 Restart=on-failure
 RestartSec=2s
