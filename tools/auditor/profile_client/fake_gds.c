@@ -438,10 +438,10 @@ static gds_status make_cert(const char *uri, const fg_req *q, gds_buf *cert, con
     case FG_ISSUE_ROGUE:
         *by = &G.cas[FG_CA_ROGUE];
         return testca_sign_csr(*by, &q->csr, uri, TESTCA_MAX_DAYS, cert);
-    case FG_ISSUE_GOOD:
     case FG_ISSUE_INTERMEDIATE:
         *by = &G.caInt;
         return testca_sign_csr(*by, &q->csr, uri, TESTCA_MAX_DAYS, cert);
+    case FG_ISSUE_GOOD:
     case FG_ISSUE_BAD_CHAIN:
     default:
         return testca_sign_csr(&G.ca, &q->csr, uri, TESTCA_MAX_DAYS, cert);
