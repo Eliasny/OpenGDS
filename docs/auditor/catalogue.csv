@@ -1,0 +1,161 @@
+id,profile,group,file,clause,spec,verified,conformance_unit,needs_write,needs_operator,slow,mutant,mutant_target
+SRV-SEC-01,server,Security,srv_security.c,"12 §7.10.5, §7.10.10, §7.10.12, §7.8.2.3, §7.8.2.5",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,anon-admin,selftest/push_test_server
+SRV-SEC-02,server,Security,srv_security.c,"12 §7.10.5, §7.10.10, §7.10.12, §7.8.2.3, §7.8.2.5",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,no-secadmin,selftest/push_test_server
+SRV-SEC-03,server,Security,srv_security.c,"12 §7.10.5, §7.10.9, §7.8.2.2",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,allow-none,selftest/push_test_server
+SRV-SEC-04,server,Security,srv_security.c,"12 §7.10.5, §7.10.10, §8.6.3",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,sign-is-enough,selftest/push_test_server
+SRV-SEC-05,server,Security,srv_security.c,"12 §7.4, §7.10.9, §7.10.12, §7.8.2.3",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,sign-for-apply,selftest/push_test_server
+SRV-SEC-06,server,Security,srv_security.c,12 §7.10.3,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,no,no,diag-public,selftest/push_test_server
+SRV-SEC-07,server,Security,srv_security.c,"12 §7.8.2.1, §7.8.2.3",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,no,no,trustlist-read-any,selftest/push_test_server
+SRV-SEC-08,server,Security,srv_security.c,OPC 10000-7 (security policy facets),OPC 10000-12 v1.05.07,todo,Push Model for Global Certificate and TrustList Management,no,no,no,deprecated-policy,selftest/push_test_server
+SRV-SEC-09,server,Security,srv_security.c,OPC 10000-6 v1.05.07 (SecureChannel enhancements),OPC 10000-12 v1.05.07,todo,Push Model for Global Certificate and TrustList Management,no,no,no,no-sce,selftest/push_test_server
+SRV-CAP-01,server,Capabilities,srv_capabilities.c,12 §7.10.3,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,no,no,no-rejected-list-method,selftest/push_test_server
+SRV-CAP-02,server,Capabilities,srv_capabilities.c,12 §7.10.3,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,no,no,no-default-group,selftest/push_test_server
+SRV-CAP-03,server,Capabilities,srv_capabilities.c,12 §7.8.3.1,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,no,no,mixed-cert-types,selftest/push_test_server
+SRV-CAP-04,server,Capabilities,srv_capabilities.c,"12 §7.10.3, Annex D",OPC 10000-12 v1.05.07,todo,Push Model for Global Certificate and TrustList Management,no,no,no,bad-capability-id,selftest/push_test_server
+SRV-CAP-05,server,Capabilities,srv_capabilities.c,12 §7.10.3,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,no,no,bad-key-format-name,selftest/push_test_server
+SRV-CAP-06,server,Capabilities,srv_capabilities.c,"12 §7.10.3, §7.10.5",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,accept-key-unadvertised,selftest/push_test_server
+SRV-CAP-07,server,Capabilities,srv_capabilities.c,"12 §7.10.3, §7.8.2.5",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,ignore-max-size,selftest/push_test_server
+SRV-CAP-08,server,Capabilities,srv_capabilities.c,"12 §7.10.2, §7.10.3",OPC 10000-12 v1.05.07,ref,Server PushManagement Transactions,no,no,no,transactions-no-cancel,selftest/push_test_server
+SRV-CAP-09,server,Capabilities,srv_capabilities.c,"12 §7.10.3, §7.10.10",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,advertise-unsupported-type,selftest/push_test_server
+SRV-TL-01,server,Trust list write,srv_trustlist.c,12 §7.8.2.2,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,open-any-mode,selftest/push_test_server
+SRV-TL-02,server,Trust list write,srv_trustlist.c,"12 §7.8.2.1, §7.8.2.5, §7.10.9",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,drop-last-chunk,selftest/push_test_server
+SRV-TL-03,server,Trust list write,srv_trustlist.c,"12 §7.8.2.1, §7.8.2.8",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,no,no,trustlist-wrapped,selftest/push_test_server
+SRV-TL-04,server,Trust list write,srv_trustlist.c,"12 §7.8.2.5, §7.8.2.9",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,mask-ignored,selftest/push_test_server
+SRV-TL-05,server,Trust list write,srv_trustlist.c,"12 §7.8.2.3, §7.8.2.9",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,no,no,openwithmasks-ignores,selftest/push_test_server
+SRV-TL-06,server,Trust list write,srv_trustlist.c,12 §7.8.2.1,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,close-applies,selftest/push_test_server
+SRV-TL-07,server,Trust list write,srv_trustlist.c,12 §7.8.2.5,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,accept-invalid-cert,selftest/push_test_server
+SRV-TL-08,server,Trust list write,srv_trustlist.c,12 §7.8.2.5; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,refuse-expired,selftest/push_test_server
+SRV-TL-09,server,Trust list write,srv_trustlist.c,12 §7.8.2.6,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,addcert-noop,selftest/push_test_server
+SRV-TL-10,server,Trust list write,srv_trustlist.c,12 §7.8.2.6,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,addcert-issuer-allowed,selftest/push_test_server
+SRV-TL-11,server,Trust list write,srv_trustlist.c,12 §7.8.2.6,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,addcert-no-chain-check,selftest/push_test_server
+SRV-TL-12,server,Trust list write,srv_trustlist.c,12 §7.8.2.6,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,addcert-while-open,selftest/push_test_server
+SRV-TL-13,server,Trust list write,srv_trustlist.c,12 §7.8.2.7,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,remove-unknown-good,selftest/push_test_server
+SRV-TL-14,server,Trust list write,srv_trustlist.c,12 §7.8.2.7,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,remove-noop,selftest/push_test_server
+SRV-TL-15,server,Trust list write,srv_trustlist.c,12 §7.8.2.7,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,remove-ca-in-use,selftest/push_test_server
+SRV-TL-16,server,Trust list write,srv_trustlist.c,12 §7.8.2.7,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,remove-keeps-crl,selftest/push_test_server
+SRV-TL-17,server,Trust list write,srv_trustlist.c,12 §7.8.2.1,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,lastupdate-frozen,selftest/push_test_server
+SRV-TL-18,server,Trust list write,srv_trustlist.c,12 §7.8.2.1,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,yes,no-activity-timeout,selftest/push_test_server
+SRV-TL-19,server,Trust list write,srv_trustlist.c,12 §7.8.2.1,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,no,no,size-readable,selftest/push_test_server
+SRV-TL-20,server,Trust list write,srv_trustlist.c,12 §7.8.2.1,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,no,no,updatefreq-readonly,selftest/push_test_server
+SRV-CSR-01,server,Signing request,srv_csr.c,12 §7.10.10,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,csr-new-key-always,selftest/push_test_server
+SRV-CSR-02,server,Signing request,srv_csr.c,12 §7.10.10,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,csr-empty-subject,selftest/push_test_server
+SRV-CSR-03,server,Signing request,srv_csr.c,12 §7.10.10; 6 §6.2.2,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,csr-no-san,selftest/push_test_server
+SRV-CSR-04,server,Signing request,srv_csr.c,12 §7.10.10,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,csr-regen-ignored,selftest/push_test_server
+SRV-CSR-05,server,Signing request,srv_csr.c,12 §7.10.10,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,csr-short-nonce,selftest/push_test_server
+SRV-CSR-06,server,Signing request,srv_csr.c,12 §7.10.10,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,csr-key-per-session,selftest/push_test_server
+SRV-CSR-07,server,Signing request,srv_csr.c,12 §7.10.10,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,csr-keep-old-new-key,selftest/push_test_server
+SRV-CSR-08,server,Signing request,srv_csr.c,12 §7.10.10,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,csr-any-type,selftest/push_test_server
+SRV-UPD-01,server,Certificate update,srv_update.c,12 §7.10.5,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,update-refuse-valid,selftest/push_test_server
+SRV-UPD-02,server,Certificate update,srv_update.c,12 §7.10.5,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,update-no-key-check,selftest/push_test_server
+SRV-UPD-03,server,Certificate update,srv_update.c,12 §7.10.5; 6 §6.2.2; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,update-no-uri-check,selftest/push_test_server
+SRV-UPD-04,server,Certificate update,srv_update.c,12 §7.10.5,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,update-trust-issuer-arg,selftest/push_test_server
+SRV-UPD-05,server,Certificate update,srv_update.c,12 §7.10.5; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,update-no-sig-check,selftest/push_test_server
+SRV-UPD-06,server,Certificate update,srv_update.c,12 §7.10.5,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,update-any-type,selftest/push_test_server
+SRV-UPD-07,server,Certificate update,srv_update.c,12 §7.10.5,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,update-type-mismatch,selftest/push_test_server
+SRV-UPD-08,server,Certificate update,srv_update.c,12 §7.10.5; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,update-accept-expired,selftest/push_test_server
+SRV-UPD-09,server,Certificate update,srv_update.c,12 §7.10.5,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,update-ignore-key,selftest/push_test_server
+SRV-UPD-10,server,Certificate update,srv_update.c,12 §7.10.5,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,update-accept-bad-key,selftest/push_test_server
+SRV-UPD-11,server,Certificate update,srv_update.c,12 §7.10.8,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,no,no,getcerts-mismatched,selftest/push_test_server
+SRV-UPD-12,server,Certificate update,srv_update.c,12 §7.10.6,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,selfsigned-overwrite,selftest/push_test_server
+SRV-UPD-13,server,Certificate update,srv_update.c,12 §7.10.7,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,delete-in-use,selftest/push_test_server
+SRV-TXN-01,server,Transactions,srv_transaction.c,12 §7.10.2,OPC 10000-12 v1.05.07,ref,Server PushManagement Transactions,yes,no,no,apply-required-false,selftest/push_test_server
+SRV-TXN-02,server,Transactions,srv_transaction.c,"12 §7.10.2, §7.8.2.5",OPC 10000-12 v1.05.07,ref,Server PushManagement Transactions,yes,no,no,apply-early,selftest/push_test_server
+SRV-TXN-03,server,Transactions,srv_transaction.c,12 §7.10.9,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,apply-ignored,selftest/push_test_server
+SRV-TXN-04,server,Transactions,srv_transaction.c,"12 §7.10.2, §7.10.11",OPC 10000-12 v1.05.07,ref,Server PushManagement Transactions,yes,no,no,cancel-keeps-trustlist,selftest/push_test_server
+SRV-TXN-05,server,Transactions,srv_transaction.c,"12 §7.10.2, §7.10.9",OPC 10000-12 v1.05.07,ref,Server PushManagement Transactions,yes,no,no,txn-survives-session,selftest/push_test_server
+SRV-TXN-06,server,Transactions,srv_transaction.c,"12 §7.10.2, §7.10.5, §7.8.2.2, §7.8.2.6",OPC 10000-12 v1.05.07,ref,Server PushManagement Transactions,yes,no,no,txn-interleave,selftest/push_test_server
+SRV-TXN-07,server,Transactions,srv_transaction.c,"12 §7.10.9, §7.10.11",OPC 10000-12 v1.05.07,ref,Server PushManagement Transactions,yes,no,no,apply-any-session,selftest/push_test_server
+SRV-TXN-08,server,Transactions,srv_transaction.c,12 §7.10.9,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,apply-while-open,selftest/push_test_server
+SRV-TXN-09,server,Transactions,srv_transaction.c,12 §7.10.9,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,apply-nothing-good,selftest/push_test_server
+SRV-TXN-10,server,Transactions,srv_transaction.c,12 §7.10.2,OPC 10000-12 v1.05.07,ref,Server PushManagement Transactions,yes,no,no,fail-aborts-txn,selftest/push_test_server
+SRV-TXN-11,server,Transactions,srv_transaction.c,12 §7.10.2,OPC 10000-12 v1.05.07,ref,Server PushManagement Transactions,yes,no,no,apply-partial,selftest/push_test_server
+SRV-TXN-12,server,Transactions,srv_transaction.c,12 §7.10.17,OPC 10000-12 v1.05.07,ref,Server PushManagement Transactions,yes,no,no,diag-stale,selftest/push_test_server
+SRV-TXN-13,server,Transactions,srv_transaction.c,12 §7.10.17,OPC 10000-12 v1.05.07,ref,Server PushManagement Transactions,yes,no,no,diag-cancel-good,selftest/push_test_server
+SRV-WIRE-01,server,On the wire,srv_wire.c,12 §7.10.9,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,wire-old-cert,selftest/push_test_server
+SRV-WIRE-02,server,On the wire,srv_wire.c,12 §7.10.9,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,wire-keep-channels,selftest/push_test_server
+SRV-WIRE-03,server,On the wire,srv_wire.c,12 §7.10.9,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,wire-no-shutdown-notice,selftest/push_test_server
+SRV-WIRE-04,server,On the wire,srv_wire.c,12 §7.10.9; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,wire-trustlist-not-loaded,selftest/push_test_server
+SRV-WIRE-05,server,On the wire,srv_wire.c,12 §7.10.9; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,wire-ignore-crl,selftest/push_test_server
+SRV-WIRE-06,server,On the wire,srv_wire.c,4 §6.1.3,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,no,no,wire-trust-all,selftest/push_test_server
+SRV-WIRE-07,server,On the wire,srv_wire.c,12 §7.8.2.5,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,wire-keep-removed-sessions,selftest/push_test_server
+SRV-WIRE-08,server,On the wire,srv_wire.c,12 §7.8.2.5; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,wire-crl-no-reeval,selftest/push_test_server
+SRV-PER-01,server,Persistence,srv_persistence.c,12 §7.10.9,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,yes,no,forget-on-restart,selftest/push_test_server
+SRV-PER-02,server,Persistence,srv_persistence.c,12 §7.8.2.1,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,yes,no,lastupdate-reset-now,selftest/push_test_server
+SRV-PER-03,server,Persistence,srv_persistence.c,12 §7.10.10,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,yes,no,csr-key-in-ram,selftest/push_test_server
+SRV-PER-04,server,Persistence,srv_persistence.c,12 §7.10.2,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,yes,no,txn-persist-uncommitted,selftest/push_test_server
+SRV-REJ-01,server,Rejected list,srv_rejected.c,12 §7.10.12,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,no,no,rejected-not-recorded,selftest/push_test_server
+SRV-REJ-02,server,Rejected list,srv_rejected.c,"12 §7.8.3.2, §7.10.12",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,no,no,rejected-records-invalid,selftest/push_test_server
+SRV-REJ-03,server,Rejected list,srv_rejected.c,12 §7.10.12,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,no,no,rejected-garbage,selftest/push_test_server
+SRV-REJ-04,server,Rejected list,srv_rejected.c,"12 §7.8.3.1, §7.8.3.2",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,no,no,group-rejected-broken,selftest/push_test_server
+SRV-SET-01,server,Push setup,srv_setup.c,12 Annex G.2,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,yes,no,setup-state-running,selftest/push_test_server
+SRV-SET-02,server,Push setup,srv_setup.c,12 Annex G.2,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,yes,no,setup-no-cert,selftest/push_test_server
+SRV-SET-03,server,Push setup,srv_setup.c,12 Annex G.2,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,yes,no,setup-exit-no-role,selftest/push_test_server
+SRV-SET-04,server,Push setup,srv_setup.c,12 Annex G.2; OPC 10000-18 (role management),OPC 10000-12 v1.05.07,todo,Push Model for Global Certificate and TrustList Management,yes,yes,no,setup-sticky,selftest/push_test_server
+SRV-SET-05,server,Push setup,srv_setup.c,12 §7.5,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,yes,no,setup-open-after,selftest/push_test_server
+SRV-SET-06,server,Push setup,srv_setup.c,12 §7.10.13,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,yes,no,reset-no-shutdown,selftest/push_test_server
+SRV-KC-01,server,KeyCredential push,srv_keycred.c,"12 §8.6.3, §8.6.5",OPC 10000-12 v1.05.07,ref,Push Model for KeyCredential Service,yes,no,no,kc-create-noop,selftest/push_test_server
+SRV-KC-02,server,KeyCredential push,srv_keycred.c,12 §8.6.3,OPC 10000-12 v1.05.07,ref,Push Model for KeyCredential Service,yes,no,no,kc-no-uri-check,selftest/push_test_server
+SRV-KC-03,server,KeyCredential push,srv_keycred.c,"12 §8.6.3, §8.6.7, §8.6.8",OPC 10000-12 v1.05.07,ref,Push Model for KeyCredential Service,yes,no,no,kc-no-secadmin,selftest/push_test_server
+SRV-KC-04,server,KeyCredential push,srv_keycred.c,12 §8.6.6,OPC 10000-12 v1.05.07,ref,Push Model for KeyCredential Service,yes,no,no,kc-empty-key,selftest/push_test_server
+SRV-KC-05,server,KeyCredential push,srv_keycred.c,12 §8.6.7,OPC 10000-12 v1.05.07,ref,Push Model for KeyCredential Service,yes,no,no,kc-update-refuse,selftest/push_test_server
+SRV-KC-06,server,KeyCredential push,srv_keycred.c,12 §8.6.7,OPC 10000-12 v1.05.07,ref,Push Model for KeyCredential Service,yes,no,no,kc-any-policy,selftest/push_test_server
+SRV-KC-07,server,KeyCredential push,srv_keycred.c,12 §8.6.7,OPC 10000-12 v1.05.07,ref,Push Model for KeyCredential Service,yes,no,no,kc-any-thumbprint,selftest/push_test_server
+SRV-KC-08,server,KeyCredential push,srv_keycred.c,12 §8.6.7,OPC 10000-12 v1.05.07,ref,Push Model for KeyCredential Service,yes,no,no,kc-accept-plaintext,selftest/push_test_server
+SRV-KC-09,server,KeyCredential push,srv_keycred.c,12 §8.6.8,OPC 10000-12 v1.05.07,ref,Push Model for KeyCredential Service,yes,no,no,kc-delete-noop,selftest/push_test_server
+SRV-KC-10,server,KeyCredential push,srv_keycred.c,12 §8.6.5,OPC 10000-12 v1.05.07,ref,Push Model for KeyCredential Service,yes,no,yes,kc-status-stale,selftest/push_test_server
+SRV-AUD-01,server,Audit events,srv_audit.c,"12 §7.8.2.1, §7.8.2.13",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,audit-no-trustlist-event,selftest/push_test_server
+SRV-AUD-02,server,Audit events,srv_audit.c,12 §7.10.27,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,audit-no-cert-event,selftest/push_test_server
+CLI-TRU-01,client,Trust in the GDS,cli_trust.c,12 Annex G.1,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,send-password-untrusted,selftest/pull_test_client
+CLI-TRU-02,client,Trust in the GDS,cli_trust.c,12 Annex G.1; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,trust-any-gds,selftest/pull_test_client
+CLI-TRU-03,client,Trust in the GDS,cli_trust.c,4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,ignore-gds-crl,selftest/pull_test_client
+CLI-TRU-04,client,Trust in the GDS,cli_trust.c,4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,accept-expired-gds,selftest/pull_test_client
+CLI-TRU-05,client,Trust in the GDS,cli_trust.c,4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,no-gds-uri-check,selftest/pull_test_client
+CLI-TRU-06,client,Trust in the GDS,cli_trust.c,"12 §7.6, §7.9.3, §7.9.4, §7.9.5",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,use-sign-only,selftest/pull_test_client
+CLI-TRU-07,client,Trust in the GDS,cli_trust.c,OPC 10000-7 (security policy facets),OPC 10000-12 v1.05.07,todo,TBD,no,yes,no,prefer-deprecated,selftest/pull_test_client
+CLI-REG-01,client,Registration,cli_register.c,"12 §6.5.5, §6.5.6; 6 §6.2.2",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,register-wrong-uri,selftest/pull_test_client
+CLI-REG-02,client,Registration,cli_register.c,12 §6.5.5,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,register-wrong-type,selftest/pull_test_client
+CLI-REG-03,client,Registration,cli_register.c,12 §6.5.5,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,register-bad-url,selftest/pull_test_client
+CLI-REG-04,client,Registration,cli_register.c,"12 §6.5.4, §6.5.6",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,register-every-run,selftest/pull_test_client
+CLI-REG-05,client,Registration,cli_register.c,12 Annex G.1,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,persist-prompted-creds,selftest/pull_test_client
+CLI-CSR-01,client,Signing request,cli_csr.c,12 §7.9.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,csr-bad-signature,selftest/pull_test_client
+CLI-CSR-02,client,Signing request,cli_csr.c,12 §7.9.3; 6 §6.2.2,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,csr-wrong-uri,selftest/pull_test_client
+CLI-CSR-03,client,Signing request,cli_csr.c,"12 §7.9.3, §7.8.4.9",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,csr-weak-key,selftest/pull_test_client
+CLI-CSR-04,client,Signing request,cli_csr.c,"12 §7.9.3, §7.9.7, §7.8.3.1",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,csr-unlisted-type,selftest/pull_test_client
+CLI-CSR-05,client,Signing request,cli_csr.c,12 §7.9.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,csr-no-dns,selftest/pull_test_client
+CLI-CSR-06,client,Signing request,cli_csr.c,12 §7.6,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,csr-reuse-key,selftest/pull_test_client
+CLI-CSR-07,client,Signing request,cli_csr.c,12 §7.9.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,leak-private-key,selftest/pull_test_client
+CLI-CSR-08,client,Signing request,cli_csr.c,12 §7.9.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,csr-retry-storm,selftest/pull_test_client
+CLI-CSR-09,client,Signing request,cli_csr.c,"12 §7.6, §7.9.4",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,use-newkeypair,selftest/pull_test_client
+CLI-PEN-01,client,Pending approval,cli_pending.c,"12 §7.9.5, §7.6",OPC 10000-12 v1.05.07,ref,TBD,no,yes,yes,pending-give-up,selftest/pull_test_client
+CLI-PEN-02,client,Pending approval,cli_pending.c,"12 §7.6, §7.9.5",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,poll-no-backoff,selftest/pull_test_client
+CLI-PEN-03,client,Pending approval,cli_pending.c,12 §7.6,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,pending-new-csr,selftest/pull_test_client
+CLI-PEN-04,client,Pending approval,cli_pending.c,12 §7.6,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,pending-forget,selftest/pull_test_client
+CLI-PEN-05,client,Pending approval,cli_pending.c,"12 §7.9.5, §7.6",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,poll-after-reject,selftest/pull_test_client
+CLI-PEN-06,client,Pending approval,cli_pending.c,12 §7.9.5,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,pending-stuck-invalid,selftest/pull_test_client
+CLI-PEN-07,client,Pending approval,cli_pending.c,12 §6.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,keep-session-open,selftest/pull_test_client
+CLI-PEN-08,client,Pending approval,cli_pending.c,12 §6.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,yes,no-cycle-jitter,selftest/pull_test_client
+CLI-INS-01,client,Installation,cli_install.c,"12 Annex G.1, §7.6",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,install-ignored,selftest/pull_test_client
+CLI-INS-02,client,Installation,cli_install.c,12 §7.9.5; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,install-no-chain,selftest/pull_test_client
+CLI-INS-03,client,Installation,cli_install.c,12 §7.6,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,install-in-ram,selftest/pull_test_client
+CLI-TL-01,client,Trust list,cli_trustlist.c,"12 §7.9.9, §7.8.2.4",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,read-one-chunk,selftest/pull_test_client
+CLI-TL-02,client,Trust list,cli_trustlist.c,12 §7.8.2.4,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,no-close,selftest/pull_test_client
+CLI-TL-03,client,Trust list,cli_trustlist.c,12 §7.9.9; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,trustlist-not-installed,selftest/pull_test_client
+CLI-TL-04,client,Trust list,cli_trustlist.c,12 §7.9.9; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,ignore-crls,selftest/pull_test_client
+CLI-TL-05,client,Trust list,cli_trustlist.c,12 §7.8.2.8; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,trustlist-merge,selftest/pull_test_client
+CLI-TL-06,client,Trust list,cli_trustlist.c,12 §7.8.2.8; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,issuers-trusted,selftest/pull_test_client
+CLI-TL-07,client,Trust list,cli_trustlist.c,12 §7.6,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,always-download,selftest/pull_test_client
+CLI-TL-08,client,Trust list,cli_trustlist.c,"12 §7.6, §7.8.2.1",OPC 10000-12 v1.05.07,ref,TBD,no,yes,yes,ignore-update-frequency,selftest/pull_test_client
+CLI-REN-01,client,Renewal,cli_renew.c,"12 §7.9.10, §7.6",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,ignore-update-required,selftest/pull_test_client
+CLI-REN-02,client,Renewal,cli_renew.c,"12 §7.9.10, §7.6",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,renew-always,selftest/pull_test_client
+CLI-REN-03,client,Renewal,cli_renew.c,12 §7.6,OPC 10000-12 v1.05.07,ref,TBD,no,yes,yes,no-expiry-renewal,selftest/pull_test_client
+CLI-REN-04,client,Renewal,cli_renew.c,12 §7.6,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,renew-keep-old,selftest/pull_test_client
+CLI-REN-05,client,Renewal,cli_renew.c,"12 Annex G.1, §7.6",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,renew-with-password,selftest/pull_test_client
+CLI-FLT-01,client,Faults,cli_faults.c,"12 §7.6, §7.8.2.4",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,install-partial-trustlist,selftest/pull_test_client
+CLI-FLT-02,client,Faults,cli_faults.c,12 §7.8.2.8,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,parse-garbage,selftest/pull_test_client
+CLI-FLT-03,client,Faults,cli_faults.c,12 §7.9.5; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,install-unverified,selftest/pull_test_client
+CLI-FLT-04,client,Faults,cli_faults.c,12 §7.9.5,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,install-wrong-key,selftest/pull_test_client
+CLI-FLT-05,client,Faults,cli_faults.c,12 §7.9.5; 6 §6.2.2,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,install-wrong-uri,selftest/pull_test_client
+CLI-FLT-06,client,Faults,cli_faults.c,12 §7.9.5; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,install-expired,selftest/pull_test_client
+CLI-FLT-07,client,Faults,cli_faults.c,12 §7.6,OPC 10000-12 v1.05.07,ref,TBD,no,yes,yes,no-call-timeout,selftest/pull_test_client
+CLI-FLT-08,client,Faults,cli_faults.c,12 §7.8.2.4; OPC 10000-20 (FileType Read),OPC 10000-12 v1.05.07,todo,TBD,no,yes,no,no-length-check,selftest/pull_test_client
+CLI-FLT-09,client,Faults,cli_faults.c,12 §6.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,reconnect-storm,selftest/pull_test_client
