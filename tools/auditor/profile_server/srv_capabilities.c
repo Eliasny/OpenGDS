@@ -10,13 +10,11 @@
  * SPDX-License-Identifier: MPL-2.0 */
 #include <open62541/client_highlevel.h>
 
-#include <openssl/bn.h>
 #include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
-#include <openssl/x509v3.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -34,7 +32,7 @@
  * certificate grows by exactly one byte per padding byte (all DER lengths
  * around the padding stay in the two-byte form). */
 #define PAD_MIN 300
-#define PAD_MAX 12000
+#define PAD_MAX ST_MAX_CERT_PAD
 #define FILLER_TARGET 4000
 
 static UA_NodeId ns0(UA_UInt32 id) {
@@ -54,21 +52,6 @@ static bool admin_or_not_tested(ga_ctx *ctx, srv_target *t) {
     if(r != UA_STATUSCODE_GOOD)
         ga_not_tested(ctx, "setup: admin session -> %s", UA_StatusCode_name(r));
     return r == UA_STATUSCODE_GOOD;
-}
-
-/* Undo whatever a probing session got accepted by mistake, then close it. */
-static void discard(UA_Client *c) {
-    UA_NodeId m;
-    if(uac_find_child(c, ns0(UA_NS0ID_SERVERCONFIGURATION), "CancelChanges", &m) ==
-       UA_STATUSCODE_GOOD) {
-        size_t outN = 0;
-        UA_Variant *out = NULL;
-        (void)UA_Client_call(c, ns0(UA_NS0ID_SERVERCONFIGURATION), m, 0, NULL, &outN, &out);
-        if(out)
-            UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
-    }
-    UA_NodeId_clear(&m);
-    st_client_free(c);
 }
 
 /* ---------------- SRV-CAP-01 ---------------- */
@@ -516,7 +499,7 @@ static void t_cap_key_unadvertised(ga_ctx *ctx, void *p) {
     bool acr = false;
     if(r == UA_STATUSCODE_GOOD) {
         r = st_update_cert_key(t, c, &cert, &t->caDer, 1, "PEM", &pem, &acr);
-        discard(c);
+        st_discard(c);
     } else {
         ga_not_tested(ctx, "setup: second admin session -> %s", UA_StatusCode_name(r));
         gds_buf_free(&cert);
@@ -537,41 +520,11 @@ static void t_cap_key_unadvertised(ga_ctx *ctx, void *p) {
 
 /* ---------------- SRV-CAP-07 ---------------- */
 
-/* A filler certificate from the test CA with `pad` bytes of nsComment. */
 static gds_status filler(const testca_t *ca, EVP_PKEY *key, unsigned idx, size_t pad,
                          gds_buf *out) {
-    static unsigned char padding[PAD_MAX];
-    memset(padding, 'A', sizeof(padding));
-    X509 *x = X509_new();
-    X509_NAME *nm = X509_NAME_new();
-    ASN1_IA5STRING *cm = ASN1_IA5STRING_new();
-    BIGNUM *sn = BN_new(); /* 62 random bits, top bit set: a fixed-length DER serial */
     char cn[64];
     (void)snprintf(cn, sizeof(cn), "%s big list %u", TESTCA_ORG, idx);
-    unsigned char *der = NULL;
-    int len = -1;
-    if(x && nm && cm && sn && pad <= sizeof(padding) && X509_set_version(x, 2) == 1 &&
-       BN_rand(sn, 62, BN_RAND_TOP_ONE, BN_RAND_BOTTOM_ANY) == 1 &&
-       BN_to_ASN1_INTEGER(sn, X509_get_serialNumber(x)) &&
-       X509_set_issuer_name(x, X509_get_subject_name(ca->cert)) == 1 &&
-       X509_NAME_add_entry_by_txt(nm, "O", MBSTRING_UTF8, (const unsigned char *)TESTCA_ORG, -1,
-                                  -1, 0) == 1 &&
-       X509_NAME_add_entry_by_txt(nm, "CN", MBSTRING_UTF8, (const unsigned char *)cn, -1, -1,
-                                  0) == 1 &&
-       X509_set_subject_name(x, nm) == 1 && X509_gmtime_adj(X509_getm_notBefore(x), -3600) &&
-       X509_gmtime_adj(X509_getm_notAfter(x), 86400L) && X509_set_pubkey(x, key) == 1 &&
-       ASN1_STRING_set(cm, padding, (int)pad) == 1 &&
-       X509_add1_ext_i2d(x, NID_netscape_comment, cm, 0, X509V3_ADD_DEFAULT) == 1 &&
-       X509_sign(x, ca->key, EVP_sha256()) > 0)
-        len = i2d_X509(x, &der);
-    gds_status s = len > 0 ? gds_buf_dup(der, (size_t)len, out) : GDS_ECRYPTO;
-    OPENSSL_free(der);
-    BN_free(sn);
-    ASN1_IA5STRING_free(cm);
-    X509_NAME_free(nm);
-    X509_free(x);
-    ERR_clear_error();
-    return s;
+    return st_make_cert(ca, key, cn, -3600, 86400L, false, pad, out);
 }
 
 /* A filler of exactly `want` bytes (base: the size at PAD_MIN). */
@@ -687,7 +640,7 @@ static void t_cap_max_size(ga_ctx *ctx, void *p) {
     if(w == UA_STATUSCODE_GOOD)
         ga_note(ctx, "CloseAndUpdate -> Good, ApplyChangesRequired %s", acr ? "TRUE" : "FALSE");
     r = st_read_trustlist(c, ST_MASK_ALL, &after);
-    discard(c);
+    st_discard(c);
     char why[160] = "";
     bool same = r == UA_STATUSCODE_GOOD && st_lists_equal(&before, &after, why, sizeof(why));
     if(r != UA_STATUSCODE_GOOD)
@@ -775,7 +728,7 @@ static void t_cap_csr_types(ga_ctx *ctx, void *p) {
         }
         types_clear(types, n);
     }
-    discard(c);
+    st_discard(c);
     groups_clear(&g);
     if(invalid)
         ga_fail(ctx, "%zu advertised CertificateType(s) refused with Bad_InvalidArgument", invalid);

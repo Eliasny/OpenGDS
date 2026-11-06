@@ -52,10 +52,11 @@ audit() { # audit <name> [args]: run the profile, TAP into $W/<name>.tap
 }
 
 RC=0
+SLOW_TESTS="SRV-TL-18"
 if [ -z "$ONLY" ] || [ "$ONLY" = good ]; then
     echo "=== good push_test_server"
     start_server good
-    audit good --expect "$E/push_test_server.csv"
+    audit good --slow --expect "$E/push_test_server.csv"
     G=$?
     stop_server
     cat "$W/good.tap"
@@ -70,7 +71,8 @@ while IFS=, read -r mutant test want; do
     case "$mutant" in ''|\#*) continue ;; esac
     [ -n "$ONLY" ] && [ "$ONLY" != "$mutant" ] && continue
     start_server "$mutant" --break "$mutant"
-    audit "$mutant"
+    # tests flagged slow in the catalogue run only for their own mutant
+    case " $SLOW_TESTS " in *" $test "*) audit "$mutant" --slow ;; *) audit "$mutant" ;; esac
     stop_server
     got=$(grep -A1 -E "^(not )?ok [0-9]+ - $test " "$W/$mutant.tap" | sed -n 's/^#   verdict: \([a-z_]*\).*/\1/p')
     if [ "$got" = "$want" ]; then

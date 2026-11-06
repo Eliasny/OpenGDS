@@ -18,7 +18,7 @@ Each group is one source file of the profile (named in the heading) and starts w
 | --- | --- |
 | ID | Stable test ID, `SRV-<group>-NN` or `CLI-<group>-NN`. It is the test's name in every report format and in `--only`/`--skip`. IDs are never reused; a dropped test leaves a gap |
 | Clause | The clause the test checks. `12 §7.10.5` is OPC 10000-12 §7.10.5; `4 §6.1.3` is OPC 10000-4; `6 §6.2.2` is OPC 10000-6 |
-| Flags | `W` needs write access (`--allow-changes`); `O` needs an outside step (operator prompt, `--trigger-cmd`, `--restart-cmd` or `--setup-cmd`); `slow` takes more than a minute. `—` means none |
+| Flags | `W` needs write access (`--allow-changes`); `O` needs an outside step (operator prompt, `--trigger-cmd`, `--restart-cmd` or `--setup-cmd`); `slow` takes more than a minute and runs only with `--slow` (Not tested otherwise). `—` means none |
 | Check | What the Auditor does |
 | Pass when | The behaviour the clause states |
 | Fail / Warn / Not supported | The rules for every other verdict. A rule not listed cannot happen for that test |
