@@ -260,9 +260,9 @@ static UA_StatusCode job_new(const gds_binding *b, const gds_session *ss,
         return UA_STATUSCODE_BADOUTOFMEMORY;
     __atomic_add_fetch(&((gds_binding *)(uintptr_t)b)->refs, 1, __ATOMIC_ACQ_REL);
     j->b = b;
-    j->snap.anonymous = ss->anonymous;
+    j->snap.anonymous = gds_session_anonymous(ss); /* an expired X.509 user too */
     memcpy(j->snap.user, ss->user, sizeof(j->snap.user));
-    j->snap.roles = ss->roles;
+    j->snap.roles = gds_session_roles(ss);
     j->snap.securityMode = ss->securityMode;
     UA_StatusCode r = UA_String_copy(&ss->clientAppUri, &j->snap.clientAppUri);
     if(r == UA_STATUSCODE_GOOD)
@@ -405,9 +405,9 @@ bool gds_embed_executable(const gds_binding *b, const void *sessionContext) {
     const gds_session *ss = gds_session_get(sessionContext);
     if(!ss || (gds_security_mode)ss->securityMode < b->minMode)
         return false;
-    if(b->anonymous || b->nPrivileges > 0 || (b->authenticated && !ss->anonymous))
+    if(b->anonymous || b->nPrivileges > 0 || (b->authenticated && !gds_session_anonymous(ss)))
         return true;
-    return (ss->roles & b->roleBits) != 0;
+    return (gds_session_roles(ss) & b->roleBits) != 0;
 }
 
 int gds_embed_decide(const gds_server *s, const void *sessionContext, const UA_NodeId *methodId) {

@@ -109,7 +109,7 @@ gds_status gds_caller_build(gds_server *s, const UA_NodeId *sessionId, const voi
     /* OPC 10000-18 §4.3: Anonymous for every session, AuthenticatedUser
      * for every session with user credentials. */
     add_role(b, UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS));
-    if(!ss->anonymous) {
+    if(!gds_session_anonymous(ss)) {
         add_role(b, UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_AUTHENTICATEDUSER));
         memcpy(b->user, ss->user, sizeof(b->user));
         b->user[sizeof(b->user) - 1] = '\0';
@@ -119,7 +119,7 @@ gds_status gds_caller_build(gds_server *s, const UA_NodeId *sessionId, const voi
         unsigned bit = 0;
         const char *name = NULL;
         gds_role_at(i, s->ns, &id, &bit, &name);
-        if(ss->roles & bit)
+        if(gds_session_roles(ss) & bit)
             add_role(b, id);
     }
 
@@ -139,7 +139,7 @@ gds_status gds_caller_build(gds_server *s, const UA_NodeId *sessionId, const voi
     c->abi_minor = GDS_PLUGIN_ABI_MINOR;
     c->struct_size = sizeof(*c);
     c->sessionId = &b->sessionId;
-    c->userName = ss->anonymous ? NULL : b->user;
+    c->userName = gds_session_anonymous(ss) ? NULL : b->user;
     c->roles = b->roles;
     c->rolesSize = b->nRoles;
     c->applicationUri = b->appUri;

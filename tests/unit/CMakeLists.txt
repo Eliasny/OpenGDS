@@ -80,3 +80,7 @@ add_test(NAME unit_sandbox COMMAND test_sandbox "${CMAKE_CURRENT_BINARY_DIR}/san
 add_executable(test_embed_roles test_embed_roles.c)
 target_link_libraries(test_embed_roles PRIVATE gds_server)
 add_test(NAME unit_embed_roles COMMAND test_embed_roles "${CMAKE_CURRENT_BINARY_DIR}/roles-run")
+
+add_executable(test_x509_users test_x509_users.c)
+target_link_libraries(test_x509_users PRIVATE gds_server)
+add_test(NAME unit_x509_users COMMAND test_x509_users "${CMAKE_CURRENT_BINARY_DIR}/x509-users-run")
