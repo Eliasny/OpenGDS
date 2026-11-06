@@ -647,6 +647,29 @@ static UA_Client *gds_client(const gds_buf *cert, const gds_buf *key, const gds_
     return c;
 }
 
+/* What main holds, freed at exit whichever return it took */
+static struct {
+    gds_buf *cert, *key, *newKey, *pendKey, *trust, *crls;
+    UA_Client **client;
+} held;
+
+static void free_held(void) {
+    if(!held.cert)
+        return;
+    if(held.client && *held.client) {
+        UA_Client_delete(*held.client);
+        *held.client = NULL;
+    }
+    gds_buf_free(held.cert);
+    gds_buf_free_secret(held.key);
+    gds_buf_free_secret(held.newKey);
+    gds_buf_free_secret(held.pendKey);
+    for(size_t i = 0; i < MAX_TRUST; i++) {
+        gds_buf_free(&held.trust[i]);
+        gds_buf_free(&held.crls[i]);
+    }
+}
+
 /* Self-test main: one linear script of steps, kept in one place on purpose. */
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 int main(int argc, char **argv) {
@@ -719,11 +742,19 @@ int main(int argc, char **argv) {
     printf("OpenGDS pull test client (Auditor self-test target)  app=%s  gds=%s\n", appUri, gds);
 
     uac_step("Load identity and the explicitly trusted GDS issuer");
-    gds_buf cert = {0}, key = {0}, newKey = {0}, pendKey = {0};
+    /* static, so that the exit handler can free them on the early error
+     * returns as well (LeakSanitizer turns a leak into a crash exit) */
+    static gds_buf cert, key, newKey, pendKey, trust[MAX_TRUST], crls[MAX_TRUST];
+    held.cert = &cert;
+    held.key = &key;
+    held.newKey = &newKey;
+    held.pendKey = &pendKey;
+    held.trust = trust;
+    held.crls = crls;
+    (void)atexit(free_held);
     gds_status gs = ensureOwnIdentity(pki, &cert, &key);
     if(gs != GDS_OK)
         return failg("own identity", gs);
-    gds_buf trust[MAX_TRUST] = {{0}}, crls[MAX_TRUST] = {{0}};
     for(size_t i = 0; i < trustN; i++)
         if((gs = gds_file_read(trustFiles[i], GDS_MAX_CERT_SIZE, &trust[i])) != GDS_OK)
             return failg(trustFiles[i], gs);
@@ -752,7 +783,8 @@ int main(int argc, char **argv) {
      * ApplicationSelfAdmin (Anonymous); credentials only for the first one,
      * or when the GDS offers no Anonymous token. */
     bool selfAdmin = !x509_is_self_signed(&cert) && !is_mutant("renew-with-password");
-    UA_Client *client = NULL;
+    static UA_Client *client;
+    held.client = &client;
     UA_StatusCode r = UA_STATUSCODE_BADINTERNALERROR;
     for(int attempt = 0; attempt < 2 && r != UA_STATUSCODE_GOOD; attempt++) {
         bool anonymous = attempt == 0 ? (selfAdmin || !user) : false;
@@ -778,6 +810,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "the GDS certificate does not name the GDS ApplicationUri - not trusted\n");
         UA_Client_disconnect(client);
         UA_Client_delete(client);
+        client = NULL;
         return 1;
     }
     uac_info("connected");
@@ -1051,6 +1084,7 @@ int main(int argc, char **argv) {
     uac_step("Disconnect (Part 12 §6.3: stay connected to the GDS as briefly as possible)");
     UA_Client_disconnect(client);
     UA_Client_delete(client);
+    client = NULL;
     UA_NodeId_clear(&appId);
     UA_NodeId_clear(&groupId);
     UA_NodeId_clear(&tlId);
