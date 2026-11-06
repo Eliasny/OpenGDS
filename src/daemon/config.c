@@ -15,12 +15,13 @@ typedef enum { T_STR, T_PATH, T_BOOL, T_PORT } kind;
 
 typedef struct {
     const char *key;
-    kind k;
     size_t off, size;
+    kind k;
     bool required;
 } field;
 
-#define F(name, member, k, req) {name, k, offsetof(gdsd_config, member), sizeof(((gdsd_config *)0)->member), req}
+#define F(name, member, k, req)                                                          \
+    {name, offsetof(gdsd_config, member), sizeof(((gdsd_config *)0)->member), k, req}
 
 static const field fields[] = {
     F("application_uri", applicationUri, T_STR, true),
@@ -72,20 +73,20 @@ static bool set_value(const field *f, const char *v, size_t n, gdsd_config *c) {
         memcpy(dst, tmp, n + 1);
         return true;
     case T_BOOL: {
-        bool *b = (bool *)(void *)dst;
-        if(strcmp(tmp, "true") == 0)
-            *b = true;
-        else if(strcmp(tmp, "false") == 0)
-            *b = false;
-        else
+        bool b = strcmp(tmp, "true") == 0;
+        if(!b && strcmp(tmp, "false") != 0)
             return false;
+        GDS_ASSERT(f->size == sizeof(b));
+        memcpy(dst, &b, sizeof(b));
         return true;
     }
     case T_PORT: {
         long p = 0;
         if(!gds_parse_long(tmp, 0, 65535, &p))
             return false;
-        *(uint16_t *)(void *)dst = (uint16_t)p;
+        uint16_t port = (uint16_t)p;
+        GDS_ASSERT(f->size == sizeof(port));
+        memcpy(dst, &port, sizeof(port));
         return true;
     }
     default:

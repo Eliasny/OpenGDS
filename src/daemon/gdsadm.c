@@ -115,8 +115,9 @@ static bool status_cb(void *ctx, int64_t recordId, const UA_ApplicationRecordDat
     printf("%lld\t%.*s\t", (long long)recordId, (int)rec->applicationUri.length,
            (const char *)rec->applicationUri.data);
     if(r == GDS_OK) {
-        UA_DateTimeStruct t = UA_DateTime_toStruct((UA_DateTime)notAfter);
-        bool expired = (UA_DateTime)notAfter < UA_DateTime_now();
+        /* the store keeps Unix seconds */
+        UA_DateTimeStruct t = UA_DateTime_toStruct(UA_DateTime_fromUnixTime(notAfter));
+        bool expired = notAfter < (int64_t)time(NULL);
         printf("%s %04u-%02u-%02u\n", expired ? "expired" : "valid until", (unsigned)t.year,
                (unsigned)t.month, (unsigned)t.day);
     } else {

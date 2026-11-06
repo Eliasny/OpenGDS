@@ -42,4 +42,5 @@ add_subdirectory(tests/unit)
 
 if(OPENGDS_BUILD_AUDITOR)
     add_subdirectory(tools/auditor)
+    add_subdirectory(tests/integration/pull)
 endif()

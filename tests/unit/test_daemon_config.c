@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "check.h"
+#include "common/buf.h"
 #include "config.h"
 #include "common/banned.h"
 
@@ -47,15 +48,12 @@ static void test_refused(void) {
           line == 0); /* application_uri missing */
     static const char nul[] = BASE "hostname = a\0b\n";
     CHECK(gdsd_config_parse(nul, sizeof(nul) - 1, &c, &line) == GDS_EINVAL && line == 5);
-    char big[2000];
-    memset(big, 'a', sizeof(big));
-    memcpy(big, "hostname = ", 11);
-    big[sizeof(big) - 1] = '\n';
+    char longValue[GDSD_MAX_VALUE + 10];
+    memset(longValue, 'a', sizeof(longValue) - 1);
+    longValue[sizeof(longValue) - 1] = '\0';
     char text[4096];
-    size_t n = strlen(BASE);
-    memcpy(text, BASE, n);
-    memcpy(text + n, big, sizeof(big));
-    CHECK(gdsd_config_parse(text, n + sizeof(big), &c, &line) == GDS_EINVAL);
+    CHECK(gds_path(text, sizeof(text), "%shostname = %s\n", BASE, longValue) == GDS_OK);
+    CHECK(parse(text, &c, &line) == GDS_EINVAL && line == 5);
 }
 
 int main(void) {

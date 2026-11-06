@@ -1,0 +1,55 @@
+# OpenGDS Global Discovery Server. opengdsd starts opengds-signer itself over a
+# socketpair; the CA key passphrase reaches only the signer, through
+# systemd credentials ($CREDENTIALS_DIRECTORY/ca-passphrase), never argv or
+# the environment. Put it in place with:
+#   systemd-creds encrypt --name=ca-passphrase - /etc/opengds/ca-passphrase.cred
+# SPDX-License-Identifier: MPL-2.0
+[Unit]
+Description=OpenGDS OPC UA Global Discovery Server
+Documentation=https://github.com/Eliasny/OpenGDS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opengds
+Group=opengds
+ExecStart=/usr/bin/opengdsd --config /etc/opengds/opengds.conf
+LoadCredentialEncrypted=ca-passphrase:/etc/opengds/ca-passphrase.cred
+StateDirectory=opengds opengds-signer
+StateDirectoryMode=0700
+ConfigurationDirectory=opengds
+UMask=0077
+Restart=on-failure
+RestartSec=2s
+
+# Hardening (systemd-analyze security opengds.service)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
