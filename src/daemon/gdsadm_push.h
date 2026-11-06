@@ -5,5 +5,7 @@
 
 int gdsadm_apps_register(int argc, char **argv);
 int gdsadm_push_now(int argc, char **argv);
+int gdsadm_apps_unregister(int argc, char **argv);
+int gdsadm_certs_revoke(int argc, char **argv);
 
 #endif

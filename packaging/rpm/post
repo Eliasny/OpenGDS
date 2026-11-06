@@ -1,0 +1,11 @@
+# opengds %post: system users, configuration directory, systemd reload.
+# The service is not enabled or started (docs/packaging.md).
+# SPDX-License-Identifier: MPL-2.0
+systemd-sysusers /usr/lib/sysusers.d/opengds.conf
+install -d -m 0750 -o root -g opengds /etc/opengds
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || :
+    if [ "$1" -gt 1 ] && systemctl is-active --quiet opengds.service; then
+        systemctl try-restart opengds-signer.socket opengds.service || :
+    fi
+fi

@@ -323,6 +323,7 @@ static void session_free(gds_session *s) {
     if(!s)
         return;
     UA_String_clear(&s->clientAppUri);
+    UA_ByteString_clear(&s->clientCert);
     UA_String_clear(&s->securityPolicyUri);
     for(size_t i = 0; i < GDS_SESSION_TL_HANDLES; i++)
         UA_ByteString_clear(&s->tl[i].file);
@@ -376,6 +377,12 @@ bool gds_session_is_app(const void *sessionContext, const UA_String *application
     return s && s->clientAppUri.length > 0 && UA_String_equal(&s->clientAppUri, applicationUri);
 }
 
+bool gds_session_holds_cert(const void *sessionContext, const gds_buf *der) {
+    const gds_session *s = sessionContext;
+    return s && der && s->clientAppUri.length > 0 && s->clientCert.length > 0 &&
+           s->clientCert.length == der->len && memcmp(s->clientCert.data, der->data, der->len) == 0;
+}
+
 static UA_StatusCode login_cb(const UA_String *userName, const UA_ByteString *password,
                               size_t n, const UA_UsernamePasswordLogin *list,
                               void **sessionContext, void *loginContext) {
@@ -424,8 +431,12 @@ static UA_StatusCode activate(UA_Server *server, UA_AccessControl *ac,
     gds_session *s = *sessionContext;
     if(s != old)
         session_free(old); /* re-activation with a new identity */
-    if(s && s->clientAppUri.length == 0)
+    if(s && s->clientAppUri.length == 0) {
         s->clientAppUri = cert_app_uri(cert);
+        if(s->clientAppUri.length > 0 &&
+           UA_ByteString_copy(cert, &s->clientCert) != UA_STATUSCODE_GOOD)
+            UA_String_clear(&s->clientAppUri); /* no rights rather than half of them */
+    }
     if(s && ep) {
         s->securityMode = ep->securityMode;
         UA_String_clear(&s->securityPolicyUri);
