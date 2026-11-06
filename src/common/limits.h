@@ -8,6 +8,8 @@
 
 #define GDS_MAX_CSR_SIZE          ((size_t)16 * 1024)
 #define GDS_MAX_CERT_SIZE         ((size_t)16 * 1024)
+/* Certificate serial (RFC 5280 §4.1.2.2: at most 20 octets; room for others) */
+#define GDS_MAX_SERIAL_SIZE       ((size_t)64)
 #define GDS_MAX_CHAIN_LEN         ((size_t)8)
 #define GDS_MAX_KEY_SIZE          ((size_t)16 * 1024)
 #define GDS_MAX_CRL_SIZE          ((size_t)1024 * 1024)

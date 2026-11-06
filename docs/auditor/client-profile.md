@@ -44,7 +44,7 @@ RegisterApplication needs the DiscoveryAdmin Role or the ApplicationAdmin Privil
 | CLI-REG-01 | 12 §6.5.5, §6.5.6; 6 §6.2.2 | O | Compare the ApplicationRecord's ApplicationUri with the SAN URI of the certificate on the channel | Equal | Fail: different | `register-wrong-uri` |
 | CLI-REG-02 | 12 §6.5.5 | O | Compare ApplicationType with what the application is (a Client; ClientAndServer if it also serves) | Matches | Warn: different | `register-wrong-type` |
 | CLI-REG-03 | 12 §6.5.5 | O | For a ClientAndServer, call GetEndpoints on every DiscoveryUrl in the record | Each answers with the same ApplicationUri | Fail: another ApplicationUri. Warn: a URL does not answer. Not supported: pure Client | `register-bad-url` |
-| CLI-REG-04 | 12 §6.5.4, §6.5.6 | O | Run a second cycle with the record already present | The client finds its record (FindApplications) or handles Bad_EntryExists and goes on | Warn: the cycle stops on Bad_EntryExists. The spec does not require FindApplications first | `register-every-run` |
+| CLI-REG-04 | 12 §6.5.5, §6.5.6 | O | Run a second cycle with the record already present | The client finds its record (FindApplications) or handles Bad_EntryExists and goes on | Warn: the cycle stops on Bad_EntryExists. The spec does not require FindApplications first | `register-every-run` |
 | CLI-REG-05 | 12 Annex G.1 | O | The operator types UserName credentials at the client's prompt in cycle 1; cycle 2 runs without an operator | Cycle 2 does not use those credentials again | Fail: the prompted credentials were persisted | `persist-prompted-creds` |
 
 ## Signing request (`cli_csr.c`)

@@ -261,6 +261,8 @@ static gds_status install(gds_server *s) {
     if(r == UA_STATUSCODE_GOOD)
         r = gds_certmgr_install(s);
     if(r == UA_STATUSCODE_GOOD)
+        r = gds_revoke_install(s);
+    if(r == UA_STATUSCODE_GOOD)
         r = gds_trustlist_install(s);
     if(r == UA_STATUSCODE_GOOD)
         r = install_role_nodes(s);

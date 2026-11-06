@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "common/limits.h"
+#include "x509util.h"
 #include "common/banned.h"
 
 #define GDS_NS_URI "http://opcfoundation.org/UA/GDS/"
@@ -138,19 +139,14 @@ void gt_record(UA_ApplicationRecordDataType *rec, const char *uri, UA_Applicatio
     }
 }
 
-UA_StatusCode gt_register(gds_target *t, UA_ApplicationType type, char *uriOut, size_t uriLen,
-                          UA_NodeId *appId) {
+UA_StatusCode gt_register_record(gds_target *t, const UA_ApplicationRecordDataType *rec,
+                                 UA_NodeId *appId) {
     UA_NodeId_init(appId);
-    gt_unique_uri(t, uriOut, uriLen);
-    UA_ApplicationRecordDataType rec;
-    UA_LocalizedText name;
-    UA_String url;
-    gt_record(&rec, uriOut, type, &name, &url);
     UA_StatusCode r = gt_session(t); /* binds the GDS type namespace before encoding */
     if(r != UA_STATUSCODE_GOOD)
         return r;
     UA_Variant in;
-    UA_Variant_setScalar(&in, &rec, gt_record_type());
+    UA_Variant_setScalar(&in, (void *)(uintptr_t)rec, gt_record_type());
     size_t outN = 0;
     UA_Variant *out = NULL;
     r = gt_call(t, UA_GDSID_DIRECTORY_REGISTERAPPLICATION, 1, &in, 1, &outN, &out);
@@ -162,6 +158,131 @@ UA_StatusCode gt_register(gds_target *t, UA_ApplicationType type, char *uriOut, 
     else
         r = UA_NodeId_copy(id, appId);
     gt_free_out(out, outN);
+    return r;
+}
+
+UA_StatusCode gt_register(gds_target *t, UA_ApplicationType type, char *uriOut, size_t uriLen,
+                          UA_NodeId *appId) {
+    UA_NodeId_init(appId);
+    gt_unique_uri(t, uriOut, uriLen);
+    UA_ApplicationRecordDataType rec;
+    UA_LocalizedText name;
+    UA_String url;
+    gt_record(&rec, uriOut, type, &name, &url);
+    return gt_register_record(t, &rec, appId);
+}
+
+UA_StatusCode gt_call_obj(gds_target *t, UA_NodeId obj, UA_NodeId method, size_t inN,
+                          const UA_Variant *in, size_t minOut, size_t *outN, UA_Variant **out) {
+    *outN = 0;
+    *out = NULL;
+    UA_StatusCode r = gt_session(t);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    r = UA_Client_call(t->client, obj, method, inN, in, outN, out);
+    if(r == UA_STATUSCODE_GOOD && *outN < minOut)
+        r = UA_STATUSCODE_BADUNEXPECTEDERROR;
+    if(r != UA_STATUSCODE_GOOD) {
+        gt_free_out(*out, *outN);
+        *out = NULL;
+        *outN = 0;
+    }
+    return r;
+}
+
+UA_StatusCode gt_find(UA_Client *c, UA_NodeId parent, UA_UInt16 ns, const char *name,
+                      UA_NodeId *out) {
+    UA_NodeId_init(out);
+    UA_RelativePathElement el;
+    UA_RelativePathElement_init(&el);
+    el.referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HIERARCHICALREFERENCES);
+    el.includeSubtypes = true;
+    el.targetName = UA_QUALIFIEDNAME(ns, (char *)(uintptr_t)name);
+    UA_BrowsePath bp;
+    UA_BrowsePath_init(&bp);
+    bp.startingNode = parent;
+    bp.relativePath.elements = &el;
+    bp.relativePath.elementsSize = 1;
+    UA_TranslateBrowsePathsToNodeIdsRequest req;
+    UA_TranslateBrowsePathsToNodeIdsRequest_init(&req);
+    req.browsePaths = &bp;
+    req.browsePathsSize = 1;
+    UA_TranslateBrowsePathsToNodeIdsResponse resp =
+        UA_Client_Service_translateBrowsePathsToNodeIds(c, req);
+    UA_StatusCode r = resp.responseHeader.serviceResult;
+    if(r == UA_STATUSCODE_GOOD) {
+        if(resp.resultsSize != 1 || resp.results[0].statusCode != UA_STATUSCODE_GOOD ||
+           resp.results[0].targetsSize < 1)
+            r = UA_STATUSCODE_BADNOTFOUND;
+        else
+            r = UA_NodeId_copy(&resp.results[0].targets[0].targetId.nodeId, out);
+    }
+    UA_TranslateBrowsePathsToNodeIdsResponse_clear(&resp);
+    return r;
+}
+
+UA_Client *gt_anon_session(gds_target *t, UA_StatusCode *r) {
+    UA_Client *c = gt_new_client(t);
+    if(!c) {
+        *r = UA_STATUSCODE_BADOUTOFMEMORY;
+        return NULL;
+    }
+    *r = UA_Client_connect(c, t->url);
+    if(*r != UA_STATUSCODE_GOOD) {
+        UA_Client_delete(c);
+        return NULL;
+    }
+    return c;
+}
+
+UA_Client *gt_sign_only_session(gds_target *t, UA_StatusCode *r) {
+    static const char *const policies[] = {
+        "http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256",
+        "http://opcfoundation.org/UA/SecurityPolicy#Aes128_Sha256_RsaOaep"};
+    *r = UA_STATUSCODE_BADSECURITYPOLICYREJECTED;
+    for(size_t i = 0; i < sizeof(policies) / sizeof(policies[0]); i++) {
+        UA_Client *c = uac_new_secure_mode(&t->cert, &t->key, t->trust, t->trustN, t->crls,
+                                           t->crlN, t->appUri, policies[i],
+                                           UA_MESSAGESECURITYMODE_SIGN);
+        if(!c) {
+            *r = UA_STATUSCODE_BADOUTOFMEMORY;
+            continue;
+        }
+        UA_Client_getConfig(c)->customDataTypes = &gdsTypes;
+        *r = t->user ? UA_Client_connectUsername(c, t->url, t->user, t->password)
+                     : UA_Client_connect(c, t->url);
+        if(*r == UA_STATUSCODE_GOOD)
+            return c;
+        UA_Client_delete(c);
+    }
+    return NULL;
+}
+
+void gt_drop(UA_Client *c) {
+    if(!c)
+        return;
+    UA_Client_disconnect(c);
+    UA_Client_delete(c);
+}
+
+UA_StatusCode gt_issue(gds_target *t, ga_ctx *ctx, char *uri, size_t uriLen, UA_NodeId *appId,
+                       gds_buf *cert, gds_buf *issuer) {
+    cert->data = issuer->data = NULL;
+    cert->len = issuer->len = 0;
+    UA_StatusCode r = gt_register(t, UA_APPLICATIONTYPE_CLIENT, uri, uriLen, appId);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    gds_buf key = {0}, csr = {0};
+    size_t privLen = 0;
+    if(x509_new_rsa_key(2048, &key) != GDS_OK ||
+       x509_make_csr(&key, "OpenGDS Auditor test", uri, NULL, &csr) != GDS_OK)
+        r = UA_STATUSCODE_BADINTERNALERROR;
+    else
+        r = gt_sign(t, appId, &csr, ctx, cert, issuer, &privLen);
+    gds_buf_free_secret(&key);
+    gds_buf_free(&csr);
+    if(r != UA_STATUSCODE_GOOD)
+        UA_NodeId_clear(appId);
     return r;
 }
 
@@ -228,4 +349,55 @@ UA_StatusCode gt_sign(gds_target *t, const UA_NodeId *appId, const gds_buf *csr,
         return gds_status_to_ua(s);
     }
     return UA_STATUSCODE_GOOD;
+}
+
+bool gt_absent(ga_ctx *ctx, UA_StatusCode r, bool optional, const char *method) {
+    if(r != UA_STATUSCODE_BADMETHODINVALID && r != UA_STATUSCODE_BADNOTIMPLEMENTED &&
+       r != UA_STATUSCODE_BADNODEIDUNKNOWN)
+        return false;
+    if(optional)
+        ga_not_supported(ctx, "%s (Optional) not offered: %s", method, UA_StatusCode_name(r));
+    else
+        ga_fail(ctx, "%s (Mandatory) not offered: %s", method, UA_StatusCode_name(r));
+    return true;
+}
+
+UA_StatusCode gt_service(gds_target *t, UA_NodeId folder, const char *method, UA_NodeId *obj) {
+    UA_NodeId_init(obj);
+    UA_StatusCode r = gt_session(t);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    UA_BrowseDescription bd;
+    UA_BrowseDescription_init(&bd);
+    bd.nodeId = folder;
+    bd.browseDirection = UA_BROWSEDIRECTION_FORWARD;
+    bd.referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HIERARCHICALREFERENCES);
+    bd.includeSubtypes = true;
+    bd.nodeClassMask = UA_NODECLASS_OBJECT;
+    bd.resultMask = UA_BROWSERESULTMASK_NONE;
+    UA_BrowseRequest req;
+    UA_BrowseRequest_init(&req);
+    req.nodesToBrowse = &bd;
+    req.nodesToBrowseSize = 1;
+    req.requestedMaxReferencesPerNode = 64;
+    UA_BrowseResponse resp = UA_Client_Service_browse(t->client, req);
+    r = resp.responseHeader.serviceResult;
+    if(r == UA_STATUSCODE_GOOD && (resp.resultsSize != 1 || resp.results[0].statusCode != UA_STATUSCODE_GOOD))
+        r = resp.resultsSize == 1 ? resp.results[0].statusCode : UA_STATUSCODE_BADUNEXPECTEDERROR;
+    bool found = false;
+    for(size_t i = 0; r == UA_STATUSCODE_GOOD && !found && i < resp.results[0].referencesSize; i++) {
+        const UA_ExpandedNodeId *x = &resp.results[0].references[i].nodeId;
+        if(x->serverIndex != 0 || x->namespaceUri.length > 0)
+            continue;
+        UA_NodeId m;
+        if(gt_find(t->client, x->nodeId, t->ns, method, &m) == UA_STATUSCODE_GOOD) {
+            UA_NodeId_clear(&m);
+            r = UA_NodeId_copy(&x->nodeId, obj);
+            found = true;
+        }
+    }
+    UA_BrowseResponse_clear(&resp);
+    if(r == UA_STATUSCODE_GOOD && !found)
+        r = UA_STATUSCODE_BADNOTFOUND;
+    return r;
 }

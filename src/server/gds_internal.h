@@ -171,6 +171,11 @@ GDS_MUST_CHECK UA_StatusCode gds_load_app(gds_server *s, const UA_Guid *id,
 GDS_MUST_CHECK UA_StatusCode gds_directory_install(gds_server *s);
 GDS_MUST_CHECK UA_StatusCode gds_certmgr_install(gds_server *s);
 GDS_MUST_CHECK UA_StatusCode gds_trustlist_install(gds_server *s);
+/* RevokeCertificate (gds_revoke.c). */
+GDS_MUST_CHECK UA_StatusCode gds_revoke_install(gds_server *s);
+/* Revoke every certificate of appId: store first, then the CA's CRL.
+ * Server thread; takes storeLock for the store part only. */
+GDS_MUST_CHECK UA_StatusCode gds_revoke_app_certs(gds_server *s, const UA_Guid *appId);
 /* Approvals (gds_approvals.c): the source object, Respond/Respond2 and a
  * dialog for every Pending request in the store. Before the server runs. */
 GDS_MUST_CHECK UA_StatusCode gds_approvals_install(gds_server *s);

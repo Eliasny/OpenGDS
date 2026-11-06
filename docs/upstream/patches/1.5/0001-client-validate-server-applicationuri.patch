@@ -1,0 +1,448 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Julius Pfrommer <julius.pfrommer@o6-automation.com>
+Date: Mon, 21 Sep 2026 21:42:14 +0200
+Subject: [PATCH] fix(client): validate server certificate ApplicationUri
+
+(cherry picked from commit 980fe58667c4d241b417820eae5053c6edd375ea)
+---
+ src/client/ua_client_connect.c                | 25 +++++++++
+ tests/client/check_client_authentication.c    |  5 ++
+ tests/client/check_client_encryption.c        |  2 +-
+ .../check_cert_validation_client_response.c   | 56 ++++++++++++++++++-
+ tests/encryption/check_certificategroup.c     |  4 +-
+ tests/encryption/check_crl_validation.c       |  6 +-
+ tests/encryption/check_crypto_coverage.c      |  2 +-
+ .../check_encryption_aes128sha256rsaoaep.c    |  4 +-
+ .../check_encryption_aes256sha256rsapss.c     |  4 +-
+ tests/encryption/check_encryption_basic256.c  |  4 +-
+ .../check_encryption_basic256sha256.c         |  4 +-
+ ...ck_encryption_basic256sha256_with_config.c |  2 +-
+ .../check_encryption_key_password.c           |  2 +-
+ tests/encryption/check_gds_informationmodel.c |  2 +-
+ .../encryption/check_username_connect_none.c  |  2 +-
+ tests/interop/node-opcua/server.mjs           |  3 +
+ tests/pubsub/check_pubsub_sks_client.c        |  2 +-
+ tests/pubsub/check_pubsub_sks_pull.c          |  2 +-
+ tests/pubsub/check_pubsub_sks_push.c          |  2 +-
+ 19 files changed, 109 insertions(+), 24 deletions(-)
+
+diff --git a/src/client/ua_client_connect.c b/src/client/ua_client_connect.c
+index 2780d94b2..2d8165ade 100644
+--- a/src/client/ua_client_connect.c
++++ b/src/client/ua_client_connect.c
+@@ -1703,6 +1703,31 @@ createSessionCallback(UA_Client *client, void *userdata,
+             goto cleanup;
+     }
+ 
++    /* OPC UA Part 4, 5.7.2: Bind the authenticated server certificate to the
++     * ApplicationUri claimed in the CreateSession response. Discovery data is
++     * not trusted and therefore cannot replace this check. */
++    if(csr->serverCertificate.length > 0 && csr->serverEndpointsSize == 0) {
++        UA_LOG_ERROR(client->config.logging, UA_LOGCATEGORY_CLIENT,
++                     "CreateSession returned a server certificate without "
++                     "an EndpointDescription to verify its ApplicationUri");
++        res = UA_STATUSCODE_BADSECURITYCHECKSFAILED;
++        goto cleanup;
++    }
++    for(size_t i = 0; csr->serverCertificate.length > 0 &&
++                    i < csr->serverEndpointsSize; i++) {
++        const UA_String *applicationUri =
++            &csr->serverEndpoints[i].server.applicationUri;
++        res = UA_CertificateUtils_verifyApplicationUri(&csr->serverCertificate,
++                                                        applicationUri);
++        if(res != UA_STATUSCODE_GOOD) {
++            UA_LOG_ERROR(client->config.logging, UA_LOGCATEGORY_CLIENT,
++                         "The server certificate's ApplicationUri does not "
++                         "match the ApplicationUri %S returned by CreateSession",
++                         *applicationUri);
++            goto cleanup;
++        }
++    }
++
+     /* Copy the SessionId */
+     UA_NodeId_clear(&client->sessionId);
+     res |= UA_NodeId_copy(&csr->sessionId, &client->sessionId);
+diff --git a/tests/client/check_client_authentication.c b/tests/client/check_client_authentication.c
+index 9f50cb837..cd36756a7 100644
+--- a/tests/client/check_client_authentication.c
++++ b/tests/client/check_client_authentication.c
+@@ -74,6 +74,11 @@ static void setup(void) {
+     UA_CertificateGroup_AcceptAll(&config->secureChannelPKI);
+     UA_CertificateGroup_AcceptAll(&config->sessionPKI);
+ 
++    /* Set the ApplicationUri used in the server certificate */
++    UA_String_clear(&config->applicationDescription.applicationUri);
++    config->applicationDescription.applicationUri =
++        UA_STRING_ALLOC("urn:open62541.server.application");
++
+     /* Add username/password auth */
+     UA_UsernamePasswordLogin login;
+     login.password = UA_STRING("admin");
+diff --git a/tests/client/check_client_encryption.c b/tests/client/check_client_encryption.c
+index 3a7602fee..7cbd8d5ba 100644
+--- a/tests/client/check_client_encryption.c
++++ b/tests/client/check_client_encryption.c
+@@ -69,7 +69,7 @@ static void setup(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     UA_Server_run_startup(server);
+     THREAD_CREATE(server_thread, serverloop);
+diff --git a/tests/encryption/check_cert_validation_client_response.c b/tests/encryption/check_cert_validation_client_response.c
+index 2561894fd..e3180bef1 100644
+--- a/tests/encryption/check_cert_validation_client_response.c
++++ b/tests/encryption/check_cert_validation_client_response.c
+@@ -36,7 +36,7 @@ forceCertVerifyStatus(UA_CertificateGroup *certGroup,
+ }
+ 
+ static void
+-setup(void) {
++setupServer(const char *applicationUri) {
+     running = true;
+ 
+     UA_ByteString certificate;
+@@ -66,12 +66,22 @@ setup(void) {
+ 
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC(applicationUri);
+ 
+     UA_Server_run_startup(server);
+     THREAD_CREATE(server_thread, serverloop);
+ }
+ 
++static void
++setup(void) {
++    setupServer("urn:open62541.unconfigured.application");
++}
++
++static void
++setupMismatchingApplicationUri(void) {
++    setupServer("urn:mismatching:application");
++}
++
+ static void
+ teardown(void) {
+     running = false;
+@@ -132,13 +142,55 @@ START_TEST(testOpenSecureChannelCertificateFailuresHidden) {
+ }
+ END_TEST
+ 
++START_TEST(testCreateSessionAcceptsMatchingServerApplicationUri) {
++    forcedVerifyStatus = UA_STATUSCODE_GOOD;
++
++    UA_Client *client = newSecureClient();
++    UA_StatusCode retval = UA_Client_connect(client, "opc.tcp://localhost:4840");
++    ck_assert_msg(retval == UA_STATUSCODE_GOOD,
++                  "client connect returned %s",
++                  UA_StatusCode_name(retval));
++
++    UA_Client_disconnect(client);
++    UA_Client_delete(client);
++}
++END_TEST
++
++START_TEST(testCreateSessionRejectsMismatchingServerApplicationUri) {
++    forcedVerifyStatus = UA_STATUSCODE_GOOD;
++
++    UA_Client *client = newSecureClient();
++    UA_StatusCode retval = UA_Client_connect(client, "opc.tcp://localhost:4840");
++
++    ck_assert_msg(retval == UA_STATUSCODE_BADCERTIFICATEURIINVALID,
++                  "client connect returned %s",
++                  UA_StatusCode_name(retval));
++
++    UA_SecureChannelState channelState;
++    UA_SessionState sessionState;
++    UA_Client_getState(client, &channelState, &sessionState, NULL);
++    ck_assert_int_eq(channelState, UA_SECURECHANNELSTATE_CLOSED);
++    ck_assert_int_eq(sessionState, UA_SESSIONSTATE_CLOSED);
++
++    UA_Client_delete(client);
++}
++END_TEST
++
+ static Suite *
+ testSuite_create(void) {
+     Suite *s = suite_create("Certificate Validation Client Response");
+     TCase *tc = tcase_create("OpenSecureChannel Certificate Failures Hidden");
+     tcase_add_checked_fixture(tc, setup, teardown);
+     tcase_add_test(tc, testOpenSecureChannelCertificateFailuresHidden);
++    tcase_add_test(tc, testCreateSessionAcceptsMatchingServerApplicationUri);
+     suite_add_tcase(s, tc);
++
++    TCase *tcApplicationUri = tcase_create("Server ApplicationUri");
++    tcase_add_checked_fixture(tcApplicationUri,
++                              setupMismatchingApplicationUri, teardown);
++    tcase_add_test(tcApplicationUri,
++                   testCreateSessionRejectsMismatchingServerApplicationUri);
++    suite_add_tcase(s, tcApplicationUri);
+     return s;
+ }
+ 
+diff --git a/tests/encryption/check_certificategroup.c b/tests/encryption/check_certificategroup.c
+index c391151a1..409111c31 100644
+--- a/tests/encryption/check_certificategroup.c
++++ b/tests/encryption/check_certificategroup.c
+@@ -60,7 +60,7 @@ static void setup(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-            UA_STRING_ALLOC("urn:unconfigured:application");
++            UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     UA_Server_run_startup(server);
+     THREAD_CREATE(server_thread, serverloop);
+@@ -100,7 +100,7 @@ static void setup2(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-            UA_STRING_ALLOC("urn:unconfigured:application");
++            UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     /* Clear old certificates */
+     UA_ByteString empty[2] = {0};
+diff --git a/tests/encryption/check_crl_validation.c b/tests/encryption/check_crl_validation.c
+index def08516e..4371cadfb 100644
+--- a/tests/encryption/check_crl_validation.c
++++ b/tests/encryption/check_crl_validation.c
+@@ -86,7 +86,7 @@ static void setup1(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     UA_Server_run_startup(server);
+     THREAD_CREATE(server_thread, serverloop);
+@@ -148,7 +148,7 @@ static void setup2(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     UA_Server_run_startup(server);
+     THREAD_CREATE(server_thread, serverloop);
+@@ -210,7 +210,7 @@ static void setup3(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     UA_Server_run_startup(server);
+     THREAD_CREATE(server_thread, serverloop);
+diff --git a/tests/encryption/check_crypto_coverage.c b/tests/encryption/check_crypto_coverage.c
+index 9d2982b23..01a05c7aa 100644
+--- a/tests/encryption/check_crypto_coverage.c
++++ b/tests/encryption/check_crypto_coverage.c
+@@ -854,7 +854,7 @@ static void setup_policy(void) {
+ 
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     UA_Server_run_startup(policyServer);
+     THREAD_CREATE(policy_server_thread, policyServerloop);
+diff --git a/tests/encryption/check_encryption_aes128sha256rsaoaep.c b/tests/encryption/check_encryption_aes128sha256rsaoaep.c
+index 7918a53b0..fe09c0b84 100644
+--- a/tests/encryption/check_encryption_aes128sha256rsaoaep.c
++++ b/tests/encryption/check_encryption_aes128sha256rsaoaep.c
+@@ -83,7 +83,7 @@ static void setup(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     for(size_t i = 0; i < trustListSize; i++)
+         UA_ByteString_clear(&trustList[i]);
+@@ -121,7 +121,7 @@ static void setup2(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     UA_Server_run_startup(server);
+     THREAD_CREATE(server_thread, serverloop);
+diff --git a/tests/encryption/check_encryption_aes256sha256rsapss.c b/tests/encryption/check_encryption_aes256sha256rsapss.c
+index 5d043bbcc..95557fde3 100644
+--- a/tests/encryption/check_encryption_aes256sha256rsapss.c
++++ b/tests/encryption/check_encryption_aes256sha256rsapss.c
+@@ -83,7 +83,7 @@ static void setup(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     for(size_t i = 0; i < trustListSize; i++)
+         UA_ByteString_clear(&trustList[i]);
+@@ -121,7 +121,7 @@ static void setup2(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     UA_Server_run_startup(server);
+     THREAD_CREATE(server_thread, serverloop);
+diff --git a/tests/encryption/check_encryption_basic256.c b/tests/encryption/check_encryption_basic256.c
+index 1dbf9285e..e2b003fa4 100644
+--- a/tests/encryption/check_encryption_basic256.c
++++ b/tests/encryption/check_encryption_basic256.c
+@@ -94,7 +94,7 @@ static void setup(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     for(size_t i = 0; i < trustListSize; i++)
+         UA_ByteString_clear(&trustList[i]);
+@@ -132,7 +132,7 @@ static void setup2(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     UA_Server_run_startup(server);
+     THREAD_CREATE(server_thread, serverloop);
+diff --git a/tests/encryption/check_encryption_basic256sha256.c b/tests/encryption/check_encryption_basic256sha256.c
+index 15e1c47dc..1e9c10dcc 100644
+--- a/tests/encryption/check_encryption_basic256sha256.c
++++ b/tests/encryption/check_encryption_basic256sha256.c
+@@ -83,7 +83,7 @@ static void setup(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     for(size_t i = 0; i < trustListSize; i++)
+         UA_ByteString_clear(&trustList[i]);
+@@ -121,7 +121,7 @@ static void setup2(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     UA_Server_run_startup(server);
+     THREAD_CREATE(server_thread, serverloop);
+diff --git a/tests/encryption/check_encryption_basic256sha256_with_config.c b/tests/encryption/check_encryption_basic256sha256_with_config.c
+index 0a2e352c9..8f33c3eac 100644
+--- a/tests/encryption/check_encryption_basic256sha256_with_config.c
++++ b/tests/encryption/check_encryption_basic256sha256_with_config.c
+@@ -37,7 +37,7 @@ static void initialize_server_config(UA_ServerConfig *config) {
+ 
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ }
+ 
+ static UA_Server *create_server(void) {
+diff --git a/tests/encryption/check_encryption_key_password.c b/tests/encryption/check_encryption_key_password.c
+index d61e8d0b5..186f058a4 100644
+--- a/tests/encryption/check_encryption_key_password.c
++++ b/tests/encryption/check_encryption_key_password.c
+@@ -80,7 +80,7 @@ static void setup(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     for(size_t i = 0; i < trustListSize; i++)
+         UA_ByteString_clear(&trustList[i]);
+diff --git a/tests/encryption/check_gds_informationmodel.c b/tests/encryption/check_gds_informationmodel.c
+index 89988f7e6..7e49740f4 100644
+--- a/tests/encryption/check_gds_informationmodel.c
++++ b/tests/encryption/check_gds_informationmodel.c
+@@ -83,7 +83,7 @@ static void setup(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-            UA_STRING_ALLOC("urn:unconfigured:application");
++            UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     UA_Server_run_startup(server);
+     THREAD_CREATE(server_thread, serverloop);
+diff --git a/tests/encryption/check_username_connect_none.c b/tests/encryption/check_username_connect_none.c
+index ef0f6b3f5..a86ae4d63 100644
+--- a/tests/encryption/check_username_connect_none.c
++++ b/tests/encryption/check_username_connect_none.c
+@@ -55,7 +55,7 @@ static void setup(void) {
+ 
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     UA_Server_run_startup(server);
+     THREAD_CREATE(server_thread, serverloop);
+diff --git a/tests/interop/node-opcua/server.mjs b/tests/interop/node-opcua/server.mjs
+index ae6560171..c9a2219cd 100644
+--- a/tests/interop/node-opcua/server.mjs
++++ b/tests/interop/node-opcua/server.mjs
+@@ -53,6 +53,9 @@ const server = new OPCUAServer({
+     certificateFile: certFile,
+     privateKeyFile: keyFile,
+     serverCertificateManager,
++    serverInfo: {
++        applicationUri: "urn:localhost:node-opcua:interop",
++    },
+     securityPolicies: [SecurityPolicy.None, SecurityPolicy.Basic256Sha256],
+     securityModes: [
+         MessageSecurityMode.None,
+diff --git a/tests/pubsub/check_pubsub_sks_client.c b/tests/pubsub/check_pubsub_sks_client.c
+index f2e081bd3..5d2127d84 100644
+--- a/tests/pubsub/check_pubsub_sks_client.c
++++ b/tests/pubsub/check_pubsub_sks_client.c
+@@ -176,7 +176,7 @@ skssetup(void) {
+     UA_ServerConfig *config = UA_Server_getConfig(sksServer);
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     UA_String basic256sha256 = UA_STRING("http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256");
+     UA_AccessControl_default(config, true, &basic256sha256, 2, userNamePW);
+diff --git a/tests/pubsub/check_pubsub_sks_pull.c b/tests/pubsub/check_pubsub_sks_pull.c
+index 5deb9f209..412282062 100644
+--- a/tests/pubsub/check_pubsub_sks_pull.c
++++ b/tests/pubsub/check_pubsub_sks_pull.c
+@@ -158,7 +158,7 @@ setup(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     UA_String basic256sha256 = UA_STRING("http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256");
+     UA_AccessControl_default(config, true, &basic256sha256, 2, userNamePW);
+diff --git a/tests/pubsub/check_pubsub_sks_push.c b/tests/pubsub/check_pubsub_sks_push.c
+index fff026b9b..b57cb2d17 100644
+--- a/tests/pubsub/check_pubsub_sks_push.c
++++ b/tests/pubsub/check_pubsub_sks_push.c
+@@ -257,7 +257,7 @@ setup(void) {
+     /* Set the ApplicationUri used in the certificate */
+     UA_String_clear(&config->applicationDescription.applicationUri);
+     config->applicationDescription.applicationUri =
+-        UA_STRING_ALLOC("urn:unconfigured:application");
++        UA_STRING_ALLOC("urn:open62541.unconfigured.application");
+ 
+     config->pubSubConfig.securityPolicies =
+         (UA_PubSubSecurityPolicy *)UA_malloc(sizeof(UA_PubSubSecurityPolicy));
+-- 
+2.43.0
+

@@ -18,6 +18,12 @@
 
 #define APP_URI "urn:opengds:test:server"
 
+/* Entries on a CRL (an empty CRL has no list at all). */
+static int crl_count(X509_CRL *crl) {
+    STACK_OF(X509_REVOKED) *l = X509_CRL_get_REVOKED(crl);
+    return l ? sk_X509_REVOKED_num(l) : 0;
+}
+
 static UA_Guid reqId;
 
 /* A CSR that tries to choose its own subject and ApplicationUri. */
@@ -126,8 +132,9 @@ static void check_profile(X509 *x) {
     CHECK(X509_get0_subject_key_id(x) != NULL && X509_get0_authority_key_id(x) != NULL);
 }
 
-/* The issued certificate chains to the CA and passes a CRL check. */
-static void check_chain(X509 *leaf, gds_ca *ca) {
+/* Verify leaf against the CA and its current CRL: the X509_V_ error, or
+ * -1 if the CA's certificate or CRL could not be read. */
+static int verify_with_crl(X509 *leaf, gds_ca *ca, long *crlNumber, int *entries) {
     gds_buf caDer = {0}, crlDer = {0};
     CHECK(gds_ca_get_ca_cert(ca, &caDer) == GDS_OK);
     CHECK(gds_ca_get_crl(ca, &crlDer) == GDS_OK);
@@ -136,18 +143,23 @@ static void check_chain(X509 *leaf, gds_ca *ca) {
     X509_CRL *crl = d2i_X509_CRL(NULL, &p, (long)crlDer.len);
     X509_STORE *st = X509_STORE_new();
     X509_STORE_CTX *ctx = X509_STORE_CTX_new();
+    int err = -1;
     CHECK(caCert && crl && st && ctx);
     if(caCert && crl && st && ctx) {
         CHECK(X509_check_ca(caCert) == 1);
+        CHECK(X509_CRL_verify(crl, X509_get0_pubkey(caCert)) == 1);
+        if(crlNumber) {
+            ASN1_INTEGER *n = X509_CRL_get_ext_d2i(crl, NID_crl_number, NULL, NULL);
+            *crlNumber = n ? ASN1_INTEGER_get(n) : -1;
+            ASN1_INTEGER_free(n);
+        }
+        if(entries)
+            *entries = crl_count(crl);
         X509_STORE_add_cert(st, caCert);
         X509_STORE_add_crl(st, crl);
         X509_STORE_set_flags(st, X509_V_FLAG_CRL_CHECK);
         X509_STORE_CTX_init(ctx, st, leaf, NULL);
-        int ok = X509_verify_cert(ctx);
-        if(ok != 1)
-            fprintf(stderr, "verify: %s\n",
-                    X509_verify_cert_error_string(X509_STORE_CTX_get_error(ctx)));
-        CHECK(ok == 1);
+        err = X509_verify_cert(ctx) == 1 ? X509_V_OK : X509_STORE_CTX_get_error(ctx);
         CHECK(ASN1_TIME_compare(X509_get0_notAfter(leaf), X509_get0_notAfter(caCert)) <= 0);
     }
     X509_STORE_CTX_free(ctx);
@@ -156,6 +168,15 @@ static void check_chain(X509 *leaf, gds_ca *ca) {
     X509_free(caCert);
     gds_buf_free(&caDer);
     gds_buf_free(&crlDer);
+    return err;
+}
+
+/* The issued certificate chains to the CA and passes a CRL check. */
+static void check_chain(X509 *leaf, gds_ca *ca) {
+    int err = verify_with_crl(leaf, ca, NULL, NULL);
+    if(err != X509_V_OK)
+        fprintf(stderr, "verify: %s\n", err < 0 ? "no CA" : X509_verify_cert_error_string(err));
+    CHECK(err == X509_V_OK);
 }
 
 static void test_issue(gds_ca *ca, const gds_ca_subject *subj, const gds_buf *csr) {
@@ -231,16 +252,64 @@ static void no_destroy(void *ctx) {
 
 static void test_pre_sign(const gds_ca_subject *subj, const gds_buf *csr) {
     const gds_ca_backend b = {GDS_CA_ABI_VERSION, refuse_pre_sign, count_sign, no_buf, no_buf,
-                              no_destroy};
+                              no_destroy, NULL};
     gds_ca *ca = NULL;
     CHECK(gds_ca_wrap(&b, NULL, &ca) == GDS_OK);
     gds_ca_issued out;
     CHECK(ca && gds_ca_sign_csr(ca, subj, csr, &out) == GDS_ESTATE);
     CHECK_EQ_INT(signCalls, 0);
+    uint8_t one = 1;
+    gds_buf serial = {&one, 1};
+    CHECK(ca && gds_ca_revoke(ca, &serial) == GDS_EUNSUPPORTED); /* revoke is optional */
     gds_ca_close(ca);
     gds_ca_backend wrong = b;
     wrong.abiVersion = 99;
     CHECK(gds_ca_wrap(&wrong, NULL, &ca) == GDS_EINVAL && ca == NULL);
+}
+
+/* Revoke a, then b after a reopen: each serial goes on a new CRL
+ * (number + 1), once, and stays on every later CRL. */
+static void check_revoke(const gds_ca_config *cfg, gds_ca **ca, const gds_ca_issued *a,
+                         const gds_ca_issued *b, X509 *xa, X509 *xb) {
+    long n0 = 0, n1 = 0, n2 = 0;
+    int entries = -1;
+    CHECK(verify_with_crl(xa, *ca, &n0, &entries) == X509_V_OK && entries == 0);
+    CHECK(gds_ca_revoke(*ca, &a->serial) == GDS_OK);
+    CHECK(verify_with_crl(xa, *ca, &n1, &entries) == X509_V_ERR_CERT_REVOKED);
+    CHECK(n1 == n0 + 1 && entries == 1);
+    CHECK(verify_with_crl(xb, *ca, NULL, NULL) == X509_V_OK);
+    CHECK(gds_ca_revoke(*ca, &a->serial) == GDS_OK); /* again: no new CRL */
+    CHECK(verify_with_crl(xa, *ca, &n2, &entries) == X509_V_ERR_CERT_REVOKED);
+    CHECK(n2 == n1 && entries == 1);
+    gds_buf empty = {0};
+    CHECK(gds_ca_revoke(*ca, &empty) == GDS_EINVAL);
+    gds_ca_close(*ca);
+    *ca = NULL;
+    /* the CRL file keeps the entry; the next revocation adds to it */
+    if(!CHECK(gds_ca_openssl_open(cfg, ca) == GDS_OK) || !*ca)
+        return;
+    CHECK(gds_ca_revoke(*ca, &b->serial) == GDS_OK);
+    CHECK(verify_with_crl(xa, *ca, &n2, &entries) == X509_V_ERR_CERT_REVOKED);
+    CHECK(verify_with_crl(xb, *ca, NULL, NULL) == X509_V_ERR_CERT_REVOKED);
+    CHECK(n2 == n1 + 1 && entries == 2);
+}
+
+static void test_revoke(const gds_ca_config *cfg, const gds_ca_subject *subj,
+                        const gds_buf *csr) {
+    gds_ca *ca = NULL;
+    if(!CHECK(gds_ca_openssl_open(cfg, &ca) == GDS_OK) || !ca)
+        return;
+    gds_ca_issued a, b;
+    CHECK(gds_ca_sign_csr(ca, subj, csr, &a) == GDS_OK);
+    CHECK(gds_ca_sign_csr(ca, subj, csr, &b) == GDS_OK);
+    X509 *xa = parse_cert(&a.der), *xb = parse_cert(&b.der);
+    if(CHECK(xa && xb))
+        check_revoke(cfg, &ca, &a, &b, xa, xb);
+    X509_free(xa);
+    X509_free(xb);
+    gds_ca_issued_clear(&a);
+    gds_ca_issued_clear(&b);
+    gds_ca_close(ca);
 }
 
 static void test_reopen(const gds_ca_config *cfg, const gds_buf *firstCa) {
@@ -310,6 +379,7 @@ int main(int argc, char **argv) {
     gds_buf first = {0};
     CHECK(gds_ca_get_ca_cert(ca, &first) == GDS_OK);
     gds_ca_close(ca);
+    test_revoke(&cfg, &subj, &csr);
     test_reopen(&cfg, &first);
 
     gds_buf_free(&first);

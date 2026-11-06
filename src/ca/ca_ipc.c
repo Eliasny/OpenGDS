@@ -40,13 +40,10 @@ static gds_status recv_reply(ipc_ca *c, size_t *len) {
     return GDS_OK;
 }
 
-/* Send one request and decode its reply into issued or der. */
-static gds_status call(ipc_ca *c, gds_sigp_op op, const UA_Guid *reqId, gds_ca_issued *issued,
-                       gds_buf *der) {
-    gds_buf req = {0};
-    gds_status r = gds_sigp_encode_request(op, reqId, &req);
-    if(r != GDS_OK)
-        return r;
+/* Send one encoded request (taken) and decode its reply into issued or der. */
+static gds_status exchange(ipc_ca *c, gds_sigp_op op, gds_buf req, gds_ca_issued *issued,
+                           gds_buf *der) {
+    gds_status r = GDS_OK;
     pthread_mutex_lock(&c->lock);
     size_t len = 0;
     if(send(c->fd, req.data, req.len, MSG_NOSIGNAL) != (ssize_t)req.len)
@@ -61,6 +58,13 @@ static gds_status call(ipc_ca *c, gds_sigp_op op, const UA_Guid *reqId, gds_ca_i
     return r == GDS_OK ? remote : r;
 }
 
+static gds_status call(ipc_ca *c, gds_sigp_op op, const UA_Guid *reqId, gds_ca_issued *issued,
+                       gds_buf *der) {
+    gds_buf req = {0};
+    gds_status r = gds_sigp_encode_request(op, reqId, &req);
+    return r == GDS_OK ? exchange(c, op, req, issued, der) : r;
+}
+
 static gds_status ipc_sign_csr(void *ctx, const gds_ca_subject *subj, const gds_buf *csrDer,
                                gds_ca_issued *out) {
     (void)csrDer; /* the signer reads the CSR from the store */
@@ -73,6 +77,17 @@ static gds_status ipc_get_ca_cert(void *ctx, gds_buf *out) {
 
 static gds_status ipc_get_crl(void *ctx, gds_buf *out) {
     return call(ctx, GDS_SIGP_ISSUE_CRL, NULL, NULL, out);
+}
+
+static gds_status ipc_revoke(void *ctx, const gds_buf *serial) {
+    gds_buf req = {0};
+    gds_status r = gds_sigp_encode_revoke(serial, &req);
+    if(r != GDS_OK)
+        return r;
+    gds_buf crl = {0}; /* the new CRL; trust lists fetch it again */
+    r = exchange(ctx, GDS_SIGP_REVOKE, req, NULL, &crl);
+    gds_buf_free(&crl);
+    return r;
 }
 
 static void ipc_destroy(void *ctx) {
@@ -93,6 +108,7 @@ static const gds_ca_backend ipc_backend = {
     .get_ca_cert = ipc_get_ca_cert,
     .get_crl = ipc_get_crl,
     .destroy = ipc_destroy,
+    .revoke = ipc_revoke,
 };
 
 gds_status gds_ca_ipc_open(int fd, int timeoutMs, gds_ca **out) {
