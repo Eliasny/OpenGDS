@@ -29,6 +29,15 @@ GDS_MUST_CHECK gds_status x509_make_csr(const gds_buf *keyDer, const char *commo
                                         const char *applicationUri, const char *dnsName,
                                         gds_buf *csrOut);
 
+/* Fresh RSA key (DER, PKCS#8 or traditional). Caller frees with gds_buf_free_secret. */
+GDS_MUST_CHECK gds_status x509_new_rsa_key(unsigned bits, gds_buf *keyOut);
+/* The URI entries of the certificate's subjectAltName; first one into out. */
+GDS_MUST_CHECK gds_status x509_san_uri(const gds_buf *certDer, char *out, size_t outLen);
+/* true if the certificate carries the CSR's public key */
+bool x509_cert_has_csr_key(const gds_buf *certDer, const gds_buf *csrDer);
+/* true if `cert` is signed by `issuer` */
+bool x509_signed_by(const gds_buf *certDer, const gds_buf *issuerDer);
+
 /* Parsers with a size check. Returned objects are owned by the caller. */
 X509 *x509_parse_cert(const gds_buf *der);
 EVP_PKEY *x509_parse_key(const gds_buf *der); /* DER (PKCS#8 or traditional) or PEM */

@@ -1,0 +1,28 @@
+# Expected verdicts of gdsaudit gds against the mock GDS (profile_client/mock_gds.c).
+# The mock is a demo fixture, not a GDS: it implements only the pull thin path.
+# CI fails when any verdict changes, including a Fail turning into a Pass.
+gds.sec.endpoints,warn
+gds.sec.none_session,pass
+gds.sec.anonymous_register,pass
+gds.dir.find_unknown,pass
+gds.dir.register_valid,pass
+gds.dir.register_no_uri,pass
+gds.dir.register_bad_type,fail
+gds.dir.register_server_no_urls,fail
+gds.dir.register_no_names,fail
+gds.dir.get_application,fail
+gds.dir.get_unknown,fail
+gds.dir.update_application,fail
+gds.dir.unregister,fail
+gds.dir.query_by_uri,fail
+gds.cm.groups,pass
+gds.cm.groups_unknown,pass
+gds.cm.status_new,pass
+gds.cm.bad_csr,fail
+gds.cm.signing_flow,pass
+gds.cm.csr_wrong_uri,pass
+gds.cm.finish_unknown,pass
+gds.cm.status_after_issue,pass
+gds.tl.get_trustlist,pass
+gds.tl.read_bad_handle,pass
+gds.tl.write_anonymous,pass
