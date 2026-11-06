@@ -133,4 +133,50 @@ echo "=============== 7. the store has the device's certificate ==============="
 "$GDSADM" certs status --store "$W/data/opengds.db" > "$W/certs.txt" || fail "certs status"
 grep "$DEV_URI" "$W/certs.txt" | grep -q "valid until" || { cat "$W/certs.txt"; fail "no device certificate"; }
 grep "$DEV_URI" "$W/certs.txt"
+
+# revoked <cert.der>: the certificate fails a CRL check against the GDS CA's current CRL
+revoked() {
+    openssl x509 -inform DER -in "$1" -out "$W/check.pem" 2>/dev/null || fail "openssl x509 $1"
+    openssl x509 -inform DER -in "$W/ca/ca.der" -out "$W/ca.pem" || fail "openssl x509 ca"
+    openssl crl -inform DER -in "$W/ca/ca.crl" -out "$W/crl.pem" || fail "openssl crl"
+    openssl verify -CAfile "$W/ca.pem" -CRLfile "$W/crl.pem" -crl_check "$W/check.pem" \
+        > "$W/verify.txt" 2>&1 && return 1
+    grep -q "certificate revoked" "$W/verify.txt"
+}
+# the device certificates the GDS issued, newest first
+ISSUED=$(ls -t "$W"/pki-dev/ApplCerts/own/certs/*.der | grep -v '/selfsigned' | head -2)
+NEWEST=$(echo "$ISSUED" | head -1)
+OLDER=$(echo "$ISSUED" | sed -n 2p)
+[ -n "$NEWEST" ] && [ -n "$OLDER" ] || fail "the device should hold two issued certificates"
+
+echo "=============== 8. gdsadm certs revoke (no CertificateAuthorityAdmin: refused) ==============="
+# shellcheck disable=SC2046
+if "$GDSADM" certs revoke "$DEV_URI" --revoke-cert "$NEWEST" $(conn viewer "$W/viewer.pw") \
+    > "$W/revoke0.txt" 2>&1; then
+    cat "$W/revoke0.txt"; fail "a revoke without CertificateAuthorityAdmin succeeded"
+fi
+expect "BadUserAccessDenied" "$W/revoke0.txt"
+revoked "$NEWEST" && fail "refused revoke still put the certificate on the CRL"
+
+echo "=============== 9. gdsadm certs revoke ==============="
+# shellcheck disable=SC2046
+"$GDSADM" certs revoke "$DEV_URI" --revoke-cert "$NEWEST" $(conn admin "$W/admin.pw") \
+    > "$W/revoke1.txt" 2>&1 || { cat "$W/revoke1.txt"; fail "certs revoke"; }
+expect "revoked" "$W/revoke1.txt"
+revoked "$NEWEST" || { cat "$W/verify.txt"; fail "the revoked certificate is not on the CRL"; }
+revoked "$OLDER" && fail "the other certificate was revoked too"
+# a certificate the GDS did not issue to this application
+# shellcheck disable=SC2046
+if "$GDSADM" certs revoke "$DEV_URI" --revoke-cert "$DEV_CERT" $(conn admin "$W/admin.pw") \
+    > "$W/revoke2.txt" 2>&1; then
+    cat "$W/revoke2.txt"; fail "revoking a self-signed certificate succeeded"
+fi
+expect "BadInvalidArgument" "$W/revoke2.txt"
+
+echo "=============== 10. gdsadm apps unregister revokes the rest ==============="
+# shellcheck disable=SC2046
+"$GDSADM" apps unregister "$DEV_URI" $(conn admin "$W/admin.pw") \
+    > "$W/unreg.txt" 2>&1 || { cat "$W/unreg.txt"; fail "apps unregister"; }
+expect "unregistered $DEV_URI" "$W/unreg.txt"
+revoked "$OLDER" || { cat "$W/verify.txt"; fail "unregister left a certificate off the CRL"; }
 echo "PUSH TRACER PASSED"
