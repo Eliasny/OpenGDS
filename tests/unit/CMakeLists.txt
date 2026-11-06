@@ -11,3 +11,7 @@ target_link_libraries(test_signer PRIVATE gds_signer gds_ca_ipc)
 add_test(NAME unit_signer COMMAND test_signer "${CMAKE_CURRENT_BINARY_DIR}/signer-run")
 add_test(NAME signer_refuses_bad_args COMMAND opengds-signer --fd 0)
 set_tests_properties(signer_refuses_bad_args PROPERTIES WILL_FAIL TRUE)
+
+add_executable(test_push_select test_push_select.c)
+target_link_libraries(test_push_select PRIVATE gds_push)
+add_test(NAME unit_push_select COMMAND test_push_select)
