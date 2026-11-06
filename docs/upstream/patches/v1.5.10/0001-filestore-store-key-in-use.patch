@@ -1,0 +1,133 @@
+From cd61e12a24985a67a83d9c3e41320f2187bc64ac Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Elias=20Nyk=C3=A4nen?=
+ <61413159+Eliasny@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 04:29:54 +0000
+Subject: [PATCH] fix(plugin): store the key in use for a certificate pushed
+ without a key
+
+When UpdateCertificate installs a certificate without a new private key
+(the certificate was issued for a CSR without regeneratePrivateKey), the
+filestore SecurityPolicy wrote the certificate to own/certs but no key to
+own/private. After a restart, the application finds the new certificate
+in the store but no key with the same name.
+
+Find the key in own/private that pairs with the new certificate and store
+it under the name of the certificate as well. A certificate that is
+already in the store no longer skips writing its key. If no key in the
+store pairs with the certificate, log a warning.
+---
+ plugins/crypto/ua_securitypolicy_filestore.c | 72 +++++++++++++++++---
+ 1 file changed, 63 insertions(+), 9 deletions(-)
+
+diff --git a/plugins/crypto/ua_securitypolicy_filestore.c b/plugins/crypto/ua_securitypolicy_filestore.c
+index e0caa7254..24d2d2cf7 100644
+--- a/plugins/crypto/ua_securitypolicy_filestore.c
++++ b/plugins/crypto/ua_securitypolicy_filestore.c
+@@ -130,8 +130,40 @@ createCertName(const UA_ByteString *certificate, char *fileNameBuf, size_t fileN
+ }
+ 
+ 
++/* Find the private key in the directory that pairs with the certificate */
+ static UA_StatusCode
+-writeCertificateAndPrivateKeyToFilestore(const UA_String storePath,
++findPrivateKeyInFilestore(const char *keyDir, const UA_ByteString *certificate,
++                          UA_ByteString *privateKey) {
++    UA_DIR *dir = UA_opendir(keyDir);
++    if(!dir)
++        return UA_STATUSCODE_BADNOTFOUND;
++
++    UA_StatusCode retval = UA_STATUSCODE_BADNOTFOUND;
++    struct UA_DIRENT *dirent;
++    while((dirent = UA_readdir(dir)) != NULL) {
++        if(dirent->d_type != UA_DT_REG)
++            continue;
++        char filename[UA_PATH_MAX];
++        if(mp_snprintf(filename, UA_PATH_MAX, "%s/%s", keyDir, dirent->d_name) < 0)
++            continue;
++        UA_ByteString key = UA_BYTESTRING_NULL;
++        if(readFileToByteString(filename, &key) != UA_STATUSCODE_GOOD)
++            continue;
++        if(UA_CertificateUtils_checkKeyPair(certificate, &key) == UA_STATUSCODE_GOOD) {
++            *privateKey = key;
++            retval = UA_STATUSCODE_GOOD;
++            break;
++        }
++        UA_ByteString_memZero(&key);
++        UA_ByteString_clear(&key);
++    }
++    UA_closedir(dir);
++    return retval;
++}
++
++static UA_StatusCode
++writeCertificateAndPrivateKeyToFilestore(const UA_Logger *logger,
++                                         const UA_String storePath,
+                                          const UA_ByteString newCertificate,
+                                          const UA_ByteString newPrivateKey) {
+     UA_StatusCode retval = UA_STATUSCODE_GOOD;
+@@ -148,8 +180,7 @@ writeCertificateAndPrivateKeyToFilestore(const UA_String storePath,
+         return UA_STATUSCODE_BADINTERNALERROR;
+ 
+     /* Check if certificate is already stored */
+-    if(checkCertificateInFilestore(ownCertPathDir, newCertificate))
+-        return UA_STATUSCODE_GOOD;
++    UA_Boolean certStored = checkCertificateInFilestore(ownCertPathDir, newCertificate);
+ 
+     /* Create filename for new certificate */
+     char newFilename[UA_PATH_MAX];
+@@ -167,15 +198,38 @@ writeCertificateAndPrivateKeyToFilestore(const UA_String storePath,
+                    ownKeyPathDir, newFilename, ".key") < 0)
+         return UA_STATUSCODE_BADINTERNALERROR;
+ 
+-    retval = writeByteStringToFile(newCertFilename, &newCertificate);
+-    if(retval != UA_STATUSCODE_GOOD)
+-        return retval;
++    if(!certStored) {
++        retval = writeByteStringToFile(newCertFilename, &newCertificate);
++        if(retval != UA_STATUSCODE_GOOD)
++            return retval;
++    }
+ 
+-    /* Write new private key only if it is set */
+     if(newPrivateKey.length > 0)
+         return writeByteStringToFile(newKeyFilename, &newPrivateKey);
+-    else
++
++    /* No new private key: the certificate was issued for the key pair in use
++     * (CreateSigningRequest without regeneratePrivateKey). Store that key
++     * under the name of the new certificate as well, so that the certificate
++     * and its key can be loaded as a pair after a restart. */
++    UA_ByteString existingKey = UA_BYTESTRING_NULL;
++    retval = readFileToByteString(newKeyFilename, &existingKey);
++    if(retval == UA_STATUSCODE_GOOD) {
++        UA_ByteString_memZero(&existingKey);
++        UA_ByteString_clear(&existingKey);
++        return UA_STATUSCODE_GOOD; /* Already stored */
++    }
++    retval = findPrivateKeyInFilestore(ownKeyPathDir, &newCertificate, &existingKey);
++    if(retval != UA_STATUSCODE_GOOD) {
++        UA_LOG_WARNING(logger, UA_LOGCATEGORY_SECURITYPOLICY,
++                       "The private key of the new certificate is not in the "
++                       "filestore. The certificate cannot be loaded with its "
++                       "key after a restart.");
+         return UA_STATUSCODE_GOOD;
++    }
++    retval = writeByteStringToFile(newKeyFilename, &existingKey);
++    UA_ByteString_memZero(&existingKey);
++    UA_ByteString_clear(&existingKey);
++    return retval;
+ }
+ 
+ /************************/
+@@ -553,7 +607,7 @@ updateCertificate_filestore(UA_SecurityPolicy *sp,
+ 
+     sp->localCertificate = isp->localCertificate;
+ 
+-    retval = writeCertificateAndPrivateKeyToFilestore(pc->storePath,
++    retval = writeCertificateAndPrivateKeyToFilestore(sp->logger, pc->storePath,
+                                                       newCertificate, newPrivateKey);
+     UA_ByteString_clear(&localCertificateTmp);
+ 
+-- 
+2.43.0
+

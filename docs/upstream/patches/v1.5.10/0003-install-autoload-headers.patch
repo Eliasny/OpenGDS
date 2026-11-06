@@ -1,0 +1,42 @@
+From 6a99a966e262f2fb37f82fd0027cf2134f4742c7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Elias=20Nyk=C3=A4nen?=
+ <61413159+Eliasny@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 04:21:56 +0000
+Subject: [PATCH] fix(build): install the headers of autoloaded information
+ models
+
+With UA_INFORMATION_MODEL_AUTOLOAD the generated datatype, NodeId and
+namespace headers of the selected models (e.g. types_gds_generated.h,
+nodeids_gds.h) are compiled into the library but not installed. An
+application built against the installed library therefore cannot use the
+datatypes or NodeIds of a model it loads.
+
+Add the generated public headers to the exported headers so that they are
+installed with the other generated headers. Add a CI job that installs a
+build with AUTOLOAD=GDS and compiles an application against it.
+---
+ CMakeLists.txt | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 80989e624..0f141c688 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1575,6 +1575,14 @@ if(UA_ENABLE_NODESET_INJECTOR)
+     list(APPEND lib_headers ${PROJECT_BINARY_DIR}/src_generated/open62541/nodesetinjector.h)
+     list(APPEND lib_sources ${PROJECT_BINARY_DIR}/src_generated/open62541/nodesetinjector.c
+                             ${UA_NODESETINJECTOR_SOURCE_FILES})
++
++    # Install the public headers of the autoloaded models (datatypes, NodeIds
++    # and the namespace function) so that applications built against the
++    # installed library can use the datatypes and NodeIds of these models.
++    set(UA_NODESETINJECTOR_HEADERS ${UA_NODESETINJECTOR_SOURCE_FILES})
++    list(FILTER UA_NODESETINJECTOR_HEADERS INCLUDE REGEX "\\.h$")
++    list(FILTER UA_NODESETINJECTOR_HEADERS EXCLUDE REGEX "_internal\\.h$")
++    list(APPEND exported_headers ${UA_NODESETINJECTOR_HEADERS})
+ endif()
+ 
+ #####################
+-- 
+2.43.0
+
