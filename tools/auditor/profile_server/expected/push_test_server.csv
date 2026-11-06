@@ -80,4 +80,8 @@ SRV-WIRE-05,pass
 SRV-WIRE-06,pass
 SRV-WIRE-07,pass
 SRV-WIRE-08,pass
+SRV-REJ-01,pass
+SRV-REJ-02,pass
+SRV-REJ-03,pass
+SRV-REJ-04,pass
 SRV-RESTORE,pass

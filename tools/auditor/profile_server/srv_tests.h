@@ -20,6 +20,8 @@ extern const ga_test srv_transaction_tests[];
 extern const size_t srv_transaction_count;
 extern const ga_test srv_wire_tests[];
 extern const size_t srv_wire_count;
+extern const ga_test srv_rejected_tests[];
+extern const size_t srv_rejected_count;
 extern const ga_test srv_restore_tests[];
 extern const size_t srv_restore_count;
 

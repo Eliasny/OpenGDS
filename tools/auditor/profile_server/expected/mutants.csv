@@ -79,3 +79,7 @@ wire-ignore-crl,SRV-WIRE-05,fail
 wire-trust-all,SRV-WIRE-06,fail
 wire-keep-removed-sessions,SRV-WIRE-07,fail
 wire-crl-no-reeval,SRV-WIRE-08,fail
+rejected-not-recorded,SRV-REJ-01,warn
+rejected-records-invalid,SRV-REJ-02,fail
+rejected-garbage,SRV-REJ-03,fail
+group-rejected-broken,SRV-REJ-04,fail

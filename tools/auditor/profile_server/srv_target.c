@@ -962,3 +962,45 @@ EVP_PKEY *st_tgood_key(const srv_target *t) {
     ERR_clear_error();
     return k;
 }
+
+/* An anonymous session over SignAndEncrypt with the application identity
+ * cert/key, trusting the test CA (which issues t-good) and the pinned
+ * certificate. *out is NULL unless the session is activated. */
+UA_StatusCode st_peer_connect(const srv_target *t, const gds_buf *cert, const gds_buf *key,
+                              UA_Client **out) {
+    *out = NULL;
+    char uri[256];
+    if(x509_san_uri(cert, uri, sizeof(uri)) != GDS_OK)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    gds_buf trust[2];
+    size_t n = 0;
+    trust[n++] = t->caDer;
+    if(t->pinned.len)
+        trust[n++] = t->pinned;
+    UA_Client *c = uac_new_secure_mode(cert, key, trust, n, &t->caCrl, 1, uri, POLICY_RSAPSS,
+                                       UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
+    if(!c)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    UA_StatusCode r = UA_Client_connect(c, t->url);
+    if(r == UA_STATUSCODE_GOOD)
+        *out = c;
+    else
+        st_client_free(c);
+    return r;
+}
+
+/* A refusal that names the certificate, or hides it (Part 4 §6.1.3,
+ * Part 6 §6.7.5: Bad_SecurityChecksFailed may stand for any of them).
+ * Closed connections are how a server can end an OpenSecureChannel. */
+bool st_cert_refusal(UA_StatusCode r) {
+    static const UA_StatusCode codes[] = {
+        UA_STATUSCODE_BADSECURITYCHECKSFAILED,       UA_STATUSCODE_BADCERTIFICATEUNTRUSTED,
+        UA_STATUSCODE_BADCERTIFICATEREVOKED,         UA_STATUSCODE_BADCERTIFICATEINVALID,
+        UA_STATUSCODE_BADCERTIFICATECHAININCOMPLETE, UA_STATUSCODE_BADCERTIFICATEREVOCATIONUNKNOWN,
+        UA_STATUSCODE_BADCONNECTIONCLOSED,           UA_STATUSCODE_BADSECURECHANNELCLOSED,
+    };
+    for(size_t i = 0; i < GDS_ARRAY_SIZE(codes); i++)
+        if(r == codes[i])
+            return true;
+    return false;
+}
