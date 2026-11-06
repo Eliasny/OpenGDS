@@ -24,16 +24,23 @@ dotnet publish "$SAMPLES/Samples/GDS/ConsoleServer/NetCoreGlobalDiscoveryServer.
     { tail -50 "$W/build.log"; echo "reference GDS build failed"; exit 2; }
 
 # stdin is not a console: the sample then creates its default users
-# (appadmin/demo has DiscoveryAdmin and CertificateAuthorityAdmin)
-(cd "$W/gds" && exec dotnet NetCoreGlobalDiscoveryServer.dll < /dev/null > "$W/gds.log" 2>&1) &
+# (appadmin/demo has DiscoveryAdmin and CertificateAuthorityAdmin). Its
+# command loop quits on end of input, so stdin is a FIFO held open, never
+# /dev/null.
+rm -f "$W/stdin"
+mkfifo "$W/stdin"
+sleep infinity > "$W/stdin" &
+HOLD=$!
+(cd "$W/gds" && exec dotnet NetCoreGlobalDiscoveryServer.dll < "$W/stdin" > "$W/gds.log" 2>&1) &
 GDS=$!
-trap 'kill $GDS 2>/dev/null; true' EXIT
+trap 'kill $GDS $HOLD 2>/dev/null; true' EXIT
 for _ in $(seq 1 120); do
     (echo > /dev/tcp/127.0.0.1/58810) 2>/dev/null && break
     sleep 1
 done
 (echo > /dev/tcp/127.0.0.1/58810) 2>/dev/null || { tail -60 "$W/gds.log"; echo "reference GDS did not start"; exit 2; }
 sleep 3 # CA certificate creation finishes after the listener is up
+kill -0 $GDS 2>/dev/null || { tail -60 "$W/gds.log"; echo "reference GDS exited"; exit 2; }
 
 # Trust exactly the GDS's own certificate and its CA (Annex G: explicit trust)
 set --
@@ -54,6 +61,12 @@ fi
 "$AUDIT" gds "$@" | tee "$W/reference.tap"
 RC=${PIPESTATUS[0]}
 echo "# gdsaudit exit code $RC"
+kill -0 $GDS 2>/dev/null || { echo "reference GDS exited during the run"; exit 2; }
+# A run in which no session could be opened says nothing about the reference.
+if grep -q 'cannot open a session on the target' "$W/reference.tap" || [ "$RC" = 2 ]; then
+    echo "gdsaudit could not open a session on the reference GDS: the run itself failed"
+    exit 2
+fi
 if [ ! -f "$EXPECT" ]; then
     echo "# no $EXPECT yet: verdicts recorded only"
     exit 0
