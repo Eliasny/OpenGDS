@@ -50,11 +50,13 @@ if(NOT EXISTS "${_o6_inc}/open62541/nodeids_gds.h")
     message(FATAL_ERROR "GDS headers missing (scripts/build_open62541.sh installs them)")
 endif()
 
-find_package(OpenSSL 3.0 REQUIRED)
-if(OPENSSL_VERSION VERSION_LESS 3.5)
-    message(WARNING "OpenSSL ${OPENSSL_VERSION}: OpenGDS requires 3.5 for production "
-                    "builds (3.0 LTS ended 7 Sep 2026). Test tools still build.")
+# Decision G2: OpenSSL 3.5 LTS from the start (3.0 LTS ended 7 Sep 2026).
+# Ubuntu 24.04 ships 3.0, so build it with scripts/build_openssl.sh <dir> and
+# pass -DOPENSSL_ROOT_DIR=<dir>; static libraries are preferred.
+if(NOT DEFINED OPENSSL_USE_STATIC_LIBS)
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
 endif()
+find_package(OpenSSL 3.5 REQUIRED)
 find_package(Threads REQUIRED)
 
 add_library(open62541::open62541 STATIC IMPORTED GLOBAL)

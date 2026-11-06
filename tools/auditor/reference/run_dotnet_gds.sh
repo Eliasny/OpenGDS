@@ -39,7 +39,14 @@ for _ in $(seq 1 120); do
     sleep 1
 done
 (echo > /dev/tcp/127.0.0.1/58810) 2>/dev/null || { tail -60 "$W/gds.log"; echo "reference GDS did not start"; exit 2; }
-sleep 3 # CA certificate creation finishes after the listener is up
+# The listener opens before the server leaves its startup state (GetEndpoints
+# then answers BadServerHalted): wait for the sample's own "listening" line.
+for _ in $(seq 1 60); do
+    grep -q 'OPC UA server listening at' "$W/gds.log" && break
+    sleep 1
+done
+grep -q 'OPC UA server listening at' "$W/gds.log" || { tail -60 "$W/gds.log"; echo "reference GDS never reported listening"; exit 2; }
+sleep 2 # CA certificate creation finishes after the listener is up
 kill -0 $GDS 2>/dev/null || { tail -60 "$W/gds.log"; echo "reference GDS exited"; exit 2; }
 
 # Trust exactly the GDS's own certificate and its CA (Annex G: explicit trust)
