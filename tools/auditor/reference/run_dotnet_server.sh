@@ -63,6 +63,10 @@ fi
 "$AUDIT" server "$@" | tee "$W/reference.tap"
 RC=${PIPESTATUS[0]}
 echo "# gdsaudit exit code $RC"
+# The server's own trace (OutputFilePath in its Config.xml): the place to
+# see why a call failed
+TRACE="${XDG_DATA_HOME:-$HOME/.local/share}/OPC Foundation/Logs/Quickstarts.ReferenceServer.log.txt"
+[ -f "$TRACE" ] && cp "$TRACE" "$W/server-trace.log"
 kill -0 $SRV 2>/dev/null || { tail -60 "$W/server.log"; echo "reference server exited during the run"; exit 2; }
 # A run that opened no admin session says nothing about the reference.
 if [ "$RC" = 2 ] || ! grep -qE '^(not )?ok ' "$W/reference.tap"; then

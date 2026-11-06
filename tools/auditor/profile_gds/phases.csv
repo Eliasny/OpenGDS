@@ -15,6 +15,7 @@ gds.dir.get_application,W1
 gds.dir.get_unknown,W1
 gds.dir.update_application,W1
 gds.dir.unregister,W1
+gds.dir.unregister_revokes,MVP
 gds.dir.query_by_uri,W1
 gds.cm.groups,T1
 gds.cm.groups_unknown,W2
