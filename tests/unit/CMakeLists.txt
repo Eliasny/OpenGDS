@@ -99,3 +99,8 @@ add_executable(test_gdsadm_import test_gdsadm_import.c
 target_include_directories(test_gdsadm_import PRIVATE "${PROJECT_SOURCE_DIR}/src/daemon")
 target_link_libraries(test_gdsadm_import PRIVATE gds_server)
 add_test(NAME unit_gdsadm_import COMMAND test_gdsadm_import)
+
+add_executable(test_registrar test_registrar.c)
+target_link_libraries(test_registrar PRIVATE gds_server)
+add_test(NAME unit_registrar COMMAND test_registrar "${CMAKE_CURRENT_BINARY_DIR}/registrar-run")
+set_tests_properties(unit_registrar PROPERTIES TIMEOUT 120)
