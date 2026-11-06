@@ -2,6 +2,12 @@
  * SPDX-License-Identifier: MPL-2.0 */
 #include "srv_target.h"
 
+#include <errno.h>
+#include <stdio.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+
 #include <open62541/client_config_default.h>
 #include <open62541/client_highlevel.h>
 #include <open62541/plugin/log_stdout.h>
@@ -992,4 +998,53 @@ bool st_cert_refusal(UA_StatusCode r) {
         if(r == codes[i])
             return true;
     return false;
+}
+
+static UA_StatusCode run_restart_cmd(const char *cmd) {
+    fflush(NULL);
+    pid_t pid = fork();
+    if(pid < 0)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    if(pid == 0) {
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+    int st = 0;
+    while(waitpid(pid, &st, 0) < 0)
+        if(errno != EINTR)
+            return UA_STATUSCODE_BADINTERNALERROR;
+    return WIFEXITED(st) && WEXITSTATUS(st) == 0 ? UA_STATUSCODE_GOOD
+                                                  : UA_STATUSCODE_BADINTERNALERROR;
+}
+
+UA_StatusCode st_restart(srv_target *t, ga_ctx *ctx) {
+    st_close(t);
+    UA_StatusCode r;
+    if(t->restartCmd) {
+        r = run_restart_cmd(t->restartCmd);
+        ga_note(ctx, "--restart-cmd -> %s", r == UA_STATUSCODE_GOOD ? "exit 0" : "failed");
+        if(r != UA_STATUSCODE_GOOD)
+            return r;
+    } else if(isatty(STDIN_FILENO)) {
+        fprintf(stderr, "Restart the target now, then press Enter: ");
+        int ch;
+        while((ch = getchar()) != EOF && ch != '\n')
+            ;
+    } else {
+        return UA_STATUSCODE_BADNOTSUPPORTED;
+    }
+    time_t start = time(NULL);
+    for(;;) {
+        UA_EndpointDescription *eps = NULL;
+        size_t n = 0;
+        r = st_endpoints(t, &eps, &n);
+        UA_Array_delete(eps, n, &UA_TYPES[UA_TYPES_ENDPOINTDESCRIPTION]);
+        if(r == UA_STATUSCODE_GOOD || (long)(time(NULL) - start) > t->settleSec)
+            break;
+        struct timespec ts = {0, 500000000L};
+        nanosleep(&ts, NULL);
+    }
+    ga_note(ctx, "target back after %ld s (GetEndpoints -> %s)", (long)(time(NULL) - start),
+            UA_StatusCode_name(r));
+    return r;
 }

@@ -166,7 +166,7 @@ Not a conformance test: the last line of every run, with its own verdict (README
 
 ConformanceUnit: Push Model for Global Certificate and TrustList Management.
 
-Each test restarts the target with `--restart-cmd` or an operator prompt, and reports Not tested when neither is available.
+Each test restarts the target with `--restart-cmd` (run with `sh -c`; it must return once the restart is started) or an operator prompt when stdin is a terminal, and reports Not tested when neither is available. The Auditor then waits up to the settle timeout for GetEndpoints. SRV-PER-03 cancels its UpdateCertificate when the target has transactions, so the target keeps its key; without transactions the new key stays in use and the restore step warns.
 
 | ID | Clause | Flags | Check | Pass when | Fail / Warn / Not supported | Mutant |
 | --- | --- | --- | --- | --- | --- | --- |
