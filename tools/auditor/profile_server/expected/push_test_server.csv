@@ -47,6 +47,13 @@ SRV-CSR-06,pass
 SRV-CSR-07,pass
 SRV-CSR-08,pass
 SRV-UPD-01,pass
+SRV-UPD-02,pass
+SRV-UPD-03,pass
+SRV-UPD-04,pass
+SRV-UPD-05,pass
+SRV-UPD-06,pass
+SRV-UPD-07,pass
+SRV-UPD-08,pass
 SRV-TXN-03,pass
 SRV-WIRE-01,pass
 SRV-RESTORE,pass
