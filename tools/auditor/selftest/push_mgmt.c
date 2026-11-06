@@ -59,6 +59,10 @@ static const struct {
     {"deprecated-policy", "SRV-SEC-08", "Basic128Rsa15 and Basic256 endpoints offered"},
     {"wire-old-cert", "SRV-WIRE-01",
      "after ApplyChanges the Basic256Sha256 policy keeps the old certificate"},
+    {"wire-keep-channels", "SRV-WIRE-02",
+     "after ApplyChanges with a certificate the SecureChannels stay open"},
+    {"wire-no-shutdown-notice", "SRV-WIRE-03",
+     "ApplyChanges closes the channels without SecondsTillShutdown or ShutdownReason"},
     {"no-rejected-list-method", "SRV-CAP-01", "ServerConfiguration has no GetRejectedList"},
     {"no-default-group", "SRV-CAP-02", "CertificateGroups does not reference DefaultApplicationGroup"},
     {"mixed-cert-types", "SRV-CAP-03",
@@ -974,7 +978,35 @@ static bool chains_to_queued(void) {
     return found;
 }
 
-static UA_StatusCode apply(void) {
+/* The queued certificate into every SecurityPolicy of its type and their
+ * endpoints, as UA_Server_updateCertificate does, without closing the
+ * SecureChannels: the caller decides when they close. */
+static UA_StatusCode install_cert_quiet(void) {
+    UA_ServerConfig *cfg = UA_Server_getConfig(P.server);
+    UA_ByteString key = P.certKey.length ? P.certKey : UA_BYTESTRING_NULL;
+    for(size_t i = 0; i < cfg->endpointsSize; i++) {
+        UA_EndpointDescription *ed = &cfg->endpoints[i];
+        UA_SecurityPolicy *sp = NULL;
+        for(size_t j = 0; j < cfg->securityPoliciesSize && !sp; j++)
+            if(UA_String_equal(&cfg->securityPolicies[j].policyUri, &ed->securityPolicyUri))
+                sp = &cfg->securityPolicies[j];
+        if(!sp)
+            return UA_STATUSCODE_BADINTERNALERROR;
+        if(!UA_NodeId_equal(&sp->certificateTypeId, &P.certType))
+            continue;
+        UA_StatusCode r = sp->updateCertificate(sp, P.cert, key);
+        if(r != UA_STATUSCODE_GOOD)
+            return r;
+        UA_ByteString_clear(&ed->serverCertificate);
+        if(UA_ByteString_copy(&P.cert, &ed->serverCertificate) != UA_STATUSCODE_GOOD)
+            return UA_STATUSCODE_BADOUTOFMEMORY;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
+/* closeNow: UA_Server_updateCertificate, which closes the SecureChannels of
+ * the CertificateType right away; else install_cert_quiet. */
+static UA_StatusCode apply(bool closeNow) {
     UA_StatusCode r = UA_STATUSCODE_GOOD;
     if(P.hasList) {
         r = install_list(&P.list);
@@ -988,9 +1020,11 @@ static UA_StatusCode apply(void) {
         UA_ByteString old = UA_BYTESTRING_NULL;
         if(sp && UA_ByteString_copy(&sp->localCertificate, &old) != UA_STATUSCODE_GOOD)
             return UA_STATUSCODE_BADOUTOFMEMORY;
-        r = UA_Server_updateCertificate(
-            P.server, ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP),
-            P.certType, P.cert, P.certKey.length ? &P.certKey : NULL);
+        r = closeNow ? UA_Server_updateCertificate(
+                           P.server,
+                           ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP),
+                           P.certType, P.cert, P.certKey.length ? &P.certKey : NULL)
+                     : install_cert_quiet();
         if(sp && r == UA_STATUSCODE_GOOD && P.ownKey.length)
             r = sp->updateCertificate(sp, old, P.ownKey);
         UA_ByteString_clear(&old);
@@ -1003,6 +1037,115 @@ static UA_StatusCode apply(void) {
         }
     }
     return r;
+}
+
+static UA_StatusCode apply_done(UA_StatusCode r) {
+    txn_clear();
+    if(!breaking("diag-stale"))
+        diag_end(r);
+    UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "ApplyChanges -> %s",
+                UA_StatusCode_name(r));
+    return r;
+}
+
+/* ---------------- Shutdown notice (12 §7.10.9) ----------------
+ * A new certificate closes the SecureChannels of its CertificateType. The
+ * server first advertises that in ServerStatus SecondsTillShutdown and
+ * ShutdownReason: ApplyChanges completes asynchronously after
+ * PM_NOTICE_MS, its response goes out, and then the channels close. */
+#define PM_NOTICE_MS 1500
+
+static struct {
+    UA_Variant *output; /* the waiting ApplyChanges (its async operation) */
+    bool cancelled;     /* the server gave up on it (session closed, shutdown) */
+    UA_DateTime until;  /* the announced interruption, 0: none */
+} N;
+
+static void reason_write(const char *text) {
+    UA_LocalizedText t = UA_LOCALIZEDTEXT(text[0] ? "en" : "", (char *)(uintptr_t)text);
+    UA_Variant v;
+    UA_Variant_setScalar(&v, &t, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
+    if(UA_Server_writeValue(P.server, ns0(UA_NS0ID_SERVER_SERVERSTATUS_SHUTDOWNREASON), v) !=
+       UA_STATUSCODE_GOOD)
+        UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "ShutdownReason not written");
+}
+
+static void notice_clear(void) {
+    memset(&N, 0, sizeof(N));
+    reason_write("");
+}
+
+static void notice_due(UA_Server *server, void *data) {
+    (void)data;
+    UA_Variant *out = N.output;
+    bool cancelled = N.cancelled;
+    notice_clear();
+    if(cancelled) {
+        UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "ApplyChanges cancelled");
+        return;
+    }
+    UA_ByteString cert = UA_BYTESTRING_NULL;
+    UA_NodeId type = UA_NODEID_NULL;
+    UA_StatusCode r = UA_STATUSCODE_BADINVALIDSTATE; /* the transaction went with its session */
+    if(P.txn && P.hasCert) {
+        r = UA_ByteString_copy(&P.cert, &cert) | UA_NodeId_copy(&P.certType, &type);
+        if(r == UA_STATUSCODE_GOOD)
+            r = apply(false);
+    }
+    apply_done(r);
+    /* the response first: the delayed callbacks run in order (open62541 EventLoop) */
+    UA_StatusCode s = UA_Server_setAsyncCallMethodResult(server, out, r);
+    if(r == UA_STATUSCODE_GOOD) /* the same certificate again, now closing the channels */
+        r = UA_Server_updateCertificate(
+            server, ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP),
+            type, cert, NULL);
+    if(s != UA_STATUSCODE_GOOD || r != UA_STATUSCODE_GOOD)
+        UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND,
+                       "ApplyChanges result -> %s, closing the channels -> %s",
+                       UA_StatusCode_name(s), UA_StatusCode_name(r));
+    UA_ByteString_clear(&cert);
+    UA_NodeId_clear(&type);
+}
+
+static UA_StatusCode notice_start(UA_Variant *output) {
+    UA_EventLoop *el = UA_Server_getConfig(P.server)->eventLoop;
+    UA_DateTime due = el->dateTime_nowMonotonic(el) + PM_NOTICE_MS * UA_DATETIME_MSEC;
+    UA_StatusCode r = UA_Server_addTimedCallback(P.server, notice_due, NULL, due, NULL);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    N.output = output;
+    N.cancelled = false;
+    N.until = UA_DateTime_now() + PM_NOTICE_MS * UA_DATETIME_MSEC;
+    reason_write("The application certificate changes: SecureChannels will be closed");
+    return UA_STATUSCODE_GOOD;
+}
+
+static void notice_cancelled(UA_Server *server, const void *out) {
+    (void)server;
+    if(N.output && out == N.output)
+        N.cancelled = true;
+}
+
+/* SecondsTillShutdown, rounded up while a notice stands */
+static UA_StatusCode notice_read(UA_Server *server, const UA_NodeId *sessionId,
+                                 void *sessionContext, const UA_NodeId *nodeId, void *nodeContext,
+                                 UA_Boolean includeSourceTimeStamp, const UA_NumericRange *range,
+                                 UA_DataValue *value) {
+    (void)server, (void)sessionId, (void)sessionContext, (void)nodeId, (void)nodeContext;
+    (void)includeSourceTimeStamp;
+    if(range)
+        return UA_STATUSCODE_BADINDEXRANGEINVALID;
+    UA_DateTime left = N.until ? N.until - UA_DateTime_now() : 0;
+    UA_UInt32 sec = left > 0 ? (UA_UInt32)((left + UA_DATETIME_SEC - 1) / UA_DATETIME_SEC) : 0;
+    value->hasValue = true;
+    return UA_Variant_setScalarCopy(&value->value, &sec, &UA_TYPES[UA_TYPES_UINT32]);
+}
+
+static UA_StatusCode shutdown_notice(UA_Server *server) {
+    UA_Server_getConfig(server)->asyncOperationCancelCallback = notice_cancelled;
+    UA_CallbackValueSource src = {notice_read, NULL};
+    return UA_Server_setVariableNode_callbackValueSource(
+        server, ns0(UA_NS0ID_SERVER_SERVERSTATUS_SECONDSTILLSHUTDOWN), src);
 }
 
 static UA_StatusCode scApplyChanges(METHOD_ARGS) {
@@ -1021,14 +1164,16 @@ static UA_StatusCode scApplyChanges(METHOD_ARGS) {
         if(P.files[i].used && P.files[i].mode == PM_MODE_WRITE_ERASE &&
            UA_NodeId_equal(&P.files[i].session, sessionId))
             return UA_STATUSCODE_BADINVALIDSTATE; /* §7.10.9: a TrustList is still open */
+    if(P.hasCert && !breaking("apply-ignored") && !breaking("wire-no-shutdown-notice") &&
+       !breaking("wire-keep-channels") && !breaking("wire-old-cert")) {
+        if(N.output)
+            return UA_STATUSCODE_BADINVALIDSTATE; /* this ApplyChanges is in progress */
+        if(notice_start(output) == UA_STATUSCODE_GOOD)
+            return UA_STATUSCODE_GOODCOMPLETESASYNCHRONOUSLY; /* notice_due completes it */
+    }
     if(!(breaking("apply-ignored") && P.hasCert))
-        r = apply();
-    txn_clear();
-    if(!breaking("diag-stale"))
-        diag_end(r);
-    UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "ApplyChanges -> %s",
-                UA_StatusCode_name(r));
-    return r;
+        r = apply(!breaking("wire-keep-channels"));
+    return apply_done(r);
 }
 
 static UA_StatusCode scCancelChanges(METHOD_ARGS) {
@@ -1799,6 +1944,7 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
                          pm_mode_fn modeOf) {
     memset(&P, 0, sizeof(P));
     memset(&D, 0, sizeof(D));
+    memset(&N, 0, sizeof(N));
     P.server = server;
     P.brk = mutant;
     P.acceptKeys = acceptKeys;
@@ -1831,6 +1977,7 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
     if(advertise(server) != UA_STATUSCODE_GOOD || optional_methods(server) != UA_STATUSCODE_GOOD ||
        structure_mutants(server) != UA_STATUSCODE_GOOD ||
        trustlist_props(server) != UA_STATUSCODE_GOOD || diagnostics(server) != UA_STATUSCODE_GOOD ||
+       shutdown_notice(server) != UA_STATUSCODE_GOOD ||
        verify_mutants() != UA_STATUSCODE_GOOD)
         return UA_STATUSCODE_BADINTERNALERROR;
     return UA_STATUSCODE_GOOD;

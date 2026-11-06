@@ -943,3 +943,11 @@ gds_status st_withkey(const srv_target *t, gds_buf *cert, gds_buf *pem) {
         gds_buf_free(cert);
     return s;
 }
+
+EVP_PKEY *st_tgood_key(const srv_target *t) {
+    X509 *x = x509_parse_cert(&t->tGood);
+    EVP_PKEY *k = x ? X509_get_pubkey(x) : NULL;
+    X509_free(x);
+    ERR_clear_error();
+    return k;
+}
