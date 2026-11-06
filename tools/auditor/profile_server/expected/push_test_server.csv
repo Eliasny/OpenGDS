@@ -9,6 +9,15 @@ SRV-SEC-05,pass
 SRV-SEC-06,not_supported   # TransactionDiagnostics comes with SRV-TXN-12
 SRV-SEC-07,pass
 SRV-SEC-08,pass
+SRV-CAP-01,pass
+SRV-CAP-02,pass
+SRV-CAP-03,pass
+SRV-CAP-04,pass
+SRV-CAP-05,pass
+SRV-CAP-06,pass
+SRV-CAP-07,pass
+SRV-CAP-08,pass
+SRV-CAP-09,pass
 SRV-TL-02,pass
 SRV-UPD-01,pass
 SRV-TXN-03,pass

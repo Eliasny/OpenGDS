@@ -8,6 +8,7 @@
 #include <openssl/crypto.h>
 
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -364,10 +365,14 @@ UA_StatusCode st_apply(UA_Client *c) {
 
 UA_StatusCode st_csr(const srv_target *t, UA_Client *c, bool regen, const UA_ByteString *nonce,
                      gds_buf *csr) {
+    return st_csr_for(c, ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP),
+                      t->certType, regen, nonce, csr);
+}
+
+UA_StatusCode st_csr_for(UA_Client *c, UA_NodeId group, UA_NodeId type, bool regen,
+                         const UA_ByteString *nonce, gds_buf *csr) {
     csr->data = NULL;
     csr->len = 0;
-    UA_NodeId group = ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
-    UA_NodeId type = t->certType;
     UA_String subject = UA_STRING_NULL;
     UA_Boolean rg = regen;
     UA_ByteString n = nonce ? *nonce : UA_BYTESTRING_NULL;
@@ -394,6 +399,12 @@ UA_StatusCode st_csr(const srv_target *t, UA_Client *c, bool regen, const UA_Byt
 
 UA_StatusCode st_update_cert(const srv_target *t, UA_Client *c, const gds_buf *cert,
                              const gds_buf *issuers, size_t issuersN, bool *applyRequired) {
+    return st_update_cert_key(t, c, cert, issuers, issuersN, NULL, NULL, applyRequired);
+}
+
+UA_StatusCode st_update_cert_key(const srv_target *t, UA_Client *c, const gds_buf *cert,
+                                 const gds_buf *issuers, size_t issuersN, const char *keyFormat,
+                                 const gds_buf *key, bool *applyRequired) {
     *applyRequired = false;
     UA_ByteString iss[GDS_MAX_CHAIN_LEN];
     if(issuersN > GDS_MAX_CHAIN_LEN)
@@ -405,8 +416,12 @@ UA_StatusCode st_update_cert(const srv_target *t, UA_Client *c, const gds_buf *c
     UA_NodeId group = ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
     UA_NodeId type = t->certType;
     UA_ByteString cb = {cert->len, cert->data};
-    UA_String fmt = UA_STRING_NULL;
+    UA_String fmt = keyFormat ? UA_STRING((char *)(uintptr_t)keyFormat) : UA_STRING_NULL;
     UA_ByteString pk = UA_BYTESTRING_NULL;
+    if(key) {
+        pk.data = key->data;
+        pk.length = key->len;
+    }
     UA_Variant in[6];
     UA_Variant_setScalar(&in[0], &group, &UA_TYPES[UA_TYPES_NODEID]);
     UA_Variant_setScalar(&in[1], &type, &UA_TYPES[UA_TYPES_NODEID]);
