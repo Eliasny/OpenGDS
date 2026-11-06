@@ -80,5 +80,9 @@ if(OPENGDS_BUILD_AUDITOR)
     add_subdirectory(tests/integration)
 endif()
 
-# Install rules and packages (.deb, .rpm, .tar.gz); docs/packaging.md
-add_subdirectory(packaging)
+# Install rules and packages (.deb, .rpm, .tar.gz; docs/packaging.md), only
+# for an OpenGDS build of its own: a project that embeds OpenGDS with
+# add_subdirectory (UASM) packages itself.
+if(_gds_top)
+    add_subdirectory(packaging)
+endif()
