@@ -1,0 +1,21 @@
+#!/bin/sh
+# opengds postinst: system users, configuration directory, systemd reload.
+# The service is not enabled or started: it needs /etc/opengds/opengds.conf,
+# the users file and the CA passphrase first (docs/packaging.md).
+# SPDX-License-Identifier: MPL-2.0
+set -e
+if [ "$1" = configure ]; then
+    systemd-sysusers /usr/lib/sysusers.d/opengds.conf
+    install -d -m 0750 -o root -g opengds /etc/opengds
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload || true
+        # An upgrade restarts a service that was running.
+        if [ -n "$2" ] && systemctl is-active --quiet opengds.service; then
+            systemctl try-restart opengds-signer.socket opengds.service || true
+        fi
+    fi
+    if [ -z "$2" ] && [ ! -e /etc/opengds/opengds.conf ]; then
+        echo "opengds: configure /etc/opengds (see /usr/share/doc/opengds/packaging.md), then: systemctl enable --now opengds-signer.socket opengds.service"
+    fi
+fi
+exit 0

@@ -1,0 +1,288 @@
+# OpenGDS releases (docs/packaging.md): packages for every distribution and
+# architecture, built twice on separate runners and compared byte for byte,
+# a systemd install test, the container image, Sigstore and OpenPGP
+# signatures, and a draft GitHub release.
+#
+#   tag v*            full release; signs and publishes (environment `release`)
+#   pull request      dry run when packaging files change: build, compare,
+#                     smoke test and image build; nothing is signed or pushed
+#   workflow_dispatch the same dry run on any branch
+#
+# Decisions (Elias, 2026-11-06): P1 sign with Sigstore keyless AND the OpenGDS
+# OpenPGP key; P2 RPMs for EL 9 and Fedora; P3 image on ghcr.io/eliasny/opengds;
+# P4 Debian 13, Ubuntu 24.04, EL 9 (and Fedora) on amd64 and arm64.
+# SPDX-License-Identifier: MPL-2.0
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - packaging/**
+      - scripts/release/**
+      - scripts/build_openssl.sh
+      - scripts/build_open62541.sh
+      - scripts/build_sqlite.sh
+      - .dockerignore
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Empty: build from the live mirrors. snapshot.debian.org answers 503 when
+  # several jobs fetch at once, so a date here is for rebuilding an old
+  # release later, not for every run. Each build records its exact build
+  # environment in <target>-<arch>.buildenv.txt, which says what to install.
+  DEBIAN_SNAPSHOT: ""
+  IMAGE: ghcr.io/eliasny/opengds
+  PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+
+jobs:
+  build:
+    name: build ${{ matrix.target }} ${{ matrix.arch }} (${{ matrix.pass }})
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [deb13, ubuntu24.04, el9, fc45]
+        arch: [amd64, arm64]
+        # Two independent builds of everything: `compare` fails unless
+        # they are byte-identical.
+        pass: [a, b]
+        include:
+          # Build containers, pinned by digest (multi-arch indexes)
+          - target: deb13
+            image: debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+            tgz: "1"
+          - target: ubuntu24.04
+            image: ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+          - target: el9
+            image: almalinux:9@sha256:245f8aab832fe800aa42bdab5fad75ebbd8e0b4c9f24820a83c638b177857ae2
+          - target: fc45
+            image: fedora:45@sha256:a7d72ba2745b100a3351087472e5ee7b2450af7cf331e7673007e3817612839c
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build in ${{ matrix.image }}
+        env:
+          BUILD_IMAGE: ${{ matrix.image }}
+          WITH_TGZ: ${{ matrix.tgz }}
+          WITH_SOURCE: ${{ matrix.target == 'deb13' && matrix.arch == 'amd64' && '1' || '' }}
+          # Tests change no output: run them once.
+          SKIP_TESTS: ${{ matrix.pass == 'b' && '1' || '' }}
+        run: |
+          # Same paths in every build: /src for the tree, /work for the rest.
+          docker run --rm -v "$PWD:/src" -w /src \
+            -e DEBIAN_SNAPSHOT -e WITH_TGZ -e WITH_SOURCE -e SKIP_TESTS \
+            "$BUILD_IMAGE" sh -ec '
+              scripts/release/install-build-deps.sh > /tmp/deps.log 2>&1 || { tail -40 /tmp/deps.log; exit 1; }
+              git config --global --add safe.directory /src
+              WORK=/work scripts/release/build-release.sh /src/dist'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pkg-${{ matrix.target }}-${{ matrix.arch }}-${{ matrix.pass }}
+          path: dist/
+          if-no-files-found: error
+
+  compare:
+    name: reproducible
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: pkg-*
+          path: pkg
+      - name: Compare pass a with pass b
+        run: |
+          set -eu
+          bad=0
+          for a in pkg/*-a; do
+            b=${a%-a}-b
+            if cmp -s "$a/SHA256SUMS" "$b/SHA256SUMS"; then
+              echo "${a#pkg/pkg-}: identical ($(wc -l < "$a/SHA256SUMS") files)"
+            else
+              echo "::error::${a#pkg/pkg-} is not reproducible"
+              diff "$a/SHA256SUMS" "$b/SHA256SUMS" || true
+              bad=1
+            fi
+          done
+          exit "$bad"
+      - name: Collect the release files
+        run: |
+          set -eu
+          mkdir release
+          for d in pkg/*-a; do
+            for f in "$d"/*; do
+              n=$(basename "$f")
+              [ "$n" = SHA256SUMS ] && continue
+              [ -e "release/$n" ] && { echo "::error::two builds produce $n"; exit 1; }
+              cp "$f" release/
+            done
+          done
+          (cd release && sha256sum * > ../SHA256SUMS && mv ../SHA256SUMS .)
+          cat release/SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-unsigned
+          path: release/
+          if-no-files-found: error
+
+  smoke:
+    name: systemd install ${{ matrix.arch }}
+    needs: build
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pkg-ubuntu24.04-${{ matrix.arch }}-a
+          path: dist
+      - name: Install, start, check, remove
+        run: scripts/release/smoke-test-systemd.sh dist/opengds_*_${{ matrix.arch }}.deb
+
+  image:
+    name: image ${{ matrix.arch }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        if: env.PUBLISH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build (and on a tag, push by digest)
+        id: build
+        run: |
+          set -eu
+          epoch=$(git log -1 --format=%ct)
+          out="type=image,name=$IMAGE,rewrite-timestamp=true"
+          [ "$PUBLISH" = true ] && out="$out,push-by-digest=true,name-canonical=true,push=true"
+          docker buildx build -f packaging/docker/Dockerfile --platform "linux/${{ matrix.arch }}" \
+            --build-arg SOURCE_DATE_EPOCH="$epoch" --build-arg DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" \
+            --provenance=false --metadata-file meta.json --output "$out" .
+          digest=$(jq -r '."containerimage.digest"' meta.json)
+          echo "image digest $digest"
+          mkdir -p digests && touch "digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digests/
+          if-no-files-found: error
+
+  publish:
+    name: sign and publish
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [compare, smoke, image]
+    runs-on: ubuntu-24.04
+    # The OpenPGP key lives only in this environment, limited to v* tags.
+    environment: release
+    permissions:
+      contents: write       # the draft release
+      packages: write       # the image index
+      id-token: write       # Sigstore keyless signing
+      attestations: write   # GitHub build provenance
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-unsigned
+          path: release
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Image index for both architectures, signed
+        id: index
+        run: |
+          set -eu
+          version=${GITHUB_REF_NAME#v}
+          docker buildx imagetools create -t "$IMAGE:$version" -t "$IMAGE:latest" \
+            $(for d in digests/*; do printf '%s@sha256:%s ' "$IMAGE" "$(basename "$d")"; done)
+          digest=$(docker buildx imagetools inspect "$IMAGE:$version" --format '{{json .Manifest}}' | jq -r .digest)
+          cosign sign --yes "$IMAGE@$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true
+      - name: OpenPGP signatures
+        env:
+          GPG_KEY: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}
+          GPG_PASS: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
+        run: |
+          set -eu
+          if [ -z "$GPG_KEY" ] || [ -z "$GPG_PASS" ]; then
+            echo "::error::RELEASE_GPG_PRIVATE_KEY / RELEASE_GPG_PASSPHRASE missing in the release environment (docs/packaging.md)"
+            exit 1
+          fi
+          sudo apt-get update -q && sudo apt-get install -y -q rpm
+          export GNUPGHOME=$(mktemp -d)
+          pass=$(mktemp) && printf '%s' "$GPG_PASS" > "$pass"
+          printf '%s\n' "$GPG_KEY" | gpg --batch --import
+          fpr=$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
+          sign="gpg --batch --yes --pinentry-mode loopback --passphrase-file $pass --local-user $fpr"
+          cd release
+          # RPMs carry their signature inside (dnf gpgcheck).
+          for f in *.rpm; do
+            rpmsign --addsign --define "_gpg_name $fpr" \
+              --define "__gpg_sign_cmd %{__gpg} gpg --batch --no-armor --pinentry-mode loopback --passphrase-file $pass -u $fpr -sbo %{__signature_filename} --digest-algo sha256 %{__plaintext_filename}" "$f"
+          done
+          sha256sum $(ls | grep -v '^SHA256SUMS$') > SHA256SUMS
+          for f in $(ls | grep -v -e '^SHA256SUMS$' -e '\.rpm$'); do
+            $sign --armor --detach-sign -o "$f.asc" "$f"
+          done
+          $sign --clearsign -o SHA256SUMS.asc SHA256SUMS
+          rm -f "$pass"
+      - name: Sigstore signatures
+        run: |
+          set -eu
+          cd release
+          for f in $(ls | grep -v -e '\.asc$'); do
+            cosign sign-blob --yes --bundle "$f.sigstore.json" "$f" > /dev/null
+          done
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: release/SHA256SUMS
+      - name: Draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "OpenGDS ${GITHUB_REF_NAME#v}" \
+            --notes "Container image: \`$IMAGE:${GITHUB_REF_NAME#v}\` (${{ steps.index.outputs.digest }}). Verify every file as in docs/packaging.md, \"Verifying a release\"." \
+            release/*

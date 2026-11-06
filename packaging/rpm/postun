@@ -1,0 +1,5 @@
+# opengds %postun. The store and the CA key in /var/lib are never deleted.
+# SPDX-License-Identifier: MPL-2.0
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || :
+fi

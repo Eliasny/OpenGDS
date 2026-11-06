@@ -9,6 +9,8 @@
  *
  * Over OPC UA, as a standard Administration Component (gdsadm_push.c):
  *   gdsadm apps register ...                RegisterApplication on the GDS
+ *   gdsadm apps unregister URI ...          UnregisterApplication (revokes its certificates)
+ *   gdsadm certs revoke URI ...             RevokeCertificate
  *   gdsadm push now URI ...                 push trust list + certificate to a device
  *
  * Passwords are read from stdin or a file, never argv. The store is opened read-only
@@ -48,6 +50,8 @@ static int usage(void) {
                     "--password-file F --trust CA.der [--crl CA.crl] [--comment TEXT] "
                     "REQUEST_ID\n"
                     "       gdsadm apps register --uri URI --name NAME --type TYPE ... CONNECTION\n"
+                    "       gdsadm apps unregister URI CONNECTION\n"
+                    "       gdsadm certs revoke URI --revoke-cert DER CONNECTION\n"
                     "       gdsadm push now URI [--server-url URL] [--server-cert DER]\n"
                     "                       [--device-user NAME --device-password-file FILE] CONNECTION\n"
                     "  CONNECTION: --gds URL --cert DER --key DER --trust DER... [--crl DER]...\n"
@@ -307,6 +311,10 @@ int main(int argc, char **argv) {
         return store_cmd(argc, argv, list_cb, false);
     if(argc >= 3 && strcmp(argv[1], "apps") == 0 && strcmp(argv[2], "register") == 0)
         return gdsadm_apps_register(argc, argv);
+    if(argc >= 3 && strcmp(argv[1], "apps") == 0 && strcmp(argv[2], "unregister") == 0)
+        return gdsadm_apps_unregister(argc, argv);
+    if(argc >= 3 && strcmp(argv[1], "certs") == 0 && strcmp(argv[2], "revoke") == 0)
+        return gdsadm_certs_revoke(argc, argv);
     if(argc >= 3 && strcmp(argv[1], "push") == 0 && strcmp(argv[2], "now") == 0)
         return gdsadm_push_now(argc, argv);
     if(argc >= 3 && strcmp(argv[1], "certs") == 0 && strcmp(argv[2], "status") == 0)

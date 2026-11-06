@@ -147,6 +147,18 @@ static gds_status open_ca(const options *o, gds_ca **ca) {
     return r;
 }
 
+/* The issuance journal lives in the CA directory, which opengdsd cannot
+ * write (docs/architecture.md). */
+static gds_status open_journal(const options *o, gds_journal **j) {
+    char path[4096];
+    gds_status r = gds_path(path, sizeof(path), "%s/" GDS_JOURNAL_FILE, o->caDir);
+    if(r == GDS_OK)
+        r = gds_journal_open(path, j);
+    if(r != GDS_OK)
+        fprintf(stderr, "opengds-signer: journal in %s: %s\n", o->caDir, gds_status_name(r));
+    return r;
+}
+
 /* --listen: a fresh socket at path; a stale one (a previous run) is replaced. */
 static int listen_at(const char *path) {
     struct sockaddr_un a;
@@ -183,7 +195,11 @@ static gds_status open_signer(const options *o, gds_signer *s) {
         return r;
     }
     r = open_ca(o, &s->ca);
+    if(r == GDS_OK)
+        r = open_journal(o, &s->journal);
     if(r != GDS_OK) {
+        gds_ca_close(s->ca);
+        s->ca = NULL;
         gds_store_close(s->store);
         s->store = NULL;
     }
@@ -272,7 +288,7 @@ int main(int argc, char **argv) {
     /* private key material lives in OpenSSL's secure heap (mlock'd, guarded) */
     if(CRYPTO_secure_malloc_init(SECURE_HEAP_BYTES, 32) == 0)
         fprintf(stderr, "opengds-signer: secure heap unavailable, continuing without it\n");
-    gds_signer s = {NULL, NULL};
+    gds_signer s = {NULL, NULL, NULL};
     gds_status r;
     int lfd = -1;
     if(o.listen) {
@@ -292,6 +308,7 @@ int main(int argc, char **argv) {
         if(r == GDS_OK)
             r = gds_signer_serve(&s, (int)o.fd);
     }
+    gds_journal_close(s.journal);
     gds_ca_close(s.ca);
     gds_store_close(s.store);
     return r == GDS_OK ? 0 : 1;

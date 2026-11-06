@@ -85,6 +85,7 @@ add_subdirectory(src/server)
 add_subdirectory(src/daemon)
 add_subdirectory(src/client)
 add_subdirectory(src/push)
+add_subdirectory(src/gdsctl)
 if(OPENGDS_BUILD_TESTS)
     add_subdirectory(tests/unit)
     add_subdirectory(tests/fuzz)
@@ -97,3 +98,6 @@ if(OPENGDS_BUILD_AUDITOR)
     # tracer drives gdsaudit and pull_test_client against opengdsd
     add_subdirectory(tests/integration)
 endif()
+
+# Install rules and packages (.deb, .rpm, .tar.gz); docs/packaging.md
+add_subdirectory(packaging)
