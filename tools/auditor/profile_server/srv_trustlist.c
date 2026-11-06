@@ -400,6 +400,54 @@ static void t_tl_expired(ga_ctx *ctx, void *p) {
     gds_buf_free(&ca);
 }
 
+/* CloseAndUpdate then CancelChanges; *has false if the target lacks it. */
+static UA_StatusCode cancelled_txn(UA_Client *c, const UA_TrustListDataType *tl, bool *has,
+                                   ga_ctx *ctx) {
+    UA_NodeId cancel;
+    *has = uac_find_child(c, ns0(UA_NS0ID_SERVERCONFIGURATION), "CancelChanges", &cancel) ==
+           UA_STATUSCODE_GOOD;
+    if(!*has) {
+        ga_note(ctx, "no CancelChanges: the cancelled transaction is skipped");
+        return UA_STATUSCODE_GOOD;
+    }
+    bool acr = false;
+    UA_StatusCode r = st_write_trustlist(c, tl, 512, &acr, ctx);
+    size_t outN = 0;
+    UA_Variant *out = NULL;
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Client_call(c, ns0(UA_NS0ID_SERVERCONFIGURATION), cancel, 0, NULL, &outN, &out);
+    if(out)
+        UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
+    UA_NodeId_clear(&cancel);
+    ga_note(ctx, "CloseAndUpdate then CancelChanges -> %s", UA_StatusCode_name(r));
+    return r;
+}
+
+/* The steps of SRV-TL-17; ts[0] is read before, ts[i] after step i. */
+static UA_StatusCode lastupdate_steps(srv_target *t, const UA_TrustListDataType *l0,
+                                      const UA_TrustListDataType *more, UA_DateTime ts[5],
+                                      bool *hasCancel, ga_ctx *ctx) {
+    UA_Client *c = t->client;
+    bool acr = false;
+    UA_StatusCode r = last_update(c, &ts[0]);
+    if(r == UA_STATUSCODE_GOOD)
+        r = write_apply(c, more, ctx); /* 1: an applied change */
+    if(r == UA_STATUSCODE_GOOD)
+        r = last_update(c, &ts[1]);
+    if(r == UA_STATUSCODE_GOOD) /* 2: Open, Write, Close */
+        r = st_write_trustlist_ex(c, l0, 512, false, &acr, ctx);
+    if(r == UA_STATUSCODE_GOOD)
+        r = last_update(c, &ts[2]);
+    if(r == UA_STATUSCODE_GOOD) /* 3: a cancelled transaction */
+        r = cancelled_txn(c, l0, hasCancel, ctx);
+    if(r == UA_STATUSCODE_GOOD)
+        r = last_update(c, &ts[3]);
+    UA_StatusCode rr = write_apply(c, l0, ctx); /* 4: back to the list, always */
+    if(rr == UA_STATUSCODE_GOOD)
+        rr = last_update(c, &ts[4]);
+    return r != UA_STATUSCODE_GOOD ? r : rr;
+}
+
 /* SRV-TL-17 (12 §7.8.2.1): LastUpdateTime moves with each applied change only */
 static void t_tl_lastupdate(ga_ctx *ctx, void *p) {
     srv_target *t = p;
@@ -407,67 +455,21 @@ static void t_tl_lastupdate(ga_ctx *ctx, void *p) {
         return;
     UA_TrustListDataType l0, more;
     UA_TrustListDataType_init(&more);
-    UA_DateTime t0 = 0, t1 = 0, t2 = 0, t3 = 0, t4 = 0;
+    UA_DateTime ts[5] = {0};
+    bool hasCancel = false;
     UA_StatusCode r = applied(t, &l0);
     if(r == UA_STATUSCODE_GOOD)
         r = st_list_copy_add(&l0, &t->peerCert, NULL, &more);
     if(r == UA_STATUSCODE_GOOD)
-        r = last_update(t->client, &t0);
-    if(r != UA_STATUSCODE_GOOD) {
-        UA_TrustListDataType_clear(&l0);
-        UA_TrustListDataType_clear(&more);
-        ga_not_tested(ctx, "setup -> %s", UA_StatusCode_name(r));
-        return;
-    }
-    const char *bad = NULL;
-    /* 1: an applied change */
-    r = write_apply(t->client, &more, ctx);
-    if(r == UA_STATUSCODE_GOOD)
-        r = last_update(t->client, &t1);
-    if(r == UA_STATUSCODE_GOOD && t1 <= t0)
-        bad = "it did not move after an applied change";
-    /* 2: Open, Write, Close */
-    bool acr = false;
-    if(r == UA_STATUSCODE_GOOD)
-        r = st_write_trustlist_ex(t->client, &l0, 512, false, &acr, ctx);
-    if(r == UA_STATUSCODE_GOOD)
-        r = last_update(t->client, &t2);
-    if(r == UA_STATUSCODE_GOOD && !bad && t2 != t1)
-        bad = "it moved after Close";
-    /* 3: a transaction cancelled with CancelChanges, if the target has it */
-    UA_NodeId cancel;
-    bool hasCancel = uac_find_child(t->client, ns0(UA_NS0ID_SERVERCONFIGURATION), "CancelChanges",
-                                    &cancel) == UA_STATUSCODE_GOOD;
-    if(r == UA_STATUSCODE_GOOD && hasCancel) {
-        r = st_write_trustlist(t->client, &l0, 512, &acr, ctx);
-        size_t outN = 0;
-        UA_Variant *out = NULL;
-        if(r == UA_STATUSCODE_GOOD)
-            r = UA_Client_call(t->client, ns0(UA_NS0ID_SERVERCONFIGURATION), cancel, 0, NULL, &outN,
-                               &out);
-        if(out)
-            UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
-        ga_note(ctx, "CloseAndUpdate then CancelChanges -> %s", UA_StatusCode_name(r));
-        if(r == UA_STATUSCODE_GOOD)
-            r = last_update(t->client, &t3);
-        if(r == UA_STATUSCODE_GOOD && !bad && t3 != t2)
-            bad = "it moved after CancelChanges";
-    } else {
-        t3 = t2;
-        ga_note(ctx, "no CancelChanges: the cancelled transaction is skipped");
-    }
-    UA_NodeId_clear(&cancel);
-    /* 4: back to the previous list, an applied change again */
-    UA_StatusCode rr = write_apply(t->client, &l0, ctx);
-    if(rr == UA_STATUSCODE_GOOD)
-        rr = last_update(t->client, &t4);
-    if(rr == UA_STATUSCODE_GOOD && !bad && t4 <= t3)
-        bad = "it did not move after the second applied change";
+        r = lastupdate_steps(t, &l0, &more, ts, &hasCancel, ctx);
     UA_TrustListDataType_clear(&l0);
     UA_TrustListDataType_clear(&more);
-    if(r == UA_STATUSCODE_GOOD)
-        r = rr;
-    if(r != UA_STATUSCODE_GOOD && !bad)
+    const char *bad = ts[1] <= ts[0]    ? "it did not move after an applied change"
+                      : ts[2] != ts[1] ? "it moved after Close"
+                      : ts[3] != ts[2] ? "it moved after CancelChanges"
+                      : ts[4] <= ts[3] ? "it did not move after the second applied change"
+                                       : NULL;
+    if(r != UA_STATUSCODE_GOOD)
         ga_not_tested(ctx, "a step of the sequence failed: %s", UA_StatusCode_name(r));
     else if(bad)
         ga_fail(ctx, "LastUpdateTime: %s", bad);

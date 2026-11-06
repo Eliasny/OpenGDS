@@ -18,7 +18,17 @@ SRV-CAP-06,pass
 SRV-CAP-07,pass
 SRV-CAP-08,pass
 SRV-CAP-09,pass
+SRV-TL-01,pass
 SRV-TL-02,pass
+SRV-TL-03,pass
+SRV-TL-04,pass
+SRV-TL-05,pass
+SRV-TL-06,pass
+SRV-TL-07,pass
+SRV-TL-08,pass
+SRV-TL-17,pass
+SRV-TL-19,pass
+SRV-TL-20,not_supported   # 12 §7.8.2.1: no UpdateFrequency inside ServerConfiguration
 SRV-UPD-01,pass
 SRV-TXN-03,pass
 SRV-WIRE-01,pass

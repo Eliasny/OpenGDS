@@ -822,7 +822,7 @@ static UA_StatusCode size_read(UA_Server *server, const UA_NodeId *sessionId,
     (void)includeSourceTimeStamp, (void)range;
     value->hasStatus = true;
     value->status = UA_STATUSCODE_BADNOTSUPPORTED;
-    return UA_STATUSCODE_GOOD;
+    return UA_STATUSCODE_BADNOTSUPPORTED;
 }
 
 #define TLP(x) UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_##x
@@ -834,6 +834,11 @@ static UA_StatusCode trustlist_props(UA_Server *server) {
     if(!breaking("size-readable")) {
         UA_CallbackValueSource src = {size_read, NULL};
         r = UA_Server_setVariableNode_callbackValueSource(server, ns0(TLP(SIZE)), src);
+    } else {
+        UA_UInt64 size = 4096;
+        UA_Variant v;
+        UA_Variant_setScalar(&v, &size, &UA_TYPES[UA_TYPES_UINT64]);
+        r = UA_Server_writeValue(server, ns0(TLP(SIZE)), v);
     }
     (void)UA_Server_deleteNode(server, ns0(TLP(UPDATEFREQUENCY)), true);
     if(r == UA_STATUSCODE_GOOD && breaking("updatefreq-readonly")) {

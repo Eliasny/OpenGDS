@@ -17,7 +17,17 @@ accept-key-unadvertised,SRV-CAP-06,fail
 ignore-max-size,SRV-CAP-07,fail
 transactions-no-cancel,SRV-CAP-08,fail
 advertise-unsupported-type,SRV-CAP-09,fail
+open-any-mode,SRV-TL-01,fail
 drop-last-chunk,SRV-TL-02,fail
+trustlist-wrapped,SRV-TL-03,fail
+mask-ignored,SRV-TL-04,fail
+openwithmasks-ignores,SRV-TL-05,warn
+close-applies,SRV-TL-06,fail
+accept-invalid-cert,SRV-TL-07,fail
+accept-expired-ca,SRV-TL-08,fail
+lastupdate-frozen,SRV-TL-17,fail
+size-readable,SRV-TL-19,warn
+updatefreq-readonly,SRV-TL-20,fail
 update-refuse-valid,SRV-UPD-01,fail
 apply-ignored,SRV-TXN-03,fail
 wire-old-cert,SRV-WIRE-01,fail
