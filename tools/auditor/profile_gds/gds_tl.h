@@ -40,6 +40,12 @@ GDS_MUST_CHECK UA_StatusCode gtl_remove_thumb(UA_Client *c, UA_NodeId tl, const 
 UA_StatusCode gtl_last_update(UA_Client *c, UA_NodeId tl, UA_DateTime *out);
 bool gtl_has(const UA_ByteString *list, size_t n, const gds_buf *x);
 
+/* Read the DefaultApplicationGroup TrustList over a session; the caller
+ * clears *tl. */
+GDS_MUST_CHECK UA_StatusCode gtl_read_group(gds_target *t, UA_TrustListDataType *tl);
+/* Is the DER certificate listed in one of the CRLs of the trust list? */
+bool gtl_crl_lists(const UA_TrustListDataType *tl, const gds_buf *certDer);
+
 /* Test certificates: an RSA-2048 certificate for key with CN=cn, O=TESTCA_ORG,
  * an optional SAN URI, valid for days, signed by issuer/issuerKey (NULL:
  * self-signed). isCa adds basicConstraints CA:TRUE and keyCertSign. */

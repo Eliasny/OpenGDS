@@ -21,7 +21,7 @@ the service Object, which is itself Optional.
 | FindApplications | Method | M | §6.5.5 | `gds.dir.find_unknown` (pass) |
 | RegisterApplication | Method | M | §6.5.6 | `gds.dir.register_bad_type` (pass), `gds.dir.register_no_names` (pass), `gds.dir.register_no_uri` (pass), `gds.dir.register_server_no_urls` (pass), `gds.dir.register_valid` (pass), `gds.sec.anonymous_register` (pass) |
 | UpdateApplication | Method | M | §6.5.7 | `gds.acc.update_other` (pass), `gds.dir.update_application` (pass) |
-| UnregisterApplication | Method | M | §6.5.8 | `gds.acc.unregister_other` (pass), `gds.dir.unregister` (pass) |
+| UnregisterApplication | Method | M | §6.5.8 | `gds.acc.unregister_other` (pass), `gds.dir.unregister` (pass), `gds.dir.unregister_revokes` (pass) |
 | GetApplication | Method | M | §6.5.9 | `gds.dir.get_application` (pass), `gds.dir.get_unknown` (pass) |
 | QueryApplications | Method | M | §6.5.10 | `gds.dir.query_by_uri` (pass), `gds.qry.capabilities` (pass), `gds.qry.na_excluded` (fail), `gds.qry.name` (pass), `gds.qry.paging` (pass), `gds.qry.product_uri` (pass), `gds.qry.type_mask` (pass), `gds.qry.uri_pattern` (pass) |
 | QueryServers | Method (deprecated) | M | §6.5.11 | `gds.qry.servers` (fail) |
