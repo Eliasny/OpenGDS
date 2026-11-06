@@ -26,6 +26,15 @@ target_link_libraries(test_daemon_config PRIVATE gds_daemon)
 add_test(NAME unit_daemon_config COMMAND test_daemon_config)
 add_test(NAME gdsadm_refuses_bad_args COMMAND gdsadm apps list)
 set_tests_properties(gdsadm_refuses_bad_args PROPERTIES WILL_FAIL TRUE)
+# approve without the request id, and with a request id that is not a GUID
+add_test(NAME gdsadm_approve_refuses_bad_args
+         COMMAND gdsadm approvals approve --url opc.tcp://localhost:1 --user u
+                 --password-file /x --trust /x)
+add_test(NAME gdsadm_approve_refuses_bad_id
+         COMMAND gdsadm approvals approve --url opc.tcp://localhost:1 --user u
+                 --password-file /x --trust /x not-a-guid)
+set_tests_properties(gdsadm_approve_refuses_bad_args PROPERTIES PASS_REGULAR_EXPRESSION "usage: gdsadm")
+set_tests_properties(gdsadm_approve_refuses_bad_id PROPERTIES PASS_REGULAR_EXPRESSION "not a request id")
 add_test(NAME opengdsd_refuses_bad_args COMMAND opengdsd)
 set_tests_properties(opengdsd_refuses_bad_args PROPERTIES WILL_FAIL TRUE)
 add_executable(test_plugin_abi test_plugin_abi.c)

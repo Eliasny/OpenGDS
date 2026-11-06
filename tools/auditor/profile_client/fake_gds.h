@@ -51,6 +51,7 @@ typedef struct {
     char certUri[FG_MAX_URI];     /* SAN URI of the channel's client certificate */
     double tOpen, tClose;         /* monotonic ms */
     bool closed;                  /* CloseSession or timeout */
+    bool killed;                  /* closed by the fake GDS (CLI-FLT-09) */
 } fg_session;
 
 /* What FinishRequest issues (CLI-FLT-03..06) */
@@ -60,7 +61,8 @@ typedef enum {
     FG_ISSUE_WRONG_KEY, /* a certificate for another key pair */
     FG_ISSUE_WRONG_URI, /* SAN URI of another application */
     FG_ISSUE_EXPIRED,   /* notAfter in the past */
-    FG_ISSUE_ROGUE      /* signed by FG_CA_ROGUE (the rogue GDS hands it out) */
+    FG_ISSUE_ROGUE,     /* signed by FG_CA_ROGUE (the rogue GDS hands it out) */
+    FG_ISSUE_BAD_CHAIN  /* recorded only: a good certificate in an over-long answer */
 } fg_issue;
 
 /* Content of the trust list the TrustList file serves (CLI-TL-03..06) */
@@ -115,6 +117,11 @@ typedef struct {
     fg_issue issue;
     fg_tl tl;
     fg_identity identity;       /* not MAIN: the server restarts with that certificate */
+    bool tlRevokes;             /* the GDS CA's CRL in the list revokes fg_set_revoked_cert's */
+    bool tlGarbage;             /* the trust list file is truncated, an array length too big */
+    bool tlOverRead;            /* Read returns more than Length: another (rogue) list */
+    size_t hugeIssuers;         /* not 0: FinishRequest IssuerCertificates has this many entries */
+    bool closeSessions;         /* each session is closed by the GDS after its first call */
 } fg_behaviour;
 
 typedef struct {
@@ -134,6 +141,8 @@ UA_Server *fg_new_server_quietly(UA_ServerConfig *sc);
 void fg_stop(void);
 
 void fg_set_behaviour(const fg_behaviour *b);
+/* The certificate the GDS CA's CRL revokes when behaviour.tlRevokes */
+GDS_MUST_CHECK gds_status fg_set_revoked_cert(const gds_buf *cert);
 /* Events recorded so far. Indices stay valid until fg_stop. */
 size_t fg_event_count(void);
 const fg_event *fg_event_at(size_t i);
