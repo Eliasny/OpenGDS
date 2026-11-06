@@ -4,6 +4,7 @@
 add_library(gdsaudit_profile_server STATIC
     srv_target.c
     srv_security.c
+    srv_capabilities.c
     srv_trustlist.c
     srv_update.c
     srv_transaction.c
