@@ -13,7 +13,7 @@
  *   users_file       = /etc/opengds/users           (required)
  *   organization     = Example Oy                   (O= in issued certificates)
  *   ca_dir           = /var/lib/opengds-signer/ca   (required)
- *   signer           = /usr/libexec/opengds-signer  (opengdsd starts the signer itself)
+ *   signer           = /usr/libexec/opengds/opengds-signer  (opengdsd starts the signer itself)
  *   signer_socket    = /run/opengds/signer.sock     (connect to a signer started by systemd,
  *                                                    opengds-signer.socket; production)
  *   (neither: the CA runs in opengdsd, development only)
