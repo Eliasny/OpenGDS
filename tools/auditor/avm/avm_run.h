@@ -36,6 +36,12 @@ typedef struct {
 AvmRun *avm_run_start(char **argv, const char *runDir, const AvmRunCallbacks *cb, void *user,
                       GError **error);
 
+/* A finished run read back from a run folder (the UI's own or a headless
+ * run's --events file): its events are replayed to cb from the main loop,
+ * then finished is called with the run's exit code. NULL and *error if
+ * DIR/events.jsonl cannot be read. */
+AvmRun *avm_run_open(const char *runDir, const AvmRunCallbacks *cb, void *user, GError **error);
+
 /* Abort: the engine finishes the test in progress, marks the rest Not
  * tested and restores the target, then exits (SIGINT, as Ctrl-C would). */
 void avm_run_abort(AvmRun *run);

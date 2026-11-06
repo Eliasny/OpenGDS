@@ -35,7 +35,7 @@ typedef struct {
     GtkCheckButton *tofu, *allowChanges;
     GtkSpinButton *port;
     /* run */
-    GtkWidget *runBtn, *abortBtn, *exportBtn, *openBtn;
+    GtkWidget *runBtn, *abortBtn, *exportBtn, *openBtn, *historyBtn, *openFolderBtn;
     GtkLabel *banner, *status;
     GtkProgressBar *progress;
     GtkListBox *list;
@@ -355,6 +355,8 @@ static void set_running(Win *w, gboolean running) {
     gtk_widget_set_sensitive(w->abortBtn, running);
     gtk_widget_set_sensitive(w->exportBtn, !running && w->run != NULL);
     gtk_widget_set_sensitive(GTK_WIDGET(w->profile), !running);
+    gtk_widget_set_sensitive(w->historyBtn, !running);
+    gtk_widget_set_sensitive(w->openFolderBtn, !running);
 }
 
 static void set_verdict_label(GtkLabel *l, int v) {
@@ -584,6 +586,66 @@ static void start_run(Win *w) {
     g_free(engine);
 }
 
+gboolean win_main_show_run(GtkWindow *win, const char *dir, GError **error) {
+    Win *w = g_object_get_data(G_OBJECT(win), "gdsaudit-win");
+    if(!w || avm_run_is_running(w->run)) {
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_BUSY, "A run is going: wait for it or abort it.");
+        return FALSE;
+    }
+    AvmRunCallbacks cb = {on_run_event, on_run_log, on_run_finished};
+    AvmRun *run = avm_run_open(dir, &cb, w, error);
+    if(!run)
+        return FALSE;
+    avm_run_free(w->run);
+    w->run = run;
+    clear_results(w);
+    gtk_widget_set_visible(GTK_WIDGET(w->banner), FALSE);
+    char *m = g_strdup_printf("Showing the stored run in %s", dir);
+    set_status(w, m);
+    g_free(m);
+    set_running(w, TRUE);
+    return TRUE;
+}
+
+const ga_results *win_main_results(GtkWindow *win) {
+    Win *w = g_object_get_data(G_OBJECT(win), "gdsaudit-win");
+    return w && w->run && !avm_run_is_running(w->run) ? avm_run_results(w->run) : NULL;
+}
+
+static void on_history(GtkButton *b, gpointer data) {
+    (void)b;
+    page_history_present(((Win *)data)->win);
+}
+
+static void on_open_folder_chosen(GObject *src, GAsyncResult *res, gpointer data) {
+    Win *w = data;
+    GError *e = NULL;
+    GFile *f = gtk_file_dialog_select_folder_finish(GTK_FILE_DIALOG(src), res, &e);
+    if(!f) {
+        g_clear_error(&e);
+        return;
+    }
+    char *dir = g_file_get_path(f);
+    g_object_unref(f);
+    if(dir && !win_main_show_run(w->win, dir, &e)) {
+        char *m = g_strdup_printf("Cannot open %s: %s", dir, e ? e->message : "");
+        set_status(w, m);
+        g_free(m);
+    }
+    g_clear_error(&e);
+    g_free(dir);
+}
+
+static void on_open_folder(GtkButton *b, gpointer data) {
+    (void)b;
+    Win *w = data;
+    GtkFileDialog *d = gtk_file_dialog_new();
+    gtk_file_dialog_set_title(d, "Open a results folder (with events.jsonl)");
+    gtk_file_dialog_set_modal(d, TRUE);
+    gtk_file_dialog_select_folder(d, w->win, NULL, on_open_folder_chosen, w);
+    g_object_unref(d);
+}
+
 static void on_allowed(gboolean allowed, gpointer user) {
     Win *w = user;
     if(allowed)
@@ -791,6 +853,12 @@ GtkWindow *win_main_new(GtkApplication *app) {
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), w->runBtn);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), w->abortBtn);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->exportBtn);
+    w->historyBtn = button("_History…", "Past runs: open one or compare two",
+                           G_CALLBACK(on_history), w);
+    w->openFolderBtn = button("Open _folder…", "Show a results folder, also of a headless run",
+                              G_CALLBACK(on_open_folder), w);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->historyBtn);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->openFolderBtn);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->openBtn);
     gtk_window_set_titlebar(w->win, header);
 
@@ -810,7 +878,7 @@ GtkWindow *win_main_new(GtkApplication *app) {
 
 gboolean win_main_check(GtkWindow *win) {
     Win *w = g_object_get_data(G_OBJECT(win), "gdsaudit-win");
-    return w && w->runBtn && w->list && w->profile && w->preset &&
+    return w && w->runBtn && w->list && w->profile && w->preset && w->historyBtn &&
            gtk_drop_down_get_selected(w->preset) == AVM_PRESET_QUICK &&
            !gtk_check_button_get_active(w->allowChanges);
 }

@@ -1,7 +1,7 @@
 # View-model of the desktop UI (Auditor plan avm/): GLib and GIO only, no
 # GTK, so it is tested without a display.
 # SPDX-License-Identifier: MPL-2.0
-add_library(gdsaudit_avm STATIC avm_plan.c avm_run.c)
+add_library(gdsaudit_avm STATIC avm_plan.c avm_run.c avm_history.c)
 target_include_directories(gdsaudit_avm PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
                            PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(gdsaudit_avm PUBLIC gdsaudit_report PkgConfig::GDSAUDIT_GIO
@@ -11,6 +11,11 @@ add_executable(test_avm_plan test_avm_plan.c)
 target_include_directories(test_avm_plan PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(test_avm_plan PRIVATE gdsaudit_avm gds_hardening)
 add_test(NAME avm_plan COMMAND test_avm_plan)
+
+add_executable(test_avm_history test_avm_history.c)
+target_include_directories(test_avm_history PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(test_avm_history PRIVATE gdsaudit_avm gds_hardening)
+add_test(NAME avm_history COMMAND test_avm_history)
 
 # The UI's way of running the engine against push_test_server must give the
 # verdicts pinned for the headless run.
