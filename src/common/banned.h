@@ -5,6 +5,12 @@
 #define OPENGDS_COMMON_BANNED_H
 
 #if defined(__GNUC__) || defined(__clang__)
+/* FORTIFY_SOURCE (clang) defines some of these as macros: drop them first,
+ * nothing after this header may use them anyway */
+#undef strcpy
+#undef strcat
+#undef sprintf
+#undef vsprintf
 #pragma GCC poison strcpy strcat sprintf vsprintf gets strtok
 #pragma GCC poison atoi atol atoll atof
 #pragma GCC poison rand srand
