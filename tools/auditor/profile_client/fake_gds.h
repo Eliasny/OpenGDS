@@ -36,6 +36,19 @@ typedef enum {
 const char *fg_method_name(fg_method m);
 
 #define FG_MAX_URI 256
+#define FG_NO_SESSION ((size_t)-1)
+
+typedef enum { FG_TOKEN_ANONYMOUS = 0, FG_TOKEN_USERNAME, FG_TOKEN_X509, FG_TOKEN_OTHER } fg_token;
+
+/* One session the client activated (12 §6.3, Annex G.1). */
+typedef struct {
+    UA_NodeId id;
+    UA_MessageSecurityMode mode;  /* of the SecureChannel it runs on */
+    fg_token token;
+    char certUri[FG_MAX_URI];     /* SAN URI of the channel's client certificate */
+    double tOpen, tClose;         /* monotonic ms */
+    bool closed;                  /* CloseSession or timeout */
+} fg_session;
 
 /* One method call as the client made it. Owned by the fake GDS. */
 typedef struct {
@@ -50,6 +63,9 @@ typedef struct {
     UA_NodeId group;        /* CertificateGroupId argument (Sign, NewKeyPair) */
     UA_NodeId certType;     /* CertificateTypeId argument (Sign, NewKeyPair) */
     gds_buf args;           /* every ByteString/String input, concatenated (leak scans) */
+    size_t session;         /* index for fg_session_at, FG_NO_SESSION if unknown */
+    UA_NodeId requestId;    /* StartSigningRequest result, FinishRequest argument */
+    size_t bytes;           /* TrustList.Read: bytes returned */
 } fg_event;
 
 /* How the fake GDS answers. Set per cycle by faults.c. */
@@ -57,6 +73,9 @@ typedef struct {
     long approveAfter;          /* FinishRequest answers Bad_NothingToDo this many times */
     bool forceUpdateRequired;   /* GetCertificateStatus always returns TRUE */
     UA_StatusCode signResult;   /* not Good: StartSigningRequest answers with this code */
+    UA_StatusCode finishResult; /* not Good: FinishRequest rejects the request for good */
+    size_t tlReadMax;           /* not 0: TrustList.Read returns at most this many bytes */
+    bool tlChanged;             /* the trust list changes (new LastUpdateTime) for this cycle */
 } fg_behaviour;
 
 typedef struct {
@@ -77,6 +96,10 @@ void fg_set_behaviour(const fg_behaviour *b);
 /* Events recorded so far. Indices stay valid until fg_stop. */
 size_t fg_event_count(void);
 const fg_event *fg_event_at(size_t i);
+size_t fg_session_count(void);
+const fg_session *fg_session_at(size_t i);
+/* Size of the encoded TrustListDataType the TrustList file serves */
+size_t fg_trustlist_size(void);
 
 /* Files the trigger hands to the client */
 const char *fg_url(void);
