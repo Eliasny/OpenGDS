@@ -276,6 +276,7 @@ The plugin API (`include/opengds/`) is the seam UASM builds on, so its shape dec
 - The CA slot runs in the signer, so CA plugins (UASM ceremonies, HSM profiles) get the signer's protections; store, policy, events, push and cluster plugins run in `opengdsd`.
 - The cluster slot (`opengds_set_role`) is the only way to change the node role; on a standby the core refuses state-changing methods with `Bad_InvalidState` before any plugin sees them.
 - Plugin API headers compile cleanly under `-std=c11 -Wpedantic -Werror` and C++17, and contain no open62541 types except stable ones (`UA_StatusCode`, `UA_NodeId`, `UA_ByteString`, and for method plugins `UA_Variant` and `UA_Argument`, which carry method arguments in OPC UA's own encoding), so a library upgrade does not break the ABI.
+- Companion information models (UASM ask A12): an embedder that instantiates types of another model chooses it at open62541 build time with `MODELS` in `scripts/build_open62541.sh`. For example, `MODELS="DI;GDS"` gives the OPC 10000-100 SoftwareUpdate AddIn its DI types, and Part 21 onboarding adds `Onboarding`. The default build stays `GDS`, so OpenGDS on its own exposes no other namespace. The core finds the GDS namespace index by URI, so extra models never move it. A model open62541 does not ship is compiled with the nodeset compiler, and its `namespace_<name>_generated(gds_server_ua(s))` is called before `gds_server_run`; this needs no new API.
 
 ## The Auditor under these rules
 
