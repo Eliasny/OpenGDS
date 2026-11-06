@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MPL-2.0
 add_library(gds_server STATIC
     gds_access.c
+    gds_alarms.c
     gds_approvals.c
     gds_audit.c
     gds_caller.c

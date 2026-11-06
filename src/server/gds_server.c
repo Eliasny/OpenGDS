@@ -268,6 +268,8 @@ static gds_status install(gds_server *s) {
         r = install_role_nodes(s);
     if(r == UA_STATUSCODE_GOOD)
         r = gds_approvals_install(s);
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_alarms_install(s);
     if(r != UA_STATUSCODE_GOOD) {
         fprintf(stderr, "opengds: installing the GDS methods failed: %s\n", UA_StatusCode_name(r));
         return GDS_ENOTFOUND;
@@ -288,6 +290,7 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
     pthread_cond_init(&s->workCond, NULL);
     pthread_mutex_init(&s->plugLock, NULL);
     pthread_mutex_init(&s->bindLock, NULL);
+    pthread_mutex_init(&s->alarmLock, NULL);
     pthread_cond_init(&s->plugCond, NULL);
     s->store = cfg->store;
     s->ca = cfg->ca;
@@ -396,11 +399,13 @@ void gds_server_delete(gds_server *s) {
     if(s->ua)
         UA_Server_delete(s->ua); /* closes every session, cancels plugin calls */
     gds_embed_free(s);
+    gds_alarms_free(s);
     gds_access_uninstall();
     gds_buf_free(&s->caCert);
     pthread_cond_destroy(&s->plugCond);
     pthread_mutex_destroy(&s->plugLock);
     pthread_mutex_destroy(&s->bindLock);
+    pthread_mutex_destroy(&s->alarmLock);
     pthread_cond_destroy(&s->workCond);
     pthread_mutex_destroy(&s->roleLock);
     pthread_mutex_destroy(&s->workLock);

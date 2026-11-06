@@ -776,6 +776,10 @@ static UA_Boolean executable_on(UA_Server *server, UA_AccessControl *ac, const U
                                 const UA_NodeId *objectId, void *octx) {
     (void)ac, (void)sid, (void)mctx, (void)octx;
     struct gds_server *s = UA_Server_getConfig(server)->context;
+    /* Acknowledge on a plugin alarm: its ackRoles (gds_alarms.c, A16) */
+    if(methodId->namespaceIndex == 0 && methodId->identifierType == UA_NODEIDTYPE_NUMERIC &&
+       methodId->identifier.numeric == UA_NS0ID_ACKNOWLEDGEABLECONDITIONTYPE_ACKNOWLEDGE)
+        return gds_alarm_may_ack(s, sctx, objectId);
     /* RolePermissions of embedder nodes (issue #49): Call on the object
      * and on the method node */
     return gds_method_executable(s, sctx, methodId) && gds_node_call_allowed(s, sctx, objectId) &&
