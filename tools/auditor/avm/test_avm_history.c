@@ -17,6 +17,7 @@ static void eq_str(const char *got, const char *want) {
 }
 
 /* A run folder with an events file: tests given as "ID=verdict" */
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): GLib assert and string macros
 static void write_run(const char *root, const char *name, const char *started,
                       const char *const *tests) {
     char *dir = g_build_filename(root, name, NULL);
