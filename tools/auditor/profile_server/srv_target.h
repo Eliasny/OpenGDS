@@ -45,7 +45,9 @@ typedef struct {
     bool certQueued;           /* SRV-UPD-01 queued t-good in the admin session */
     bool applied;              /* SRV-TXN-03 passed: t-good and the queued list are in use */
     bool restored;             /* the snapshot was pushed back */
+    bool keyReplaced;          /* SRV-UPD-09 put a key of the Auditor's in use */
     bool slow;                 /* --slow: run the tests flagged slow */
+    const char *only;          /* --only: tests that run only when selected by name check it */
     char adminPassword[256];
     char userPassword[256];
     char targetUri[GDS_MAX_APPLICATION_URI + 1]; /* learned from GetEndpoints */
@@ -165,5 +167,8 @@ GDS_MUST_CHECK gds_status st_make_cert(const testca_t *issuer, EVP_PKEY *key, co
 GDS_MUST_CHECK gds_status st_make_leaf(const testca_t *issuer, EVP_PKEY *key, const char *cn,
                                        const char *uri, long fromSec, long toSec, bool isCa,
                                        size_t pad, gds_buf *out);
+/* t-withkey: a certificate for the target from the test CA, with a key the
+ * Auditor generated, as PEM (caller frees pem with gds_buf_free_secret). */
+GDS_MUST_CHECK gds_status st_withkey(const srv_target *t, gds_buf *cert, gds_buf *pem);
 
 #endif
