@@ -144,7 +144,7 @@ ConformanceUnit: Push Model for Global Certificate and TrustList Management.
 
 | ID | Clause | Flags | Check | Pass when | Fail / Warn / Not supported | Mutant |
 | --- | --- | --- | --- | --- | --- | --- |
-| SRV-WIRE-01 | 12 §7.10.9 | W | After SRV-TXN-03, GetEndpoints and OpenSecureChannel on every endpoint of the group | Every endpoint presents the new certificate | Fail: any endpoint presents the old one | `wire-old-cert` |
+| SRV-WIRE-01 | 12 §7.10.9, §7.8.4.8, §7.8.4.9 | W | After SRV-TXN-03, GetEndpoints, and OpenSecureChannel on every endpoint whose SecurityPolicy uses the updated CertificateType (RsaMin for Basic128Rsa15 and Basic256, §7.8.4.8; RsaSha256 for Basic256Sha256 and the Aes RSA policies, §7.8.4.9), with a client that trusts only `ca` | Every such endpoint presents the new certificate; endpoints of other CertificateTypes are another slot of the group and are listed as evidence | Fail: any such endpoint presents the old one or refuses the channel | `wire-old-cert` |
 | SRV-WIRE-02 | 12 §7.10.9 | W | Keep the `admin` channel that called ApplyChanges open and watch it | The channel is closed or renewed with the new certificate within the settle timeout | Warn: still on the old certificate after 30 s. Fail: still on it after the settle timeout | `wire-keep-channels` |
 | SRV-WIRE-03 | 12 §7.10.9 | W | Subscribe to ServerStatus before ApplyChanges | If the server closes connections, SecondsTillShutdown and ShutdownReason were set first | Warn: connections closed without notice (timing makes this unsafe to Fail) | `wire-no-shutdown-notice` |
 | SRV-WIRE-04 | 12 §7.10.9; 4 §6.1.3 | W | With `ca` in the applied trust list, connect as `peer-good` | Session created | Fail: refused | `wire-trustlist-not-loaded` |
@@ -152,6 +152,14 @@ ConformanceUnit: Push Model for Global Certificate and TrustList Management.
 | SRV-WIRE-06 | 4 §6.1.3 | — | Connect as `peer-unknown` | Refused (Bad_CertificateUntrusted or Bad_SecurityChecksFailed) | Fail: session created | `wire-trust-all` |
 | SRV-WIRE-07 | 12 §7.8.2.5 | W | Open a session as `peer-good`; RemoveCertificate(`peer-good`); apply | The `peer-good` session and channel are closed | Warn: still open after 30 s. Fail: still open after the settle timeout | `wire-keep-removed-sessions` |
 | SRV-WIRE-08 | 12 §7.8.2.5; 4 §6.1.3 | W | Open a session as `peer-good`; push a new CRL from `ca` that lists it; apply | The session and channel are closed | Warn: still open after 30 s. Fail: still open after the settle timeout | `wire-crl-no-reeval` |
+
+## Restore (`srv_restore.c`)
+
+Not a conformance test: the last line of every run, with its own verdict (README, [Safety, snapshot and restore](README.md#safety-snapshot-and-restore)).
+
+| ID | Clause | Flags | Check | Pass when | Fail / Warn / Not supported | Mutant |
+| --- | --- | --- | --- | --- | --- | --- |
+| SRV-RESTORE | README | W | On a new session (which discards any transaction a test left open, §7.10.2), push back the snapshot's certificate (if it changed) and trust list, and apply | Both pushed back and applied, or no test changed the target | Fail: either could not be restored; the evidence names what is left changed. When `--only` leaves this line out, the CLI still restores and prints the result as a comment | — |
 
 ## Persistence (`srv_persistence.c`)
 

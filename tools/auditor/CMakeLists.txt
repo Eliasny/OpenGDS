@@ -11,7 +11,7 @@ target_include_directories(gdsaudit_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/cor
 target_link_libraries(gdsaudit_core PUBLIC gds_common)
 
 # Self-test targets: known-good reference implementations (Auditor plan, selftest/)
-add_executable(push_test_server selftest/push_test_server.c)
+add_executable(push_test_server selftest/push_test_server.c selftest/push_mgmt.c)
 add_executable(pull_test_client selftest/pull_test_client.c)
 # Seeds of the server and client profiles (push_driver plays the
 # CertificateManager, mock_gds plays a GDS)
@@ -30,3 +30,5 @@ set_tests_properties(selftest_demo_flow PROPERTIES TIMEOUT 180)
 
 add_subdirectory(profile_client)
 add_subdirectory(profile_gds)
+add_subdirectory(profile_server)
+target_link_libraries(gdsaudit PRIVATE gdsaudit_profile_server)
