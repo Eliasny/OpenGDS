@@ -1,0 +1,6 @@
+# mutant,test that must catch it,verdict that counts as caught
+# (docs/auditor/README.md, "Mutants"). One line per catalogue test.
+drop-last-chunk,SRV-TL-02,fail
+update-refuse-valid,SRV-UPD-01,fail
+apply-ignored,SRV-TXN-03,fail
+wire-old-cert,SRV-WIRE-01,fail

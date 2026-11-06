@@ -6,6 +6,7 @@
 # Usage: scripts/build_open62541.sh <prefix> [<src-dir>]
 #   SANITIZE=address,undefined  also instrument the library (ASan CI job)
 #   CC=clang                    compiler
+#   OPENSSL_ROOT=<prefix>       OpenSSL 3.5 from scripts/build_openssl.sh (required)
 set -eu
 
 TAG=v1.5.10
@@ -14,6 +15,7 @@ COMMIT=93c3bdfc9ea4718b503c6cbf57876237addd0f2c
 PREFIX=${1:?usage: build_open62541.sh <prefix> [<src-dir>]}
 SRC=${2:-$PREFIX/src/open62541}
 SANITIZE=${SANITIZE:-}
+OPENSSL_ROOT=${OPENSSL_ROOT:?set OPENSSL_ROOT to an OpenSSL 3.5 prefix (scripts/build_openssl.sh)}
 
 if [ ! -d "$SRC/.git" ]; then
     git clone --quiet --depth 1 --branch "$TAG" --recurse-submodules \
@@ -27,7 +29,8 @@ fi
 
 # Carry our fixes for the open62541 v1.5.10 gaps until upstream releases them
 # (docs/upstream/README.md): key file after a key-kept CSR push, #None for
-# discovery in the secure-only config, GDS headers installed with AUTOLOAD.
+# discovery in the secure-only config, GDS headers installed with AUTOLOAD,
+# ConditionRefresh keeping the original EventId (Part 9, 5.5.7).
 # A cached source tree may already have them; apply each patch only once.
 PATCHES="$(cd "$(dirname "$0")/.." && pwd)/docs/upstream/patches/v1.5.10"
 for p in "$PATCHES"/*.patch; do
@@ -71,6 +74,8 @@ cmake -S "$SRC" -B "$BUILD" -G "${CMAKE_GENERATOR:-Ninja}" \
     -DBUILD_SHARED_LIBS=OFF \
     -DUA_NAMESPACE_ZERO=FULL \
     -DUA_ENABLE_ENCRYPTION=OPENSSL \
+    -DOPENSSL_ROOT_DIR="$OPENSSL_ROOT" \
+    -DOPENSSL_USE_STATIC_LIBS=TRUE \
     -DUA_ENABLE_GDS_PUSHMANAGEMENT=ON \
     -DUA_INFORMATION_MODEL_AUTOLOAD=GDS \
     -DUA_ENABLE_SUBSCRIPTIONS_EVENTS=ON \

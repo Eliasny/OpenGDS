@@ -18,7 +18,8 @@ typedef enum {
     GDS_ESTATE,      /* operation not valid in the current state */
     GDS_EREMOTE,     /* the peer returned an error or a malformed result */
     GDS_EEXISTS,     /* a record with this unique key already exists */
-    GDS_ENOTLEADER   /* a store backend that is not the primary refused a write (issue #15) */
+    GDS_ENOTLEADER,  /* a store backend that is not the primary refused a write (issue #15) */
+    GDS_EUNSUPPORTED /* a valid request for something this build does not provide */
 } gds_status;
 
 const char *gds_status_name(gds_status s);

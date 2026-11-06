@@ -71,7 +71,7 @@ SRV-TXN-10,server,Transactions,srv_transaction.c,12 §7.10.2,OPC 10000-12 v1.05.
 SRV-TXN-11,server,Transactions,srv_transaction.c,12 §7.10.2,OPC 10000-12 v1.05.07,ref,Server PushManagement Transactions,yes,no,no,apply-partial,selftest/push_test_server
 SRV-TXN-12,server,Transactions,srv_transaction.c,12 §7.10.17,OPC 10000-12 v1.05.07,ref,Server PushManagement Transactions,yes,no,no,diag-stale,selftest/push_test_server
 SRV-TXN-13,server,Transactions,srv_transaction.c,12 §7.10.17,OPC 10000-12 v1.05.07,ref,Server PushManagement Transactions,yes,no,no,diag-cancel-good,selftest/push_test_server
-SRV-WIRE-01,server,On the wire,srv_wire.c,12 §7.10.9,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,wire-old-cert,selftest/push_test_server
+SRV-WIRE-01,server,On the wire,srv_wire.c,"12 §7.10.9, §7.8.4.8, §7.8.4.9",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,wire-old-cert,selftest/push_test_server
 SRV-WIRE-02,server,On the wire,srv_wire.c,12 §7.10.9,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,wire-keep-channels,selftest/push_test_server
 SRV-WIRE-03,server,On the wire,srv_wire.c,12 §7.10.9,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,wire-no-shutdown-notice,selftest/push_test_server
 SRV-WIRE-04,server,On the wire,srv_wire.c,12 §7.10.9; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,wire-trustlist-not-loaded,selftest/push_test_server
