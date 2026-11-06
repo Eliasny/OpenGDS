@@ -19,7 +19,7 @@ There are two ways to run the signer:
 
 Without `signer`, the CA runs inside `opengdsd`. That mode is for development only, and the daemon warns about it at startup.
 
-Once its socket, store and CA are open, the signer sandboxes itself (`src/common/sandbox.c`), on top of what the systemd unit applies:
+Once its socket, store and CA are open (with `--listen`: at the first connection, once `opengdsd` has created the store), the signer sandboxes itself (`src/common/sandbox.c`), on top of what the systemd unit applies:
 
 - `PR_SET_NO_NEW_PRIVS`.
 - Landlock: the CA directory read-write, the store's directory read-only (SQLite then maps its shared-memory file read-only), the passphrase file or `$CREDENTIALS_DIRECTORY` read-only, and nothing else. It also allows no TCP bind or connect and, on kernels with Landlock ABI 6, no signals or abstract sockets outside the process. On kernels without Landlock the signer logs a warning and goes on.

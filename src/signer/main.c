@@ -14,8 +14,8 @@
  * each until it closes. The CA key passphrase comes from
  * --passphrase-file or $CREDENTIALS_DIRECTORY/ca-passphrase (systemd
  * LoadCredentialEncrypted=); never from argv or the environment.
- * Once its sockets, store and CA are open (with --listen: once it listens),
- * the signer sandboxes itself (common/sandbox.h): Landlock leaves it the CA
+ * Once its socket, store and CA are open (with --listen: at the first
+ * connection, when opengdsd has created the store), the signer sandboxes itself (common/sandbox.h): Landlock leaves it the CA
  * directory, the store's directory (read-only) and the passphrase
  * source; seccomp leaves it no
  * exec, no new sockets and no connect.
@@ -190,6 +190,8 @@ static gds_status open_signer(const options *o, gds_signer *s) {
     return r;
 }
 
+static gds_status sandbox(const options *o);
+
 /* One opengdsd at a time; each connection is served until it closes. A
  * failed connection (protocol error, peer gone) ends that connection only.
  * The store and CA are opened at the first connection: opengdsd creates the
@@ -203,7 +205,15 @@ static gds_status serve_listen(const options *o, gds_signer *s, int lfd) {
                 continue;
             return GDS_EIO;
         }
-        gds_status r = s->store ? GDS_OK : open_signer(o, s);
+        gds_status r = GDS_OK;
+        if(!s->store) {
+            r = open_signer(o, s);
+            /* the store's directory exists from now on: sandbox once */
+            if(r == GDS_OK && sandbox(o) != GDS_OK) {
+                (void)close(c);
+                return GDS_EDENIED; /* half sandboxed: stop */
+            }
+        }
         if(r == GDS_OK)
             r = gds_signer_serve(s, c);
         if(r != GDS_OK)
@@ -240,8 +250,7 @@ static gds_status sandbox(const options *o) {
     paths[n].path = o->passFile ? o->passFile : creds;
     if(paths[n].path)
         n++;
-    /* OpenSSL reads its configuration once; with --listen the CA opens
-     * after the sandbox is in place */
+    /* OpenSSL reads its configuration once, before the file rules apply */
     if(OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CONFIG, NULL) != 1)
         return GDS_ECRYPTO;
     gds_sandbox sb = {GDS_SB_SIGNER, paths, n};
@@ -270,9 +279,7 @@ int main(int argc, char **argv) {
         lfd = listen_at(o.listen);
         if(lfd < 0)
             return 1;
-        r = sandbox(&o);
-        if(r == GDS_OK)
-            r = serve_listen(&o, &s, lfd);
+        r = serve_listen(&o, &s, lfd);
         (void)close(lfd);
     } else {
         if(!is_seqpacket((int)o.fd)) {
