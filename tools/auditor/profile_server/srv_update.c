@@ -84,8 +84,10 @@ static bool queued_or_not_tested(ga_ctx *ctx, srv_target *t) {
 static void requeue(ga_ctx *ctx, srv_target *t) {
     bool acr = false;
     UA_StatusCode r = st_update_cert(t, t->client, &t->tGood, &t->caDer, 1, &acr);
-    if(r != UA_STATUSCODE_GOOD)
+    if(r != UA_STATUSCODE_GOOD) {
         ga_note(ctx, "queueing t-good again -> %s", UA_StatusCode_name(r));
+        t->certQueued = false; /* what builds on t-good is not tested */
+    }
 }
 
 /* The verdict for a call that must be refused. good: the codes that pass
@@ -104,6 +106,17 @@ static void expect_refused(ga_ctx *ctx, srv_target *t, UA_StatusCode r, const ch
         ga_pass(ctx, "%s refused: %s", what, UA_StatusCode_name(r));
     else
         ga_warn(ctx, "%s refused with %s, not the expected code", what, UA_StatusCode_name(r));
+}
+
+/* The public key of t-good, which is the active key: certificates for it
+ * are made without another CreateSigningRequest, so a target whose CSR
+ * breaks after an accepted certificate does not take the next tests down. */
+static EVP_PKEY *tgood_key(const srv_target *t) {
+    X509 *x = x509_parse_cert(&t->tGood);
+    EVP_PKEY *k = x ? X509_get_pubkey(x) : NULL;
+    X509_free(x);
+    ERR_clear_error();
+    return k;
 }
 
 /* A CSR for the active key (RegeneratePrivateKey FALSE) */
@@ -133,6 +146,15 @@ static void t_update_wrong_uri(ga_ctx *ctx, void *p) {
     srv_target *t = p;
     if(!queued_or_not_tested(ctx, t))
         return;
+    /* Without transactions an accepted certificate is in use at once, and a
+     * wrong ApplicationUri breaks the rest of the run (and the restore). */
+    bool present = false, txn = false;
+    st_supports_transactions(t->client, &present, &txn);
+    if(!txn) {
+        ga_not_tested(ctx, "SupportsTransactions is not TRUE: an accepted t-wronguri would be "
+                           "in use at once and break the following tests");
+        return;
+    }
     gds_buf csr = {0}, cert = {0};
     UA_StatusCode r = active_csr(t, &csr);
     if(r == UA_STATUSCODE_GOOD)
@@ -166,19 +188,21 @@ static void t_update_issuer_arg(ga_ctx *ctx, void *p) {
     if(!queued_or_not_tested(ctx, t))
         return;
     testca_t ca2 = {0};
-    gds_buf ca2Der = {0}, csr = {0}, cert = {0};
+    gds_buf ca2Der = {0}, cert = {0};
     ca2.key = EVP_RSA_gen(2048);
     gds_status gs = ca2.key ? st_make_cert(NULL, ca2.key, TESTCA_ORG " ca2", -3600, 7 * 86400L,
                                            true, 0, &ca2Der)
                             : GDS_ECRYPTO;
     if(gs == GDS_OK && !(ca2.cert = x509_parse_cert(&ca2Der)))
         gs = GDS_ECRYPTO;
+    EVP_PKEY *pub = gs == GDS_OK ? tgood_key(t) : NULL;
+    if(gs == GDS_OK && !pub)
+        gs = GDS_ECRYPTO;
+    if(gs == GDS_OK)
+        gs = st_make_leaf(&ca2, pub, "t-ca2", t->targetUri, -3600, TESTCA_MAX_DAYS * 86400L,
+                          false, 0, &cert);
+    EVP_PKEY_free(pub);
     UA_StatusCode r = gds_status_to_ua(gs);
-    if(r == UA_STATUSCODE_GOOD)
-        r = active_csr(t, &csr);
-    if(r == UA_STATUSCODE_GOOD)
-        r = gds_status_to_ua(testca_sign_csr(&ca2, &csr, t->targetUri, TESTCA_MAX_DAYS, &cert));
-    gds_buf_free(&csr);
     if(r == UA_STATUSCODE_GOOD) {
         bool acr = false;
         r = st_update_cert(t, t->client, &cert, &ca2Der, 1, &acr);
@@ -272,25 +296,18 @@ static void t_update_expired(ga_ctx *ctx, void *p) {
     srv_target *t = p;
     if(!queued_or_not_tested(ctx, t))
         return;
-    gds_buf csr = {0}, cert = {0};
-    UA_StatusCode r = active_csr(t, &csr);
-    const unsigned char *d = csr.data;
-    X509_REQ *req = r == UA_STATUSCODE_GOOD && csr.len <= GDS_MAX_CSR_SIZE
-                        ? d2i_X509_REQ(NULL, &d, (long)csr.len)
-                        : NULL;
-    EVP_PKEY *pub = req ? X509_REQ_get0_pubkey(req) : NULL;
+    gds_buf cert = {0};
+    EVP_PKEY *pub = tgood_key(t);
     gds_status gs = pub ? st_make_leaf(&t->ca, pub, "t-expired", t->targetUri, -10 * 86400L,
                                        -86400L, false, 0, &cert)
-                        : GDS_EINVAL;
-    X509_REQ_free(req);
-    gds_buf_free(&csr);
-    ERR_clear_error();
+                        : GDS_ECRYPTO;
+    EVP_PKEY_free(pub);
     if(gs != GDS_OK) {
-        ga_not_tested(ctx, "setup: t-expired (%s): %s", UA_StatusCode_name(r), gds_status_name(gs));
+        ga_not_tested(ctx, "setup: t-expired: %s", gds_status_name(gs));
         return;
     }
     bool acr = false;
-    r = st_update_cert(t, t->client, &cert, &t->caDer, 1, &acr);
+    UA_StatusCode r = st_update_cert(t, t->client, &cert, &t->caDer, 1, &acr);
     gds_buf_free(&cert);
     expect_refused(ctx, t, r, "t-expired (valid until yesterday)", NULL, 0);
 }

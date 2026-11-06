@@ -136,18 +136,30 @@ grep "$DEV_URI" "$W/certs.txt"
 
 # revoked <cert.der>: the certificate fails a CRL check against the GDS CA's current CRL
 revoked() {
-    openssl x509 -inform DER -in "$1" -out "$W/check.pem" 2>/dev/null || fail "openssl x509 $1"
+    openssl x509 -inform DER -in "$1" -out "$W/check.pem" || fail "openssl x509 $1"
     openssl x509 -inform DER -in "$W/ca/ca.der" -out "$W/ca.pem" || fail "openssl x509 ca"
     openssl crl -inform DER -in "$W/ca/ca.crl" -out "$W/crl.pem" || fail "openssl crl"
     openssl verify -CAfile "$W/ca.pem" -CRLfile "$W/crl.pem" -crl_check "$W/check.pem" \
         > "$W/verify.txt" 2>&1 && return 1
     grep -q "certificate revoked" "$W/verify.txt"
 }
-# the device certificates the GDS issued, newest first
-ISSUED=$(ls -t "$W"/pki-dev/ApplCerts/own/certs/*.der | grep -v '/selfsigned' | head -2)
-NEWEST=$(echo "$ISSUED" | head -1)
-OLDER=$(echo "$ISSUED" | sed -n 2p)
-[ -n "$NEWEST" ] && [ -n "$OLDER" ] || fail "the device should hold two issued certificates"
+# The device certificates the GDS issued, newest first, taken from the GDS's
+# store (read-only): the device's own file store may still be rewriting
+# its files after a push, and two files can share an mtime.
+NEWEST="$W/issued-newest.der"
+OLDER="$W/issued-older.der"
+python3 - "$W/data/opengds.db" "$DEV_URI" "$NEWEST" "$OLDER" <<'PY' || fail "the store should hold two certificates issued to the device"
+import sqlite3, sys
+db, uri, newest, older = sys.argv[1:5]
+con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+rows = con.execute("SELECT c.der FROM certificates c JOIN applications a ON a.id = c.app_id "
+                   "WHERE a.uri = ? ORDER BY c.rowid DESC LIMIT 2", (uri,)).fetchall()
+if len(rows) != 2:
+    sys.exit(f"{len(rows)} certificates issued to {uri}")
+for path, (der,) in zip((newest, older), rows):
+    with open(path, "wb") as f:
+        f.write(der)
+PY
 
 echo "=============== 8. gdsadm certs revoke (no CertificateAuthorityAdmin: refused) ==============="
 # shellcheck disable=SC2046

@@ -287,3 +287,33 @@ done:
     X509_free(x);
     return ret;
 }
+
+bool gtl_crl_lists(const UA_TrustListDataType *tl, const gds_buf *certDer) {
+    X509 *x = x509_parse_cert(certDer);
+    if(!x)
+        return false;
+    bool hit = false;
+    const UA_ByteString *lists[2] = {tl->trustedCrls, tl->issuerCrls};
+    size_t sizes[2] = {tl->trustedCrlsSize, tl->issuerCrlsSize};
+    for(size_t l = 0; l < 2 && !hit; l++) {
+        for(size_t i = 0; i < sizes[l] && !hit; i++) {
+            const unsigned char *pp = lists[l][i].data;
+            X509_CRL *crl = d2i_X509_CRL(NULL, &pp, (long)lists[l][i].length);
+            if(!crl)
+                continue;
+            X509_REVOKED *rev = NULL;
+            hit = X509_CRL_get0_by_cert(crl, &rev, x) == 1;
+            X509_CRL_free(crl);
+        }
+    }
+    X509_free(x);
+    return hit;
+}
+
+UA_StatusCode gtl_read_group(gds_target *t, UA_TrustListDataType *tl) {
+    UA_TrustListDataType_init(tl);
+    UA_StatusCode r = gt_session(t);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    return uac_read_trustlist(t->client, gtl_default(t), tl);
+}
