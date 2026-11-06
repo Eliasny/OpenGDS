@@ -90,8 +90,9 @@ static bool register_app(gds_server *s, const char *uri, UA_NodeId *appId) {
     return ok;
 }
 
-/* StartSigningRequest; the RequestId's GUID in *reqId. */
-static UA_StatusCode start(gds_server *s, const UA_NodeId *appId, UA_NodeId *reqId) {
+/* StartSigningRequest made by session `as`; the RequestId's GUID in *reqId. */
+static UA_StatusCode start_as(gds_server *s, gds_session *as, const UA_NodeId *appId,
+                              UA_NodeId *reqId) {
     gds_buf csr = {0};
     if(make_csr(&csr) != GDS_OK)
         return UA_STATUSCODE_BADINTERNALERROR;
@@ -103,7 +104,9 @@ static UA_StatusCode start(gds_server *s, const UA_NodeId *appId, UA_NodeId *req
     UA_Variant_setScalar(&in[1], &group, &UA_TYPES[UA_TYPES_NODEID]);
     UA_Variant_setScalar(&in[2], &type, &UA_TYPES[UA_TYPES_NODEID]);
     UA_Variant_setScalar(&in[3], &csrBs, &UA_TYPES[UA_TYPES_BYTESTRING]);
-    UA_CallMethodResult res = call(s, UA_GDSID_DIRECTORY_STARTSIGNINGREQUEST, in, 4);
+    UA_CallMethodResult res = call_on(s, as, UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY),
+                                      UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY_STARTSIGNINGREQUEST),
+                                      in, 4);
     UA_StatusCode r = res.statusCode;
     if(r == UA_STATUSCODE_GOOD &&
        !(res.outputArgumentsSize == 1 &&
@@ -113,6 +116,10 @@ static UA_StatusCode start(gds_server *s, const UA_NodeId *appId, UA_NodeId *req
     UA_CallMethodResult_clear(&res);
     gds_buf_free(&csr);
     return r;
+}
+
+static UA_StatusCode start(gds_server *s, const UA_NodeId *appId, UA_NodeId *reqId) {
+    return start_as(s, &admin, appId, reqId);
 }
 
 static UA_StatusCode finish(gds_server *s, const UA_NodeId *appId, const UA_NodeId *reqId) {
@@ -291,19 +298,58 @@ static void test_failover(gds_server *s, gds_store *st, const UA_NodeId *appId) 
 }
 
 /* Renewals: the app with a certificate is approved on arrival; a new one waits. */
-static void test_renewals(gds_server *s, const UA_NodeId *appId) {
-    UA_NodeId r1 = UA_NODEID_NULL, r2 = UA_NODEID_NULL, other = UA_NODEID_NULL;
-    if(CHECK_EQ_INT(start(s, appId, &r1), UA_STATUSCODE_GOOD)) {
+/* A session whose secure channel uses the application's newest certificate. */
+static bool holder_of_latest(gds_store *st, const UA_NodeId *appId, gds_session *out) {
+    gds_buf der = {0};
+    int64_t notAfter = 0;
+    memset(out, 0, sizeof(*out));
+    if(!CHECK(gds_store_cert_latest(st, &appId->identifier.guid,
+                                    UA_GDSID_DIRECTORY_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP,
+                                    UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE, &der,
+                                    &notAfter) == GDS_OK))
+        return false;
+    out->securityMode = UA_MESSAGESECURITYMODE_SIGNANDENCRYPT;
+    out->clientAppUri = UA_STRING_ALLOC(TEST_URI ":app");
+    out->clientCert.data = der.data; /* owned by the session now */
+    out->clientCert.length = der.len;
+    return true;
+}
+
+static void holder_clear(gds_session *h) {
+    UA_String_clear(&h->clientAppUri);
+    UA_ByteString_clear(&h->clientCert);
+}
+
+/* Only the holder of the prior certificate renews without approval. */
+static void test_renewals(gds_server *s, gds_store *st, const UA_NodeId *appId) {
+    UA_NodeId r1 = UA_NODEID_NULL, r2 = UA_NODEID_NULL, r3 = UA_NODEID_NULL,
+              r4 = UA_NODEID_NULL, other = UA_NODEID_NULL;
+    gds_session holder, older;
+    memset(&older, 0, sizeof(older));
+    if(holder_of_latest(st, appId, &holder) &&
+       CHECK_EQ_INT(start_as(s, &holder, appId, &r1), UA_STATUSCODE_GOOD)) {
         CHECK(!dialog_exists(s, &r1));
         CHECK_EQ_INT(finish_wait(s, appId, &r1), UA_STATUSCODE_GOOD);
     }
-    if(register_app(s, TEST_URI ":new", &other) &&
-       CHECK_EQ_INT(start(s, &other, &r2), UA_STATUSCODE_GOOD)) {
+    /* the certificate just replaced no longer renews */
+    older = holder;
+    if(holder_of_latest(st, appId, &holder) &&
+       CHECK_EQ_INT(start_as(s, &older, appId, &r2), UA_STATUSCODE_GOOD))
         CHECK(dialog_exists(s, &r2));
-        CHECK_EQ_INT(finish(s, &other, &r2), UA_STATUSCODE_BADNOTHINGTODO);
+    /* an administrator does not hold the certificate */
+    if(CHECK_EQ_INT(start(s, appId, &r3), UA_STATUSCODE_GOOD))
+        CHECK(dialog_exists(s, &r3));
+    if(register_app(s, TEST_URI ":new", &other) &&
+       CHECK_EQ_INT(start(s, &other, &r4), UA_STATUSCODE_GOOD)) {
+        CHECK(dialog_exists(s, &r4));
+        CHECK_EQ_INT(finish(s, &other, &r4), UA_STATUSCODE_BADNOTHINGTODO);
     }
+    holder_clear(&holder);
+    holder_clear(&older);
     UA_NodeId_clear(&r1);
     UA_NodeId_clear(&r2);
+    UA_NodeId_clear(&r3);
+    UA_NodeId_clear(&r4);
     UA_NodeId_clear(&other);
 }
 
@@ -384,7 +430,7 @@ int main(int argc, char **argv) {
     cfg.approval = GDS_APPROVE_RENEWALS;
     if(CHECK(gds_server_new(&cfg, &s) == GDS_OK) && s) {
         UA_Server_setAdminSessionContext(gds_server_ua(s), &admin);
-        test_renewals(s, &appId);
+        test_renewals(s, st, &appId);
         UA_Server_setAdminSessionContext(gds_server_ua(s), NULL);
     }
     gds_server_delete(s);

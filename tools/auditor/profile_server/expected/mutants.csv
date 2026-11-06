@@ -59,5 +59,15 @@ update-accept-bad-key,SRV-UPD-10,fail
 getcerts-mismatched,SRV-UPD-11,fail
 selfsigned-overwrite,SRV-UPD-12,fail
 delete-in-use,SRV-UPD-13,fail
+apply-required-false,SRV-TXN-01,fail
+apply-early,SRV-TXN-02,fail
 apply-ignored,SRV-TXN-03,fail
+cancel-keeps-trustlist,SRV-TXN-04,fail
+txn-survives-session,SRV-TXN-05,fail
+txn-interleave,SRV-TXN-06,fail
+apply-any-session,SRV-TXN-07,fail
+apply-while-open,SRV-TXN-08,fail
+apply-nothing-good,SRV-TXN-09,fail
+fail-aborts-txn,SRV-TXN-10,fail
+apply-partial,SRV-TXN-11,fail
 wire-old-cert,SRV-WIRE-01,fail

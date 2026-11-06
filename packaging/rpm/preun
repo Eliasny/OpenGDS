@@ -1,0 +1,6 @@
+# opengds %preun: stop the service on removal (not on upgrade).
+# SPDX-License-Identifier: MPL-2.0
+if [ "$1" -eq 0 ] && [ -d /run/systemd/system ]; then
+    systemctl stop opengds.service opengds-signer.socket || :
+    systemctl disable opengds.service opengds-signer.socket || :
+fi

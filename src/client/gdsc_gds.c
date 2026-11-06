@@ -106,6 +106,32 @@ UA_StatusCode gdsc_register_application(UA_Client *c, UA_UInt16 ns,
     return r;
 }
 
+UA_StatusCode gdsc_unregister_application(UA_Client *c, UA_UInt16 ns,
+                                          const UA_NodeId *applicationId) {
+    UA_Variant in, *out = NULL;
+    size_t outN = 0;
+    UA_Variant_setScalar(&in, (void *)(uintptr_t)applicationId, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_StatusCode r =
+        dir_call(c, ns, UA_GDSID_DIRECTORY_UNREGISTERAPPLICATION, 1, &in, 0, &out, &outN);
+    out_free(out, outN);
+    return r;
+}
+
+UA_StatusCode gdsc_revoke_certificate(UA_Client *c, UA_UInt16 ns, const UA_NodeId *applicationId,
+                                      const gds_buf *cert) {
+    if(!cert || !cert->data || cert->len == 0 || cert->len > GDS_MAX_CERT_SIZE)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    UA_ByteString bs = {cert->len, cert->data};
+    UA_Variant in[2], *out = NULL;
+    size_t outN = 0;
+    UA_Variant_setScalar(&in[0], (void *)(uintptr_t)applicationId, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[1], &bs, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    UA_StatusCode r =
+        dir_call(c, ns, UA_GDSID_DIRECTORY_REVOKECERTIFICATE, 2, in, 0, &out, &outN);
+    out_free(out, outN);
+    return r;
+}
+
 static UA_StatusCode start_signing(UA_Client *c, UA_UInt16 ns, const UA_NodeId *appId,
                                    const UA_NodeId *group, const UA_NodeId *certType,
                                    const gds_buf *csr, UA_NodeId *reqId) {
