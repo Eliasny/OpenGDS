@@ -1,0 +1,63 @@
+# OpenGDS with the signer in its own container (docs/architecture.md,
+# "Containers"; docs/packaging.md, "Container").
+#
+#   mkdir -p etc && cp opengds.conf users etc/      # see docs/packaging.md
+#   printf '%s' 'the CA key passphrase' > ca-passphrase && chmod 0400 ca-passphrase
+#   docker compose -f packaging/docker/compose.yaml up -d
+#
+# Only the signer container gets the passphrase and the CA volume. The two
+# share the socket volume, and the signer mounts the store read-only.
+# SPDX-License-Identifier: MPL-2.0
+name: opengds
+
+x-hardening: &hardening
+  image: ${OPENGDS_IMAGE:-ghcr.io/eliasny/opengds:latest}
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp:size=16m,mode=1777"]
+  restart: on-failure
+
+services:
+  signer:
+    <<: *hardening
+    user: "10002:10001"
+    network_mode: none
+    entrypoint:
+      - /usr/libexec/opengds/opengds-signer
+      - --listen
+      - /run/opengds/signer.sock
+      - --store
+      - /var/lib/opengds/opengds.db
+      - --ca-dir
+      - /var/lib/opengds-signer/ca
+      - --passphrase-file
+      - /run/secrets/ca-passphrase
+    secrets:
+      - source: ca-passphrase
+        uid: "10002"
+        gid: "10001"
+        mode: 0400
+    volumes:
+      - signer-state:/var/lib/opengds-signer
+      - gds-state:/var/lib/opengds:ro
+      - signer-socket:/run/opengds
+
+  opengdsd:
+    <<: *hardening
+    user: "10001:10001"
+    depends_on: [signer]
+    ports: ["58810:58810"]
+    volumes:
+      - ${OPENGDS_ETC:-./etc}:/etc/opengds:ro
+      - gds-state:/var/lib/opengds
+      - signer-socket:/run/opengds
+
+secrets:
+  ca-passphrase:
+    file: ${OPENGDS_CA_PASSPHRASE:-./ca-passphrase}
+
+volumes:
+  gds-state:
+  signer-state:
+  signer-socket:

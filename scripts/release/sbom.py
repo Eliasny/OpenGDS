@@ -171,14 +171,27 @@ def main():
         o6["comment"] = "Built from %s with the OpenGDS patches %s" % (o6_commit, patch_note)
     add(o6, "STATIC_LINK")
 
-    # open62541's submodules, at the commits the pinned tag records.
+    # open62541's submodules that end up in the library, at the commits the
+    # pinned tag records. ua-nodeset supplies the compiled-in GDS model; the
+    # others count only when the feature that builds them is on.
     o6_src = os.path.join(a.open62541_prefix, "src/open62541")
+    try:
+        with open(os.path.join(a.open62541_prefix, "include/open62541/config.h"), encoding="utf-8") as f:
+            o6_config = f.read()
+    except OSError:
+        sys.exit("sbom.py: open62541 config.h not found under %s" % a.open62541_prefix)
+    linked = {"ua-nodeset": True}
+    for sub, feature in (("mdnsd", "UA_ENABLE_DISCOVERY_MULTICAST_MDNSD"), ("mqtt-c", "UA_ENABLE_MQTT"),
+                         ("nodesetLoader", "UA_ENABLE_NODESETLOADER")):
+        linked[sub] = re.search(r"^#define %s\b" % feature, o6_config, re.M) is not None
     subs = run(["git", "-C", o6_src, "submodule", "status"]) or ""
     for line in subs.splitlines():
         parts = line.strip().lstrip("+-U").split()
         if len(parts) < 2:
             continue
         sub_commit, sub_path = parts[0], parts[1]
+        if not linked.get(os.path.basename(sub_path), False):
+            continue
         url = run(["git", "-C", o6_src, "config", "-f", ".gitmodules", "--get",
                    "submodule.%s.url" % sub_path]) or "NOASSERTION"
         pkg = {
