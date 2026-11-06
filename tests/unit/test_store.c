@@ -1,0 +1,133 @@
+/* OpenGDS unit test: SQLite store (src/store).
+ * SPDX-License-Identifier: MPL-2.0 */
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include "check.h"
+#include "common/buf.h"
+#include "common/ids.h"
+#include "store.h"
+#include "common/banned.h"
+
+static UA_Guid rnd_guid(void) {
+    UA_Guid g;
+    UA_Guid_init(&g);
+    CHECK(gds_guid_random(&g) == GDS_OK);
+    return g;
+}
+
+static void make_record(UA_ApplicationRecordDataType *rec, const char *uri,
+                        UA_LocalizedText *name) {
+    UA_ApplicationRecordDataType_init(rec);
+    rec->applicationUri = UA_STRING((char *)(uintptr_t)uri);
+    rec->applicationType = UA_APPLICATIONTYPE_CLIENT;
+    *name = UA_LOCALIZEDTEXT("en", "Unit test app");
+    rec->applicationNames = name;
+    rec->applicationNamesSize = 1;
+    rec->productUri = UA_STRING("urn:opengds:test:product");
+}
+
+static void test_apps(gds_store *s, const UA_Guid *id, const UA_Guid *id2) {
+    UA_ApplicationRecordDataType rec;
+    UA_LocalizedText name;
+    make_record(&rec, "urn:opengds:test:a", &name);
+    CHECK(gds_store_app_insert(s, id, &rec) == GDS_OK);
+    CHECK(gds_store_app_insert(s, id2, &rec) == GDS_EEXISTS);
+
+    UA_ApplicationRecordDataType *found = NULL;
+    size_t n = 0;
+    UA_String uri = UA_STRING("urn:opengds:test:a");
+    CHECK(gds_store_app_find_uri(s, &uri, 10, &found, &n) == GDS_OK);
+    if(CHECK_EQ_INT(n, 1)) {
+        CHECK(found[0].applicationId.identifierType == UA_NODEIDTYPE_GUID &&
+              UA_Guid_equal(&found[0].applicationId.identifier.guid, id));
+        CHECK(UA_String_equal(&found[0].applicationUri, &uri));
+        CHECK_EQ_INT(found[0].applicationNamesSize, 1);
+    }
+    UA_Array_delete(found, n, &UA_TYPES_GDS[UA_TYPES_GDS_APPLICATIONRECORDDATATYPE]);
+    UA_String none = UA_STRING("urn:opengds:test:none");
+    CHECK(gds_store_app_find_uri(s, &none, 10, &found, &n) == GDS_OK && n == 0 && !found);
+
+    UA_ApplicationRecordDataType got;
+    CHECK(gds_store_app_get(s, id, &got) == GDS_OK);
+    CHECK(UA_String_equal(&got.applicationUri, &uri));
+    UA_ApplicationRecordDataType_clear(&got);
+    CHECK(gds_store_app_get(s, id2, &got) == GDS_ENOTFOUND);
+}
+
+/* Received -> Issued */
+static void test_requests(gds_store *s, const UA_Guid *appId) {
+    gds_request q;
+    memset(&q, 0, sizeof(q));
+    q.id = rnd_guid();
+    q.appId = *appId;
+    q.groupId = 615;
+    q.certType = 12557;
+    q.state = GDS_REQ_RECEIVED;
+    uint8_t csr[] = {0x30, 0x03, 0x02, 0x01, 0x00};
+    q.csr.data = csr;
+    q.csr.len = sizeof(csr);
+    CHECK(gds_store_req_insert(s, &q) == GDS_OK);
+    gds_request next;
+    CHECK(gds_store_req_next_received(s, &next) == GDS_OK);
+    CHECK(UA_Guid_equal(&next.id, &q.id) && next.csr.len == sizeof(csr));
+    gds_request_clear(&next);
+    gds_buf cert = {csr, sizeof(csr)};
+    CHECK(gds_store_req_set_state(s, &q.id, GDS_REQ_ISSUED, &cert, UA_STATUSCODE_GOOD) == GDS_OK);
+    CHECK(gds_store_req_next_received(s, &next) == GDS_ENOTFOUND);
+    CHECK(gds_store_req_get(s, &q.id, &next) == GDS_OK);
+    CHECK_EQ_INT(next.state, GDS_REQ_ISSUED);
+    CHECK_EQ_INT(next.cert.len, sizeof(csr));
+    gds_request_clear(&next);
+    UA_Guid unknown = rnd_guid();
+    CHECK(gds_store_req_set_state(s, &unknown, GDS_REQ_ISSUED, NULL, 0) == GDS_ENOTFOUND);
+}
+
+static void test_certs(gds_store *s, const UA_Guid *id, const UA_Guid *id2) {
+    uint8_t serial[] = {1, 2, 3};
+    uint8_t body[] = {0x30, 0x03, 0x02, 0x01, 0x00};
+    gds_buf ser = {serial, sizeof(serial)};
+    gds_buf cert = {body, sizeof(body)};
+    CHECK(gds_store_cert_add(s, id, 615, 12557, &ser, &cert, 100, 200) == GDS_OK);
+    gds_buf der = {0};
+    int64_t notAfter = 0;
+    CHECK(gds_store_cert_latest(s, id, 615, 12557, &der, &notAfter) == GDS_OK);
+    CHECK(der.len == sizeof(body) && notAfter == 200);
+    gds_buf_free(&der);
+    CHECK(gds_store_cert_latest(s, id2, 615, 12557, &der, &notAfter) == GDS_ENOTFOUND);
+}
+
+int main(int argc, char **argv) {
+    if(argc < 2) {
+        fprintf(stderr, "usage: %s <dir>\n", argv[0]);
+        return 2;
+    }
+    char path[1024];
+    CHECK(gds_mkdirs(argv[1], 0700) == GDS_OK);
+    CHECK(gds_path(path, sizeof(path), "%s/store.db", argv[1]) == GDS_OK);
+    (void)unlink(path);
+
+    gds_store *s = NULL;
+    if(!CHECK(gds_store_open(path, &s) == GDS_OK) || !s)
+        return CHECK_DONE();
+    CHECK_EQ_INT(gds_store_schema_version(s), 1);
+    struct stat sb;
+    CHECK(stat(path, &sb) == 0 && (sb.st_mode & 0777) == 0600);
+
+    UA_Guid id = rnd_guid(), id2 = rnd_guid();
+    test_apps(s, &id, &id2);
+    test_requests(s, &id);
+    test_certs(s, &id, &id2);
+    gds_store_close(s);
+
+    /* everything survives a reopen */
+    if(CHECK(gds_store_open(path, &s) == GDS_OK) && s) {
+        UA_ApplicationRecordDataType got;
+        CHECK(gds_store_app_get(s, &id, &got) == GDS_OK);
+        UA_ApplicationRecordDataType_clear(&got);
+        gds_store_close(s);
+    }
+    return CHECK_DONE();
+}
