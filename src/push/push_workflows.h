@@ -19,11 +19,16 @@
 
 #include "common/buf.h"
 #include "common/compiler.h"
+#include "common/limits.h"
 
-/* Signs the Server's CSR. In opengdsd this records the request in the store
- * and calls gds_ca_sign_csr (the signer builds every field from the
- * registered record, decision G5). *certOut is owned by the caller. */
-typedef gds_status (*push_sign_fn)(void *ctx, const gds_buf *csrDer, gds_buf *certOut);
+/* Signs the Server's CSR: gdsadm sends it to the GDS (StartSigningRequest,
+ * FinishRequest); inside opengdsd it would record a store request and call
+ * gds_ca_sign_csr. Either way every field comes from the registered record
+ * (decision G5). The callback may also return the issuer chain
+ * (issuersOut has GDS_MAX_CHAIN_LEN slots); when it returns none, the job's
+ * issuers are sent. Outputs are owned by the caller (the report). */
+typedef gds_status (*push_sign_fn)(void *ctx, const gds_buf *csrDer, gds_buf *certOut,
+                                   gds_buf *issuersOut, size_t *issuersN);
 
 typedef struct {
     UA_NodeId certificateGroup; /* e.g. GDSC_DEFAULT_APP_GROUP */
@@ -56,6 +61,8 @@ typedef struct {
     bool cancelled;            /* CancelChanges was called after a failure */
     UA_StatusCode cancelCode;  /* its result (Bad_MethodInvalid: Server has no transactions) */
     gds_buf issued;            /* the certificate sent, DER; freed by push_report_clear */
+    gds_buf issuers[GDS_MAX_CHAIN_LEN]; /* issuer chain from the sign callback */
+    size_t issuersN;
 } push_report;
 
 void push_report_clear(push_report *r);

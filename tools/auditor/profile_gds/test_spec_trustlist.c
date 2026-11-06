@@ -137,7 +137,7 @@ static void t_write_anonymous(ga_ctx *ctx, void *p) {
 }
 
 const ga_test spec_trustlist_tests[] = {
-    {"gds.tl.get_trustlist", "12 §7.9.8", "GetTrustList returns a readable trust list with the CA",
+    {"gds.tl.get_trustlist", "12 §7.9.9", "GetTrustList returns a readable trust list with the CA",
      true, false, t_get_trustlist},
     {"gds.tl.read_bad_handle", "5 Annex C.2.4", "TrustList Read refuses a handle that was never opened",
      false, false, t_read_bad_handle},

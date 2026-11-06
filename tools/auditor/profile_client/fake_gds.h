@@ -46,6 +46,7 @@ typedef enum { FG_TOKEN_ANONYMOUS = 0, FG_TOKEN_USERNAME, FG_TOKEN_X509, FG_TOKE
 typedef struct {
     UA_NodeId id;
     UA_MessageSecurityMode mode;  /* of the SecureChannel it runs on */
+    char policy[128];             /* SecurityPolicy URI of that channel */
     fg_token token;
     char certUri[FG_MAX_URI];     /* SAN URI of the channel's client certificate */
     double tOpen, tClose;         /* monotonic ms */
@@ -58,18 +59,30 @@ typedef enum {
     FG_ISSUE_UNTRUSTED, /* signed by FG_CA_OTHER, which no list holds */
     FG_ISSUE_WRONG_KEY, /* a certificate for another key pair */
     FG_ISSUE_WRONG_URI, /* SAN URI of another application */
-    FG_ISSUE_EXPIRED    /* notAfter in the past */
+    FG_ISSUE_EXPIRED,   /* notAfter in the past */
+    FG_ISSUE_ROGUE      /* signed by FG_CA_ROGUE (the rogue GDS hands it out) */
 } fg_issue;
 
 /* Content of the trust list the TrustList file serves (CLI-TL-03..06) */
 typedef enum {
     FG_TL_MAIN = 0,  /* the GDS CA and its CRL */
     FG_TL_WITH_X,    /* plus CA X in TrustedCertificates */
-    FG_TL_ISSUER_Y   /* plus CA Y in IssuerCertificates only */
+    FG_TL_ISSUER_Y,  /* plus CA Y in IssuerCertificates only */
+    FG_TL_ROGUE      /* only the rogue CA (what a rogue GDS would serve) */
 } fg_tl;
 
 /* The CAs of the fixture (TEST CAs, one directory each below workDir) */
-typedef enum { FG_CA_MAIN = 0, FG_CA_X, FG_CA_Y, FG_CA_OTHER, FG_CA_COUNT } fg_ca_id;
+typedef enum { FG_CA_MAIN = 0, FG_CA_X, FG_CA_Y, FG_CA_OTHER, FG_CA_ROGUE, FG_CA_COUNT } fg_ca_id;
+
+/* The certificate the fake GDS presents (CLI-TRU-*) */
+typedef enum {
+    FG_ID_MAIN = 0, /* from the GDS CA the client was told to trust */
+    FG_ID_ROGUE,    /* from FG_CA_ROGUE, which the client does not trust */
+    FG_ID_REVOKED,  /* from the GDS CA, revoked in the CRL handed to the client */
+    FG_ID_EXPIRED,  /* from the GDS CA, expired */
+    FG_ID_WRONGURI, /* from the GDS CA, SAN URI not the GDS ApplicationUri */
+    FG_ID_COUNT
+} fg_identity;
 
 /* One method call as the client made it. Owned by the fake GDS. */
 typedef struct {
@@ -101,6 +114,7 @@ typedef struct {
     bool tlChanged;             /* the trust list changes (new LastUpdateTime) for this cycle */
     fg_issue issue;
     fg_tl tl;
+    fg_identity identity;       /* not MAIN: the server restarts with that certificate */
 } fg_behaviour;
 
 typedef struct {

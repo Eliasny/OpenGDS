@@ -1,0 +1,5 @@
+# OpenGDS users
+admin DiscoveryAdmin,CertificateAuthorityAdmin,SecurityAdmin pbkdf2-sha256:100000:00112233445566778899aabbccddeeff:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+observer Observer pbkdf2-sha256:10000:00112233445566778899aabbccddeeff:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  # read only
+nobody - pbkdf2-sha256:10000000:00112233445566778899aabbccddeeff:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
