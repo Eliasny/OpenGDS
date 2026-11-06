@@ -1,6 +1,6 @@
 # Research
 
-Desk research on the open risks in the project context and the Auditor plan, done in week 1. Every claim links to a public source, read on 2026-11-06. This is not legal advice: the trademark note lists what a short lawyer review should confirm.
+Desk research on the open risks in the project context and the Auditor plan, done in week 1. Every claim links to a public source, read on 2026-11-06. This is not legal advice. Elias decided on 2026-11-06 that trademark use is not a concern, so no lawyer review is planned.
 
 | Note | Question | Short answer |
 |---|---|---|
@@ -11,7 +11,7 @@ Desk research on the open risks in the project context and the Auditor plan, don
 ## What changes in the plans
 
 1. **Join the OPC Foundation as a Startup member** ($500 a year) once the company that will own the OpenGDS trademark exists. It brings the CTT, which now automates GDS client and server tests, for OpenGDS 1.0 and Auditor reference runs. Step up to Corporate D before certifying UASM to get the lab discount. This closes the "CTT access" open decision in the project context.
-2. **Rename UASM before any public use.** UASM is a MASM-compatible assembler packaged in Arch, MSYS2, openSUSE and Gentoo. Sharing the name with a developer tool makes search and any trademark filing harder. "OpenGDS" is usable: the two projects using it are dormant and in other fields.
+2. **UASM keeps its name for now** (decided 2026-11-06), despite the clash: UASM is a MASM-compatible assembler packaged in Arch, MSYS2, openSUSE and Gentoo. Sharing the name with a developer tool makes search and any trademark filing harder. "OpenGDS" is usable: the two projects using it are dormant and in other fields.
 3. **Use "OpenGDS Auditor"**, never a name with "OPC" or "OPC UA" in it. Keep the planned report line, and use the wording rules in note 1 on reports, the README and the website.
-4. **Contact Fraunhofer IOSB early**, as the plan already says. Their GDS is still unreleased, so OpenGDS can be first with an open, MPL-licensed C GDS, but a release from them would compete head on.
-5. **Download and read OPC 20100 Trademark Guideline v1.00 (2026-03-02)** before Auditor 1.0. It needs a free OPC Foundation login, so this research could read only its summary.
+4. **No contact with Fraunhofer IOSB** (decided 2026-11-06). Their GDS is still unreleased, so OpenGDS can be first with an open, MPL-licensed C GDS. A release from them would compete head on, so watch their product page and the open62541 repository.
+5. **No trademark follow-up** (decided 2026-11-06): no lawyer review and no reading of the OPC 20100 guideline is planned.

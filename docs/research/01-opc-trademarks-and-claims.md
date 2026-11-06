@@ -2,13 +2,13 @@
 
 **Question:** can the project use the names "OpenGDS", "OpenGDS Auditor" and "UASM", and the report wording "self-test, not OPC Foundation certification"? What must it avoid?
 
-**Answer:** yes to all four, with the rules below. Not legal advice: the last section lists what a lawyer should confirm.
+**Answer:** yes to all four, with the rules below. Not legal advice. Elias decided on 2026-11-06 that trademark use is not a concern, so this note is for reference only, with no lawyer review planned.
 
 ## What the Foundation owns
 
 - The Foundation holds US registrations for the word marks **OPC**, **OPC UA**, **OPC FOUNDATION** and **CERTIFIED FOR COMPLIANCE OPC FOUNDATION**, among 14 US filings ([trademark portfolio](https://trademarkdir.com/owner/opc-foundation)). Its own site lists "OPC Foundation", its logo, the "OPC UA" logo "and other OPC Foundation logos and titles" as its marks ([Specifications Agreement of Use, section G](https://opcfoundation.org/license/specifications/1.15/)).
 - Word marks such as "OPC UA CX™" and "OPC UA FX™" are also claimed ([OPC 20100 summary](https://opcfoundation.org/developer-tools/documents/view/379/)).
-- The governing document is **OPC 20100 Trademark Guideline, v1.00, 2026-03-02**. It covers organization logos ("OPC Foundation® Member"), technology logos ("OPC UA®") and certification logos, and "applies to all communication channels" ([summary page](https://opcfoundation.org/developer-tools/documents/view/379/)). The full text needs a login, so this note relies on the agreements below. Read it before Auditor 1.0.
+- The governing document is **OPC 20100 Trademark Guideline, v1.00, 2026-03-02**. It covers organization logos ("OPC Foundation® Member"), technology logos ("OPC UA®") and certification logos, and "applies to all communication channels" ([summary page](https://opcfoundation.org/developer-tools/documents/view/379/)). The full text needs a login, so this note relies on the agreements below.
 
 ## Rules from the Foundation's agreements
 
@@ -43,10 +43,5 @@ open62541 shows the accepted pattern: it says only its reference server is "OPC 
 | Plain text "OPC UA" with ® on first mention in prose (for example "OPC UA®") | Any Foundation logo, the "Certified for Compliance" mark, or "OPC" in a product name, logo, domain or package name |
 | A trademark notice in the README and reports: "OPC UA and OPC Foundation are trademarks of the OPC Foundation. OpenGDS is not affiliated with or endorsed by the OPC Foundation." | Implying endorsement, partnership or membership before joining |
 
-The Auditor preset called "pre-certification" in the plan is fine as a preset name only if its description says it prepares for certification and is not one. "Preparation for certification" is safer.
+The Auditor preset keeps its name "pre-certification" (decided 2026-11-06).
 
-## For the lawyer
-
-1. Confirm the OPC 20100 rules for using "OPC UA" as descriptive text in an open-source product's README, website and reports.
-2. Clearance search for "OpenGDS" and the UASM replacement in EU, US and Finnish registers, classes 9 and 42.
-3. Which company files the OpenGDS trademark (already an open decision in the project context).

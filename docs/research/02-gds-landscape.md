@@ -20,7 +20,7 @@ open62541 implements only the **push target**: the [GDS Receiver driver](https:/
 ### What this means for OpenGDS
 
 - Nobody ships an open-source, production-grade GDS in C today. The .NET GDS is the only free, complete one, and it targets C# shops. OpenGDS's position holds, but the window depends on Fraunhofer's release.
-- Fraunhofer is the main risk and also the best ally: same library, same maintainers. Talking to them early (already planned) could turn a rival into upstream reviewers, or show that their release is close and licensed differently.
+- Fraunhofer's release is the main competitive risk: same library and same maintainers. By decision (2026-11-06) the project will not contact Fraunhofer IOSB. Watch their product page and the open62541 repository instead.
 - Trustpoint could use OpenGDS as its pull-side GDS, or OpenGDS could use Trustpoint as an external CA through the plugin API.
 - UASM's commercial rivals are UaGDS and SGDS. Their public product pages, as read for this note, mention no primary/standby cluster, HSM support or Part 21 onboarding, which supports UASM's focus. Their manuals were not checked.
 
