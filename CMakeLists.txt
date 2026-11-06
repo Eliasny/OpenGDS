@@ -37,6 +37,7 @@ add_subdirectory(src/store)
 add_subdirectory(src/ca)
 add_subdirectory(src/signer)
 add_subdirectory(src/server)
+add_subdirectory(src/daemon)
 add_subdirectory(tests/unit)
 
 if(OPENGDS_BUILD_AUDITOR)
