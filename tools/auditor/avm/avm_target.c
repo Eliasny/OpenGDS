@@ -192,7 +192,7 @@ gboolean avm_target_name_ok(const char *name) {
     size_t len = name ? strlen(name) : 0;
     if(len == 0 || len > MAX_NAME || !g_utf8_validate(name, -1, NULL))
         return FALSE;
-    for(const char *c = name; *c; c = g_utf8_next_char(c)) {
+    for(const char *c = name; *c; c += g_utf8_skip[*(const guchar *)c]) {
         gunichar u = g_utf8_get_char(c);
         if(g_unichar_iscntrl(u) || u == '[' || u == ']')
             return FALSE;
