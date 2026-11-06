@@ -19,6 +19,14 @@ There are two ways to run the signer:
 
 Without `signer`, the CA runs inside `opengdsd`. That mode is for development only, and the daemon warns about it at startup.
 
+Once its socket, store and CA are open, the signer sandboxes itself (`src/common/sandbox.c`), on top of what the systemd unit applies:
+
+- `PR_SET_NO_NEW_PRIVS`.
+- Landlock: the CA directory read-write, the store's directory read (plus write to SQLite's existing shared-memory file), the passphrase file or `$CREDENTIALS_DIRECTORY` read-only, and nothing else. It also allows no TCP bind or connect and, on kernels with Landlock ABI 6, no signals or abstract sockets outside the process. On kernels without Landlock the signer logs a warning and goes on.
+- seccomp: an allowlist of the system calls it uses. Any other call fails with EPERM. `execve`, `ptrace`, `socket`, `connect`, `bind`, `listen`, `bpf`, `keyctl`, `mount` and module loading kill the process, as does new executable memory.
+
+The log line `opengds-signer: sandbox: Landlock ABI N, seccomp on` shows what applied. seccomp needs libseccomp (2.5 or later) at build time. `-DOPENGDS_SECCOMP=ON` makes it required, and without it the build applies Landlock only. Builds with AddressSanitizer or ThreadSanitizer skip the sandbox.
+
 ## First start
 
 1. Create the users file, mode 0600:
