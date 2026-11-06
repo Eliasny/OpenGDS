@@ -39,6 +39,37 @@ static void test_rank(void) {
     CHECK_EQ_INT(gdsc_policy_rank(NULL), 0);
 }
 
+/* 12 §7.8.4: which CertificateType an endpoint's policy presents */
+static void test_cert_type(void) {
+    static const struct {
+        const char *policy;
+        UA_UInt32 type; /* 0: none */
+    } cases[] = {
+        {P "Basic128Rsa15", UA_NS0ID_RSAMINAPPLICATIONCERTIFICATETYPE},
+        {P "Basic256", UA_NS0ID_RSAMINAPPLICATIONCERTIFICATETYPE},
+        {P "Basic256Sha256", UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE},
+        {P "Aes128_Sha256_RsaOaep", UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE},
+        {P "Aes256_Sha256_RsaPss", UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE},
+        {P "ECC_nistP256", UA_NS0ID_ECCNISTP256APPLICATIONCERTIFICATETYPE},
+        {P "ECC_nistP384", UA_NS0ID_ECCNISTP384APPLICATIONCERTIFICATETYPE},
+        {P "ECC_brainpoolP256r1", UA_NS0ID_ECCBRAINPOOLP256R1APPLICATIONCERTIFICATETYPE},
+        {P "ECC_brainpoolP384r1", UA_NS0ID_ECCBRAINPOOLP384R1APPLICATIONCERTIFICATETYPE},
+        {P "ECC_curve25519", UA_NS0ID_ECCCURVE25519APPLICATIONCERTIFICATETYPE},
+        {P "ECC_curve448", UA_NS0ID_ECCCURVE448APPLICATIONCERTIFICATETYPE},
+        {P "None", 0},
+        {P "Basic256Sha2560", 0},
+        {"urn:x#Basic256Sha256", 0},
+    };
+    for(size_t i = 0; i < GDS_ARRAY_SIZE(cases); i++) {
+        UA_String u = UA_STRING((char *)(uintptr_t)cases[i].policy);
+        UA_NodeId got = gdsc_policy_cert_type(&u);
+        UA_NodeId want = cases[i].type ? UA_NODEID_NUMERIC(0, cases[i].type) : UA_NODEID_NULL;
+        CHECK(UA_NodeId_equal(&got, &want));
+    }
+    UA_NodeId nul = gdsc_policy_cert_type(NULL);
+    CHECK(UA_NodeId_isNull(&nul));
+}
+
 static void test_select(void) {
     UA_EndpointDescription eps[] = {
         ep(P "None", UA_MESSAGESECURITYMODE_NONE),
@@ -90,6 +121,7 @@ static void test_select(void) {
 
 int main(void) {
     test_rank();
+    test_cert_type();
     test_select();
     return check_done();
 }

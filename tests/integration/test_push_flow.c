@@ -183,10 +183,17 @@ static gds_status seed_wrong_uri_store(void) {
     return gds_file_write_atomic(p, F.wrongKey.data, F.wrongKey.len, 0600);
 }
 
+/* the CertificateType the pushes replace */
+static const UA_NodeId *rsa_type(void) {
+    static UA_NodeId t;
+    t = GDSC_RSA_SHA256_APP_CERT;
+    return &t;
+}
+
 static gds_status wait_presents(const char *url, const gds_buf *cert) {
     const struct timespec step = {0, 100L * 1000L * 1000L};
     for(int i = 0; i < 100; i++) {
-        if(gdsc_wait_presents(url, cert, 0) == UA_STATUSCODE_GOOD)
+        if(gdsc_wait_presents(url, rsa_type(), cert, 0) == UA_STATUSCODE_GOOD)
             return GDS_OK;
         nanosleep(&step, NULL);
     }
@@ -196,7 +203,7 @@ static gds_status wait_presents(const char *url, const gds_buf *cert) {
 static gds_status wait_server(void) {
     const struct timespec step = {0, 100L * 1000L * 1000L};
     for(int i = 0; i < 100; i++) {
-        if(read_server_cert() == GDS_OK && gdsc_wait_presents(F.url, &F.serverCert, 0) ==
+        if(read_server_cert() == GDS_OK && gdsc_wait_presents(F.url, rsa_type(), &F.serverCert, 0) ==
                                                 UA_STATUSCODE_GOOD)
             return GDS_OK;
         gds_buf_free(&F.serverCert);
@@ -383,7 +390,7 @@ static void case_push(const UA_TrustListDataType *tl) {
     result("push", gs == GDS_OK && rep.trustListUpdated && rep.certificateUpdated && rep.applied,
            d);
     if(gs == GDS_OK) {
-        r = gdsc_wait_presents(F.url, &rep.issued, 10000);
+        r = gdsc_wait_presents(F.url, rsa_type(), &rep.issued, 10000);
         result("push-presents-issued", r == UA_STATUSCODE_GOOD, UA_StatusCode_name(r));
         verify_after_push(tl, "push-ca-trust-only");
     }

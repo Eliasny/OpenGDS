@@ -248,6 +248,26 @@ bool gds_caller_permitted(struct gds_server *s, const gds_caller *caller,
  * RolePermissions. Namespace 0 and the GDS namespace: GDS_EDENIED. */
 GDS_MUST_CHECK gds_status gds_server_remove_node(struct gds_server *s, const UA_NodeId *nodeId);
 
+/* ---- embedder Roles (UASM ask A10, issue #63) ----
+ * Roles that OpenGDS does not define, such as the OPC 10000-21
+ * RegistrarAdmin (§9.2.10, §9.2.12) and SoftwareUpdateAdmin (§9.2.5).
+ * gds_server_add_role must come before gds_server_run, on the thread that
+ * runs the server; afterwards it fails with GDS_ESTATE. Once added:
+ *   - the users file grants the Role by name (the file may be loaded
+ *     before the Role is added; gds_server_run refuses to start with
+ *     GDS_EINVAL while a name in it is no Role);
+ *   - gds_caller.roles carries roleId for the sessions that hold it;
+ *   - gds_method_def.roles and gds_role_permission.roleId may name it;
+ *   - the Role is a component of Server/ServerCapabilities/RoleSet (OPC
+ *     10000-18 §4.2): an existing Object with roleId (from a NodeSet) is
+ *     linked there, otherwise a RoleType object named `name` is created.
+ * name: letters, digits, '.', '_', '-', at most 64 characters. A name or
+ * NodeId that is taken (a built-in Role, Anonymous, AuthenticatedUser or
+ * an earlier embedder Role): GDS_EEXISTS. A NodeId in the GDS namespace:
+ * GDS_EDENIED. More than 16 embedder Roles: GDS_ETOOBIG. */
+GDS_MUST_CHECK gds_status gds_server_add_role(struct gds_server *s, const char *name,
+                                              const UA_NodeId *roleId);
+
 /* ---- audit events of other parts (UASM ask A7, issue #18) ----
  * gds_server_raise_audit_event appends the event to the store's
  * hash-chained audit log (store.h) and then, only once that committed,

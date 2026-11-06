@@ -19,8 +19,8 @@
 
 #define GDS_NS_URI "http://opcfoundation.org/UA/GDS/"
 #define GDS_MAX_PRIVILEGE_PROVIDERS 8
-/* Anonymous, AuthenticatedUser and every role of gds_role_table */
-#define GDS_MAX_CALLER_ROLES 16
+/* Anonymous, AuthenticatedUser and every built-in and embedder Role */
+#define GDS_MAX_CALLER_ROLES (2 + GDS_ROLE_BUILTIN_COUNT + GDS_MAX_EMBED_ROLES)
 
 typedef struct gds_binding gds_binding;
 typedef struct gds_job gds_job;
@@ -50,6 +50,7 @@ struct gds_server {
     pthread_cond_t workCond;
     bool workPending, workStop;
     bool plugStop; /* plugin workers stop (plugLock); here for packing */
+    bool started;  /* gds_server_run was called (__atomic); here for packing */
     /* plugin privilege providers, fixed before the server runs */
     gds_privilege_provider privProviders[GDS_MAX_PRIVILEGE_PROVIDERS];
     size_t nPrivProviders;

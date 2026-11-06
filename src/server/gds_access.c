@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
+#include <limits.h>
 
 #include "common/safeint.h"
 #include "common/banned.h"
@@ -115,8 +117,145 @@ const gds_role_info *gds_role_table(size_t *n) {
     return roleTable;
 }
 
-static bool parse_roles(span f, unsigned *roles) {
-    *roles = 0;
+/* ---- embedder Roles (A10) ----
+ * Added on the server thread before the server runs and read after, so
+ * they need no lock; gds_access_uninstall clears them. */
+typedef struct {
+    char name[GDS_MAX_ROLE_NAME + 1];
+    UA_NodeId id;
+} embed_role;
+static embed_role embedRoles[GDS_MAX_EMBED_ROLES];
+static size_t nEmbedRoles;
+static const gds_users *installedUsers;
+
+_Static_assert(sizeof(roleTable) / sizeof(roleTable[0]) == GDS_ROLE_BUILTIN_COUNT,
+               "GDS_ROLE_BUILTIN_COUNT");
+_Static_assert(GDS_ROLE_EMBED_FIRST_BIT + GDS_MAX_EMBED_ROLES <= 31, "role bits");
+
+size_t gds_role_count(void) {
+    return GDS_ROLE_BUILTIN_COUNT + nEmbedRoles;
+}
+
+void gds_role_at(size_t i, UA_UInt16 gdsNs, UA_NodeId *id, unsigned *bit, const char **name) {
+    if(i < GDS_ROLE_BUILTIN_COUNT) {
+        const gds_role_info *r = &roleTable[i];
+        *id = UA_NODEID_NUMERIC(r->gdsNamespace ? gdsNs : 0, r->id);
+        *bit = r->bit;
+        *name = r->name;
+        return;
+    }
+    const embed_role *e = &embedRoles[i - GDS_ROLE_BUILTIN_COUNT];
+    *id = e->id;
+    *bit = 1u << (GDS_ROLE_EMBED_FIRST_BIT + (i - GDS_ROLE_BUILTIN_COUNT));
+    *name = e->name;
+}
+
+unsigned gds_role_bit(UA_UInt16 gdsNs, const UA_NodeId *id) {
+    for(size_t i = 0; i < gds_role_count(); i++) {
+        UA_NodeId r;
+        unsigned bit = 0;
+        const char *name = NULL;
+        gds_role_at(i, gdsNs, &r, &bit, &name);
+        if(UA_NodeId_equal(&r, id))
+            return bit;
+    }
+    return 0;
+}
+
+static bool role_name_ok(span f) {
+    if(f.n == 0 || f.n > GDS_MAX_ROLE_NAME || span_eq(f, "Anonymous") ||
+       span_eq(f, "AuthenticatedUser") || span_eq(f, "-"))
+        return false;
+    for(size_t i = 0; i < f.n; i++) {
+        char c = f.p[i];
+        if(!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+             c == '.' || c == '_' || c == '-'))
+            return false;
+    }
+    return true;
+}
+
+static unsigned role_by_name(span f) {
+    for(size_t i = 0; i < gds_role_count(); i++) {
+        UA_NodeId id;
+        unsigned bit = 0;
+        const char *name = NULL;
+        gds_role_at(i, 0, &id, &bit, &name);
+        if(span_eq(f, name))
+            return bit;
+    }
+    return 0;
+}
+
+gds_status gds_access_add_role(const char *name, const UA_NodeId *id, UA_UInt16 gdsNs) {
+    if(!name || !id || UA_NodeId_isNull(id))
+        return GDS_EINVAL;
+    span f = {name, strlen(name)};
+    if(f.n > GDS_MAX_ROLE_NAME || !role_name_ok(f))
+        return span_eq(f, "Anonymous") || span_eq(f, "AuthenticatedUser") ? GDS_EEXISTS
+                                                                            : GDS_EINVAL;
+    const UA_NodeId anon = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+    const UA_NodeId auth = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_AUTHENTICATEDUSER);
+    if(role_by_name(f) || gds_role_bit(gdsNs, id) || UA_NodeId_equal(id, &anon) ||
+       UA_NodeId_equal(id, &auth))
+        return GDS_EEXISTS;
+    if(nEmbedRoles == GDS_MAX_EMBED_ROLES)
+        return GDS_ETOOBIG;
+    embed_role *e = &embedRoles[nEmbedRoles];
+    if(UA_NodeId_copy(id, &e->id) != UA_STATUSCODE_GOOD)
+        return GDS_ENOMEM;
+    memcpy(e->name, name, f.n);
+    e->name[f.n] = '\0';
+    nEmbedRoles++;
+    return GDS_OK;
+}
+
+void gds_access_drop_last_role(void) {
+    if(nEmbedRoles == 0)
+        return;
+    nEmbedRoles--;
+    UA_NodeId_clear(&embedRoles[nEmbedRoles].id);
+    memset(&embedRoles[nEmbedRoles], 0, sizeof(embedRoles[0]));
+}
+
+static void embed_roles_clear(void) {
+    for(size_t i = 0; i < nEmbedRoles; i++)
+        UA_NodeId_clear(&embedRoles[i].id);
+    memset(embedRoles, 0, sizeof(embedRoles));
+    nEmbedRoles = 0;
+}
+
+/* The embedder Role bits of a user; 0 for names that are no Role. */
+static unsigned embed_bits(const gds_user *u) {
+    unsigned bits = 0;
+    for(size_t i = 0; i < u->nEmbedRoles; i++) {
+        span f = {u->embedRoles[i], strlen(u->embedRoles[i])};
+        bits |= role_by_name(f);
+    }
+    return bits;
+}
+
+gds_status gds_access_check_users(void) {
+    const gds_users *users = installedUsers;
+    for(size_t i = 0; users && i < users->n; i++) {
+        const gds_user *u = &users->users[i];
+        for(size_t k = 0; k < u->nEmbedRoles; k++) {
+            span f = {u->embedRoles[k], strlen(u->embedRoles[k])};
+            if(!role_by_name(f)) {
+                fprintf(stderr, "users file: user %s: %s is not a Role\n", u->name,
+                        u->embedRoles[k]);
+                return GDS_EINVAL;
+            }
+        }
+    }
+    return GDS_OK;
+}
+
+/* Built-in names become bits; any other well-formed name is kept for
+ * the embedder Roles, which may be added after the file is loaded. */
+static bool parse_roles(span f, gds_user *u) {
+    u->roles = 0;
+    u->nEmbedRoles = 0;
     if(span_eq(f, "-"))
         return true;
     const char *p = f.p;
@@ -126,21 +265,36 @@ static bool parse_roles(span f, unsigned *roles) {
         if(r.n == 0)
             break;
         unsigned bit = 0;
-        for(size_t i = 0; i < sizeof(roleTable) / sizeof(roleTable[0]) && !bit; i++)
+        for(size_t i = 0; i < GDS_ROLE_BUILTIN_COUNT && !bit; i++)
             if(span_eq(r, roleTable[i].name))
                 bit = roleTable[i].bit;
-        if(!bit)
+        if(bit) {
+            u->roles |= bit;
+            continue;
+        }
+        if(!role_name_ok(r) || u->nEmbedRoles == GDS_MAX_EMBED_ROLES)
             return false;
-        *roles |= bit;
+        bool dup = false;
+        for(size_t i = 0; i < u->nEmbedRoles && !dup; i++)
+            dup = span_eq(r, u->embedRoles[i]);
+        if(dup)
+            continue;
+        memcpy(u->embedRoles[u->nEmbedRoles], r.p, r.n);
+        u->embedRoles[u->nEmbedRoles++][r.n] = '\0';
     }
     return true;
 }
 
-/* pbkdf2-sha256:<iterations>:<salt hex>:<hash hex> */
+/* pbkdf2-sha256:<iterations>:<salt hex>:<hash hex> or x509-sha256:<hex> */
 static bool parse_credential(span f, gds_user *u) {
     const char *p = f.p;
     size_t len = f.n;
     span algo = next_field(&p, &len, ':');
+    if(span_eq(algo, "x509-sha256")) {
+        span thumb = next_field(&p, &len, ':');
+        u->x509 = true;
+        return len == 0 && unhex(thumb.p, thumb.n, u->thumbprint, sizeof(u->thumbprint));
+    }
     span iter = next_field(&p, &len, ':');
     span salt = next_field(&p, &len, ':');
     span hash = next_field(&p, &len, ':');
@@ -172,7 +326,7 @@ static bool parse_line(const char *line, size_t len, gds_user *u, bool *blank) {
     span cred = next_field(&line, &len, ' ');
     span extra = next_field(&line, &len, ' ');
     memset(u, 0, sizeof(*u));
-    return extra.n == 0 && parse_name(name, u) && parse_roles(roles, &u->roles) &&
+    return extra.n == 0 && parse_name(name, u) && parse_roles(roles, u) &&
            parse_credential(cred, u);
 }
 
@@ -203,7 +357,9 @@ gds_status gds_users_load(const char *path, gds_users *out) {
             r = GDS_ETOOBIG;
         } else if(!blank) {
             for(size_t i = 0; i < out->n && r == GDS_OK; i++)
-                if(strcmp(out->users[i].name, u.name) == 0)
+                if(strcmp(out->users[i].name, u.name) == 0 ||
+                   (u.x509 && out->users[i].x509 &&
+                    memcmp(out->users[i].thumbprint, u.thumbprint, sizeof(u.thumbprint)) == 0))
                     r = GDS_EEXISTS;
             if(r == GDS_OK)
                 out->users[out->n++] = u;
@@ -241,10 +397,24 @@ gds_status gds_password_hash(const uint8_t *pw, size_t len, uint32_t iterations,
     return r;
 }
 
+const gds_user *gds_users_check_cert(const gds_users *u, const UA_ByteString *certDer) {
+    uint8_t thumb[GDS_X509_THUMBPRINT];
+    unsigned len = 0;
+    if(!u || !certDer || certDer->length == 0 ||
+       EVP_Digest(certDer->data, certDer->length, thumb, &len, EVP_sha256(), NULL) != 1 ||
+       len != sizeof(thumb))
+        return NULL;
+    for(size_t i = 0; i < u->n; i++)
+        if(u->users[i].x509 &&
+           CRYPTO_memcmp(u->users[i].thumbprint, thumb, sizeof(thumb)) == 0)
+            return &u->users[i];
+    return NULL;
+}
+
 const gds_user *gds_users_check(const gds_users *u, const UA_String *name, const UA_ByteString *pw) {
     const gds_user *found = NULL;
     for(size_t i = 0; i < u->n && !found; i++)
-        if(name->length == strlen(u->users[i].name) &&
+        if(!u->users[i].x509 && name->length == strlen(u->users[i].name) &&
            memcmp(name->data, u->users[i].name, name->length) == 0)
             found = &u->users[i];
     /* unknown users cost the same PBKDF2 as known ones */
@@ -268,6 +438,7 @@ typedef struct {
     UA_NodeId id;
     bool anonymous;
     unsigned roles;
+    UA_DateTime notAfter;
 } live_session;
 static live_session live[MAX_LIVE_SESSIONS];
 static size_t nLive;
@@ -292,6 +463,7 @@ static void live_set(const UA_NodeId *id, const gds_session *s) {
     if(nLive < MAX_LIVE_SESSIONS && UA_NodeId_copy(id, &live[nLive].id) == UA_STATUSCODE_GOOD) {
         live[nLive].anonymous = s->anonymous;
         live[nLive].roles = s->roles;
+        live[nLive].notAfter = s->notAfter;
         nLive++;
     }
     pthread_mutex_unlock(&sessLock);
@@ -300,10 +472,12 @@ static void live_set(const UA_NodeId *id, const gds_session *s) {
 size_t gds_access_sessions_with(unsigned roles, bool anonymous, bool authenticated,
                                 UA_NodeId *out, size_t max) {
     size_t n = 0;
+    UA_DateTime now = UA_DateTime_now();
     pthread_mutex_lock(&sessLock);
     for(size_t i = 0; i < nLive && n < max; i++) {
         const live_session *l = &live[i];
-        bool match = anonymous || (authenticated && !l->anonymous) || (l->roles & roles) != 0;
+        bool anon = l->anonymous || (l->notAfter != 0 && now > l->notAfter);
+        bool match = anonymous || (authenticated && !anon) || (!anon && (l->roles & roles) != 0);
         if(match && UA_NodeId_copy(&l->id, &out[n]) == UA_STATUSCODE_GOOD)
             n++;
     }
@@ -400,7 +574,7 @@ static UA_StatusCode login_cb(const UA_String *userName, const UA_ByteString *pa
             return UA_STATUSCODE_BADUSERACCESSDENIED;
         }
         memcpy(s->user, u->name, sizeof(s->user));
-        s->roles = u->roles;
+        s->roles = u->roles | embed_bits(u);
     }
     *sessionContext = s;
     return UA_STATUSCODE_GOOD;
@@ -410,17 +584,56 @@ typedef UA_StatusCode (*activate_fn)(UA_Server *, UA_AccessControl *, const UA_E
                                      const UA_ByteString *, const UA_NodeId *,
                                      const UA_ExtensionObject *, void **);
 static activate_fn defaultActivate;
+static bool x509Enabled;
+
+/* The certificate's notAfter, 0 if it cannot be read. */
+static UA_DateTime not_after(const UA_ByteString *der) {
+    const unsigned char *p = der->data;
+    X509 *x = der->length <= LONG_MAX ? d2i_X509(NULL, &p, (long)der->length) : NULL;
+    struct tm tm;
+    memset(&tm, 0, sizeof(tm));
+    UA_DateTime t = 0;
+    if(x && ASN1_TIME_to_tm(X509_get0_notAfter(x), &tm) == 1)
+        t = UA_DateTime_fromUnixTime((UA_Int64)timegm(&tm));
+    X509_free(x);
+    return t;
+}
+
+/* An X509IdentityToken: open62541 has already checked userTokenSignature
+ * (OPC 10000-4 §5.7.3.2, computed as in §6.1.8) and validated the
+ * certificate against config->sessionPKI, the DefaultUserTokenGroup trust
+ * list (OPC 10000-12 §7.8.3.3), with the steps of OPC 10000-4 §6.1.3
+ * Table 100 (validity period, revocation). Here the certificate becomes a
+ * user of the users file, or is refused. */
+static UA_StatusCode activate_x509(const UA_X509IdentityToken *t, void **sessionContext) {
+    if(!x509Enabled)
+        return UA_STATUSCODE_BADIDENTITYTOKENREJECTED;
+    const gds_user *u = gds_users_check_cert(installedUsers, &t->certificateData);
+    if(!u)
+        return UA_STATUSCODE_BADUSERACCESSDENIED;
+    UA_DateTime end = not_after(&t->certificateData);
+    if(end == 0 || UA_DateTime_now() > end)
+        return UA_STATUSCODE_BADIDENTITYTOKENREJECTED;
+    gds_session *s = calloc(1, sizeof(*s));
+    if(!s)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    memcpy(s->user, u->name, sizeof(s->user));
+    s->roles = u->roles | embed_bits(u);
+    s->notAfter = end;
+    *sessionContext = s;
+    return UA_STATUSCODE_GOOD;
+}
 
 static UA_StatusCode activate(UA_Server *server, UA_AccessControl *ac,
                               const UA_EndpointDescription *ep, const UA_ByteString *cert,
                               const UA_NodeId *sessionId, const UA_ExtensionObject *token,
                               void **sessionContext) {
-    /* T1 takes anonymous and user name tokens; X.509 user tokens come later */
-    if(token->encoding >= UA_EXTENSIONOBJECT_DECODED &&
-       token->content.decoded.type == &UA_TYPES[UA_TYPES_X509IDENTITYTOKEN])
-        return UA_STATUSCODE_BADIDENTITYTOKENREJECTED;
     void *old = *sessionContext;
     UA_StatusCode r = defaultActivate(server, ac, ep, cert, sessionId, token, sessionContext);
+    /* the default plugin takes X.509 tokens without a session context */
+    if(r == UA_STATUSCODE_GOOD && token->encoding >= UA_EXTENSIONOBJECT_DECODED &&
+       token->content.decoded.type == &UA_TYPES[UA_TYPES_X509IDENTITYTOKEN])
+        r = activate_x509(token->content.decoded.data, sessionContext);
     if(r != UA_STATUSCODE_GOOD) {
         if(*sessionContext != old) {
             session_free(*sessionContext);
@@ -571,12 +784,15 @@ static UA_Boolean executable_on(UA_Server *server, UA_AccessControl *ac, const U
 
 void gds_access_uninstall(void) {
     live_clear();
+    x509Enabled = false;
+    embed_roles_clear();
+    installedUsers = NULL;
     X509_free(gdsCa);
     gdsCa = NULL;
 }
 
 gds_status gds_access_install(UA_ServerConfig *config, const gds_users *users,
-                              const gds_buf *caCertDer) {
+                              const gds_buf *caCertDer, bool x509Users) {
     gds_access_uninstall();
     const unsigned char *cp = caCertDer->data;
     gdsCa = caCertDer->len ? d2i_X509(NULL, &cp, (long)caCertDer->len) : NULL;
@@ -596,6 +812,7 @@ gds_status gds_access_install(UA_ServerConfig *config, const gds_users *users,
     OPENSSL_cleanse(rnd, sizeof(rnd));
     if(r != UA_STATUSCODE_GOOD)
         return GDS_ENOMEM;
+    installedUsers = users;
     defaultActivate = config->accessControl.activateSession;
     config->accessControl.activateSession = activate;
     config->accessControl.closeSession = close_session;
@@ -607,11 +824,12 @@ gds_status gds_access_install(UA_ServerConfig *config, const gds_users *users,
     config->accessControl.getUserAccessLevel = read_only;
     config->accessControl.getUserExecutable = executable;
     config->accessControl.getUserExecutableOnObject = executable_on;
-    /* X.509 user tokens are refused in T1: do not offer them */
+    /* X.509 user tokens only with a user certificate trust list */
+    x509Enabled = x509Users;
     UA_AccessControl *ac = &config->accessControl;
     size_t k = 0;
     for(size_t i = 0; i < ac->userTokenPoliciesSize; i++) {
-        if(ac->userTokenPolicies[i].tokenType == UA_USERTOKENTYPE_CERTIFICATE) {
+        if(!x509Users && ac->userTokenPolicies[i].tokenType == UA_USERTOKENTYPE_CERTIFICATE) {
             UA_UserTokenPolicy_clear(&ac->userTokenPolicies[i]);
             continue;
         }
