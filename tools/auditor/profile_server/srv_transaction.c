@@ -594,6 +594,211 @@ static void t_partial(ga_ctx *ctx, void *p) {
                 UA_StatusCode_name(ra), g2Seen ? "yes" : "no", newList ? "yes" : "no");
 }
 
+/* ---------------- SRV-TXN-12, -13: TransactionDiagnostics (12 §7.10.17) ---------------- */
+
+typedef struct {
+    UA_DataValue start, end, result, tls, groups, errors;
+} diag_values;
+
+static void diag_clear(diag_values *d) {
+    UA_DataValue *v[] = {&d->start, &d->end, &d->result, &d->tls, &d->groups, &d->errors};
+    for(size_t i = 0; i < GDS_ARRAY_SIZE(v); i++)
+        UA_DataValue_clear(v[i]);
+}
+
+/* The DataValue of one diagnostics Property, status included */
+static UA_StatusCode diag_one(UA_Client *c, const UA_NodeId *diag, const char *name,
+                              UA_DataValue *out) {
+    UA_DataValue_init(out);
+    UA_NodeId n;
+    UA_StatusCode r = uac_find_child(c, *diag, name, &n);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    UA_ReadValueId rv;
+    UA_ReadValueId_init(&rv);
+    rv.nodeId = n;
+    rv.attributeId = UA_ATTRIBUTEID_VALUE;
+    UA_ReadRequest req;
+    UA_ReadRequest_init(&req);
+    req.nodesToRead = &rv;
+    req.nodesToReadSize = 1;
+    UA_ReadResponse resp = UA_Client_Service_read(c, req);
+    r = resp.responseHeader.serviceResult;
+    if(r == UA_STATUSCODE_GOOD && resp.resultsSize != 1)
+        r = UA_STATUSCODE_BADUNEXPECTEDERROR;
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_DataValue_copy(&resp.results[0], out);
+    UA_ReadResponse_clear(&resp);
+    UA_NodeId_clear(&n);
+    return r;
+}
+
+static UA_StatusCode diag_read(UA_Client *c, const UA_NodeId *diag, diag_values *d) {
+    memset(d, 0, sizeof(*d));
+    UA_StatusCode r = diag_one(c, diag, "StartTime", &d->start);
+    if(r == UA_STATUSCODE_GOOD)
+        r = diag_one(c, diag, "EndTime", &d->end);
+    if(r == UA_STATUSCODE_GOOD)
+        r = diag_one(c, diag, "Result", &d->result);
+    if(r == UA_STATUSCODE_GOOD)
+        r = diag_one(c, diag, "AffectedTrustLists", &d->tls);
+    if(r == UA_STATUSCODE_GOOD)
+        r = diag_one(c, diag, "AffectedCertificateGroups", &d->groups);
+    if(r == UA_STATUSCODE_GOOD)
+        r = diag_one(c, diag, "Errors", &d->errors);
+    return r;
+}
+
+static bool dv_ok(const UA_DataValue *v) {
+    return v->hasValue && (!v->hasStatus || v->status == UA_STATUSCODE_GOOD);
+}
+
+static bool dv_time(const UA_DataValue *v, UA_DateTime *out) {
+    if(!dv_ok(v) || !(UA_Variant_hasScalarType(&v->value, &UA_TYPES[UA_TYPES_UTCTIME]) ||
+                      UA_Variant_hasScalarType(&v->value, &UA_TYPES[UA_TYPES_DATETIME])))
+        return false;
+    *out = *(UA_DateTime *)v->value.data;
+    return true;
+}
+
+static bool dv_status(const UA_DataValue *v, UA_StatusCode *out) {
+    if(!dv_ok(v) || !UA_Variant_hasScalarType(&v->value, &UA_TYPES[UA_TYPES_STATUSCODE]))
+        return false;
+    *out = *(UA_StatusCode *)v->value.data;
+    return true;
+}
+
+static bool dv_has_node(const UA_DataValue *v, UA_UInt32 id) {
+    if(!dv_ok(v) || v->value.type != &UA_TYPES[UA_TYPES_NODEID])
+        return false;
+    const UA_NodeId *n = v->value.data;
+    size_t len = UA_Variant_isScalar(&v->value) ? 1 : v->value.arrayLength;
+    UA_NodeId want = ns0(id);
+    for(size_t i = 0; i < len; i++)
+        if(UA_NodeId_equal(&n[i], &want))
+            return true;
+    return false;
+}
+
+/* TransactionDiagnostics present, and the state after SRV-TXN-03 */
+static bool diag_node(ga_ctx *ctx, srv_target *t, UA_NodeId *diag) {
+    *diag = UA_NODEID_NULL;
+    if(!transactions(ctx, t))
+        return false;
+    if(uac_find_child(t->client, ns0(UA_NS0ID_SERVERCONFIGURATION), "TransactionDiagnostics",
+                      diag) != UA_STATUSCODE_GOOD) {
+        UA_NodeId_clear(diag);
+        ga_not_supported(ctx, "ServerConfiguration has no TransactionDiagnostics");
+        return false;
+    }
+    if(!t->applied) {
+        UA_NodeId_clear(diag);
+        ga_not_tested(ctx, "builds on SRV-TXN-03 (t-good and the new trust list in use)");
+        return false;
+    }
+    return true;
+}
+
+/* One complaint, or none: what contradicts §7.10.17 during a transaction */
+static const char *diag_during(const diag_values *d) {
+    UA_DateTime st = 0, et = 1;
+    if(!d->result.hasStatus || d->result.status != UA_STATUSCODE_BADINVALIDSTATE)
+        return "Result does not have status Bad_InvalidState";
+    if(!dv_time(&d->start, &st) || st == 0)
+        return "StartTime is not a time";
+    if(!dv_time(&d->end, &et) || et != 0)
+        return "EndTime is not DateTime.MinValue";
+    if(!dv_has_node(&d->tls, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST))
+        return "AffectedTrustLists does not list the queued TrustList";
+    return NULL;
+}
+
+static const char *diag_after(const diag_values *d, UA_StatusCode applied) {
+    UA_DateTime st = 0, et = 0;
+    UA_StatusCode res = 0;
+    if(!dv_status(&d->result, &res))
+        return "Result is not Good with a StatusCode value";
+    if(res != applied)
+        return "Result is not the code ApplyChanges returned";
+    if(!dv_time(&d->start, &st) || !dv_time(&d->end, &et) || et == 0 || st > et)
+        return "StartTime is not before EndTime";
+    if(!dv_ok(&d->errors) || (!UA_Variant_isEmpty(&d->errors.value) &&
+                              (UA_Variant_isScalar(&d->errors.value) || d->errors.value.arrayLength)))
+        return "Errors is not empty";
+    return NULL;
+}
+
+static void t_diag(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    UA_NodeId diag;
+    if(!diag_node(ctx, t, &diag))
+        return;
+    bool acr = false; /* the list in use again: nothing changes */
+    UA_StatusCode r = st_write_trustlist(t->client, &t->queued, 4096, &acr, ctx);
+    diag_values during, after;
+    memset(&after, 0, sizeof(after));
+    if(r == UA_STATUSCODE_GOOD)
+        r = diag_read(t->client, &diag, &during);
+    UA_StatusCode applied = r == UA_STATUSCODE_GOOD ? st_apply(t->client) : r;
+    if(r == UA_STATUSCODE_GOOD)
+        r = diag_read(t->client, &diag, &after);
+    UA_NodeId_clear(&diag);
+    if(r != UA_STATUSCODE_GOOD) {
+        (void)cancel(t->client);
+        ga_not_tested(ctx, "setup: queue the trust list in use and read the diagnostics -> %s",
+                      UA_StatusCode_name(r));
+    } else {
+        ga_note(ctx, "ApplyChanges -> %s", UA_StatusCode_name(applied));
+        const char *bad = diag_during(&during);
+        const char *bad2 = bad ? NULL : diag_after(&after, applied);
+        if(bad)
+            ga_fail(ctx, "during the transaction: %s", bad);
+        else if(bad2)
+            ga_fail(ctx, "after ApplyChanges: %s", bad2);
+        else
+            ga_pass(ctx, "Bad_InvalidState during the transaction with the TrustList listed; "
+                         "after ApplyChanges Result %s, StartTime <= EndTime, no Errors",
+                    UA_StatusCode_name(applied));
+    }
+    diag_clear(&during);
+    diag_clear(&after);
+}
+
+static void t_diag_cancel(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    UA_NodeId diag, m;
+    if(!diag_node(ctx, t, &diag))
+        return;
+    if(uac_find_child(t->client, ns0(UA_NS0ID_SERVERCONFIGURATION), "CancelChanges", &m) !=
+       UA_STATUSCODE_GOOD) {
+        UA_NodeId_clear(&diag);
+        ga_not_supported(ctx, "ServerConfiguration has no CancelChanges");
+        return;
+    }
+    UA_NodeId_clear(&m);
+    bool acr = false;
+    UA_StatusCode r = st_write_trustlist(t->client, &t->queued, 4096, &acr, ctx);
+    UA_StatusCode rc = r == UA_STATUSCODE_GOOD ? cancel(t->client) : r;
+    diag_values d;
+    memset(&d, 0, sizeof(d));
+    if(r == UA_STATUSCODE_GOOD && rc == UA_STATUSCODE_GOOD)
+        r = diag_read(t->client, &diag, &d);
+    UA_NodeId_clear(&diag);
+    UA_StatusCode res = UA_STATUSCODE_GOOD;
+    if(r != UA_STATUSCODE_GOOD || rc != UA_STATUSCODE_GOOD)
+        ga_not_tested(ctx, "setup: queue a trust list, CancelChanges -> %s, read -> %s",
+                      UA_StatusCode_name(rc), UA_StatusCode_name(r));
+    else if(!dv_status(&d.result, &res))
+        ga_fail(ctx, "after CancelChanges Result has no StatusCode value (status %s)",
+                UA_StatusCode_name(d.result.status));
+    else if(res != UA_STATUSCODE_BADREQUESTCANCELLEDBYCLIENT)
+        ga_fail(ctx, "after CancelChanges Result is %s, not Bad_RequestCancelledByClient",
+                UA_StatusCode_name(res));
+    else
+        ga_pass(ctx, "after CancelChanges Result is Bad_RequestCancelledByClient");
+    diag_clear(&d);
+}
+
 const ga_test srv_transaction_tests[] = {
     {"SRV-TXN-01", "12 §7.10.2", "ApplyChangesRequired is always TRUE with transactions", true,
      false, t_acr_always},
@@ -617,5 +822,9 @@ const ga_test srv_transaction_tests[] = {
     {"SRV-TXN-10", "12 §7.10.2", "A failed call keeps the transaction", true, false,
      t_fail_keeps},
     {"SRV-TXN-11", "12 §7.10.2", "ApplyChanges applies all or nothing", true, false, t_partial},
+    {"SRV-TXN-12", "12 §7.10.17", "TransactionDiagnostics during and after a transaction", true,
+     false, t_diag},
+    {"SRV-TXN-13", "12 §7.10.17", "TransactionDiagnostics after CancelChanges", true, false,
+     t_diag_cancel},
 };
 const size_t srv_transaction_count = GDS_ARRAY_SIZE(srv_transaction_tests);

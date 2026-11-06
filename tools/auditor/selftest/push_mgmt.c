@@ -78,6 +78,8 @@ static const struct {
     {"accept-invalid-cert", "SRV-TL-07", "CloseAndUpdate does not check certificate signatures"},
     {"accept-expired-ca", "SRV-TL-08", "CloseAndUpdate does not check certificate validity times"},
     {"lastupdate-frozen", "SRV-TL-17", "ApplyChanges does not move LastUpdateTime"},
+    {"diag-stale", "SRV-TXN-12", "ApplyChanges leaves TransactionDiagnostics as it was"},
+    {"diag-cancel-good", "SRV-TXN-13", "after CancelChanges the diagnostics Result is Good"},
     {"size-readable", "SRV-TL-19", "the TrustList Size Property returns a value"},
     {"updatefreq-readonly", "SRV-TL-20", "the TrustList has a read-only UpdateFrequency"},
     {"addcert-noop", "SRV-TL-09", "AddCertificate returns Good and adds nothing"},
@@ -229,6 +231,30 @@ static void txn_clear(void) {
     P.hasCert = false;
 }
 
+/* ---------------- TransactionDiagnostics (12 §7.10.17) ----------------
+ * The last transaction: all Variables Bad_OutOfService until one starts,
+ * reset when the next one starts. */
+#define DIAG(x) UA_NS0ID_SERVERCONFIGURATION_TRANSACTIONDIAGNOSTICS_##x
+
+static struct {
+    bool started, done;
+    UA_DateTime start, end; /* end 0: DateTime.MinValue, not completed */
+    UA_StatusCode result;
+    bool trustList, group; /* DefaultApplicationGroup's TrustList / the group */
+} D;
+
+static void diag_begin(void) {
+    memset(&D, 0, sizeof(D));
+    D.started = true;
+    D.start = UA_DateTime_now();
+}
+
+static void diag_end(UA_StatusCode result) {
+    D.done = true;
+    D.end = UA_DateTime_now();
+    D.result = result;
+}
+
 /* Join or start the caller's transaction; Bad_TransactionPending if another
  * Session holds one (§7.8.2.2, §7.10.5). */
 static UA_StatusCode txn_join(const UA_NodeId *session) {
@@ -239,8 +265,10 @@ static UA_StatusCode txn_join(const UA_NodeId *session) {
                    ? UA_STATUSCODE_GOOD
                    : UA_STATUSCODE_BADTRANSACTIONPENDING;
     UA_StatusCode r = UA_NodeId_copy(session, &P.owner);
-    if(r == UA_STATUSCODE_GOOD)
+    if(r == UA_STATUSCODE_GOOD) {
         P.txn = true;
+        diag_begin();
+    }
     return r;
 }
 
@@ -425,6 +453,7 @@ static UA_StatusCode queue_list(const UA_TrustListDataType *in) {
     UA_TrustListDataType_clear(&P.list);
     P.list = base;
     P.hasList = true;
+    D.trustList = true;
     return UA_STATUSCODE_GOOD;
 }
 
@@ -866,6 +895,7 @@ static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
     if(r != UA_STATUSCODE_GOOD)
         return r;
     P.hasCert = true;
+    D.group = true;
     UA_Boolean applyRequired = true;
     return UA_Variant_setScalarCopy(&output[0], &applyRequired, &UA_TYPES[UA_TYPES_BOOLEAN]);
 }
@@ -973,6 +1003,8 @@ static UA_StatusCode scApplyChanges(METHOD_ARGS) {
     if(!(breaking("apply-ignored") && P.hasCert))
         r = apply();
     txn_clear();
+    if(!breaking("diag-stale"))
+        diag_end(r);
     UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "ApplyChanges -> %s",
                 UA_StatusCode_name(r));
     return r;
@@ -990,8 +1022,11 @@ static UA_StatusCode scCancelChanges(METHOD_ARGS) {
     UA_StatusCode r = txn_owner_check(sessionId);
     if(r == UA_STATUSCODE_GOOD && breaking("cancel-keeps-trustlist") && P.hasList)
         r = install_list(&P.list);
-    if(r == UA_STATUSCODE_GOOD)
+    if(r == UA_STATUSCODE_GOOD) {
         txn_clear();
+        diag_end(breaking("diag-cancel-good") ? UA_STATUSCODE_GOOD
+                                              : UA_STATUSCODE_BADREQUESTCANCELLEDBYCLIENT);
+    }
     return r;
 }
 
@@ -1566,6 +1601,122 @@ static UA_StatusCode trustlist_props(UA_Server *server) {
 }
 #undef TLP
 
+#define DAG_ID UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP
+#define DAG_TL_ID UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST
+
+static UA_StatusCode diag_value(UA_UInt32 id, UA_DataValue *value) {
+    if(!D.started) {
+        value->hasStatus = true;
+        value->status = UA_STATUSCODE_BADOUTOFSERVICE;
+        return value->status; /* the library keeps only a returned Bad code */
+    }
+    value->hasValue = true;
+    UA_Variant *v = &value->value;
+    switch(id) {
+    case DIAG(STARTTIME):
+        return UA_Variant_setScalarCopy(v, &D.start, &UA_TYPES[UA_TYPES_UTCTIME]);
+    case DIAG(ENDTIME):
+        return UA_Variant_setScalarCopy(v, &D.end, &UA_TYPES[UA_TYPES_UTCTIME]);
+    case DIAG(RESULT):
+        if(!D.done) {
+            value->hasValue = false;
+            value->hasStatus = true;
+            value->status = UA_STATUSCODE_BADINVALIDSTATE;
+            return value->status;
+        }
+        return UA_Variant_setScalarCopy(v, &D.result, &UA_TYPES[UA_TYPES_STATUSCODE]);
+    case DIAG(AFFECTEDTRUSTLISTS): {
+        UA_NodeId n = ns0(DAG_TL_ID);
+        return UA_Variant_setArrayCopy(v, &n, D.trustList ? 1 : 0, &UA_TYPES[UA_TYPES_NODEID]);
+    }
+    case DIAG(AFFECTEDCERTIFICATEGROUPS): {
+        UA_NodeId n = ns0(DAG_ID);
+        return UA_Variant_setArrayCopy(v, &n, D.group ? 1 : 0, &UA_TYPES[UA_TYPES_NODEID]);
+    }
+    case DIAG(ERRORS): {
+        /* one entry for a failed ApplyChanges, on the group or else the TrustList */
+        UA_TransactionErrorType e;
+        UA_TransactionErrorType_init(&e);
+        e.targetId = ns0(D.group ? DAG_ID : DAG_TL_ID);
+        e.error = D.result;
+        e.message = UA_LOCALIZEDTEXT("", "ApplyChanges failed");
+        bool err = D.done && D.result != UA_STATUSCODE_GOOD &&
+                   D.result != UA_STATUSCODE_BADREQUESTCANCELLEDBYCLIENT;
+        return UA_Variant_setArrayCopy(v, &e, err ? 1 : 0,
+                                       &UA_TYPES[UA_TYPES_TRANSACTIONERRORTYPE]);
+    }
+    default:
+        return UA_STATUSCODE_BADNODEIDUNKNOWN;
+    }
+}
+
+static UA_StatusCode diag_read(UA_Server *server, const UA_NodeId *sessionId,
+                               void *sessionContext, const UA_NodeId *nodeId, void *nodeContext,
+                               UA_Boolean includeSourceTimeStamp, const UA_NumericRange *range,
+                               UA_DataValue *value) {
+    (void)server, (void)sessionId, (void)sessionContext, (void)nodeContext;
+    (void)includeSourceTimeStamp, (void)range;
+    if(nodeId->namespaceIndex != 0 || nodeId->identifierType != UA_NODEIDTYPE_NUMERIC)
+        return UA_STATUSCODE_BADNODEIDUNKNOWN;
+    return diag_value(nodeId->identifier.numeric, value);
+}
+
+/* ServerConfiguration/TransactionDiagnostics (Optional, 12 §7.10.3), which
+ * the library's ns0 does not instantiate. Read access is limited to
+ * SecurityAdmin by push_test_server's access control. */
+static UA_StatusCode diagnostics(UA_Server *server) {
+    static const struct {
+        UA_UInt32 id;
+        const char *name;
+        UA_UInt32 type;
+        bool array;
+    } vars[] = {
+        {DIAG(STARTTIME), "StartTime", UA_NS0ID_UTCTIME, false},
+        {DIAG(ENDTIME), "EndTime", UA_NS0ID_UTCTIME, false},
+        {DIAG(RESULT), "Result", UA_NS0ID_STATUSCODE, false},
+        {DIAG(AFFECTEDTRUSTLISTS), "AffectedTrustLists", UA_NS0ID_NODEID, true},
+        {DIAG(AFFECTEDCERTIFICATEGROUPS), "AffectedCertificateGroups", UA_NS0ID_NODEID, true},
+        {DIAG(ERRORS), "Errors", UA_NS0ID_TRANSACTIONERRORTYPE, true},
+    };
+    UA_ObjectAttributes oa = UA_ObjectAttributes_default;
+    oa.displayName = UA_LOCALIZEDTEXT("", "TransactionDiagnostics");
+    UA_StatusCode r = UA_Server_addNode_begin(
+        server, UA_NODECLASS_OBJECT, ns0(UA_NS0ID_SERVERCONFIGURATION_TRANSACTIONDIAGNOSTICS),
+        ns0(UA_NS0ID_SERVERCONFIGURATION), ns0(UA_NS0ID_HASCOMPONENT),
+        UA_QUALIFIEDNAME(0, "TransactionDiagnostics"), ns0(UA_NS0ID_TRANSACTIONDIAGNOSTICSTYPE),
+        &oa, &UA_TYPES[UA_TYPES_OBJECTATTRIBUTES], NULL, NULL);
+    if(r == UA_STATUSCODE_BADNODEIDEXISTS)
+        r = UA_STATUSCODE_GOOD; /* a library with the full ns0 */
+    for(size_t i = 0; r == UA_STATUSCODE_GOOD && i < GDS_ARRAY_SIZE(vars); i++) {
+        UA_VariableAttributes va = UA_VariableAttributes_default;
+        va.dataType = ns0(vars[i].type);
+        va.valueRank = vars[i].array ? UA_VALUERANK_ONE_DIMENSION : UA_VALUERANK_SCALAR;
+        va.accessLevel = UA_ACCESSLEVELMASK_READ;
+        va.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)vars[i].name);
+        UA_UInt32 dims[1] = {0};
+        if(vars[i].array) { /* an empty array, else the type check refuses the node */
+            UA_Variant_setArray(&va.value, UA_EMPTY_ARRAY_SENTINEL, 0,
+                                UA_findDataType(&va.dataType));
+            va.arrayDimensions = dims;
+            va.arrayDimensionsSize = 1;
+        }
+        UA_StatusCode a = UA_Server_addVariableNode(
+            server, ns0(vars[i].id), ns0(UA_NS0ID_SERVERCONFIGURATION_TRANSACTIONDIAGNOSTICS),
+            ns0(UA_NS0ID_HASPROPERTY), UA_QUALIFIEDNAME(0, (char *)(uintptr_t)vars[i].name),
+            ns0(UA_NS0ID_PROPERTYTYPE), va, NULL, NULL);
+        if(a != UA_STATUSCODE_GOOD && a != UA_STATUSCODE_BADNODEIDEXISTS)
+            r = a;
+        UA_CallbackValueSource src = {diag_read, NULL};
+        if(r == UA_STATUSCODE_GOOD)
+            r = UA_Server_setVariableNode_callbackValueSource(server, ns0(vars[i].id), src);
+    }
+    UA_StatusCode f = UA_Server_addNode_finish(server, ns0(UA_NS0ID_SERVERCONFIGURATION_TRANSACTIONDIAGNOSTICS));
+    return r != UA_STATUSCODE_GOOD ? r : f;
+}
+#undef DAG_ID
+#undef DAG_TL_ID
+#undef DIAG
+
 /* The mutants that remove a node or a reference (SRV-CAP-01, -02, -08). */
 static UA_StatusCode structure_mutants(UA_Server *server) {
     if(breaking("no-rejected-list-method"))
@@ -1589,6 +1740,7 @@ static UA_StatusCode structure_mutants(UA_Server *server) {
 UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteString *ownKey,
                          pm_mode_fn modeOf) {
     memset(&P, 0, sizeof(P));
+    memset(&D, 0, sizeof(D));
     P.server = server;
     P.brk = mutant;
     P.acceptKeys = acceptKeys;
@@ -1620,7 +1772,7 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
         UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "no CancelChanges node");
     if(advertise(server) != UA_STATUSCODE_GOOD || optional_methods(server) != UA_STATUSCODE_GOOD ||
        structure_mutants(server) != UA_STATUSCODE_GOOD ||
-       trustlist_props(server) != UA_STATUSCODE_GOOD)
+       trustlist_props(server) != UA_STATUSCODE_GOOD || diagnostics(server) != UA_STATUSCODE_GOOD)
         return UA_STATUSCODE_BADINTERNALERROR;
     return UA_STATUSCODE_GOOD;
 }

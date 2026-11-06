@@ -4,3 +4,7 @@
 # Re-check when the open62541 pin moves.
 deadlock:UA_Timer_add
 deadlock:UA_Timer_process
+# GLib (desktop UI view-model tests, avm/): GLib is not built with TSan and
+# syncs its worker thread (gmain) with futex-based GMutex, which TSan cannot
+# see, so its own malloc/free pairs show as races. Our code stays checked.
+called_from_lib:libglib-2.0.so.0

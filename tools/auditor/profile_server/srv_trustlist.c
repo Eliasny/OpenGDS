@@ -811,11 +811,15 @@ static void t_tl_idle(ga_ctx *ctx, void *p) {
 /* CloseAndUpdate then CancelChanges; *has false if the target lacks it. */
 static UA_StatusCode cancelled_txn(UA_Client *c, const UA_TrustListDataType *tl, bool *has,
                                    ga_ctx *ctx) {
-    UA_NodeId cancel;
-    *has = uac_find_child(c, ns0(UA_NS0ID_SERVERCONFIGURATION), "CancelChanges", &cancel) ==
-           UA_STATUSCODE_GOOD;
+    UA_NodeId cancel = UA_NODEID_NULL;
+    bool present = false, txn = false; /* CancelChanges belongs to transactions (12 §7.10.3) */
+    st_supports_transactions(c, &present, &txn);
+    *has = txn && uac_find_child(c, ns0(UA_NS0ID_SERVERCONFIGURATION), "CancelChanges",
+                                 &cancel) == UA_STATUSCODE_GOOD;
     if(!*has) {
-        ga_note(ctx, "no CancelChanges: the cancelled transaction is skipped");
+        UA_NodeId_clear(&cancel);
+        ga_note(ctx, "no CancelChanges or SupportsTransactions not TRUE: the cancelled "
+                     "transaction is skipped");
         return UA_STATUSCODE_GOOD;
     }
     bool acr = false;
