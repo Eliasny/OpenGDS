@@ -19,14 +19,20 @@ SRV=""
 trap '[ -n "$SRV" ] && kill "$SRV" 2>/dev/null; true' EXIT INT TERM
 
 "$B/gdsaudit" server --work "$W/auditor" --init-only || exit 2
+cp "$W/auditor/own/cert.der" "$W/auditor-plain.der"
+cp "$W/auditor/admin/own/cert.der" "$W/auditor-admin.der"
+printf 'operator\n' > "$W/user.pw"
+chmod 600 "$W/user.pw"
 
-# start_server <name> [--break mutant]: fresh PKI, the Auditor trusted and SecurityAdmin
+# start_server <name> [--break mutant]: fresh PKI; both Auditor identities
+# trusted, the admin one mapped to SecurityAdmin; "operator" a plain user
 start_server() {
     name=$1
     shift
     PORT=$((PORT + 1))
     "$B/push_test_server" --port "$PORT" --pki "$W/pki-$name" \
-        --trust "$W/auditor/own/cert.der" --admin-cert "$W/auditor/own/cert.der" "$@" \
+        --trust "$W/auditor-plain.der" --trust "$W/auditor-admin.der" \
+        --admin-cert "$W/auditor-admin.der" --user operator:operator "$@" \
         > "$W/server-$name.log" 2>&1 &
     SRV=$!
     i=0
@@ -41,7 +47,8 @@ audit() { # audit <name> [args]: run the profile, TAP into $W/<name>.tap
     name=$1
     shift
     "$B/gdsaudit" server --url "opc.tcp://127.0.0.1:$PORT" --tofu --work "$W/auditor" \
-        --allow-changes "$@" > "$W/$name.tap" 2>&1
+        --user operator --user-password-file "$W/user.pw" --allow-changes "$@" \
+        > "$W/$name.tap" 2>&1
 }
 
 RC=0

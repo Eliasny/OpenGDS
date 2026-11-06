@@ -33,6 +33,7 @@ const char *gds_status_name(gds_status s) {
     case GDS_EREMOTE: return "remote error";
     case GDS_EEXISTS: return "already exists";
     case GDS_ENOTLEADER: return "not the primary";
+    case GDS_EUNSUPPORTED: return "not supported";
     }
     return "unknown";
 }

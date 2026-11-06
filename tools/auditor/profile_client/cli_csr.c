@@ -135,12 +135,12 @@ static void t_csr_new_key(ga_ctx *ctx, void *profile) {
     csr_info first;
     if(!base_sign(p, ctx, &first))
         return;
-    cli_cycle c;
-    if(!cli_cycle_for(p, FAULT_RENEW, ctx, &c)) {
+    const cli_cycle *c = cli_shared_cycle(p, CLI_SHARED_RENEW, ctx);
+    if(!c) {
         csr_info_clear(&first);
         return;
     }
-    const fg_event *ev = cli_find(&c, FG_M_SIGN, 0);
+    const fg_event *ev = cli_find(c, FG_M_SIGN, 0);
     if(!ev) {
         ga_not_tested(ctx, "UpdateRequired was TRUE but the client made no second request");
     } else {
@@ -164,7 +164,7 @@ static void t_csr_no_leak(ga_ctx *ctx, void *profile) {
     csr_info ci;
     if(!base_sign(p, ctx, &ci))
         return;
-    const cli_cycle *c = &p->base;
+    const cli_cycle *c = &p->shared[CLI_SHARED_BASE];
     size_t hit = SIZE_MAX;
     for(size_t i = c->first; i < c->end && hit == SIZE_MAX; i++)
         if(csr_blob_has_private_key(&fg_event_at(i)->args, &ci.pubDer))

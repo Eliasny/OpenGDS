@@ -30,20 +30,42 @@ static void free_out(UA_Variant *out, size_t outN) {
         UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
 }
 
-UA_Client *st_new_client(const srv_target *t, bool withPinned, const char *policyUri,
-                         UA_MessageSecurityMode mode) {
+UA_Client *st_new_client(const srv_target *t, st_role role, bool withPinned,
+                         const char *policyUri, UA_MessageSecurityMode mode) {
     gds_buf trust[3];
     size_t n = 0;
     trust[n++] = t->caDer;
     if(withPinned && t->pinned.len)
         trust[n++] = t->pinned;
-    return uac_new_secure_mode(&t->cert, &t->key, trust, n, &t->caCrl, 1, t->appUri,
+    bool adminApp = role == ST_ADMIN && !t->adminUser && t->adminCert.len;
+    const gds_buf *c = adminApp ? &t->adminCert : &t->cert;
+    const gds_buf *k = adminApp ? &t->adminKey : &t->key;
+    return uac_new_secure_mode(c, k, trust, n, &t->caCrl, 1, t->appUri,
                                policyUri ? policyUri : POLICY_RSAPSS, mode);
 }
 
-static UA_StatusCode connect_admin(const srv_target *t, UA_Client *c) {
-    return t->user ? UA_Client_connectUsername(c, t->url, t->user, t->password)
-                   : UA_Client_connect(c, t->url);
+UA_StatusCode st_connect(const srv_target *t, st_role role, UA_Client *c) {
+    if(role == ST_ADMIN && t->adminUser)
+        return UA_Client_connectUsername(c, t->url, t->adminUser, t->adminPassword);
+    if(role == ST_USER) {
+        if(!t->userName)
+            return UA_STATUSCODE_BADIDENTITYTOKENINVALID;
+        return UA_Client_connectUsername(c, t->url, t->userName, t->userPassword);
+    }
+    return UA_Client_connect(c, t->url); /* anonymous token */
+}
+
+UA_StatusCode st_open(const srv_target *t, st_role role, const char *policyUri,
+                      UA_MessageSecurityMode mode, UA_Client **out) {
+    *out = st_new_client(t, role, true, policyUri, mode);
+    if(!*out)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    UA_StatusCode r = st_connect(t, role, *out);
+    if(r != UA_STATUSCODE_GOOD) {
+        st_client_free(*out);
+        *out = NULL;
+    }
+    return r;
 }
 
 void st_client_free(UA_Client *c) {
@@ -63,20 +85,20 @@ UA_StatusCode st_admin(srv_target *t) {
             return UA_STATUSCODE_GOOD;
         st_close(t);
     }
-    t->client = st_new_client(t, true, NULL, UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
+    t->client = st_new_client(t, ST_ADMIN, true, NULL, UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
     if(!t->client)
         return UA_STATUSCODE_BADOUTOFMEMORY;
-    UA_StatusCode r = connect_admin(t, t->client);
+    UA_StatusCode r = st_connect(t, ST_ADMIN, t->client);
     if(r != UA_STATUSCODE_GOOD)
         st_close(t);
     return r;
 }
 
 UA_StatusCode st_admin_fresh(const srv_target *t, bool withPinned, UA_Client **out) {
-    *out = st_new_client(t, withPinned, NULL, UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
+    *out = st_new_client(t, ST_ADMIN, withPinned, NULL, UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
     if(!*out)
         return UA_STATUSCODE_BADOUTOFMEMORY;
-    UA_StatusCode r = connect_admin(t, *out);
+    UA_StatusCode r = st_connect(t, ST_ADMIN, *out);
     if(r != UA_STATUSCODE_GOOD) {
         st_client_free(*out);
         *out = NULL;
@@ -105,7 +127,10 @@ void st_clear(srv_target *t) {
     UA_TrustListDataType_clear(&t->queued);
     UA_NodeId_clear(&t->certType);
     testca_free(&t->ca);
-    OPENSSL_cleanse(t->password, sizeof(t->password));
+    gds_buf_free(&t->adminCert);
+    gds_buf_free_secret(&t->adminKey);
+    OPENSSL_cleanse(t->adminPassword, sizeof(t->adminPassword));
+    OPENSSL_cleanse(t->userPassword, sizeof(t->userPassword));
 }
 
 UA_StatusCode st_endpoints(const srv_target *t, UA_EndpointDescription **eps, size_t *n) {
