@@ -248,6 +248,7 @@ Release builds also use LTO and are reproducible (`-ffile-prefix-map`, `SOURCE_D
 - `fuzz_signer_msg.c`: the signer protocol, both sides (`gds_signer_handle` and the reply decoder).
 - `fuzz_daemon_config.c`: the daemon config parser.
 - `fuzz_users.c`: the users file parser.
+- `fuzz_import.c`: `gdsadm apps import` CSV and JSON files.
 - `fuzz_auditor_responses.c`: the Auditor's handling of hostile method results.
 
 ## Run-time containment
@@ -313,6 +314,7 @@ New or changed files, in the plan's file-by-file style.
 | `src/signer/checks.c` | Re-reads record and approval from the store, rate limits |
 | `src/signer/journal.c` | Signer's own hash-chained issuance log |
 | `src/gdsctl/verify_audit.c`, `main.c` | `gdsctl verify-audit`: one store against the journals of every node's signer |
+| `src/gdsctl/backup.c` | `gdsctl backup` / `restore`: an online store snapshot and the CA directory (key, certificate, CRL, issuance journal) in one AES-256-GCM archive keyed by scrypt of a backup passphrase. Restore authenticates the archive, then puts it in place only if `verify-audit` finds nothing but "signed, not committed" (other nodes' journals can be given) |
 | `packaging/systemd/opengds-signer@.service`, `opengds-signer.socket` | Signer unit (one instance per opengdsd connection, `Accept=yes`) and the socket between the two |
 | `docs/memory-safety.md` | Published memory-safety roadmap (F1) |
 | `docs/locking.md` | Lock order and thread ownership |

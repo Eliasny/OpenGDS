@@ -55,6 +55,11 @@ GDS_MUST_CHECK gds_status gdsc_cert_uri(const gds_buf *certDer, char *out, size_
  * (None, deprecated Basic128Rsa15 and Basic256, unknown). */
 int gdsc_policy_rank(const UA_String *policyUri);
 
+/* The CertificateType whose certificate an endpoint with this
+ * SecurityPolicy presents (12 §7.8.4.8 - §7.8.4.16); NULL NodeId for None
+ * and unknown policies. */
+UA_NodeId gdsc_policy_cert_type(const UA_String *policyUri);
+
 /* Pick the SignAndEncrypt endpoint with the highest-ranked policy among
  * those `usable` names (the policies our certificate supports) that offers
  * the UserTokenType the identity needs (Anonymous, Certificate or UserName, OPC
@@ -73,11 +78,13 @@ UA_Client *gdsc_session_client(gdsc_session *s);
 const UA_String *gdsc_session_policy(const gdsc_session *s);
 void gdsc_session_close(gdsc_session *s);
 
-/* After ApplyChanges: the Server's SignAndEncrypt endpoints present `cert`
- * as their leaf certificate (12 §7.7.2: ApplyChanges may close the
- * endpoints, so this uses a fresh discovery connection, retried until
- * timeoutMs passes). */
-GDS_MUST_CHECK UA_StatusCode gdsc_wait_presents(const char *endpointUrl, const gds_buf *cert,
-                                                UA_UInt32 timeoutMs);
+/* After ApplyChanges: the Server's SignAndEncrypt endpoints whose
+ * SecurityPolicy uses `certType` present `cert` as their leaf certificate.
+ * UpdateCertificate replaces only that CertificateType's certificate
+ * (12 §7.8.4), so endpoints of other types keep theirs. 12 §7.7.2:
+ * ApplyChanges may close the endpoints, so this uses a fresh discovery
+ * connection, retried until timeoutMs passes. */
+GDS_MUST_CHECK UA_StatusCode gdsc_wait_presents(const char *endpointUrl, const UA_NodeId *certType,
+                                                const gds_buf *cert, UA_UInt32 timeoutMs);
 
 #endif

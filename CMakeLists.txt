@@ -54,10 +54,29 @@ add_library(gds_common STATIC
     src/common/buf.c
     src/common/ids.c
     src/common/safeint.c
+    src/common/sandbox.c
     src/common/ua_args.c)
 target_include_directories(gds_common PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_compile_definitions(gds_common PUBLIC _DEFAULT_SOURCE)
 target_link_libraries(gds_common PUBLIC gds_hardening open62541::open62541)
+
+# seccomp in the sandbox (src/common/sandbox.c) needs libseccomp (LGPL 2.1).
+# Optional: without it only Landlock applies. ON makes it required.
+set(OPENGDS_SECCOMP AUTO CACHE STRING "Use libseccomp for the seccomp filter (AUTO, ON, OFF)")
+if(NOT OPENGDS_SECCOMP STREQUAL "OFF")
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LIBSECCOMP IMPORTED_TARGET libseccomp>=2.5)
+    endif()
+    if(LIBSECCOMP_FOUND)
+        target_compile_definitions(gds_common PRIVATE GDS_HAVE_SECCOMP)
+        target_link_libraries(gds_common PRIVATE PkgConfig::LIBSECCOMP)
+    elseif(OPENGDS_SECCOMP STREQUAL "ON")
+        message(FATAL_ERROR "OPENGDS_SECCOMP=ON but libseccomp >= 2.5 was not found")
+    else()
+        message(STATUS "libseccomp not found: the sandbox applies Landlock only")
+    endif()
+endif()
 
 add_subdirectory(src/store)
 add_subdirectory(src/ca)
@@ -80,5 +99,9 @@ if(OPENGDS_BUILD_AUDITOR)
     add_subdirectory(tests/integration)
 endif()
 
-# Install rules and packages (.deb, .rpm, .tar.gz); docs/packaging.md
-add_subdirectory(packaging)
+# Install rules and packages (.deb, .rpm, .tar.gz; docs/packaging.md), only
+# for an OpenGDS build of its own: a project that embeds OpenGDS with
+# add_subdirectory (UASM) packages itself.
+if(_gds_top)
+    add_subdirectory(packaging)
+endif()

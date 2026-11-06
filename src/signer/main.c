@@ -14,7 +14,11 @@
  * each until it closes. The CA key passphrase comes from
  * --passphrase-file or $CREDENTIALS_DIRECTORY/ca-passphrase (systemd
  * LoadCredentialEncrypted=); never from argv or the environment.
- * Sandboxing (seccomp, Landlock) follows in the MVP milestone.
+ * Once its socket, store and CA are open (with --listen: at the first
+ * connection, when opengdsd has created the store), the signer sandboxes itself (common/sandbox.h): Landlock leaves it the CA
+ * directory, the store's directory (read-only) and the passphrase
+ * source; seccomp leaves it no
+ * exec, no new sockets and no connect.
  * SPDX-License-Identifier: MPL-2.0 */
 #include <openssl/crypto.h>
 
@@ -31,6 +35,7 @@
 #include "common/buf.h"
 #include "common/limits.h"
 #include "common/safeint.h"
+#include "common/sandbox.h"
 #include "signer.h"
 #include "store.h"
 #include "common/banned.h"
@@ -201,6 +206,8 @@ static gds_status open_signer(const options *o, gds_signer *s) {
     return r;
 }
 
+static gds_status sandbox(const options *o);
+
 /* One opengdsd at a time; each connection is served until it closes. A
  * failed connection (protocol error, peer gone) ends that connection only.
  * The store and CA are opened at the first connection: opengdsd creates the
@@ -214,13 +221,63 @@ static gds_status serve_listen(const options *o, gds_signer *s, int lfd) {
                 continue;
             return GDS_EIO;
         }
-        gds_status r = s->store ? GDS_OK : open_signer(o, s);
+        gds_status r = GDS_OK;
+        if(!s->store) {
+            r = open_signer(o, s);
+            /* the store's directory exists from now on: sandbox once */
+            if(r == GDS_OK && sandbox(o) != GDS_OK) {
+                (void)close(c);
+                return GDS_EDENIED; /* half sandboxed: stop */
+            }
+        }
         if(r == GDS_OK)
             r = gds_signer_serve(s, c);
         if(r != GDS_OK)
             fprintf(stderr, "opengds-signer: connection ended: %s\n", gds_status_name(r));
         (void)close(c);
     }
+}
+
+/* The directory part of a file path ("." for a bare name). */
+static gds_status dir_of(const char *file, char *out, size_t cap) {
+    const char *slash = strrchr(file, '/');
+    if(!slash)
+        return gds_path(out, cap, ".");
+    size_t n = slash == file ? 1 : (size_t)(slash - file);
+    if(n >= cap)
+        return GDS_ETOOBIG;
+    memcpy(out, file, n);
+    out[n] = '\0';
+    return GDS_OK;
+}
+
+static gds_status sandbox(const options *o) {
+    char storeDir[GDS_MAX_PATH];
+    gds_status r = dir_of(o->store, storeDir, sizeof(storeDir));
+    if(r != GDS_OK)
+        return r;
+    gds_sb_path paths[3] = {
+        {o->caDir, GDS_SB_CREATE}, /* CRL and serial updates; created at first start */
+        {storeDir, GDS_SB_READ},   /* read-only store; SQLite falls back to a read-only -shm */
+        {NULL, GDS_SB_READ},
+    };
+    size_t n = 2;
+    const char *creds = getenv("CREDENTIALS_DIRECTORY"); /* a directory, not a secret */
+    paths[n].path = o->passFile ? o->passFile : creds;
+    if(paths[n].path)
+        n++;
+    /* OpenSSL reads its configuration once, before the file rules apply */
+    if(OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CONFIG, NULL) != 1)
+        return GDS_ECRYPTO;
+    gds_sandbox sb = {.profile = GDS_SB_SIGNER, .paths = paths, .nPaths = n};
+    gds_sandbox_report rep;
+    r = gds_sandbox_apply(&sb, &rep);
+    if(r != GDS_OK)
+        fprintf(stderr, "opengds-signer: sandbox: %s\n", gds_status_name(r));
+    else if(!rep.skipped)
+        fprintf(stderr, "opengds-signer: sandbox: Landlock ABI %d, seccomp %s\n", rep.landlockAbi,
+                rep.seccomp ? "on" : "not built in");
+    return r;
 }
 
 int main(int argc, char **argv) {
@@ -246,6 +303,8 @@ int main(int argc, char **argv) {
             return 2;
         }
         r = open_signer(&o, &s);
+        if(r == GDS_OK)
+            r = sandbox(&o);
         if(r == GDS_OK)
             r = gds_signer_serve(&s, (int)o.fd);
     }

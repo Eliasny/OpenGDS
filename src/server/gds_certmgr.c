@@ -29,15 +29,26 @@
 
 /* ---- shared checks ---- */
 
+/* A14: refused by our own checks; the embedder's may_manage hook decides,
+ * and the method runs again if it allows. */
+#define DEFER_IF_DENIED(fn, r, app)                                                          \
+    do {                                                                                     \
+        if((r) == UA_STATUSCODE_BADUSERACCESSDENIED)                                         \
+            return gds_embed_defer_rights(s, fn, sessionId, sessionContext, methodId, objectId, \
+                                          &(app), inputSize, input, outputSize, output);     \
+    } while(0)
+
 /* The application must exist, and the caller must be a CA admin or it. */
 static UA_StatusCode check_app(gds_server *s, void *sessionContext, const UA_Guid *appId,
                                unsigned extraRoles) {
     UA_ApplicationRecordDataType rec;
     UA_StatusCode r = gds_load_app(s, appId, &rec);
+    const gds_session *ss = sessionContext;
     if(r == UA_STATUSCODE_GOOD &&
        !gds_session_has(sessionContext, GDS_ROLE_CERTIFICATE_AUTHORITY_ADMIN | extraRoles) &&
-       !gds_session_is_app(sessionContext, &rec.applicationUri))
-        r = UA_STATUSCODE_BADUSERACCESSDENIED;
+       !gds_session_is_app(sessionContext, &rec.applicationUri) &&
+       !(ss && ss->managedGranted && UA_Guid_equal(&ss->managedApp, appId)))
+        r = UA_STATUSCODE_BADUSERACCESSDENIED; /* the embedder's hook may still allow it (A14) */
     UA_ApplicationRecordDataType_clear(&rec);
     return r;
 }
@@ -118,6 +129,7 @@ static GDS_METHOD(start_signing_request) {
     UA_UInt32 group = 0, type = 0;
     const UA_ByteString *csr = NULL;
     UA_StatusCode r = signing_args(s, sessionContext, inputSize, input, &appId, &group, &type, &csr);
+    DEFER_IF_DENIED(start_signing_request, r, appId);
     if(r != UA_STATUSCODE_GOOD)
         return r;
     gds_request q;
@@ -184,6 +196,7 @@ static GDS_METHOD(finish_request) {
     UA_StatusCode r = gds_in_guid(s, inputSize, input, 0, &appId);
     if(r == UA_STATUSCODE_GOOD)
         r = check_app(s, sessionContext, &appId, 0);
+    DEFER_IF_DENIED(finish_request, r, appId);
     if(r == UA_STATUSCODE_GOOD)
         r = gds_in_guid(s, inputSize, input, 1, &reqId);
     if(r == UA_STATUSCODE_BADNOTFOUND)
@@ -223,6 +236,7 @@ static GDS_METHOD(get_certificate_groups) {
     UA_StatusCode r = gds_in_guid(s, inputSize, input, 0, &appId);
     if(r == UA_STATUSCODE_GOOD)
         r = check_app(s, sessionContext, &appId, GDS_ROLE_DISCOVERY_ADMIN);
+    DEFER_IF_DENIED(get_certificate_groups, r, appId);
     if(r != UA_STATUSCODE_GOOD)
         return r;
     UA_NodeId g =
@@ -238,6 +252,7 @@ static GDS_METHOD(get_trust_list) {
     UA_StatusCode r = gds_in_guid(s, inputSize, input, 0, &appId);
     if(r == UA_STATUSCODE_GOOD)
         r = check_app(s, sessionContext, &appId, 0);
+    DEFER_IF_DENIED(get_trust_list, r, appId);
     if(r == UA_STATUSCODE_GOOD)
         r = group_arg(s, inputSize, input, 1, &group);
     if(r != UA_STATUSCODE_GOOD)
@@ -257,6 +272,7 @@ static GDS_METHOD(get_certificate_status) {
     UA_StatusCode r = gds_in_guid(s, inputSize, input, 0, &appId);
     if(r == UA_STATUSCODE_GOOD)
         r = check_app(s, sessionContext, &appId, 0);
+    DEFER_IF_DENIED(get_certificate_status, r, appId);
     if(r == UA_STATUSCODE_GOOD)
         r = group_arg(s, inputSize, input, 1, &group);
     if(r == UA_STATUSCODE_GOOD)

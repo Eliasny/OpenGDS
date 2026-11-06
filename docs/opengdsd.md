@@ -19,6 +19,19 @@ There are two ways to run the signer:
 
 Without `signer`, the CA runs inside `opengdsd`. That mode is for development only, and the daemon warns about it at startup.
 
+Once its socket, store and CA are open (with `--listen`: at the first connection, once `opengdsd` has created the store), the signer sandboxes itself (`src/common/sandbox.c`), on top of what the systemd unit applies:
+
+- `PR_SET_NO_NEW_PRIVS`.
+- Landlock: the CA directory read-write, the store's directory read-only (SQLite then maps its shared-memory file read-only), the passphrase file or `$CREDENTIALS_DIRECTORY` read-only, and nothing else. It also allows no TCP bind or connect and, on kernels with Landlock ABI 6, no signals or abstract sockets outside the process. On kernels without Landlock the signer logs a warning and goes on.
+- seccomp: an allowlist of the system calls it uses. Any other call fails with EPERM. `execve`, `ptrace`, `socket`, `connect`, `bind`, `listen`, `bpf`, `keyctl`, `mount` and module loading kill the process, as does new executable memory.
+
+`opengdsd` sandboxes itself the same way once it has started (store, CA or signer connection, own certificate), with a wider profile for the OPC UA server:
+
+- Landlock: `data_dir` read-write, `ca_dir` read-write only with the in-process CA, the configuration and users files read-only, and `/etc/hosts`, `/etc/resolv.conf`, `/etc/nsswitch.conf`, `/etc/host.conf`, `/etc/gai.conf` and `/etc/localtime` read-only. TCP bind is allowed only on `port`, and TCP connect is not allowed at all (`opengdsd` makes no outgoing connections; push runs in `gdsadm`).
+- seccomp: the signer's allowlist plus sockets, epoll, timers and threads. `clone` is allowed only with `CLONE_THREAD`, so `fork` fails, and `clone3` answers ENOSYS so that libc falls back to `clone`. `ioctl` is limited to FIONBIO and FIONREAD. `execve`, `ptrace` and the others kill the process.
+
+The `opengds-signer: sandbox:` and `opengdsd: sandbox:` log lines (`Landlock ABI N, seccomp on`) show what applied. seccomp needs libseccomp (2.5 or later) at build time. `-DOPENGDS_SECCOMP=ON` makes it required, and without it the build applies Landlock only. Builds with AddressSanitizer or ThreadSanitizer skip the sandbox.
+
 ## First start
 
 1. Create the users file, mode 0600:
@@ -90,6 +103,37 @@ gdsadm apps unregister urn:example:device CONNECTION
 ```
 
 CONNECTION is the same as for `gdsadm push now`: `--gds URL --cert DER --key DER --trust DER [--crl DER] --user NAME --password-file FILE`.
+
+## Importing applications
+
+`gdsadm apps import` registers many applications at once, as a user with DiscoveryAdmin. Each record is one standard RegisterApplication call (OPC 10000-12 §6.5.5), so the GDS checks it exactly as it checks any other registration.
+
+```sh
+gdsadm apps import plant.csv --dry-run      # check the file; nothing is sent
+gdsadm apps import plant.csv CONNECTION
+```
+
+A CSV file (RFC 4180, UTF-8) starts with a header row that names its columns, in any order:
+
+| Column | Required | Value |
+|---|---|---|
+| `ApplicationUri` | yes | the application's URI |
+| `ApplicationName` | yes | its name |
+| `ApplicationType` | yes | `Server`, `Client` or `ClientAndServer` |
+| `ApplicationNameLocale` | no | the name's locale, default `en` |
+| `ProductUri` | no | |
+| `DiscoveryUrls` | Servers | URLs separated by spaces |
+| `ServerCapabilities` | no | Annex D identifiers separated by spaces, e.g. `DA LDS` |
+
+```csv
+ApplicationUri,ApplicationName,ApplicationType,DiscoveryUrls,ServerCapabilities
+urn:plant:press1,"Press 1, hall B",Server,opc.tcp://press1.plant:4840,DA
+urn:plant:hmi,HMI,Client,,
+```
+
+A JSON file is `{"Applications": [...]}` with each element an ApplicationRecordDataType in the OPC UA JSON encoding (OPC 10000-6 §5.4), for example `{"ApplicationUri": "urn:plant:hmi", "ApplicationType": 1, "ApplicationNames": [{"Locale": "en", "Text": "HMI"}]}`. An ApplicationId in the file is ignored, because the GDS assigns it.
+
+The report has one tab-separated line per record: the line number in the file (or the element number in JSON), the ApplicationUri, and `registered` with the new ApplicationId, `exists`, `invalid` or `failed` with the status code. A record whose ApplicationUri is registered already is left as it is, so an import can be run again after fixing the failed rows. The exit code is 1 when any record was invalid or failed. The file may hold at most 100,000 records and 16 MiB.
 
 ## Inspecting a running GDS
 

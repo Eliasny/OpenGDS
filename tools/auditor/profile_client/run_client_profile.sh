@@ -2,7 +2,9 @@
 # Run the client profile (gdsaudit client) against the pull test client:
 # once as the good client against the pinned verdicts, then once per
 # --break mutant, each of which must trip its test with its verdict.
-# Usage: run_client_profile.sh <bindir> <workdir> <expected-dir> [good|mutants]
+# "slow" runs the slow tests (the client's own schedule, a 20 s cycle
+# period) for the good client and their mutants, from slow.csv.
+# Usage: run_client_profile.sh <bindir> <workdir> <expected-dir> [good|mutants|slow]
 # SPDX-License-Identifier: MPL-2.0
 set -u
 B=$(cd "$1" && pwd)
@@ -29,18 +31,24 @@ if [ "$WHAT" = good ]; then
 fi
 
 FAILED=0
-grep -v '^#' "$E/mutants.csv" | while IFS=, read -r mutant test verdict extra; do
+CSV=$E/mutants.csv
+SLOW=""
+if [ "$WHAT" = slow ]; then
+    CSV=$E/slow.csv
+    SLOW="--slow --cycle-period 20"
+fi
+grep -v '^#' "$CSV" | while IFS=, read -r mutant test verdict extra; do
     [ -z "$mutant" ] && continue
     printf '%s,%s\n' "$test" "$verdict" > "$W/$test-$mutant.csv"
     if [ "$mutant" = - ]; then brk=""; else brk="--break $mutant"; fi
     echo "# mutant $mutant: $test must be $verdict"
     # shellcheck disable=SC2086 # brk and extra are option lists
-    run "$W/$mutant" --only "$test" --expect "$W/$test-$mutant.csv" -- \
+    run "$W/$mutant-$test" $SLOW --only "$test" --expect "$W/$test-$mutant.csv" -- \
         "$B/pull_test_client" --from-env $brk $extra
     RC=$?
     if [ $RC -ne 0 ]; then
         echo "not ok: mutant $mutant (exit $RC)"
-        tail -20 "$W/$mutant/trigger.log"
+        tail -20 "$W/$mutant-$test/trigger.log"
         echo fail >> "$W/failed"
     fi
 done

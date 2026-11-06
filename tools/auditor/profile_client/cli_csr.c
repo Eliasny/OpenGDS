@@ -117,15 +117,15 @@ static void t_csr_dns(ga_ctx *ctx, void *profile) {
         ga_pass(ctx, "no DiscoveryUrls registered, so no domain can be missing");
     } else {
         char host[FG_MAX_URI];
-        url_host(ev->discoveryUrl0, host, sizeof(host));
+        url_host(ev->discoveryUrls[0], host, sizeof(host));
         bool found = false;
         for(size_t i = 0; i < ci.dnsN && !found; i++)
             found = strcmp(ci.dns[i], host) == 0;
         if(found)
-            ga_pass(ctx, "the CSR names %s from DiscoveryUrl %s", host, ev->discoveryUrl0);
+            ga_pass(ctx, "the CSR names %s from DiscoveryUrl %s", host, ev->discoveryUrls[0]);
         else
             ga_fail(ctx, "DiscoveryUrl %s: domain %s is not among the CSR's %zu DNS names",
-                    ev->discoveryUrl0, host, ci.dnsN);
+                    ev->discoveryUrls[0], host, ci.dnsN);
     }
     csr_info_clear(&ci);
 }

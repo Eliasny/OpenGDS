@@ -36,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build libsqlite3-dev libseccomp-dev python3
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build libsqlite3-dev libseccomp-dev python3 libgtk-4-dev xvfb
       - name: Sanitizer settings
         id: san
         run: |
@@ -78,7 +78,8 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
           TSAN_OPTIONS: halt_on_error=1:suppressions=${{ github.workspace }}/tsan.supp
-        run: ctest --test-dir build --output-on-failure
+        # the slow client tests (ctest -L slow, about 6 minutes) run locally
+        run: ctest --test-dir build --output-on-failure -LE slow
       - name: Check binary hardening
         if: matrix.variant == 'release'
         run: |
@@ -99,7 +100,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build libsqlite3-dev libseccomp-dev python3 clang-tidy cppcheck
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build libsqlite3-dev libseccomp-dev python3 clang-tidy cppcheck libgtk-4-dev
       - name: Cache pinned OpenSSL 3.5
         id: ossl
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0

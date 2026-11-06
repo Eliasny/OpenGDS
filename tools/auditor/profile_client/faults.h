@@ -30,6 +30,14 @@ typedef enum {
     FAULT_HUGE_ISSUERS,   /* a new request; FinishRequest returns 10 000 IssuerCertificates */
     FAULT_TL_OVER_READ,   /* the trust list changed; Read returns more than Length (a rogue list) */
     FAULT_CLOSE_SESSIONS, /* the GDS closes each session after its first call */
+    FAULT_DROP_AFTER_SIGN, /* a new request; then the session is closed and the request forgotten */
+    FAULT_TL_DROP,        /* the trust list changed; the session is closed after the first Read */
+    FAULT_FINISH_HANG,    /* a new request; FinishRequest does not answer */
+    FAULT_ISSUE_INTERMEDIATE, /* a new request; issued by ca-int, chain ca-int, ca */
+    FAULT_PENDING_HOLD,   /* a new request; FinishRequest says Bad_NothingToDo all cycle */
+    FAULT_UPDATE_FREQUENCY, /* TrustList UpdateFrequency set (the run sets the value) */
+    FAULT_ISSUE_SHORT,    /* a new request; a certificate that expires soon (the run sets when) */
+    FAULT_REFUSE_ANONYMOUS, /* ActivateSession refuses Anonymous: the client needs credentials */
     FAULT_COUNT
 } fault_id;
 

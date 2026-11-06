@@ -10,17 +10,7 @@
 
 #include "common/compiler.h"
 
-typedef enum {
-    GA_PASS = 0,
-    GA_FAIL,
-    GA_WARN,          /* allowed by the spec but risky or ambiguous */
-    GA_NOT_SUPPORTED, /* optional feature the target does not advertise */
-    GA_NOT_TESTED     /* a needed step did not happen */
-} ga_verdict;
-
-const char *ga_verdict_name(ga_verdict v);
-/* Parse "pass", "fail", "warn", "not_supported", "not_tested". */
-bool ga_verdict_parse(const char *s, ga_verdict *out);
+#include "gdsaudit/engine.h" /* ga_verdict, events, abort */
 
 typedef struct ga_ctx ga_ctx;
 
@@ -52,6 +42,8 @@ typedef struct {
     const char *expectCsv; /* compare verdicts with "id,verdict" lines */
     bool operatorAvailable; /* a person or hook is there: run needsOperator tests */
 } ga_run_options;
+/* Every run also emits its events to the sinks of include/gdsaudit/engine.h;
+ * after ga_request_abort() the remaining tests are Not tested. */
 
 /* Runs the tests in the given (fixed) order and prints TAP to stdout.
  * Returns the exit code of the Auditor plan: 0 all passed, 1 at least one

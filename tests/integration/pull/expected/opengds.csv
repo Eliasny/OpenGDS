@@ -18,6 +18,7 @@ gds.dir.get_application,pass
 gds.dir.get_unknown,pass
 gds.dir.update_application,pass
 gds.dir.unregister,pass
+gds.dir.unregister_revokes,pass
 gds.dir.query_by_uri,pass
 gds.cm.groups,pass
 gds.cm.groups_unknown,pass
@@ -49,8 +50,8 @@ gds.qry.product_uri,pass
 gds.qry.name,pass
 gds.qry.paging,pass
 gds.qry.capabilities,pass
-gds.qry.na_excluded,fail
-gds.qry.servers,fail
+gds.qry.na_excluded,pass
+gds.qry.servers,pass
 gds.cm.get_certificates,not_supported
 gds.cm.get_certificates_unknown,not_supported
 gds.cm.get_certificates_bad_group,not_supported
