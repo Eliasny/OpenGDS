@@ -90,6 +90,18 @@ if [ -z "${OPEN62541_PREFIX:-}" ]; then
         OPENSSL_ROOT=$OPENSSL_PREFIX scripts/build_open62541.sh "$OPEN62541_PREFIX"
 fi
 
+# SQLite: the system library where it is new enough (3.37, src/store), else
+# the pinned one linked statically (EL 9 ships 3.34).
+SQLITE_ARGS=
+SQLITE_SBOM=
+sqlite_have=$(sed -n 's/^#define SQLITE_VERSION_NUMBER \([0-9]*\).*/\1/p' /usr/include/sqlite3.h 2>/dev/null || true)
+if [ "${sqlite_have:-0}" -lt 3037000 ]; then
+    SQLITE_PREFIX=${SQLITE_PREFIX:-$WORK/deps/sqlite}
+    [ -e "$SQLITE_PREFIX/lib/libsqlite3.a" ] || scripts/build_sqlite.sh "$SQLITE_PREFIX" "$WORK/deps/sqlite-src"
+    SQLITE_ARGS="-DSQLite3_INCLUDE_DIR=$SQLITE_PREFIX/include -DSQLite3_LIBRARY=$SQLITE_PREFIX/lib/libsqlite3.a"
+    SQLITE_SBOM="--sqlite-prefix $SQLITE_PREFIX"
+fi
+
 BUILD=$WORK/build
 rm -rf "$BUILD"
 MAP="-ffile-prefix-map=$SRC=/usr/src/opengds-$VERSION -ffile-prefix-map=$BUILD=/usr/src/opengds-$VERSION/build"
@@ -99,6 +111,7 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
     -DCMAKE_EXE_LINKER_FLAGS="-Wl,--build-id=sha1" \
     -DOPEN62541_PREFIX="$OPEN62541_PREFIX" -DOPENSSL_ROOT_DIR="$OPENSSL_PREFIX" \
     -DOPENGDS_PACKAGE_RELEASE="$PKGREL" \
+    -DCMAKE_C_STANDARD_LIBRARIES="-lpthread -lm" $SQLITE_ARGS \
     -DCPACK_PACKAGE_FILE_NAME="opengds-$VERSION-$DIST-$ARCH"
 cmake --build "$BUILD"
 [ -n "${SKIP_TESTS:-}" ] || ctest --test-dir "$BUILD" --output-on-failure
@@ -117,9 +130,16 @@ for f in "$BUILD"/dist/*.deb "$BUILD"/dist/*.rpm "$BUILD"/dist/*.tar.gz; do
     cp "$f" "$OUT/"
     python3 -I "$SRC/scripts/release/sbom.py" --artifact "$OUT/$(basename "$f")" \
         --source "$SRC" --commit "$COMMIT" --version "$VERSION" --format "$FORMAT" \
-        --openssl-prefix "$OPENSSL_PREFIX" --open62541-prefix "$OPEN62541_PREFIX" \
+        --openssl-prefix "$OPENSSL_PREFIX" --open62541-prefix "$OPEN62541_PREFIX" $SQLITE_SBOM \
         > "$OUT/$(basename "$f").spdx.json"
 done
+
+# The exact build environment: with it (and snapshot.debian.org for Debian)
+# anyone can rebuild these bytes later.
+case "$FORMAT" in
+    DEB) dpkg-query -W -f='${Package} ${Version} ${Architecture}\n' ;;
+    RPM) rpm -qa --qf '%{NAME} %{EPOCHNUM}:%{VERSION}-%{RELEASE} %{ARCH}\n' ;;
+esac | LC_ALL=C sort > "$OUT/$DIST-$ARCH.buildenv.txt"
 
 (cd "$OUT" && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | sort |
     xargs sha256sum > SHA256SUMS)

@@ -15,18 +15,19 @@
 #                            /run/opengds; group 10001 lets it read the store
 #                            and lets opengdsd open the 0660 socket
 #
-# Reproducible: base images are pinned by digest, Debian packages come from a
-# snapshot.debian.org date, and the release workflow passes SOURCE_DATE_EPOCH
+# Reproducible: base images are pinned by digest, Debian packages can come from
+# a snapshot.debian.org date (DEBIAN_SNAPSHOT), and the release workflow passes SOURCE_DATE_EPOCH
 # with BuildKit's rewrite-timestamp so layer times are the commit time.
 
 ARG BUILD_IMAGE=debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 ARG RUNTIME_IMAGE=gcr.io/distroless/cc-debian13:nonroot@sha256:08476c244888bfb425bae1ae4dd7c17f093e972aab8426883d97f3c6f280f7c1
 
 FROM ${BUILD_IMAGE} AS build
-# Debian packages at a fixed date: the same Dockerfile installs the same
-# compiler and libraries. snapshot.debian.org is slow under load: retry.
-ARG DEBIAN_SNAPSHOT=20261101T000000Z
-# (An empty DEBIAN_SNAPSHOT keeps the base image's own sources.)
+# Optional: Debian packages at a fixed snapshot.debian.org date (for example
+# 20261101T000000Z) to rebuild an old image with the same compiler and
+# libraries. Empty uses the base image's own mirrors; snapshot.debian.org is
+# slow under load, so apt retries.
+ARG DEBIAN_SNAPSHOT=
 RUN if [ -n "$DEBIAN_SNAPSHOT" ]; then \
         rm -f /etc/apt/sources.list.d/debian.sources && \
         printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s trixie main\ndeb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/%s trixie-security main\n' \

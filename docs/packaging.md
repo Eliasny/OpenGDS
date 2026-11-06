@@ -13,7 +13,7 @@ OpenGDS ships as:
 
 Architectures: amd64 (x86_64) and arm64 (aarch64). Each binary artifact has an SPDX 2.3 SBOM next to it (`<artifact>.spdx.json`).
 
-OpenSSL 3.5 (decision G2) and open62541 v1.5.10 are linked statically, so the packages depend only on glibc, SQLite and systemd 252 or newer.
+OpenSSL 3.5 (decision G2) and open62541 v1.5.10 are linked statically, so the packages depend only on glibc, SQLite and systemd 252 or newer. On EL 9, whose SQLite 3.34 is older than the store needs (3.37), SQLite is linked statically as well, from the version pinned in `scripts/build_sqlite.sh`.
 
 ## Installed files
 
@@ -103,7 +103,7 @@ The same commit, built in the same pinned build container, gives byte-identical 
 
 `scripts/release/check-reproducible.sh <work-dir>` builds twice, from clones at different paths, and fails if any byte differs. The release workflow does the same on two separate runners from scratch, and publishes nothing if the two disagree.
 
-The Debian and Ubuntu build containers are pinned by digest. The container image's build stage installs its packages from a fixed snapshot.debian.org date.
+The build containers are pinned by digest, and every build writes `<dist>-<arch>.buildenv.txt`, the exact package versions it built with. Rebuilding an old Debian release later means installing those versions from snapshot.debian.org (`DEBIAN_SNAPSHOT=<date>` in `scripts/release/install-build-deps.sh` and in the Dockerfile). Release runs use the live mirrors, because snapshot.debian.org refuses many parallel downloads.
 
 Signing adds bytes: an RPM carries its signature inside, so compare the unsigned payload with `rpm --delsign` before comparing hashes. The `.deb` and `.tar.gz` files are signed with detached signatures and stay byte-identical. An RPM's SBOM records the SHA-256 of the unsigned package.
 

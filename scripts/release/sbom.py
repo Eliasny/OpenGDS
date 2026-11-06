@@ -70,6 +70,7 @@ def main():
     ap.add_argument("--format", choices=["DEB", "RPM"], required=True)
     ap.add_argument("--openssl-prefix", required=True)
     ap.add_argument("--open62541-prefix", required=True)
+    ap.add_argument("--sqlite-prefix", help="SQLite linked statically (scripts/build_sqlite.sh)")
     a = ap.parse_args()
 
     src = a.source
@@ -209,6 +210,23 @@ def main():
         rels.append({"spdxElementId": spdx_id("open62541"), "relationshipType": "CONTAINS",
                      "relatedSpdxElement": pkg["SPDXID"]})
 
+    if a.sqlite_prefix:
+        with open(os.path.join(a.sqlite_prefix, "share/doc/sqlite/pinned"), encoding="utf-8") as f:
+            sq_ver, sq_sha, sq_url = f.read().split()
+        add({
+            "SPDXID": spdx_id("sqlite"),
+            "name": "sqlite",
+            "versionInfo": sq_ver,
+            "downloadLocation": sq_url,
+            "checksums": [{"algorithm": "SHA256", "checksumValue": sq_sha}],
+            "licenseConcluded": "blessing",
+            "licenseDeclared": "blessing",
+            "copyrightText": "NOASSERTION",
+            "primaryPackagePurpose": "LIBRARY",
+            "filesAnalyzed": False,
+            "comment": "Pinned in scripts/build_sqlite.sh; the distribution's SQLite is too old",
+        }, "STATIC_LINK")
+        requires = requires.replace("sqlite", "")
     for pname, deb, rpm, lic in (("glibc", "libc6", "glibc", "LGPL-2.1-or-later"),
                                  ("sqlite", "libsqlite3-0", "sqlite-libs", "blessing")):
         if pname == "sqlite" and "sqlite" not in requires:
