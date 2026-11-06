@@ -1,0 +1,52 @@
+# opengds-signer: holds the CA key; started per opengdsd connection by
+# opengds-signer.socket. No network, its own user, the passphrase from an
+# encrypted systemd credential:
+#   systemd-creds encrypt --name=ca-passphrase - /etc/opengds/ca-passphrase.cred
+# The store is read-only to it (opengds-ca is in group opengds, which can
+# read /var/lib/opengds).
+# SPDX-License-Identifier: MPL-2.0
+[Unit]
+Description=OpenGDS signer (CA key holder)
+Documentation=https://github.com/Eliasny/OpenGDS/blob/main/docs/opengdsd.md
+
+[Service]
+Type=simple
+User=opengds-ca
+Group=opengds-ca
+SupplementaryGroups=opengds
+ExecStart=/usr/libexec/opengds/opengds-signer --fd systemd --store /var/lib/opengds/opengds.db --ca-dir /var/lib/opengds-signer/ca
+StandardInput=null
+LoadCredentialEncrypted=ca-passphrase:/etc/opengds/ca-passphrase.cred
+StateDirectory=opengds-signer
+StateDirectoryMode=0700
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/opengds
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+IPAddressDeny=any
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @network-io
+SystemCallErrorNumber=EPERM

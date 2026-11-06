@@ -196,7 +196,7 @@ static UA_UInt16 setup(gds_server *s) {
     bad.browseName = "Bad";
     bad.parentId = UA_NODEID_NUMERIC(ns, 999);
     CHECK(gds_server_add_method(s, &bad) == GDS_ENOTFOUND);
-    CHECK(gds_embed_find(s, &bad.methodId) == NULL);
+    CHECK(!gds_embed_bound(s, &bad.methodId));
     return ns;
 }
 
@@ -410,7 +410,7 @@ int main(int argc, char **argv) {
     cfg.store = st;
     cfg.ca = ca;
     cfg.users = &users;
-    cfg.autoApprove = true;
+    cfg.approval = GDS_APPROVE_ALL;
     gds_server *s = NULL;
     static gds_privilege_provider px = {GDS_PLUGIN_ABI_MAJOR, GDS_PLUGIN_ABI_MINOR,
                                         sizeof(gds_privilege_provider), NULL, grant_x};

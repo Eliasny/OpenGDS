@@ -22,9 +22,11 @@ static bool complete(const gds_store_backend *be) {
            be->cert_add && be->cert_latest;
 }
 
+#define MINOR0_SIZE (offsetof(gds_store_backend, cert_latest) + sizeof(void (*)(void)))
+
 gds_status gds_store_open_backend(const gds_store_backend *be, void *ctx, gds_store **out) {
     *out = NULL;
-    if(!be || be->abi_major != GDS_STORE_ABI_MAJOR || be->struct_size < sizeof(*be) ||
+    if(!be || be->abi_major != GDS_STORE_ABI_MAJOR || be->struct_size < MINOR0_SIZE ||
        !complete(be)) {
         if(be && be->abi_major == GDS_STORE_ABI_MAJOR && be->close)
             be->close(ctx);
@@ -35,7 +37,8 @@ gds_status gds_store_open_backend(const gds_store_backend *be, void *ctx, gds_st
         be->close(ctx);
         return GDS_ENOMEM;
     }
-    memcpy(&s->be, be, sizeof(s->be));
+    /* only the fields the backend's version has; later ones stay NULL */
+    memcpy(&s->be, be, be->struct_size < sizeof(s->be) ? be->struct_size : sizeof(s->be));
     s->be.struct_size = sizeof(s->be);
     s->ctx = ctx;
     *out = s;
@@ -110,6 +113,13 @@ gds_status gds_store_req_next_received(gds_store *s, gds_request *out) {
     return s->be.req_next_received(s->ctx, out);
 }
 
+gds_status gds_store_req_scan(gds_store *s, gds_req_state state, gds_store_req_cb cb,
+                              void *ctx) {
+    if(!s->be.req_scan)
+        return GDS_EUNSUPPORTED; /* a backend before minor 2 */
+    return s->be.req_scan(s->ctx, state, cb, ctx);
+}
+
 gds_status gds_store_req_set_state(gds_store *s, const UA_Guid *id, gds_req_state state,
                                    const gds_buf *cert, UA_StatusCode error) {
     return s->be.req_set_state(s->ctx, id, state, cert, error);
@@ -124,4 +134,55 @@ gds_status gds_store_cert_add(gds_store *s, const UA_Guid *appId, uint32_t group
 gds_status gds_store_cert_latest(gds_store *s, const UA_Guid *appId, uint32_t groupId,
                                  uint32_t certType, gds_buf *der, int64_t *notAfter) {
     return s->be.cert_latest(s->ctx, appId, groupId, certType, der, notAfter);
+}
+
+gds_status gds_store_audit_append(gds_store *s, int64_t time, const gds_buf *body, int64_t *seq) {
+    if(!s->be.audit_append)
+        return GDS_EUNSUPPORTED;
+    if(!body || body->len == 0 || body->len > GDS_MAX_AUDIT_BODY)
+        return body && body->len ? GDS_ETOOBIG : GDS_EINVAL;
+    return s->be.audit_append(s->ctx, time, body, seq);
+}
+
+gds_status gds_store_audit_scan(gds_store *s, int64_t fromSeq, gds_audit_scan_cb cb, void *ctx) {
+    if(!s->be.audit_scan)
+        return GDS_EUNSUPPORTED;
+    return s->be.audit_scan(s->ctx, fromSeq, cb, ctx);
+}
+
+typedef struct {
+    int64_t next;
+    uint8_t prev[GDS_AUDIT_HASH];
+    int64_t bad;
+} verify_state;
+
+static bool verify_row(void *ctx, const gds_audit_row *row) {
+    verify_state *v = ctx;
+    uint8_t h[GDS_AUDIT_HASH];
+    if(row->seq != v->next || memcmp(row->prevHash, v->prev, GDS_AUDIT_HASH) != 0 ||
+       gds_audit_hash(v->prev, row->seq, row->time, &row->body, h) != GDS_OK ||
+       memcmp(h, row->hash, GDS_AUDIT_HASH) != 0) {
+        v->bad = row->seq != v->next ? v->next : row->seq;
+        return false;
+    }
+    memcpy(v->prev, h, GDS_AUDIT_HASH);
+    v->next++;
+    return true;
+}
+
+gds_status gds_store_audit_verify(gds_store *s, int64_t *rows, int64_t *badSeq) {
+    verify_state v;
+    memset(&v, 0, sizeof(v));
+    v.next = 1;
+    *badSeq = 0;
+    *rows = 0;
+    gds_status r = gds_store_audit_scan(s, 1, verify_row, &v);
+    *rows = v.next - 1;
+    if(r != GDS_OK)
+        return r;
+    if(v.bad) {
+        *badSeq = v.bad;
+        return GDS_ESTATE;
+    }
+    return GDS_OK;
 }

@@ -46,10 +46,13 @@ gds_status gds_server_set_role(gds_server *s, gds_node_role role, UA_Byte level,
     if(!s || !level_ok(role, level, estimatedReturnTime))
         return GDS_EINVAL;
     pthread_mutex_lock(&s->roleLock);
+    bool changed = s->role != role;
     s->role = role;
     s->serviceLevel = level;
     s->estimatedReturnTime = estimatedReturnTime;
     pthread_mutex_unlock(&s->roleLock);
+    if(changed) /* a STANDBY shows no approvals; a new PRIMARY shows the store's */
+        gds_approvals_role_changed(s);
     return GDS_OK;
 }
 
@@ -230,7 +233,8 @@ static UA_StatusCode configure(UA_ServerConfig *c, const gds_server_config *cfg,
 
 static bool config_ok(const gds_server_config *cfg) {
     return cfg && cfg->applicationUri && cfg->productUri && cfg->applicationName &&
-           cfg->ownCert.len && cfg->ownKey.len && cfg->store && cfg->ca && cfg->users;
+           cfg->ownCert.len && cfg->ownKey.len && cfg->store && cfg->ca && cfg->users &&
+           cfg->approval >= GDS_APPROVE_ALL && cfg->approval <= GDS_APPROVE_MANUAL;
 }
 
 static gds_status install(gds_server *s) {
@@ -248,6 +252,8 @@ static gds_status install(gds_server *s) {
         r = gds_trustlist_install(s);
     if(r == UA_STATUSCODE_GOOD)
         r = install_role_nodes(s);
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_approvals_install(s);
     if(r != UA_STATUSCODE_GOOD) {
         fprintf(stderr, "opengds: installing the GDS methods failed: %s\n", UA_StatusCode_name(r));
         return GDS_ENOTFOUND;
@@ -267,10 +273,11 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
     pthread_mutex_init(&s->roleLock, NULL);
     pthread_cond_init(&s->workCond, NULL);
     pthread_mutex_init(&s->plugLock, NULL);
+    pthread_mutex_init(&s->bindLock, NULL);
     pthread_cond_init(&s->plugCond, NULL);
     s->store = cfg->store;
     s->ca = cfg->ca;
-    s->autoApprove = cfg->autoApprove;
+    s->approval = cfg->approval;
     s->counterReset = UA_DateTime_now();
     s->role = GDS_NODE_STANDALONE;
     s->serviceLevel = 255;
@@ -326,6 +333,7 @@ void gds_server_delete(gds_server *s) {
     gds_buf_free(&s->caCert);
     pthread_cond_destroy(&s->plugCond);
     pthread_mutex_destroy(&s->plugLock);
+    pthread_mutex_destroy(&s->bindLock);
     pthread_cond_destroy(&s->workCond);
     pthread_mutex_destroy(&s->roleLock);
     pthread_mutex_destroy(&s->workLock);

@@ -237,7 +237,7 @@ Release builds also use LTO and are reproducible (`-ffile-prefix-map`, `SOURCE_D
 | `checksec` on built binaries | Every push | PIE, full RELRO, canary, NX, FORTIFY present |
 | OpenSSF Scorecard | Weekly | Score tracked, no regression |
 
-**Fuzz targets** (`tests/fuzz/`, seeds in `tests/fixtures/`):
+**Fuzz targets** (`tests/fuzz/`, seeds in `tests/fuzz/corpus/`; `fuzz.yml` runs them nightly, and every CI build replays the seeds as tests):
 
 - `fuzz_csr.c`: CSR checks in the signer, from raw DER.
 - `fuzz_cert_chain.c`: UpdateCertificate chain validation (client side and Auditor).
@@ -245,8 +245,9 @@ Release builds also use LTO and are reproducible (`-ffile-prefix-map`, `SOURCE_D
 - `fuzz_app_record.c`: ApplicationRecordDataType validation in RegisterApplication / UpdateApplication.
 - `fuzz_query.c`: QueryApplications filters and paging.
 - `fuzz_methods.c`: every Part 12 method callback called in-process (`UA_Server_call`) with fuzzed variant arguments, sessions and roles; asserts that no call from a non-admin session changes the store.
-- `fuzz_signer_ipc.c`: the signer's request decoder.
-- `fuzz_config.c`: the daemon config parser.
+- `fuzz_signer_msg.c`: the signer protocol, both sides (`gds_signer_handle` and the reply decoder).
+- `fuzz_daemon_config.c`: the daemon config parser.
+- `fuzz_users.c`: the users file parser.
 - `fuzz_auditor_responses.c`: the Auditor's handling of hostile method results.
 
 ## Run-time containment
@@ -310,11 +311,11 @@ New or changed files, in the plan's file-by-file style.
 | `src/signer/proto.c/.h` | Fixed, versioned, length-prefixed request and reply encoding; fuzzed |
 | `src/signer/checks.c` | Re-reads record and approval from the store, rate limits |
 | `src/signer/journal.c` | Signer's own hash-chained issuance log |
-| `packaging/systemd/opengds-signer.service`, `opengds.socket` | Signer unit and the socket between the two |
+| `packaging/systemd/opengds-signer@.service`, `opengds-signer.socket` | Signer unit (one instance per opengdsd connection, `Accept=yes`) and the socket between the two |
 | `docs/memory-safety.md` | Published memory-safety roadmap (F1) |
 | `docs/locking.md` | Lock order and thread ownership |
 | `tests/unit/test_alloc_fail.c` | Allocation failure injection |
-| `tests/fuzz/fuzz_methods.c`, `fuzz_signer_ipc.c`, `fuzz_cert_chain.c`, `fuzz_config.c`, `fuzz_auditor_responses.c` | New fuzz targets |
+| `tests/fuzz/fuzz_methods.c`, `fuzz_signer_msg.c`, `fuzz_cert_chain.c`, `fuzz_daemon_config.c`, `fuzz_users.c`, `fuzz_auditor_responses.c` | New fuzz targets |
 | `.github/workflows/ci.yml` | Matrix: GCC/Clang × release/ASan+UBSan/TSan, analysis jobs, checksec |
 | `.github/workflows/codeql.yml`, `scorecard.yml` | CodeQL and OpenSSF Scorecard |
 

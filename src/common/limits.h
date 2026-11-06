@@ -19,6 +19,8 @@
 #define GDS_MAX_QUERY_RECORDS     ((size_t)1000)
 #define GDS_MAX_TL_HANDLES        ((size_t)4)
 #define GDS_MAX_PENDING_PER_APP   ((size_t)4)
+/* Requests waiting for an administrator (spike 1, decision D1) */
+#define GDS_MAX_PENDING_APPROVALS 10000u
 #define GDS_MAX_PATH              ((size_t)1024)
 /* Encoded ApplicationRecordDataType: URI + names + 32 URLs + capabilities */
 #define GDS_MAX_RECORD_SIZE       ((size_t)256 * 1024)

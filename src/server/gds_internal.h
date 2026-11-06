@@ -24,6 +24,7 @@
 
 typedef struct gds_binding gds_binding;
 typedef struct gds_job gds_job;
+typedef struct gds_node_perms gds_node_perms;
 
 struct gds_server {
     UA_Server *ua;
@@ -34,7 +35,8 @@ struct gds_server {
     pthread_mutex_t storeLock;
     gds_ca *ca;
     gds_buf caCert; /* issuer certificate for FinishRequest, read once at start */
-    bool autoApprove;
+    gds_approval_policy approval;
+    size_t pendingApprovals; /* live dialogs; server thread only */
     UA_DateTime counterReset; /* QueryApplications lastCounterResetTime */
     /* node role (gds_server.c); roleLock is a leaf lock */
     pthread_mutex_t roleLock;
@@ -51,11 +53,15 @@ struct gds_server {
     /* plugin privilege providers, fixed before the server runs */
     gds_privilege_provider privProviders[GDS_MAX_PRIVILEGE_PROVIDERS];
     size_t nPrivProviders;
-    /* plugin methods (gds_embed.c): bindings fixed before the server
-     * runs; plugLock guards the queue, the done list and plugStop only;
-     * plugInflight is touched on the server thread only */
+    /* plugin methods (gds_embed.c): bindLock (a leaf lock) guards the
+     * bindings and the RolePermissions table (gds_nodes.c); plugLock
+     * guards the queue, the done list and plugStop only; plugInflight is
+     * touched on the server thread only */
+    pthread_mutex_t bindLock;
     gds_binding *bindings[GDS_MAX_PLUGIN_METHODS];
     size_t nBindings;
+    gds_node_perms *perms;
+    size_t nPerms, capPerms;
     pthread_mutex_t plugLock;
     pthread_cond_t plugCond;
     pthread_t plugThreads[GDS_PLUGIN_WORKERS];
@@ -99,7 +105,19 @@ void gds_embed_configure(UA_ServerConfig *c, gds_server *s);
 void gds_embed_stop(gds_server *s);
 /* Frees jobs and bindings; after UA_Server_delete. */
 void gds_embed_free(gds_server *s);
-const gds_binding *gds_embed_find(const gds_server *s, const UA_NodeId *methodId);
+/* Is a plugin callback bound to this method node? */
+bool gds_embed_bound(gds_server *s, const UA_NodeId *methodId);
+/* Drop the bindings whose method node no longer exists. */
+void gds_embed_prune(gds_server *s);
+gds_status gds_ua_status(UA_StatusCode r);
+/* RolePermissions of embedder nodes (gds_nodes.c, issue #49). */
+void gds_nodes_prune(gds_server *s);
+void gds_nodes_free(gds_server *s);
+
+/* Role NodeIds to gds_role bits, plus the implicit Anonymous and
+ * AuthenticatedUser; GDS_EINVAL for a Role no session can hold. */
+GDS_MUST_CHECK gds_status gds_role_bits(const gds_server *s, const UA_NodeId *roles, size_t n,
+                                        unsigned *bits, bool *anonymous, bool *authenticated);
 /* The session-level part of the access check (Roles, security mode). */
 bool gds_embed_executable(const gds_binding *b, const void *sessionContext);
 
@@ -152,6 +170,18 @@ GDS_MUST_CHECK UA_StatusCode gds_load_app(gds_server *s, const UA_Guid *id,
 GDS_MUST_CHECK UA_StatusCode gds_directory_install(gds_server *s);
 GDS_MUST_CHECK UA_StatusCode gds_certmgr_install(gds_server *s);
 GDS_MUST_CHECK UA_StatusCode gds_trustlist_install(gds_server *s);
+/* Approvals (gds_approvals.c): the source object, Respond/Respond2 and a
+ * dialog for every Pending request in the store. Before the server runs. */
+GDS_MUST_CHECK UA_StatusCode gds_approvals_install(gds_server *s);
+/* A dialog for a request just stored as Pending. Server thread. */
+GDS_MUST_CHECK UA_StatusCode gds_approvals_raise(gds_server *s, const gds_request *q,
+                                                 const UA_String *appUri);
+/* The node role changed: re-synchronise the dialogs with the store on the
+ * server thread (none on a STANDBY). Any thread. */
+void gds_approvals_role_changed(gds_server *s);
+/* Policy (gds_policy.c): Received (approved) or Pending. Takes storeLock. */
+GDS_MUST_CHECK gds_status gds_policy_initial_state(gds_server *s, const gds_request *q,
+                                                   gds_req_state *out);
 
 /* Signing worker (gds_certmgr.c). */
 GDS_MUST_CHECK gds_status gds_worker_start(gds_server *s);

@@ -1,22 +1,31 @@
 /* opengds-signer: holds the CA key, signs only what the store says was
  * requested (decision G1; docs/architecture.md "Split by privilege").
  *
- *   opengds-signer --fd N --store PATH --ca-dir DIR [--organization O]
- *                  [--passphrase-file F] [--plugin-fd N]
+ *   opengds-signer (--fd N | --listen PATH) --store PATH --ca-dir DIR
+ *                  [--organization O] [--passphrase-file F] [--plugin-fd N]
  *
- * --fd is a connected SOCK_SEQPACKET socket to opengdsd (inherited, or from
- * systemd socket activation). The CA key passphrase comes from
+ * --fd is a connected SOCK_SEQPACKET socket to opengdsd: inherited from
+ * opengdsd (`signer` in its configuration), or `--fd systemd` for socket
+ * activation (opengds-signer.socket with Accept=yes, one instance per
+ * opengdsd connection). --listen PATH is for hosts without systemd (e.g. a
+ * signer container sharing a socket volume with opengdsd): the signer
+ * creates a SOCK_SEQPACKET socket at PATH (mode 0660; the directory's
+ * permissions decide who may reach it) and serves one connection at a time,
+ * each until it closes. The CA key passphrase comes from
  * --passphrase-file or $CREDENTIALS_DIRECTORY/ca-passphrase (systemd
  * LoadCredentialEncrypted=); never from argv or the environment.
  * Sandboxing (seccomp, Landlock) follows in the MVP milestone.
  * SPDX-License-Identifier: MPL-2.0 */
 #include <openssl/crypto.h>
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
+#include <unistd.h>
 
 #include "ca.h"
 #include "common/buf.h"
@@ -31,13 +40,26 @@
 
 typedef struct {
     long fd, pluginFd;
-    const char *store, *caDir, *organization, *passFile;
+    const char *store, *caDir, *organization, *passFile, *listen;
 } options;
 
 static int usage(void) {
-    fprintf(stderr, "usage: opengds-signer --fd N --store PATH --ca-dir DIR "
+    fprintf(stderr, "usage: opengds-signer (--fd N | --listen PATH) --store PATH --ca-dir DIR "
                     "[--organization O] [--passphrase-file F] [--plugin-fd N]\n");
     return 2;
+}
+
+/* Socket activation (sd_listen_fds protocol, opengds-signer.socket with
+ * Accept=yes): exactly one connected socket on fd 3, meant for this pid. */
+static bool systemd_fd(long *fd) {
+    long pid = 0, n = 0;
+    const char *ep = getenv("LISTEN_PID"); /* not secrets: process ids */
+    const char *en = getenv("LISTEN_FDS");
+    if(!ep || !en || !gds_parse_long(ep, 1, 0x7fffffffL, &pid) || !gds_parse_long(en, 1, 1, &n) ||
+       pid != (long)getpid())
+        return false;
+    *fd = 3; /* SD_LISTEN_FDS_START */
+    return true;
 }
 
 static bool parse_args(int argc, char **argv, options *o) {
@@ -50,9 +72,14 @@ static bool parse_args(int argc, char **argv, options *o) {
         if(!v)
             return false;
         bool ok = true;
-        if(strcmp(a, "--fd") == 0)
+        if(strcmp(a, "--fd") == 0 && strcmp(v, "systemd") == 0)
+            ok = systemd_fd(&o->fd);
+        else if(strcmp(a, "--fd") == 0)
             ok = gds_parse_long(v, 0, 65535, &o->fd);
-        else if(strcmp(a, "--plugin-fd") == 0)
+        else if(strcmp(a, "--listen") == 0) {
+            ok = !o->listen && v[0] == '/';
+            o->listen = v;
+        } else if(strcmp(a, "--plugin-fd") == 0)
             ok = gds_parse_long(v, 0, 65535, &o->pluginFd);
         else if(strcmp(a, "--store") == 0)
             o->store = v;
@@ -67,7 +94,7 @@ static bool parse_args(int argc, char **argv, options *o) {
         if(!ok)
             return false;
     }
-    return o->fd >= 0 && o->store && o->caDir;
+    return (o->fd >= 0) != (o->listen != NULL) && o->store && o->caDir;
 }
 
 static gds_status read_passphrase(const char *file, gds_buf *out) {
@@ -115,6 +142,71 @@ static gds_status open_ca(const options *o, gds_ca **ca) {
     return r;
 }
 
+/* --listen: a fresh socket at path; a stale one (a previous run) is replaced. */
+static int listen_at(const char *path) {
+    struct sockaddr_un a;
+    memset(&a, 0, sizeof(a));
+    a.sun_family = AF_UNIX;
+    size_t n = strlen(path);
+    if(n >= sizeof(a.sun_path)) {
+        fprintf(stderr, "opengds-signer: --listen %s: path too long\n", path);
+        return -1;
+    }
+    memcpy(a.sun_path, path, n + 1);
+    int fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+    if(fd < 0)
+        return -1;
+    struct stat st;
+    if(lstat(path, &st) == 0 && S_ISSOCK(st.st_mode))
+        (void)unlink(path);
+    /* 0660 from the start: no window where the socket is more open */
+    mode_t old = umask(0117);
+    int ok = bind(fd, (const struct sockaddr *)&a, sizeof(a));
+    umask(old);
+    if(ok != 0 || listen(fd, 4) != 0) {
+        fprintf(stderr, "opengds-signer: --listen %s: cannot bind\n", path);
+        (void)close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static gds_status open_signer(const options *o, gds_signer *s) {
+    gds_status r = gds_store_open_readonly(o->store, &s->store);
+    if(r != GDS_OK) {
+        fprintf(stderr, "opengds-signer: store %s: %s\n", o->store, gds_status_name(r));
+        return r;
+    }
+    r = open_ca(o, &s->ca);
+    if(r != GDS_OK) {
+        gds_store_close(s->store);
+        s->store = NULL;
+    }
+    return r;
+}
+
+/* One opengdsd at a time; each connection is served until it closes. A
+ * failed connection (protocol error, peer gone) ends that connection only.
+ * The store and CA are opened at the first connection: opengdsd creates the
+ * store before it connects, so a signer started first (two containers)
+ * comes up cleanly. Until they open, a connection is refused by closing it. */
+static gds_status serve_listen(const options *o, gds_signer *s, int lfd) {
+    for(;;) {
+        int c = accept(lfd, NULL, NULL); /* the signer never execs */
+        if(c < 0) {
+            if(errno == EINTR || errno == ECONNABORTED)
+                continue;
+            return GDS_EIO;
+        }
+        gds_status r = s->store ? GDS_OK : open_signer(o, s);
+        if(r == GDS_OK)
+            r = gds_signer_serve(s, c);
+        if(r != GDS_OK)
+            fprintf(stderr, "opengds-signer: connection ended: %s\n", gds_status_name(r));
+        (void)close(c);
+    }
+}
+
 int main(int argc, char **argv) {
     options o;
     if(!parse_args(argc, argv, &o))
@@ -123,19 +215,24 @@ int main(int argc, char **argv) {
     /* private key material lives in OpenSSL's secure heap (mlock'd, guarded) */
     if(CRYPTO_secure_malloc_init(SECURE_HEAP_BYTES, 32) == 0)
         fprintf(stderr, "opengds-signer: secure heap unavailable, continuing without it\n");
-    if(!is_seqpacket((int)o.fd)) {
-        fprintf(stderr, "opengds-signer: --fd %ld is not a SOCK_SEQPACKET socket\n", o.fd);
-        return 2;
-    }
     gds_signer s = {NULL, NULL};
-    gds_status r = gds_store_open_readonly(o.store, &s.store);
-    if(r != GDS_OK) {
-        fprintf(stderr, "opengds-signer: store %s: %s\n", o.store, gds_status_name(r));
-        return 1;
+    gds_status r;
+    int lfd = -1;
+    if(o.listen) {
+        lfd = listen_at(o.listen);
+        if(lfd < 0)
+            return 1;
+        r = serve_listen(&o, &s, lfd);
+        (void)close(lfd);
+    } else {
+        if(!is_seqpacket((int)o.fd)) {
+            fprintf(stderr, "opengds-signer: --fd %ld is not a SOCK_SEQPACKET socket\n", o.fd);
+            return 2;
+        }
+        r = open_signer(&o, &s);
+        if(r == GDS_OK)
+            r = gds_signer_serve(&s, (int)o.fd);
     }
-    r = open_ca(&o, &s.ca);
-    if(r == GDS_OK)
-        r = gds_signer_serve(&s, (int)o.fd);
     gds_ca_close(s.ca);
     gds_store_close(s.store);
     return r == GDS_OK ? 0 : 1;

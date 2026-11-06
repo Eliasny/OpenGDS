@@ -68,6 +68,8 @@ size_t cli_count(const cli_cycle *c, fg_method m);
 void cli_sessions(const cli_cycle *c, size_t *first, size_t *end);
 
 /* Test groups (one file each, docs/auditor/client-profile.md) */
+extern const ga_test cli_trust_tests[];
+extern const size_t cli_trust_count;
 extern const ga_test cli_csr_tests[];
 extern const size_t cli_csr_count;
 extern const ga_test cli_register_tests[];
