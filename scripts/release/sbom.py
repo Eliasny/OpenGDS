@@ -8,7 +8,8 @@
 #   - statically linked: OpenSSL (pinned in scripts/build_openssl.sh) and
 #     open62541 (pinned in scripts/build_open62541.sh) with the patches carried
 #     in docs/upstream/patches/ and its git submodules
-#   - dynamically linked: glibc and SQLite, at the versions of the build system
+#   - dynamically linked: glibc, SQLite and libseccomp, at the versions of
+#     the build system
 # Deterministic: the same inputs give the same bytes (time = SOURCE_DATE_EPOCH,
 # document namespace derived from the artifact's SHA-256).
 import argparse
@@ -86,7 +87,7 @@ def main():
     elif art.endswith(".rpm"):
         requires = run(["rpm", "-qpR", a.artifact]) or ""
     else:
-        requires = "sqlite"
+        requires = "sqlite seccomp"
 
     ossl_ver, ossl_sha = pinned(os.path.join(src, "scripts/build_openssl.sh"), "VERSION", "SHA256")
     o6_tag, o6_commit = pinned(os.path.join(src, "scripts/build_open62541.sh"), "TAG", "COMMIT")
@@ -228,8 +229,9 @@ def main():
         }, "STATIC_LINK")
         requires = requires.replace("sqlite", "")
     for pname, deb, rpm, lic in (("glibc", "libc6", "glibc", "LGPL-2.1-or-later"),
-                                 ("sqlite", "libsqlite3-0", "sqlite-libs", "blessing")):
-        if pname == "sqlite" and "sqlite" not in requires:
+                                 ("sqlite", "libsqlite3-0", "sqlite-libs", "blessing"),
+                                 ("libseccomp", "libseccomp2", "libseccomp", "LGPL-2.1-only")):
+        if pname != "glibc" and pname.replace("lib", "") not in requires:
             continue
         ver = system_version(a.format, deb, rpm) or "NOASSERTION"
         add({
