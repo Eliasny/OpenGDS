@@ -5,7 +5,7 @@ no-secadmin,SRV-SEC-02,fail
 allow-none,SRV-SEC-03,fail
 sign-is-enough,SRV-SEC-04,fail
 sign-for-apply,SRV-SEC-05,warn
-# diag-public,SRV-SEC-06,fail: enabled when push_test_server gets TransactionDiagnostics (SRV-TXN-12)
+diag-public,SRV-SEC-06,fail
 trustlist-read-any,SRV-SEC-07,fail
 deprecated-policy,SRV-SEC-08,warn
 no-rejected-list-method,SRV-CAP-01,fail
@@ -70,4 +70,6 @@ apply-while-open,SRV-TXN-08,fail
 apply-nothing-good,SRV-TXN-09,fail
 fail-aborts-txn,SRV-TXN-10,fail
 apply-partial,SRV-TXN-11,fail
+diag-stale,SRV-TXN-12,fail
+diag-cancel-good,SRV-TXN-13,fail
 wire-old-cert,SRV-WIRE-01,fail
