@@ -159,6 +159,9 @@ GDS_MUST_CHECK UA_StatusCode gds_approvals_install(gds_server *s);
 /* A dialog for a request just stored as Pending. Server thread. */
 GDS_MUST_CHECK UA_StatusCode gds_approvals_raise(gds_server *s, const gds_request *q,
                                                  const UA_String *appUri);
+/* The node role changed: re-synchronise the dialogs with the store on the
+ * server thread (none on a STANDBY). Any thread. */
+void gds_approvals_role_changed(gds_server *s);
 /* Policy (gds_policy.c): Received (approved) or Pending. Takes storeLock. */
 GDS_MUST_CHECK gds_status gds_policy_initial_state(gds_server *s, const gds_request *q,
                                                    gds_req_state *out);

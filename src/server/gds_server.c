@@ -46,10 +46,13 @@ gds_status gds_server_set_role(gds_server *s, gds_node_role role, UA_Byte level,
     if(!s || !level_ok(role, level, estimatedReturnTime))
         return GDS_EINVAL;
     pthread_mutex_lock(&s->roleLock);
+    bool changed = s->role != role;
     s->role = role;
     s->serviceLevel = level;
     s->estimatedReturnTime = estimatedReturnTime;
     pthread_mutex_unlock(&s->roleLock);
+    if(changed) /* a STANDBY shows no approvals; a new PRIMARY shows the store's */
+        gds_approvals_role_changed(s);
     return GDS_OK;
 }
 

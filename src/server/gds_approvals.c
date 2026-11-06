@@ -13,12 +13,17 @@
  *   Inactive, Retain false, its last event is sent and it is deleted;
  * - every call emits AuditConditionRespondEventType, failed ones too.
  * The dialog's NodeId is ns=1;g=<RequestId>, so it names its request.
+ * When the node role changes (gds_server_set_role, a cluster failover) the
+ * dialogs are synchronised with the store: a STANDBY shows none, a PRIMARY
+ * shows one for every Pending request, including those another node
+ * received, and none for requests another node decided.
  * Who may answer is decided in access control (RegistrationAuthorityAdmin,
  * gds_access.c); the handler checks again.
  * SPDX-License-Identifier: MPL-2.0 */
 #include <open62541/nodeids.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "common/limits.h"
@@ -290,25 +295,121 @@ static GDS_METHOD(respond_cb) {
                    *(const UA_Int32 *)input[0].data, NULL, false);
 }
 
-/* ---- install and rebuild ---- */
+/* ---- synchronise with the store ---- */
 
-typedef struct {
-    gds_server *s;
-    UA_StatusCode r;
-    size_t n;
-} rebuild_ctx;
-
-static bool rebuild_one(void *ctx, const gds_request *q) {
-    rebuild_ctx *rc = ctx;
-    UA_ApplicationRecordDataType rec;
-    UA_ApplicationRecordDataType_init(&rec);
-    UA_String none = UA_STRING("an unknown application");
-    gds_status st = gds_store_app_get(rc->s->store, &q->appId, &rec);
-    rc->r = gds_approvals_raise(rc->s, q, st == GDS_OK ? &rec.applicationUri : &none);
-    UA_ApplicationRecordDataType_clear(&rec);
-    rc->n++;
-    return rc->r == UA_STATUSCODE_GOOD;
+static bool dialog_exists(UA_Server *ua, const UA_Guid *reqId) {
+    UA_NodeClass nc;
+    return UA_Server_readNodeClass(ua, UA_NODEID_GUID(APP_NS, *reqId), &nc) == UA_STATUSCODE_GOOD;
 }
+
+/* Remove the dialogs whose request is not Pending any more (or all of
+ * them on a STANDBY); return how many remain. */
+static size_t prune(gds_server *s, bool all) {
+    UA_BrowseDescription bd;
+    UA_BrowseDescription_init(&bd);
+    bd.nodeId = source_id();
+    bd.browseDirection = UA_BROWSEDIRECTION_FORWARD;
+    bd.referenceTypeId = UA_NS0ID(HASCOMPONENT);
+    bd.includeSubtypes = false;
+    bd.nodeClassMask = UA_NODECLASS_OBJECT;
+    UA_BrowseResult br = UA_Server_browse(s->ua, 0, &bd);
+    size_t left = 0;
+    for(size_t i = 0; br.statusCode == UA_STATUSCODE_GOOD && i < br.referencesSize; i++) {
+        const UA_NodeId *id = &br.references[i].nodeId.nodeId;
+        if(id->namespaceIndex != APP_NS || id->identifierType != UA_NODEIDTYPE_GUID)
+            continue;
+        bool keep = !all;
+        if(keep) {
+            gds_request q;
+            memset(&q, 0, sizeof(q));
+            gds_lock(s);
+            gds_status st = gds_store_req_get(s->store, &id->identifier.guid, &q);
+            gds_unlock(s);
+            keep = st == GDS_OK && q.state == GDS_REQ_PENDING;
+            gds_request_clear(&q);
+        }
+        if(keep)
+            left++;
+        else
+            (void)UA_Server_deleteCondition(s->ua, *id, source_id());
+    }
+    UA_BrowseResult_clear(&br);
+    return left;
+}
+
+/* Pending request ids, collected under storeLock; the dialogs are raised
+ * after it is released (the server lock is never taken inside it). */
+typedef struct {
+    gds_request *q;
+    size_t n, cap;
+    bool oom;
+} pending_list;
+
+static bool collect(void *ctx, const gds_request *q) {
+    pending_list *l = ctx;
+    if(l->n == l->cap) {
+        size_t cap = l->cap ? l->cap * 2 : 64;
+        gds_request *nq = realloc(l->q, cap * sizeof(*nq));
+        if(!nq) {
+            l->oom = true;
+            return false;
+        }
+        l->q = nq;
+        l->cap = cap;
+    }
+    gds_request *d = &l->q[l->n++];
+    memset(d, 0, sizeof(*d)); /* ids, group and type only: no CSR copy */
+    d->id = q->id;
+    d->appId = q->appId;
+    d->groupId = q->groupId;
+    d->certType = q->certType;
+    d->state = q->state;
+    return true;
+}
+
+static UA_StatusCode sync_dialogs(gds_server *s) {
+    bool standby = gds_server_role(s) == GDS_NODE_STANDBY;
+    s->pendingApprovals = prune(s, standby);
+    if(standby)
+        return UA_STATUSCODE_GOOD;
+    pending_list l = {NULL, 0, 0, false};
+    gds_lock(s);
+    gds_status st = gds_store_req_scan(s->store, GDS_REQ_PENDING, collect, &l);
+    gds_unlock(s);
+    UA_StatusCode r = st != GDS_OK ? gds_status_to_ua(st)
+                      : l.oom      ? UA_STATUSCODE_BADOUTOFMEMORY
+                                   : UA_STATUSCODE_GOOD;
+    size_t raised = 0;
+    for(size_t i = 0; r == UA_STATUSCODE_GOOD && i < l.n; i++) {
+        if(dialog_exists(s->ua, &l.q[i].id))
+            continue;
+        UA_ApplicationRecordDataType rec;
+        UA_ApplicationRecordDataType_init(&rec);
+        UA_String none = UA_STRING("an unknown application");
+        bool known = gds_load_app(s, &l.q[i].appId, &rec) == UA_STATUSCODE_GOOD;
+        r = gds_approvals_raise(s, &l.q[i], known ? &rec.applicationUri : &none);
+        UA_ApplicationRecordDataType_clear(&rec);
+        raised++;
+    }
+    free(l.q);
+    if(raised)
+        fprintf(stderr, "opengds: %zu certificate request(s) wait for approval\n", raised);
+    return r;
+}
+
+static void sync_cb(UA_Server *server, void *data) {
+    (void)server;
+    UA_StatusCode r = sync_dialogs(data);
+    if(r != UA_STATUSCODE_GOOD)
+        fprintf(stderr, "opengds: synchronising the approval dialogs: %s\n", UA_StatusCode_name(r));
+}
+
+void gds_approvals_role_changed(gds_server *s) {
+    if(s->ua)
+        (void)UA_Server_addTimedCallback(s->ua, sync_cb, s, UA_DateTime_nowMonotonic(), NULL);
+}
+
+/* ---- install ---- */
 
 UA_StatusCode gds_approvals_install(gds_server *s) {
     UA_Server *ua = s->ua;
@@ -338,13 +439,5 @@ UA_StatusCode gds_approvals_install(gds_server *s) {
         cfg->queueSizeLimits.max = GDS_MAX_PENDING_APPROVALS + 2u;
     if(r != UA_STATUSCODE_GOOD)
         return r;
-    rebuild_ctx rc = {s, UA_STATUSCODE_GOOD, 0};
-    gds_lock(s);
-    gds_status st = gds_store_req_scan(s->store, GDS_REQ_PENDING, rebuild_one, &rc);
-    gds_unlock(s);
-    if(st != GDS_OK)
-        return gds_status_to_ua(st);
-    if(rc.n)
-        fprintf(stderr, "opengds: %zu certificate request(s) wait for approval\n", rc.n);
-    return rc.r;
+    return sync_dialogs(s);
 }
