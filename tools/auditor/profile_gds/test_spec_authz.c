@@ -126,7 +126,10 @@ static void t_description(ga_ctx *ctx, void *p) {
             X509_free(x);
         }
         ERR_clear_error();
-        if(!ok)
+        if(cert->length == 0)
+            ga_fail(ctx, "ServiceCertificate is empty; §9.6.4 says it contains the Certificate "
+                         "that checks the AccessToken signatures");
+        else if(!ok)
             ga_fail(ctx, "ServiceCertificate (%zu bytes) is not DER X.509 certificates "
                          "(entry %zu does not parse)", cert->length, n + 1);
         else

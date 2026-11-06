@@ -22,6 +22,10 @@
 #      (warn): the sample AuthorizationService answers Bad_NotSupported where
 #      §9.6.6 to §9.6.8 name Bad_NotFound (or Bad_IdentityTokenRejected for a refresh
 #      token). The sample does not implement token requests.
+#   R6 gds.az.description: the sample's ServiceCertificate Property, and the one
+#      GetServiceDescription returns, are empty ByteStrings. §9.6.4: it "contains the
+#      Certificate required to check any Signature that is included with the
+#      AccessTokens".
 #   Not supported: the sample has no KeyCredentialService (§8.5, Optional), sets
 #   Server.Auditing FALSE and raises no audit events (gds.ev.*), and has neither
 #   Optional CertificateGroup alarm.
@@ -96,7 +100,7 @@ gds.kc.revoke,not_supported
 gds.kc.revoke_unknown,not_supported
 gds.kc.sign_only,not_supported
 gds.az.service,pass
-gds.az.description,pass
+gds.az.description,fail
 gds.az.start_unknown_resource,warn
 gds.az.finish_unknown,warn
 gds.az.refresh_rejected,warn
