@@ -5,6 +5,9 @@
 # target links it. Flags a compiler does not know are skipped with a message,
 # so an old compiler builds but CI (GCC 13+, Clang 18+) always has the full set.
 
+# Included by OpenGDS and by embedders that build it as a subproject (UASM).
+include_guard(GLOBAL)
+
 include(CheckCCompilerFlag)
 add_library(gds_hardening INTERFACE)
 

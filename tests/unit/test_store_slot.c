@@ -115,7 +115,9 @@ static const gds_store_backend refusingBackend = {
     GDS_STORE_ABI_MAJOR, GDS_STORE_ABI_MINOR, sizeof(gds_store_backend),
     rf_close, rf_version, rf_app_insert, rf_app_get, rf_app_find_uri, rf_app_update,
     rf_app_delete, rf_app_scan, rf_req_insert, rf_req_get, rf_req_next, rf_req_set_state,
-    rf_cert_add, rf_cert_latest, rf_req_scan,
+    rf_cert_add, rf_cert_latest,
+    NULL, NULL, /* no audit log */
+    rf_req_scan,
 };
 
 static void test_open_backend(void) {
@@ -136,6 +138,14 @@ static void test_open_backend(void) {
     CHECK(gds_store_open_backend(&refusingBackend, &r, &s) == GDS_OK && s != NULL);
     gds_store_close(s);
     CHECK_EQ_INT(r.closed, 3);
+    /* a minor 1 backend opens; it cannot list requests */
+    be = refusingBackend;
+    be.abi_minor = 1;
+    be.struct_size = offsetof(gds_store_backend, req_scan);
+    if(CHECK(gds_store_open_backend(&be, &r, &s) == GDS_OK && s != NULL))
+        CHECK(gds_store_req_scan(s, GDS_REQ_PENDING, NULL, NULL) == GDS_EUNSUPPORTED);
+    gds_store_close(s);
+    CHECK_EQ_INT(r.closed, 4);
 }
 
 /* ---- calls ---- */

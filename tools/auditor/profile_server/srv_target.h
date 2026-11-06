@@ -120,6 +120,9 @@ GDS_MUST_CHECK UA_StatusCode st_update_cert_key(const srv_target *t, UA_Client *
                                                 const gds_buf *cert, const gds_buf *issuers,
                                                 size_t issuersN, const char *keyFormat,
                                                 const gds_buf *key, bool *applyRequired);
+/* UpdateCertificate(DefaultApplicationGroup, type, cert), no issuers or key. */
+GDS_MUST_CHECK UA_StatusCode st_update_cert_as(UA_Client *c, UA_NodeId type, const gds_buf *cert,
+                                               bool *applyRequired);
 /* Read ServerConfiguration.SupportsTransactions; *present false if absent. */
 void st_supports_transactions(UA_Client *c, bool *present, bool *value);
 
@@ -158,5 +161,9 @@ const char *st_short_policy(const UA_String *policyUri);
 GDS_MUST_CHECK gds_status st_make_cert(const testca_t *issuer, EVP_PKEY *key, const char *cn,
                                        long fromSec, long toSec, bool isCa, size_t pad,
                                        gds_buf *out);
+/* As st_make_cert, with a subjectAltName URI (NULL: none). */
+GDS_MUST_CHECK gds_status st_make_leaf(const testca_t *issuer, EVP_PKEY *key, const char *cn,
+                                       const char *uri, long fromSec, long toSec, bool isCa,
+                                       size_t pad, gds_buf *out);
 
 #endif

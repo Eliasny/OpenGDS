@@ -208,6 +208,52 @@ GDS_MUST_CHECK gds_status gds_server_add_method(struct gds_server *s, const gds_
  * added). The GDS namespace's own methods cannot be bound (GDS_EDENIED). */
 GDS_MUST_CHECK gds_status gds_server_bind_method(struct gds_server *s, const gds_method_def *def);
 
+/* ---- audit events of other parts (UASM ask A7, issue #18) ----
+ * gds_server_raise_audit_event appends the event to the store's
+ * hash-chained audit log (store.h) and then, only once that committed,
+ * raises it as an OPC UA event on its source node, delivered only to the
+ * sessions that hold one of visibleTo (for example SecurityAdmin, as
+ * OPC 10000-21 §9.2.13 requires for its audit events). A refused commit
+ * (GDS_ENOTLEADER) raises nothing.
+ *
+ * The event type must be a subtype of AuditEventType (i=2052) already in
+ * the address space (load its NodeSet first). The core fills the
+ * AuditEventType fields of OPC 10000-5 §6.4.3: ActionTimeStamp (now),
+ * Status, ServerId (the GDS's ApplicationUri) and ClientUserId (the
+ * caller's user name; empty when anonymous or without a caller); fields
+ * adds the type's own fields by BrowseName. Values are copied. Safe from
+ * any thread; the plugin worker that runs a method callback may call it. */
+#define GDS_MAX_AUDIT_FIELDS 32
+
+typedef struct {
+    UA_UInt16 nsIndex; /* of the field's BrowseName */
+    const char *name;  /* BrowseName, a direct child of the event type */
+    UA_Variant value;
+} gds_event_field;
+
+typedef struct {
+    uint32_t abi_major;
+    uint32_t abi_minor;
+    size_t struct_size;
+    UA_NodeId eventType;
+    UA_NodeId sourceNode; /* null: the Server object */
+    UA_UInt16 severity;   /* 1 (lowest) .. 1000 */
+    const char *message;  /* UTF-8, NULL for none */
+    bool status;          /* AuditEventType.Status: the action succeeded */
+    const gds_event_field *fields;
+    size_t fieldsSize;
+    /* Roles whose sessions receive the event; at least one. */
+    const UA_NodeId *visibleTo;
+    size_t visibleToSize;
+} gds_audit_event;
+
+/* *seq (may be NULL) gets the event's place in the audit log. GDS_EINVAL
+ * for a type that is not an AuditEventType, a bad field or no visibleTo;
+ * GDS_EUNSUPPORTED when the store backend has no audit log. */
+GDS_MUST_CHECK gds_status gds_server_raise_audit_event(struct gds_server *s,
+                                                       const gds_caller *caller,
+                                                       const gds_audit_event *ev, int64_t *seq);
+
 #ifdef __cplusplus
 }
 #endif

@@ -97,6 +97,17 @@ static const struct {
     {"csr-key-per-session", "SRV-CSR-06", "the new key pair is usable only from its own Session"},
     {"csr-keep-old-new-key", "SRV-CSR-07", "a later CreateSigningRequest keeps the older new key pair"},
     {"csr-any-type", "SRV-CSR-08", "CreateSigningRequest accepts any CertificateTypeId"},
+    {"update-no-key-check", "SRV-UPD-02",
+     "UpdateCertificate accepts a certificate for a key the target does not hold"},
+    {"update-no-uri-check", "SRV-UPD-03",
+     "UpdateCertificate accepts a SAN URI other than the ApplicationUri"},
+    {"update-trust-issuer-arg", "SRV-UPD-04",
+     "UpdateCertificate trusts an issuer passed in IssuerCertificates"},
+    {"update-no-sig-check", "SRV-UPD-05", "UpdateCertificate does not verify the signature"},
+    {"update-any-type", "SRV-UPD-06", "UpdateCertificate accepts any CertificateTypeId"},
+    {"update-type-mismatch", "SRV-UPD-07",
+     "UpdateCertificate takes an ECC certificate into the RSA slot unchecked"},
+    {"update-accept-expired", "SRV-UPD-08", "UpdateCertificate accepts an expired certificate"},
 };
 
 bool pm_mutant_known(const char *name) {
@@ -751,6 +762,9 @@ static UA_StatusCode key_for(const UA_ByteString *cert, const UA_NodeId *session
 
 /* ---------------- ServerConfiguration methods (12 §7.10) ---------------- */
 
+static UA_StatusCode update_checks(X509 *x, const UA_Variant *issuers, const UA_NodeId *session,
+                                   UA_ByteString *key);
+
 static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
     UNUSED_ARGS;
     UA_StatusCode sec = need_channel(sessionId, true);
@@ -769,7 +783,7 @@ static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
     const UA_ByteString *cert = input[2].data, *key = input[5].data;
     const UA_NodeId dag = ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
     const UA_NodeId rsa = ns0(UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
-    if(!UA_NodeId_equal(group, &dag) || !UA_NodeId_equal(type, &rsa))
+    if(!UA_NodeId_equal(group, &dag) || (!UA_NodeId_equal(type, &rsa) && !breaking("update-any-type")))
         return UA_STATUSCODE_BADINVALIDARGUMENT; /* §7.10.5: not in the group's CertificateTypes */
     if(key->length > 0 && !breaking("accept-key-unadvertised"))
         return UA_STATUSCODE_BADNOTSUPPORTED; /* SupportedPrivateKeyFormats is empty */
@@ -779,10 +793,11 @@ static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
     X509 *x = x509_parse_cert(&b);
     if(!x)
         return UA_STATUSCODE_BADCERTIFICATEINVALID;
-    X509_free(x);
     UA_ByteString ck = UA_BYTESTRING_NULL;
     /* a pushed key gets here only with accept-key-unadvertised, which ignores it */
-    UA_StatusCode r = key->length > 0 ? UA_STATUSCODE_GOOD : key_for(cert, sessionId, &ck);
+    UA_StatusCode r =
+        key->length > 0 ? UA_STATUSCODE_GOOD : update_checks(x, &input[3], sessionId, &ck);
+    X509_free(x);
     if(r != UA_STATUSCODE_GOOD)
         return r;
     if((r = txn_join(sessionId)) != UA_STATUSCODE_GOOD) {
@@ -943,6 +958,97 @@ static bool issuer_in(X509 *x, const UA_TrustListDataType *l) {
         }
     ERR_clear_error();
     return found;
+}
+
+/* ---------------- UpdateCertificate checks (12 §7.10.5, 4 §6.1.3) ---------------- */
+
+/* The issuer of x among the certificates of `l` (n entries); *sigOk if it
+ * verifies x's signature. */
+static bool issuer_among(X509 *x, const UA_ByteString *l, size_t n, bool *sigOk) {
+    bool found = false;
+    for(size_t i = 0; i < n && !*sigOk; i++) {
+        gds_buf b = {l[i].data, l[i].length};
+        X509 *ca = x509_parse_cert(&b);
+        if(ca && X509_cmp(ca, x) != 0 && X509_check_issued(ca, x) == X509_V_OK) {
+            found = true;
+            EVP_PKEY *pk = X509_get0_pubkey(ca);
+            *sigOk = pk && X509_verify(x, pk) == 1;
+        }
+        X509_free(ca);
+    }
+    ERR_clear_error();
+    return found;
+}
+
+/* Self-signed: its own signature. CA-issued: the issuer must be in the
+ * TrustList; IssuerCertificates does not make it trusted (§7.10.5). */
+static UA_StatusCode chain_check(X509 *x, const UA_Variant *issuers) {
+    bool sigOk = false, found = false;
+    if(X509_check_issued(x, x) == X509_V_OK) {
+        EVP_PKEY *pk = X509_get0_pubkey(x);
+        found = true;
+        sigOk = pk && X509_verify(x, pk) == 1;
+        ERR_clear_error();
+    } else {
+        UA_TrustListDataType cur;
+        UA_StatusCode r = current_list(&cur);
+        if(r != UA_STATUSCODE_GOOD)
+            return r;
+        found = issuer_among(x, cur.trustedCertificates, cur.trustedCertificatesSize, &sigOk);
+        found |= issuer_among(x, cur.issuerCertificates, cur.issuerCertificatesSize, &sigOk);
+        UA_TrustListDataType_clear(&cur);
+        if(breaking("update-trust-issuer-arg") && UA_Variant_hasArrayType(issuers, &UA_TYPES[UA_TYPES_BYTESTRING]))
+            found |= issuer_among(x, issuers->data, issuers->arrayLength, &sigOk);
+    }
+    if(!found)
+        return UA_STATUSCODE_BADCERTIFICATECHAININCOMPLETE;
+    return sigOk || breaking("update-no-sig-check") ? UA_STATUSCODE_GOOD
+                                                    : UA_STATUSCODE_BADCERTIFICATEINVALID;
+}
+
+/* The SAN URI is the ApplicationUri (Part 6 §6.2.2, decision D3) */
+static UA_StatusCode uri_check(X509 *x) {
+    if(breaking("update-no-uri-check"))
+        return UA_STATUSCODE_GOOD;
+    unsigned char *der = NULL;
+    int len = i2d_X509(x, &der);
+    char uri[GDS_MAX_APPLICATION_URI + 1];
+    gds_buf b = {der, len > 0 ? (size_t)len : 0};
+    bool ok = len > 0 && x509_san_uri(&b, uri, sizeof(uri)) == GDS_OK;
+    OPENSSL_free(der);
+    const UA_String *app = &UA_Server_getConfig(P.server)->applicationDescription.applicationUri;
+    ok = ok && strlen(uri) == app->length && memcmp(uri, app->data, app->length) == 0;
+    return ok ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADCERTIFICATEURIINVALID;
+}
+
+static UA_StatusCode update_checks(X509 *x, const UA_Variant *issuers, const UA_NodeId *session,
+                                   UA_ByteString *key) {
+    UA_ByteString_init(key);
+    EVP_PKEY *pk = X509_get0_pubkey(x);
+    if(!pk || EVP_PKEY_get_base_id(pk) != EVP_PKEY_RSA) { /* the slot is RsaSha256 */
+        ERR_clear_error();
+        return breaking("update-type-mismatch") ? UA_STATUSCODE_GOOD
+                                                : UA_STATUSCODE_BADCERTIFICATEINVALID;
+    }
+    unsigned char *der = NULL;
+    int len = i2d_X509(x, &der);
+    UA_ByteString c = {len > 0 ? (size_t)len : 0, der};
+    UA_StatusCode r = len > 0 ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADCERTIFICATEINVALID;
+    if(r == UA_STATUSCODE_GOOD && !breaking("update-no-key-check"))
+        r = key_for(&c, session, key);
+    OPENSSL_free(der);
+    if(r == UA_STATUSCODE_GOOD)
+        r = chain_check(x, issuers);
+    if(r == UA_STATUSCODE_GOOD && !breaking("update-accept-expired") &&
+       (X509_cmp_current_time(X509_get0_notBefore(x)) > 0 ||
+        X509_cmp_current_time(X509_get0_notAfter(x)) < 0))
+        r = UA_STATUSCODE_BADCERTIFICATETIMEINVALID;
+    if(r == UA_STATUSCODE_GOOD)
+        r = uri_check(x);
+    if(r != UA_STATUSCODE_GOOD)
+        secret_clear(key);
+    ERR_clear_error();
+    return r;
 }
 
 /* OPC 10000-4 validation, as far as this target goes: validity times, and a
