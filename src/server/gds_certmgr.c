@@ -4,8 +4,11 @@
  *
  * Decision G7: StartSigningRequest checks and stores the request and
  * returns at once; a background worker signs it through the CA slot
- * (opengds-signer); FinishRequest only reads the store. Requests are
- * approved on arrival in T1 (autoApprove).
+ * (opengds-signer); FinishRequest only reads the store. The approval
+ * policy (gds_policy.c) approves a request on arrival or leaves it Pending
+ * with a dialog for an administrator (gds_approvals.c); FinishRequest
+ * answers Bad_NothingToDo until it is signed and Bad_RequestNotAllowed
+ * once it is rejected (§7.9.6).
  * Access: CertificateAuthorityAdmin, or the application itself (its client
  * certificate carries the record's ApplicationUri, §7.2).
  * SPDX-License-Identifier: MPL-2.0 */
@@ -114,15 +117,37 @@ static GDS_METHOD(start_signing_request) {
     q.appId = appId;
     q.groupId = group;
     q.certType = type;
-    q.state = GDS_REQ_RECEIVED;
     q.csr.data = csr->data; /* borrowed for the insert */
     q.csr.len = csr->length;
+    gds_status st = gds_policy_initial_state(s, &q, &q.state);
+    if(st != GDS_OK)
+        return gds_status_to_ua(st);
+    if(q.state == GDS_REQ_PENDING && s->pendingApprovals >= GDS_MAX_PENDING_APPROVALS)
+        return UA_STATUSCODE_BADSERVERTOOBUSY; /* decision D1 */
     gds_lock(s);
-    gds_status st = gds_store_req_insert(s->store, &q);
+    st = gds_store_req_insert(s->store, &q);
     gds_unlock(s);
     if(st != GDS_OK)
         return gds_status_to_ua(st);
-    gds_worker_kick(s);
+    if(q.state == GDS_REQ_PENDING) {
+        UA_ApplicationRecordDataType rec;
+        UA_ApplicationRecordDataType_init(&rec);
+        r = gds_load_app(s, &appId, &rec);
+        if(r == UA_STATUSCODE_GOOD)
+            r = gds_approvals_raise(s, &q, &rec.applicationUri);
+        UA_ApplicationRecordDataType_clear(&rec);
+        if(r != UA_STATUSCODE_GOOD) { /* no dialog: nobody could approve it */
+            gds_lock(s);
+            st = gds_store_req_set_state(s->store, &q.id, GDS_REQ_FAILED, NULL, r);
+            gds_unlock(s);
+            if(st != GDS_OK) /* stays Pending: its dialog is raised at the next start */
+                fprintf(stderr, "opengds: failing a request without a dialog: %s\n",
+                        gds_status_name(st));
+            return r;
+        }
+    } else {
+        gds_worker_kick(s);
+    }
     UA_NodeId rid = UA_NODEID_GUID(s->ns, q.id);
     return UA_Variant_setScalarCopy(&output[0], &rid, &UA_TYPES[UA_TYPES_NODEID]);
 }
@@ -152,7 +177,7 @@ static GDS_METHOD(finish_request) {
     if(r == UA_STATUSCODE_GOOD)
         r = gds_in_guid(s, inputSize, input, 1, &reqId);
     if(r == UA_STATUSCODE_BADNOTFOUND)
-        r = UA_STATUSCODE_BADINVALIDARGUMENT; /* §7.9.6: unknown requestId */
+        r = UA_STATUSCODE_BADINVALIDARGUMENT; /* §7.9.5: unknown requestId */
     if(r != UA_STATUSCODE_GOOD)
         return r;
     gds_request q;
@@ -169,8 +194,8 @@ static GDS_METHOD(finish_request) {
         r = UA_STATUSCODE_BADINVALIDARGUMENT;
     else if(st != GDS_OK)
         r = gds_status_to_ua(st);
-    else if(q.state == GDS_REQ_RECEIVED)
-        r = UA_STATUSCODE_BADNOTHINGTODO; /* not signed yet: poll again */
+    else if(q.state == GDS_REQ_RECEIVED || q.state == GDS_REQ_PENDING)
+        r = UA_STATUSCODE_BADNOTHINGTODO; /* not approved or not signed yet: poll again */
     else if(q.state == GDS_REQ_FAILED)
         r = q.error ? q.error : UA_STATUSCODE_BADREQUESTNOTALLOWED;
     else
@@ -319,7 +344,7 @@ static void *worker_main(void *p) {
         pthread_mutex_unlock(&s->workLock);
         if(stop)
             break;
-        while(s->autoApprove && process_one(s)) {
+        while(process_one(s)) {
             pthread_mutex_lock(&s->workLock);
             stop = s->workStop;
             pthread_mutex_unlock(&s->workLock);

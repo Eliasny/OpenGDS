@@ -1,5 +1,5 @@
 /* OpenGDS - method input checks and the ApplicationRecord rules
- * (OPC 10000-12 §6.5.5 RegisterApplication, §6.5.6 UpdateApplication).
+ * (OPC 10000-12 §6.5.6 RegisterApplication, §6.5.7 UpdateApplication).
  * SPDX-License-Identifier: MPL-2.0 */
 #include <string.h>
 

@@ -9,6 +9,7 @@
 #include <openssl/rsa.h>
 #include <openssl/crypto.h>
 #include <openssl/err.h>
+#include <openssl/pem.h>
 #include <openssl/x509v3.h>
 
 #include <stdarg.h>
@@ -707,9 +708,10 @@ UA_StatusCode st_restore(srv_target *t, char *why, size_t whyLen) {
     bool certChanged = st_presented(t, &now) == UA_STATUSCODE_GOOD &&
                        (now.len != t->snapCert.len || memcmp(now.data, t->snapCert.data, now.len) != 0);
     gds_buf_free(&now);
-    bool acr = false;
-    if(certChanged && !UA_NodeId_isNull(&t->certType))
+    bool acr = false, keptKey = certChanged && t->keyReplaced;
+    if(certChanged && !keptKey && !UA_NodeId_isNull(&t->certType))
         rc = st_update_cert(t, t->client, &t->snapCert, NULL, 0, &acr);
+    certChanged = certChanged && !keptKey;
     UA_TrustListDataType l;
     UA_TrustListDataType_init(&l);
     r = UA_TrustListDataType_copy(&t->snap, &l);
@@ -734,6 +736,10 @@ UA_StatusCode st_restore(srv_target *t, char *why, size_t whyLen) {
                        x509_thumbprint(&t->snapCert, tp) == GDS_OK ? tp : "?");
         return rc;
     }
+    if(keptKey)
+        say(why, whyLen, "trust list restored; the certificate stays the TEST one of SRV-UPD-09, "
+                         "which replaced the private key (selected by name): reinstall the "
+                         "target's own certificate and key");
     t->restored = true;
     return UA_STATUSCODE_GOOD;
 }
@@ -871,5 +877,35 @@ gds_status st_intermediate(srv_target *t) {
         gds_buf_free(&t->peerInt);
     }
     ERR_clear_error();
+    return s;
+}
+
+/* t-withkey: a certificate for the target from the test CA, with a key the
+ * Auditor generated, as PEM. */
+gds_status st_withkey(const srv_target *t, gds_buf *cert, gds_buf *pem) {
+    gds_buf der = {NULL, 0};
+    pem->data = NULL;
+    pem->len = 0;
+    gds_status s = testca_issue(&t->ca, "OpenGDS Auditor TEST t-withkey", t->targetUri, NULL,
+                                TESTCA_MAX_DAYS, cert, &der);
+    if(s != GDS_OK)
+        return s;
+    const unsigned char *q = der.data;
+    EVP_PKEY *k = d2i_AutoPrivateKey(NULL, &q, (long)der.len);
+    gds_buf_free_secret(&der);
+    BIO *bio = BIO_new(BIO_s_mem());
+    char *data = NULL;
+    long len = 0;
+    s = GDS_ECRYPTO;
+    if(k && bio && PEM_write_bio_PrivateKey(bio, k, NULL, NULL, 0, NULL, NULL) == 1 &&
+       (len = BIO_get_mem_data(bio, &data)) > 0)
+        s = gds_buf_dup(data, (size_t)len, pem);
+    if(data && len > 0)
+        OPENSSL_cleanse(data, (size_t)len);
+    BIO_free(bio);
+    EVP_PKEY_free(k);
+    ERR_clear_error();
+    if(s != GDS_OK)
+        gds_buf_free(cert);
     return s;
 }

@@ -66,12 +66,16 @@ typedef bool (*gds_store_scan_cb)(void *ctx, int64_t recordId,
 GDS_MUST_CHECK gds_status gds_store_app_scan(gds_store *s, int64_t fromRecordId,
                                              gds_store_scan_cb cb, void *ctx);
 
-/* Certificate requests: Received -> Issued -> Delivered (or Failed). */
+/* Certificate requests: [Pending ->] Received -> Issued -> Delivered, or
+ * Failed. Pending waits for an administrator (gds_approvals.c); Received
+ * is approved and waits for the signer; a rejected request is Failed with
+ * Bad_RequestNotAllowed. */
 typedef enum {
     GDS_REQ_RECEIVED = 1,
     GDS_REQ_ISSUED = 2,
     GDS_REQ_DELIVERED = 3,
-    GDS_REQ_FAILED = 4
+    GDS_REQ_FAILED = 4,
+    GDS_REQ_PENDING = 5
 } gds_req_state;
 
 typedef struct {
@@ -92,6 +96,11 @@ GDS_MUST_CHECK gds_status gds_store_req_next_received(gds_store *s, gds_request 
 GDS_MUST_CHECK gds_status gds_store_req_set_state(gds_store *s, const UA_Guid *id,
                                                   gds_req_state state, const gds_buf *cert,
                                                   UA_StatusCode error);
+/* Visit the requests in one state, oldest first. The callback borrows r
+ * and returns false to stop. */
+typedef bool (*gds_store_req_cb)(void *ctx, const gds_request *r);
+GDS_MUST_CHECK gds_status gds_store_req_scan(gds_store *s, gds_req_state state,
+                                             gds_store_req_cb cb, void *ctx);
 
 /* Issued certificates. */
 GDS_MUST_CHECK gds_status gds_store_cert_add(gds_store *s, const UA_Guid *appId, uint32_t groupId,
@@ -100,7 +109,7 @@ GDS_MUST_CHECK gds_status gds_store_cert_add(gds_store *s, const UA_Guid *appId,
                                              int64_t notAfter);
 /* Every issued certificate, in serial order (gdsctl verify-audit, issue
  * #19). The row's buffers are valid during the callback only; returning
- * false stops the scan. GDS_EUNSUPPORTED on a backend below minor 2. */
+ * false stops the scan. GDS_EUNSUPPORTED on a backend below minor 3. */
 typedef struct {
     UA_Guid appId;
     uint32_t groupId;
@@ -161,7 +170,7 @@ GDS_MUST_CHECK gds_status gds_store_audit_verify(gds_store *s, int64_t *rows, in
  * transaction: it commits fully or changes nothing. The core calls a
  * backend from one thread at a time (see "Single-writer" above). */
 #define GDS_STORE_ABI_MAJOR 1u
-#define GDS_STORE_ABI_MINOR 2u /* 1: the audit log; 2: cert_scan */
+#define GDS_STORE_ABI_MINOR 3u /* 1: the audit log; 2: req_scan; 3: cert_scan */
 
 typedef struct {
     uint32_t abi_major;
@@ -190,6 +199,8 @@ typedef struct {
     gds_status (*audit_append)(void *ctx, int64_t time, const gds_buf *body, int64_t *seq);
     gds_status (*audit_scan)(void *ctx, int64_t fromSeq, gds_audit_scan_cb cb, void *cbCtx);
     /* minor 2 */
+    gds_status (*req_scan)(void *ctx, gds_req_state state, gds_store_req_cb cb, void *cbCtx);
+    /* minor 3 */
     gds_status (*cert_scan)(void *ctx, gds_cert_scan_cb cb, void *cbCtx);
 } gds_store_backend;
 
@@ -197,7 +208,10 @@ typedef struct {
  * gds_store_close passes it to be->close (also when this call fails).
  * GDS_EINVAL for another ABI major, a struct_size below the minor 0
  * fields, or a missing function. A minor 0 backend (no audit log) works;
- * its audit calls return GDS_EUNSUPPORTED. */
+ * its audit calls return GDS_EUNSUPPORTED. Before minor 2 (or with req_scan
+ * NULL) gds_store_req_scan returns GDS_EUNSUPPORTED, and the server then
+ * starts only with approval policy GDS_APPROVE_ALL. Before minor 3 (or
+ * with cert_scan NULL) gds_store_cert_scan returns GDS_EUNSUPPORTED. */
 GDS_MUST_CHECK gds_status gds_store_open_backend(const gds_store_backend *be, void *ctx,
                                                  gds_store **out);
 
