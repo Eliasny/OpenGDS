@@ -11,7 +11,7 @@
 #define MAX_CONFIG_FILE ((size_t)64 * 1024)
 #define DEFAULT_PORT 58810
 
-typedef enum { T_STR, T_PATH, T_BOOL, T_PORT } kind;
+typedef enum { T_STR, T_PATH, T_BOOL, T_PORT, T_APPROVAL } kind;
 
 typedef struct {
     const char *key;
@@ -37,7 +37,7 @@ static const field fields[] = {
     F("ca_passphrase_file", caPassphraseFile, T_PATH, false),
     F("port", port, T_PORT, false),
     F("loopback_only", loopbackOnly, T_BOOL, false),
-    F("auto_approve", autoApprove, T_BOOL, false),
+    F("approval", approval, T_APPROVAL, false),
 };
 #define NFIELDS (sizeof(fields) / sizeof(fields[0]))
 
@@ -59,6 +59,35 @@ static bool printable(const char *b, const char *e) {
     return true;
 }
 
+static bool set_bool(const char *v, char *dst) {
+    bool b = strcmp(v, "true") == 0;
+    if(!b && strcmp(v, "false") != 0)
+        return false;
+    memcpy(dst, &b, sizeof(b));
+    return true;
+}
+
+static bool set_port(const char *v, char *dst) {
+    long p = 0;
+    if(!gds_parse_long(v, 0, 65535, &p))
+        return false;
+    uint16_t port = (uint16_t)p;
+    memcpy(dst, &port, sizeof(port));
+    return true;
+}
+
+static bool set_approval(const char *v, char *dst) {
+    static const char *const names[] = {"auto", "renewals", "manual"};
+    static const uint8_t values[] = {GDSD_APPROVE_AUTO, GDSD_APPROVE_RENEWALS, GDSD_APPROVE_MANUAL};
+    for(size_t i = 0; i < sizeof(values); i++) {
+        if(strcmp(v, names[i]) == 0) {
+            memcpy(dst, &values[i], sizeof(uint8_t));
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool set_value(const field *f, const char *v, size_t n, gdsd_config *c) {
     char *dst = (char *)c + f->off;
     char tmp[GDSD_MAX_VALUE];
@@ -73,23 +102,15 @@ static bool set_value(const field *f, const char *v, size_t n, gdsd_config *c) {
             return false;
         memcpy(dst, tmp, n + 1);
         return true;
-    case T_BOOL: {
-        bool b = strcmp(tmp, "true") == 0;
-        if(!b && strcmp(tmp, "false") != 0)
-            return false;
-        GDS_ASSERT(f->size == sizeof(b));
-        memcpy(dst, &b, sizeof(b));
-        return true;
-    }
-    case T_PORT: {
-        long p = 0;
-        if(!gds_parse_long(tmp, 0, 65535, &p))
-            return false;
-        uint16_t port = (uint16_t)p;
-        GDS_ASSERT(f->size == sizeof(port));
-        memcpy(dst, &port, sizeof(port));
-        return true;
-    }
+    case T_BOOL:
+        GDS_ASSERT(f->size == sizeof(bool));
+        return set_bool(tmp, dst);
+    case T_PORT:
+        GDS_ASSERT(f->size == sizeof(uint16_t));
+        return set_port(tmp, dst);
+    case T_APPROVAL:
+        GDS_ASSERT(f->size == sizeof(uint8_t));
+        return set_approval(tmp, dst);
     default:
         return false;
     }
@@ -100,7 +121,7 @@ static void defaults(gdsd_config *c) {
     memcpy(c->applicationName, "OpenGDS", sizeof("OpenGDS"));
     memcpy(c->productUri, "https://opengds.org/opengds", sizeof("https://opengds.org/opengds"));
     c->port = DEFAULT_PORT;
-    c->autoApprove = true;
+    c->approval = GDSD_APPROVE_RENEWALS;
 }
 
 /* One line; false on error. */

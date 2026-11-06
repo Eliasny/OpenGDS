@@ -87,6 +87,48 @@ static void test_requests(gds_store *s, const UA_Guid *appId) {
     CHECK(gds_store_req_set_state(s, &unknown, GDS_REQ_ISSUED, NULL, 0) == GDS_ENOTFOUND);
 }
 
+static bool count_req_cb(void *ctx, const gds_request *r) {
+    (void)r;
+    (*(int *)ctx)++;
+    return true;
+}
+static bool first_cb(void *ctx, const gds_request *r) {
+    *(UA_Guid *)ctx = r->id;
+    return false; /* stop after one */
+}
+
+/* Pending -> Received, and the scan by state */
+static void test_pending(gds_store *s, const UA_Guid *appId) {
+    gds_request q;
+    memset(&q, 0, sizeof(q));
+    q.appId = *appId;
+    q.groupId = 615;
+    q.certType = 12557;
+    q.state = GDS_REQ_PENDING;
+    UA_Guid ids[3];
+    for(int i = 0; i < 3; i++) {
+        ids[i] = q.id = rnd_guid();
+        CHECK(gds_store_req_insert(s, &q) == GDS_OK);
+    }
+    int n = 0;
+    CHECK(gds_store_req_scan(s, GDS_REQ_PENDING, count_req_cb, &n) == GDS_OK);
+    CHECK_EQ_INT(n, 3);
+    UA_Guid first = UA_GUID_NULL;
+    CHECK(gds_store_req_scan(s, GDS_REQ_PENDING, first_cb, &first) == GDS_OK);
+    CHECK(UA_Guid_equal(&first, &ids[0])); /* oldest first */
+    gds_request next;
+    CHECK(gds_store_req_next_received(s, &next) == GDS_ENOTFOUND); /* not approved */
+    CHECK(gds_store_req_set_state(s, &ids[1], GDS_REQ_RECEIVED, NULL, 0) == GDS_OK);
+    CHECK(gds_store_req_next_received(s, &next) == GDS_OK && UA_Guid_equal(&next.id, &ids[1]));
+    gds_request_clear(&next);
+    CHECK(gds_store_req_set_state(s, &ids[1], GDS_REQ_ISSUED, NULL, 0) == GDS_OK);
+    n = 0;
+    CHECK(gds_store_req_scan(s, GDS_REQ_PENDING, count_req_cb, &n) == GDS_OK);
+    CHECK_EQ_INT(n, 2);
+    CHECK(gds_store_req_get(s, &ids[2], &next) == GDS_OK && next.state == GDS_REQ_PENDING);
+    gds_request_clear(&next);
+}
+
 static void test_certs(gds_store *s, const UA_Guid *id, const UA_Guid *id2) {
     uint8_t serial[] = {1, 2, 3};
     uint8_t body[] = {0x30, 0x03, 0x02, 0x01, 0x00};
@@ -217,6 +259,7 @@ int main(int argc, char **argv) {
     UA_Guid id = rnd_guid(), id2 = rnd_guid();
     test_apps(s, &id, &id2);
     test_requests(s, &id);
+    test_pending(s, &id);
     test_certs(s, &id, &id2);
     test_update_delete(s);
     test_audit(s, path);

@@ -235,7 +235,7 @@ static gds_status start(daemon_state *d) {
     sc.store = d->store;
     sc.ca = d->ca;
     sc.users = &d->users;
-    sc.autoApprove = d->cfg.autoApprove;
+    sc.approval = (gds_approval_policy)d->cfg.approval; /* same values, config.h */
     return gds_server_new(&sc, &d->server);
 }
 

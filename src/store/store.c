@@ -113,6 +113,13 @@ gds_status gds_store_req_next_received(gds_store *s, gds_request *out) {
     return s->be.req_next_received(s->ctx, out);
 }
 
+gds_status gds_store_req_scan(gds_store *s, gds_req_state state, gds_store_req_cb cb,
+                              void *ctx) {
+    if(!s->be.req_scan)
+        return GDS_EUNSUPPORTED; /* a backend before minor 2 */
+    return s->be.req_scan(s->ctx, state, cb, ctx);
+}
+
 gds_status gds_store_req_set_state(gds_store *s, const UA_Guid *id, gds_req_state state,
                                    const gds_buf *cert, UA_StatusCode error) {
     return s->be.req_set_state(s->ctx, id, state, cert, error);
