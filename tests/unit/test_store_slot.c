@@ -107,13 +107,18 @@ static gds_status rf_cert_latest(void *ctx, const UA_Guid *appId, uint32_t g, ui
     return gds_store_cert_latest(R(ctx)->inner, appId, g, t, der, na);
 }
 
+static gds_status rf_req_scan(void *ctx, gds_req_state st, gds_store_req_cb cb, void *cbCtx) {
+    return gds_store_req_scan(R(ctx)->inner, st, cb, cbCtx);
+}
+
 static const gds_store_backend refusingBackend = {
     GDS_STORE_ABI_MAJOR, GDS_STORE_ABI_MINOR, sizeof(gds_store_backend),
     rf_close, rf_version, rf_app_insert, rf_app_get, rf_app_find_uri, rf_app_update,
     rf_app_delete, rf_app_scan, rf_req_insert, rf_req_get, rf_req_next, rf_req_set_state,
     rf_cert_add, rf_cert_latest,
-    NULL, NULL, /* no audit log (minor 0 behaviour) */
-    NULL,       /* no cert_scan */
+    NULL, NULL, /* no audit log */
+    rf_req_scan,
+    NULL, /* no cert_scan */
 };
 
 static void test_open_backend(void) {
@@ -134,6 +139,14 @@ static void test_open_backend(void) {
     CHECK(gds_store_open_backend(&refusingBackend, &r, &s) == GDS_OK && s != NULL);
     gds_store_close(s);
     CHECK_EQ_INT(r.closed, 3);
+    /* a minor 1 backend opens; it cannot list requests */
+    be = refusingBackend;
+    be.abi_minor = 1;
+    be.struct_size = offsetof(gds_store_backend, req_scan);
+    if(CHECK(gds_store_open_backend(&be, &r, &s) == GDS_OK && s != NULL))
+        CHECK(gds_store_req_scan(s, GDS_REQ_PENDING, NULL, NULL) == GDS_EUNSUPPORTED);
+    gds_store_close(s);
+    CHECK_EQ_INT(r.closed, 4);
 }
 
 /* ---- calls ---- */
@@ -384,7 +397,7 @@ int main(int argc, char **argv) {
     cfg.store = st;
     cfg.ca = ca;
     cfg.users = &users;
-    cfg.autoApprove = true;
+    cfg.approval = GDS_APPROVE_ALL;
     gds_server *s = NULL;
     static gds_session admin;
     admin.roles = GDS_ROLE_DISCOVERY_ADMIN | GDS_ROLE_CERTIFICATE_AUTHORITY_ADMIN;

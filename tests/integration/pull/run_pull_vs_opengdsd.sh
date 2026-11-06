@@ -72,6 +72,7 @@ ca_dir = $W/ca
 signer = $SIGNER
 ca_passphrase_file = $W/ca.pw
 organization = OpenGDS pull tracer
+approval = auto
 CONF
 
 echo "=============== 1. gdsaudit gds -> opengdsd ==============="

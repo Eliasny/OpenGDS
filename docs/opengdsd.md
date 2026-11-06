@@ -50,6 +50,20 @@ Give clients the CA certificate `ca_dir/ca.der` and the CRL `ca_dir/ca.crl` so t
 
 Sessions run only over SignAndEncrypt. SecurityPolicy None is open only for FindServers and GetEndpoints.
 
+## Approving certificate requests
+
+`approval` in the configuration decides which requests are approved on arrival:
+
+| `approval` | Approved on arrival | Waits for an administrator |
+|---|---|---|
+| `renewals` (default) | a request from an application that holds a valid certificate in that group and of that type | every other request |
+| `manual` | none | every request |
+| `auto` | every request (test benches) | none |
+
+A waiting request has state Pending. FinishRequest answers Bad_NothingToDo until the request is approved and signed, and Bad_RequestNotAllowed once it is rejected (OPC 10000-12 §7.9.6).
+
+Each waiting request is a standard Part 9 DialogCondition under the `Approvals` object (`ns=1;s=Approvals`), with NodeId `ns=1;g=<RequestId>`. Its ResponseOptionSet is Approve (0) and Reject (1). A session with the RegistrationAuthorityAdmin role answers with Respond2 (or Respond), and every answer emits an AuditConditionRespondEventType. Subscribe to events on the Server object and call ConditionRefresh to see every waiting request. The store holds the truth: the dialogs are raised again when `opengdsd` restarts. At most 10,000 requests wait at once; beyond that StartSigningRequest answers Bad_ServerTooBusy.
+
 ## Inspecting a running GDS
 
 ```sh

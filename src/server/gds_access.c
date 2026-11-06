@@ -535,6 +535,9 @@ bool gds_method_executable(const struct gds_server *s, const void *sessionContex
     UA_UInt32 id = methodId->identifier.numeric;
     if(ns0_method_open(id))
         return true;
+    /* answering approval dialogs (gds_approvals.c) */
+    if(id == UA_NS0ID_DIALOGCONDITIONTYPE_RESPOND || id == UA_NS0ID_DIALOGCONDITIONTYPE_RESPOND2)
+        return gds_session_has(sessionContext, GDS_ROLE_REGISTRATION_AUTHORITY_ADMIN);
     return gds_session_has(sessionContext, GDS_ROLE_SECURITY_ADMIN) &&
            server_configuration_method(id);
 }
