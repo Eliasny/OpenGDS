@@ -23,7 +23,8 @@
 
 typedef struct gds_store gds_store;
 
-/* Open (and create or migrate) the database at path, mode 0600. */
+/* Open (and create or migrate) the database at path, mode 0640 (group
+ * read for opengds-signer; -wal and -shm follow the same mode). */
 GDS_MUST_CHECK gds_status gds_store_open(const char *path, gds_store **out);
 /* Read-only connection for opengds-signer, which re-reads requests and
  * records instead of trusting opengdsd. Never creates or migrates; refuses
