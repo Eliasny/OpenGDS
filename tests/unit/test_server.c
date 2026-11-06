@@ -145,14 +145,14 @@ static void test_read_only(gds_server *s) {
         0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_ADDCERTIFICATE);
     UA_NodeId monitored = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_GETMONITOREDITEMS);
     UA_NodeId find = UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY_FINDAPPLICATIONS);
-    CHECK(!gds_method_executable(&anon, &upd));
-    CHECK(!gds_method_executable(NULL, &add_cert));
-    CHECK(gds_method_executable(&secadmin, &upd));
-    CHECK(gds_method_executable(&secadmin, &add_cert));
-    CHECK(gds_method_executable(&anon, &monitored));
-    CHECK(gds_method_executable(&anon, &find));
+    CHECK(!gds_method_executable(s, &anon, &upd));
+    CHECK(!gds_method_executable(s, NULL, &add_cert));
+    CHECK(gds_method_executable(s, &secadmin, &upd));
+    CHECK(gds_method_executable(s, &secadmin, &add_cert));
+    CHECK(gds_method_executable(s, &anon, &monitored));
+    CHECK(gds_method_executable(s, &anon, &find));
     UA_NodeId str = UA_NODEID_STRING(0, "x");
-    CHECK(!gds_method_executable(&secadmin, &str));
+    CHECK(!gds_method_executable(s, &secadmin, &str));
 }
 
 /* FindApplications is open to every session and is wired to OpenGDS. */

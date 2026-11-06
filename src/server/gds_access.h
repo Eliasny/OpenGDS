@@ -117,7 +117,17 @@ static inline bool gds_session_has(const void *sessionContext, unsigned roles) {
  * session's client certificate carries this ApplicationUri. */
 bool gds_session_is_app(const void *sessionContext, const UA_String *applicationUri);
 
-/* getUserExecutable: may this session call this method? (tests) */
-bool gds_method_executable(const void *sessionContext, const UA_NodeId *methodId);
+/* getUserExecutable: may this session call this method? Namespace 0:
+ * the open methods, and the ServerConfiguration methods for SecurityAdmin.
+ * The GDS namespace: yes, its methods check rights themselves. Methods
+ * that an embedder bound (gds_plugin.h): their Roles and security mode.
+ * Any other method: no. */
+struct gds_server;
+bool gds_method_executable(const struct gds_server *s, const void *sessionContext,
+                           const UA_NodeId *methodId);
+/* The embedder part of that answer (gds_embed.c): 1 yes, 0 no, -1 a
+ * namespace 0 method that no embedder bound. */
+int gds_embed_decide(const struct gds_server *s, const void *sessionContext,
+                     const UA_NodeId *methodId);
 
 #endif

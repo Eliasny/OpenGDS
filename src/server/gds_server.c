@@ -179,10 +179,11 @@ typedef UA_StatusCode (*add_policy_fn)(UA_ServerConfig *, const UA_ByteString *,
                                        const UA_ByteString *);
 
 static UA_StatusCode configure(UA_ServerConfig *c, const gds_server_config *cfg,
-                               const gds_buf *caCert) {
+                               const gds_buf *caCert, gds_server *s) {
     UA_StatusCode r = UA_ServerConfig_setBasics_withPort(c, cfg->port);
     if(r != UA_STATUSCODE_GOOD)
         return r;
+    gds_embed_configure(c, s);
     /* Accept-all at channel and session level; see the file comment. */
     if(c->secureChannelPKI.clear)
         c->secureChannelPKI.clear(&c->secureChannelPKI);
@@ -265,6 +266,8 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
     pthread_mutex_init(&s->workLock, NULL);
     pthread_mutex_init(&s->roleLock, NULL);
     pthread_cond_init(&s->workCond, NULL);
+    pthread_mutex_init(&s->plugLock, NULL);
+    pthread_cond_init(&s->plugCond, NULL);
     s->store = cfg->store;
     s->ca = cfg->ca;
     s->autoApprove = cfg->autoApprove;
@@ -280,7 +283,7 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
     }
     UA_ServerConfig c;
     memset(&c, 0, sizeof(c));
-    UA_StatusCode r = configure(&c, cfg, &s->caCert);
+    UA_StatusCode r = configure(&c, cfg, &s->caCert, s);
     if(r == UA_STATUSCODE_GOOD) {
         s->ua = UA_Server_newWithConfig(&c); /* takes c, also on failure */
         if(!s->ua)
@@ -315,10 +318,14 @@ void gds_server_delete(gds_server *s) {
     if(!s)
         return;
     gds_worker_stop(s);
+    gds_embed_stop(s);
     if(s->ua)
-        UA_Server_delete(s->ua); /* closes every session first */
+        UA_Server_delete(s->ua); /* closes every session, cancels plugin calls */
+    gds_embed_free(s);
     gds_access_uninstall();
     gds_buf_free(&s->caCert);
+    pthread_cond_destroy(&s->plugCond);
+    pthread_mutex_destroy(&s->plugLock);
     pthread_cond_destroy(&s->workCond);
     pthread_mutex_destroy(&s->roleLock);
     pthread_mutex_destroy(&s->workLock);
