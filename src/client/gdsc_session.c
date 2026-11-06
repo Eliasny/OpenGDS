@@ -5,6 +5,7 @@
 #include <open62541/client_config_default.h>
 #include <open62541/plugin/certificategroup.h>
 #include <open62541/plugin/log_stdout.h>
+#include <open62541/plugin/securitypolicy.h>
 #include <openssl/crypto.h>
 #include <openssl/x509v3.h>
 
@@ -439,7 +440,18 @@ static UA_StatusCode endpoints_present(const char *url, const gds_buf *cert) {
         UA_ClientConfig_clear(&cfg);
         return UA_STATUSCODE_BADOUTOFMEMORY;
     }
-    UA_Client *c = UA_Client_newWithConfig(&cfg);
+    /* A fixed None discovery endpoint: without one, open62541 first picks an
+     * endpoint this certificate-less client could use for a Session, and a
+     * Server that offers only secured endpoints (the norm, 12 §7.4) fails
+     * that with Bad_IdentityTokenRejected before GetEndpoints runs. A None
+     * SecureChannel for discovery is always allowed (OPC 10000-4 §5.4.4). */
+    cfg.endpoint.securityMode = UA_MESSAGESECURITYMODE_NONE;
+    cfg.endpoint.endpointUrl = UA_STRING_ALLOC(url);
+    UA_Client *c = NULL;
+    if(cfg.endpoint.endpointUrl.data &&
+       UA_String_copy(&UA_SECURITY_POLICY_NONE_URI, &cfg.endpoint.securityPolicyUri) ==
+           UA_STATUSCODE_GOOD)
+        c = UA_Client_newWithConfig(&cfg);
     if(!c) {
         UA_ClientConfig_clear(&cfg);
         return UA_STATUSCODE_BADOUTOFMEMORY;
