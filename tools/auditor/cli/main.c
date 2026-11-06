@@ -5,7 +5,16 @@
  *                [--work DIR] [--allow-changes] [--only PREFIX]
  *                [--expect FILE.csv] [--poll-seconds N] [--list]
  *
- * Runs the GDS profile (the T0 spec tests) against a GDS and prints TAP.
+ *   gdsaudit client [options] -- TRIGGER ARGV...   (profile_client/client_main.c)
+ *
+ *   gdsaudit server --url opc.tcp://host:4840 (--server-cert srv.der | --tofu)
+ *                [--admin-cert C --admin-key K | --admin-user U --admin-password-file F]
+ *                [--user U --user-password-file F] [--work DIR]
+ *                [--allow-changes] [--only PREFIX] [--expect FILE.csv] [--list]
+ *
+ * gds runs the GDS profile (the T0 spec tests) against a GDS; server runs
+ * the server profile (docs/auditor/server-profile.md) against a push-managed
+ * Server, playing its CertificateManager. Both print TAP.
  * Exit codes: 0 all passed, 1 a test failed (or, with --expect, a verdict
  * differs from the file), 2 the run could not be done, 3 some Not tested.
  * SPDX-License-Identifier: MPL-2.0 */
@@ -20,19 +29,28 @@
 
 #include "common/limits.h"
 #include "common/safeint.h"
+#include "client_profile.h"
 #include "gds_target.h"
 #include "spec_tests.h"
+#include "srv_target.h"
+#include "srv_tests.h"
 #include "common/banned.h"
 
 #define APP_URI "urn:opengds:auditor"
 #define MAX_TESTS 64
+#define MAX_SERVER_TESTS 128
 
 static int usage(const char *argv0) {
     fprintf(stderr,
             "usage: %s gds --url URL --trust CA.der [--trust ...] [--crl CRL] [--user U\n"
             "       --password-file F] [--work DIR] [--allow-changes] [--only PREFIX]\n"
-            "       [--expect FILE.csv] [--poll-seconds N] [--list]\n",
-            argv0);
+            "       [--expect FILE.csv] [--poll-seconds N] [--list]\n"
+            "   or: %s server --url URL (--server-cert SRV.der | --tofu)\n"
+            "       [--admin-cert C --admin-key K | --admin-user U --admin-password-file F]\n"
+            "       [--user U --user-password-file F] [--work DIR] [--allow-changes] [--only PREFIX]\n"
+            "       [--expect FILE.csv] [--list] [--init-only]\n"
+            "       %s client --help\n",
+            argv0, argv0, argv0);
     return 2;
 }
 
@@ -115,16 +133,14 @@ static gds_status load_file(const char *path, size_t max, gds_buf *list, size_t 
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity): flat option parsing
-int main(int argc, char **argv) {
-    if(argc < 2 || strcmp(argv[1], "gds") != 0)
-        return usage(argv[0]);
+static int gds_main(int argc, char **argv) {
     static ga_test all[MAX_TESTS];
     size_t nTests = collect(all);
     static gds_target t; /* zeroed */
     t.appUri = APP_URI;
     t.pollSeconds = 30;
     const char *work = "./gdsaudit-work", *passwordFile = NULL;
-    ga_run_options opt = {NULL, false, NULL};
+    ga_run_options opt = {NULL, false, NULL, false};
     int rc = 2;
     for(int i = 2; i < argc; i++) {
         const char *a = argv[i];
@@ -183,4 +199,175 @@ int main(int argc, char **argv) {
 cleanup:
     gt_clear(&t);
     return rc;
+}
+
+static size_t collect_server(ga_test *all) {
+    const struct {
+        const ga_test *t;
+        size_t n;
+    } sets[] = {{srv_security_tests, srv_security_count},
+                {srv_trustlist_tests, srv_trustlist_count},
+                {srv_update_tests, srv_update_count},
+                {srv_transaction_tests, srv_transaction_count},
+                {srv_wire_tests, srv_wire_count},
+                {srv_restore_tests, srv_restore_count}}; /* restore stays last */
+    size_t n = 0;
+    for(size_t s = 0; s < GDS_ARRAY_SIZE(sets); s++)
+        for(size_t i = 0; i < sets[s].n && n < MAX_SERVER_TESTS; i++)
+            all[n++] = sets[s].t[i];
+    return n;
+}
+
+/* The run's test PKI: ca (with CRL) and peer-good, under DIR/ca. */
+static gds_status load_test_pki(srv_target *t, const char *work) {
+    char dir[GDS_MAX_PATH];
+    gds_status r = gds_path(dir, sizeof(dir), "%s/ca", work);
+    if(r == GDS_OK)
+        r = testca_load_or_create(&t->ca, dir, "OpenGDS Auditor TEST CA");
+    if(r == GDS_OK)
+        r = testca_cert_der(&t->ca, &t->caDer);
+    if(r == GDS_OK)
+        r = testca_crl_der(&t->ca, &t->caCrl);
+    if(r == GDS_OK)
+        r = testca_identity(&t->ca, dir, "peer-good", "OpenGDS Auditor TEST peer",
+                            "urn:opengds:auditor:peer-good", &t->peerCert, &t->peerKey);
+    return r;
+}
+
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): flat option parsing
+static int server_main(int argc, char **argv) {
+    static ga_test all[MAX_SERVER_TESTS];
+    size_t nTests = collect_server(all);
+    static srv_target t; /* zeroed */
+    t.appUri = APP_URI;
+    const char *work = "./gdsaudit-work", *adminPwFile = NULL, *userPwFile = NULL;
+    const char *serverCert = NULL, *adminCert = NULL, *adminKey = NULL;
+    bool tofu = false, initOnly = false;
+    ga_run_options opt = {NULL, false, NULL, false};
+    int rc = 2;
+    for(int i = 2; i < argc; i++) {
+        const char *a = argv[i];
+        if(!strcmp(a, "--allow-changes")) {
+            opt.allowChanges = true;
+            continue;
+        }
+        if(!strcmp(a, "--tofu")) {
+            tofu = true;
+            continue;
+        }
+        if(!strcmp(a, "--init-only")) { /* create the identity and test PKI, then stop */
+            initOnly = true;
+            continue;
+        }
+        if(!strcmp(a, "--list")) {
+            for(size_t k = 0; k < nTests; k++)
+                printf("%-14s %-34s %s%s\n", all[k].id, all[k].clause, all[k].title,
+                       all[k].needsWrite ? " [changes]" : "");
+            return 0;
+        }
+        if(i + 1 >= argc)
+            return usage(argv[0]);
+        const char *v = argv[++i];
+        if(!strcmp(a, "--url")) t.url = v;
+        else if(!strcmp(a, "--admin-user")) t.adminUser = v;
+        else if(!strcmp(a, "--admin-password-file")) adminPwFile = v;
+        else if(!strcmp(a, "--admin-cert")) adminCert = v;
+        else if(!strcmp(a, "--admin-key")) adminKey = v;
+        else if(!strcmp(a, "--user")) t.userName = v;
+        else if(!strcmp(a, "--user-password-file")) userPwFile = v;
+        else if(!strcmp(a, "--server-cert")) serverCert = v;
+        else if(!strcmp(a, "--work")) work = v;
+        else if(!strcmp(a, "--only")) opt.only = v;
+        else if(!strcmp(a, "--expect")) opt.expectCsv = v;
+        else return usage(argv[0]);
+    }
+    if(!initOnly && (!t.url || (!serverCert == !tofu))) {
+        fprintf(stderr, "--url and one of --server-cert or --tofu (test setups only) are needed\n");
+        goto cleanup;
+    }
+    if(t.adminUser && (!adminPwFile ||
+                       read_password(adminPwFile, t.adminPassword, sizeof(t.adminPassword)) != GDS_OK)) {
+        fprintf(stderr, "--admin-user needs a readable, non-empty --admin-password-file\n");
+        goto cleanup;
+    }
+    if(t.userName && (!userPwFile ||
+                      read_password(userPwFile, t.userPassword, sizeof(t.userPassword)) != GDS_OK)) {
+        fprintf(stderr, "--user needs a readable, non-empty --user-password-file\n");
+        goto cleanup;
+    }
+    if(!adminCert != !adminKey) {
+        fprintf(stderr, "--admin-cert and --admin-key go together\n");
+        goto cleanup;
+    }
+    gds_status s = load_identity(work, &t.cert, &t.key);
+    if(s != GDS_OK) {
+        fprintf(stderr, "Auditor identity in %s: %s\n", work, gds_status_name(s));
+        goto cleanup;
+    }
+    if(adminCert) {
+        s = gds_file_read(adminCert, GDS_MAX_CERT_SIZE, &t.adminCert);
+        if(s == GDS_OK)
+            s = gds_file_read(adminKey, GDS_MAX_KEY_SIZE, &t.adminKey);
+        if(s == GDS_OK && !x509_key_matches(&t.adminCert, &t.adminKey))
+            s = GDS_EINVAL;
+    } else {
+        /* <work>/admin/own: the identity the target maps to SecurityAdmin */
+        char dir[GDS_MAX_PATH];
+        s = gds_path(dir, sizeof(dir), "%s/admin", work);
+        if(s == GDS_OK)
+            s = load_identity(dir, &t.adminCert, &t.adminKey);
+    }
+    if(s != GDS_OK) {
+        fprintf(stderr, "admin identity: %s\n", gds_status_name(s));
+        goto cleanup;
+    }
+    if((s = load_test_pki(&t, work)) != GDS_OK) {
+        fprintf(stderr, "test PKI in %s/ca: %s\n", work, gds_status_name(s));
+        goto cleanup;
+    }
+    if(initOnly) {
+        printf("Auditor identity %s/own/cert.der, admin identity %s/admin/own/cert.der and "
+               "test PKI %s/ca ready\n", work, work, work);
+        rc = 0;
+        goto cleanup;
+    }
+    uac_set_quiet(true);
+    if(serverCert) {
+        s = gds_file_read(serverCert, GDS_MAX_CERT_SIZE, &t.pinned);
+    } else {
+        UA_ByteString b = UA_BYTESTRING_NULL;
+        s = uac_fetch_server_cert(t.url, &b) == UA_STATUSCODE_GOOD ? GDS_OK : GDS_ENOTFOUND;
+        t.pinned.data = b.data;
+        t.pinned.len = b.length;
+    }
+    if(s != GDS_OK) {
+        fprintf(stderr, "target certificate: %s\n", gds_status_name(s));
+        goto cleanup;
+    }
+    printf("# target %s%s%s\n", t.url, tofu ? " (trusted on first use: test setups only)" : "",
+           opt.allowChanges ? "" : " (read-only: tests that change the target are Not tested)");
+    rc = ga_run(all, nTests, &t, &opt);
+    /* --only can leave SRV-RESTORE out: never leave the target changed */
+    if(t.snapTaken && !t.restored) {
+        char why[384];
+        if(st_restore(&t, why, sizeof(why)) == UA_STATUSCODE_GOOD) {
+            printf("# restore: snapshot pushed back and applied\n");
+        } else {
+            printf("# restore FAILED: %s\n", why);
+            rc = 1;
+        }
+    }
+cleanup:
+    st_clear(&t);
+    return rc;
+}
+
+int main(int argc, char **argv) {
+    if(argc >= 2 && strcmp(argv[1], "client") == 0)
+        return gdsaudit_client_main(argc - 1, argv + 1);
+    if(argc >= 2 && strcmp(argv[1], "gds") == 0)
+        return gds_main(argc, argv);
+    if(argc >= 2 && strcmp(argv[1], "server") == 0)
+        return server_main(argc, argv);
+    return usage(argv[0]);
 }

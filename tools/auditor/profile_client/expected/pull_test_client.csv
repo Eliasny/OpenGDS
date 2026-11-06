@@ -1,0 +1,13 @@
+# Expected verdicts of gdsaudit client against the good pull test client
+# (selftest/pull_test_client.c --from-env). It registers as a pure Client,
+# so CLI-CSR-05 is Not supported here; run_mutants.sh covers the server case.
+# CI fails when any verdict changes, including a Fail turning into a Pass.
+CLI-CSR-01,pass
+CLI-CSR-02,pass
+CLI-CSR-03,pass
+CLI-CSR-04,pass
+CLI-CSR-05,not_supported
+CLI-CSR-06,pass
+CLI-CSR-07,pass
+CLI-CSR-08,pass
+CLI-CSR-09,pass

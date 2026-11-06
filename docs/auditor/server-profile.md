@@ -8,9 +8,10 @@ Spec: OPC 10000-12 v1.05.07 (2026-04-15) unless the clause names another Part. H
 
 | Fixture | What it is |
 | --- | --- |
-| `admin` | An identity with the SecurityAdmin Role on the target (`--admin-cert`/`--admin-key`, or `--admin-user`), always over `ch-enc` |
-| `user` | An authenticated identity without SecurityAdmin (`--user-cert` or `--user`). Tests that need it report Not tested when it is not given |
+| `admin` | An identity with the SecurityAdmin Role on the target (`--admin-cert`/`--admin-key`, default `<work>/admin/own`, or `--admin-user` with `--admin-password-file`), always over `ch-enc` unless the test says otherwise |
+| `user` | An authenticated identity without SecurityAdmin (`--user` with `--user-password-file`). Tests that need it report Not tested when it is not given |
 | `anon` | Anonymous identity |
+| Plain identity | `<work>/own`: the application certificate of `user` and `anon` connections. It must be trusted by the target but not mapped to SecurityAdmin, so a refusal tests the user identity and not the application |
 | `ch-enc` | A SignAndEncrypt SecureChannel with the strongest non-deprecated policy the target offers |
 | `ch-sign` | A Sign-only SecureChannel, when the target offers one |
 | `ch-none` | A None SecureChannel with a session, when the target offers one |
@@ -30,9 +31,9 @@ These tests call every method on ServerConfiguration and on each CertificateGrou
 | --- | --- | --- | --- | --- | --- | --- |
 | SRV-SEC-01 | 12 §7.10.5, §7.10.10, §7.10.12, §7.8.2.3, §7.8.2.5 | W | As `anon` over `ch-enc`, call UpdateCertificate, CreateSigningRequest, ApplyChanges, CancelChanges, GetRejectedList, OpenWithMasks and Open(Write+EraseExisting) | Every call returns Bad_UserAccessDenied | Fail: any call returns Good. Warn: refused with another Bad code | `anon-admin` |
 | SRV-SEC-02 | 12 §7.10.5, §7.10.10, §7.10.12, §7.8.2.3, §7.8.2.5 | W | SRV-SEC-01 as `user` | Every call returns Bad_UserAccessDenied | Fail: any call returns Good. Warn: refused with another Bad code. Not tested: no `user` given | `no-secadmin` |
-| SRV-SEC-03 | 12 §7.10.5, §7.10.9, §7.8.2.2 | W | As `admin` over `ch-none`, call the methods of SRV-SEC-01 | Every call returns Bad_SecurityModeInsufficient, or the target offers no None endpoint that allows a session (endpoint list kept as evidence) | Fail: any call returns Good. Warn: refused with another Bad code | `allow-none` |
-| SRV-SEC-04 | 12 §7.10.5, §7.10.10, §8.6.3 | W | As `admin` over `ch-sign`, call UpdateCertificate, CreateSigningRequest and (if present) CreateCredential, which require an encrypted channel | Every call returns Bad_SecurityModeInsufficient, or no Sign endpoint is offered | Fail: any call returns Good. Warn: refused with another Bad code | `sign-is-enough` |
-| SRV-SEC-05 | 12 §7.4, §7.10.9, §7.10.12, §7.8.2.3 | W | As `admin` over `ch-sign`, call ApplyChanges, GetRejectedList and OpenWithMasks, which require only an authenticated channel | Refused, or no Sign endpoint is offered | Warn: accepted. The method clauses allow Sign; §7.4 says push management needs an encrypted channel | `sign-for-apply` |
+| SRV-SEC-03 | 12 §7.10.5, §7.10.9, §7.8.2.2 | W | As `admin` over `ch-none`, call the methods of SRV-SEC-01 | Every call returns Bad_SecurityModeInsufficient, or the target allows no session over None (the refused session is the evidence) | Fail: any call returns Good. Warn: refused with another Bad code | `allow-none` |
+| SRV-SEC-04 | 12 §7.10.5, §7.10.10, §8.6.3 | W | As `admin` over `ch-sign`, call UpdateCertificate, CreateSigningRequest and (if present) CreateCredential, which require an encrypted channel | Every call returns Bad_SecurityModeInsufficient, or no Sign endpoint is offered or allows a session | Fail: any call returns Good. Warn: refused with another Bad code | `sign-is-enough` |
+| SRV-SEC-05 | 12 §7.4, §7.10.9, §7.10.12, §7.8.2.3 | W | As `admin` over `ch-sign`, call ApplyChanges, GetRejectedList and OpenWithMasks, which require only an authenticated channel | Refused, or no Sign endpoint is offered or allows a session | Warn: accepted (Good, or Bad_NothingToDo from ApplyChanges, which passed the channel check). The method clauses allow Sign; §7.4 says push management needs an encrypted channel | `sign-for-apply` |
 | SRV-SEC-06 | 12 §7.10.3 | — | As `user` and `anon`, browse and read TransactionDiagnostics | Not browsable, or every Read returns Bad_UserAccessDenied or Bad_NotReadable | Fail: a value is returned. Not supported: TransactionDiagnostics absent | `diag-public` |
 | SRV-SEC-07 | 12 §7.8.2.1, §7.8.2.3 | — | As `user` and `anon`, OpenWithMasks(All) on each TrustList | Bad_UserAccessDenied | Fail: a file handle is returned | `trustlist-read-any` |
 | SRV-SEC-08 | OPC 10000-7 (security policy facets) | — | List the endpoints and their SecurityPolicyUris | No deprecated policy (Basic128Rsa15, Basic256) is offered | Warn: a deprecated policy is offered. Fail: SignAndEncrypt is only possible with a deprecated policy | `deprecated-policy` |
@@ -144,7 +145,7 @@ ConformanceUnit: Push Model for Global Certificate and TrustList Management.
 
 | ID | Clause | Flags | Check | Pass when | Fail / Warn / Not supported | Mutant |
 | --- | --- | --- | --- | --- | --- | --- |
-| SRV-WIRE-01 | 12 §7.10.9 | W | After SRV-TXN-03, GetEndpoints and OpenSecureChannel on every endpoint of the group | Every endpoint presents the new certificate | Fail: any endpoint presents the old one | `wire-old-cert` |
+| SRV-WIRE-01 | 12 §7.10.9, §7.8.4.8, §7.8.4.9 | W | After SRV-TXN-03, GetEndpoints, and OpenSecureChannel on every endpoint whose SecurityPolicy uses the updated CertificateType (RsaMin for Basic128Rsa15 and Basic256, §7.8.4.8; RsaSha256 for Basic256Sha256 and the Aes RSA policies, §7.8.4.9), with a client that trusts only `ca` | Every such endpoint presents the new certificate; endpoints of other CertificateTypes are another slot of the group and are listed as evidence | Fail: any such endpoint presents the old one or refuses the channel | `wire-old-cert` |
 | SRV-WIRE-02 | 12 §7.10.9 | W | Keep the `admin` channel that called ApplyChanges open and watch it | The channel is closed or renewed with the new certificate within the settle timeout | Warn: still on the old certificate after 30 s. Fail: still on it after the settle timeout | `wire-keep-channels` |
 | SRV-WIRE-03 | 12 §7.10.9 | W | Subscribe to ServerStatus before ApplyChanges | If the server closes connections, SecondsTillShutdown and ShutdownReason were set first | Warn: connections closed without notice (timing makes this unsafe to Fail) | `wire-no-shutdown-notice` |
 | SRV-WIRE-04 | 12 §7.10.9; 4 §6.1.3 | W | With `ca` in the applied trust list, connect as `peer-good` | Session created | Fail: refused | `wire-trustlist-not-loaded` |
@@ -152,6 +153,14 @@ ConformanceUnit: Push Model for Global Certificate and TrustList Management.
 | SRV-WIRE-06 | 4 §6.1.3 | — | Connect as `peer-unknown` | Refused (Bad_CertificateUntrusted or Bad_SecurityChecksFailed) | Fail: session created | `wire-trust-all` |
 | SRV-WIRE-07 | 12 §7.8.2.5 | W | Open a session as `peer-good`; RemoveCertificate(`peer-good`); apply | The `peer-good` session and channel are closed | Warn: still open after 30 s. Fail: still open after the settle timeout | `wire-keep-removed-sessions` |
 | SRV-WIRE-08 | 12 §7.8.2.5; 4 §6.1.3 | W | Open a session as `peer-good`; push a new CRL from `ca` that lists it; apply | The session and channel are closed | Warn: still open after 30 s. Fail: still open after the settle timeout | `wire-crl-no-reeval` |
+
+## Restore (`srv_restore.c`)
+
+Not a conformance test: the last line of every run, with its own verdict (README, [Safety, snapshot and restore](README.md#safety-snapshot-and-restore)).
+
+| ID | Clause | Flags | Check | Pass when | Fail / Warn / Not supported | Mutant |
+| --- | --- | --- | --- | --- | --- | --- |
+| SRV-RESTORE | README | W | On a new session (which discards any transaction a test left open, §7.10.2), push back the snapshot's certificate (if it changed) and trust list, and apply | Both pushed back and applied, or no test changed the target | Fail: either could not be restored; the evidence names what is left changed. When `--only` leaves this line out, the CLI still restores and prints the result as a comment | — |
 
 ## Persistence (`srv_persistence.c`)
 
