@@ -29,7 +29,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         abort();
     for(size_t i = 0; i < im.n; i++) {
         const UA_ApplicationRecordDataType *r = &im.recs[i];
-        (void)gds_validate_record(r);
+        gds_status vs = gds_validate_record(r); /* GCC ignores a (void) cast here */
+        (void)vs;
         if(i > 0 && im.lines[i] <= im.lines[i - 1])
             abort(); /* report lines follow the file */
     }
