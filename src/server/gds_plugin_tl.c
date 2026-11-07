@@ -20,6 +20,9 @@
  *   the TrustList is open (Bad_InvalidState);
  * - RemoveCertificate (§7.8.2.5) removes a certificate by its SHA-1
  *   thumbprint (hex), with the CRLs of a CA (Bad_InvalidArgument if none).
+ * - On a STANDBY node the writing calls answer Bad_InvalidState; the
+ *   embedder keeps the lists in line with gds_server_set_trust_list (A20),
+ *   which also makes a writer opened before it fail at CloseAndUpdate.
  * Handles belong to the session that opened them; a handle of a session
  * that has closed is dropped when it is in the way. Only sessions with
  * one of the group's Roles over SignAndEncrypt may call the methods
@@ -53,6 +56,7 @@ typedef struct {
     UA_UInt32 handle; /* 0 = free */
     UA_NodeId session;
     bool write;
+    UA_UInt64 gen; /* p->gen when a writer opened */
     UA_ByteString file;
     size_t pos;
 } ptl_handle;
@@ -61,6 +65,7 @@ struct gds_ptl {
     UA_NodeId group, tl;
     UA_NodeId sizeNode, openCountNode, lastUpdateNode;
     UA_CertificateGroup cg; /* under ptlLock */
+    UA_UInt64 gen;          /* replacements by the embedder (A20), ptlLock */
     unsigned roleBits;
     bool anon, auth;
     ptl_handle h[PTL_HANDLES]; /* server thread only */
@@ -316,6 +321,9 @@ static UA_StatusCode open_handle(gds_server *s, gds_ptl *p, const UA_NodeId *ses
         h->handle = UA_UInt32_random();
     } while(h->handle == 0 || handle_of(p, session, h->handle) != h);
     h->write = write;
+    pthread_mutex_lock(&s->ptlLock);
+    h->gen = p->gen;
+    pthread_mutex_unlock(&s->ptlLock);
     *out = h->handle;
     update_open_count(s, p);
     return UA_STATUSCODE_GOOD;
@@ -360,6 +368,8 @@ static UA_StatusCode m_open(gds_server *s, gds_ptl *p, const UA_NodeId *sid, siz
             return UA_STATUSCODE_BADINVALIDARGUMENT; /* §7.8.2.1 */
         write = mode != MODE_READ;
     }
+    if(write && gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINVALIDSTATE;
     UA_StatusCode r = open_handle(s, p, sid, write, m, &handle);
     if(r == UA_STATUSCODE_GOOD)
         r = set_out(out, nOut, &handle, &UA_TYPES[UA_TYPES_UINT32]);
@@ -427,9 +437,12 @@ static UA_StatusCode m_close_and_update(gds_server *s, gds_ptl *p, ptl_handle *h
         r = UA_STATUSCODE_BADINVALIDARGUMENT;
     else if(!list_ok(&tl))
         r = UA_STATUSCODE_BADCERTIFICATEINVALID;
+    else if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
+        r = UA_STATUSCODE_BADINVALIDSTATE;
     if(r == UA_STATUSCODE_GOOD) {
         pthread_mutex_lock(&s->ptlLock);
-        r = p->cg.setTrustList(&p->cg, &tl);
+        /* replaced by the embedder since this writer opened (A20) */
+        r = h->gen == p->gen ? p->cg.setTrustList(&p->cg, &tl) : UA_STATUSCODE_BADINVALIDSTATE;
         pthread_mutex_unlock(&s->ptlLock);
     }
     UA_TrustListDataType_clear(&tl);
@@ -446,6 +459,8 @@ static UA_StatusCode m_add(gds_server *s, gds_ptl *p, size_t n, const UA_Variant
     if(n != 2 || !UA_Variant_hasScalarType(&in[0], &UA_TYPES[UA_TYPES_BYTESTRING]) ||
        !UA_Variant_hasScalarType(&in[1], &UA_TYPES[UA_TYPES_BOOLEAN]))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINVALIDSTATE;
     drop_stale(p);
     if(any_open(p, false))
         return UA_STATUSCODE_BADINVALIDSTATE;
@@ -503,6 +518,8 @@ static UA_StatusCode m_remove(gds_server *s, gds_ptl *p, size_t n, const UA_Vari
     if(n != 2 || !UA_Variant_hasScalarType(&in[0], &UA_TYPES[UA_TYPES_STRING]) ||
        !UA_Variant_hasScalarType(&in[1], &UA_TYPES[UA_TYPES_BOOLEAN]))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINVALIDSTATE;
     drop_stale(p);
     if(any_open(p, false))
         return UA_STATUSCODE_BADINVALIDSTATE;
@@ -757,6 +774,28 @@ gds_status gds_ptl_get(gds_server *s, const UA_NodeId *groupId, UA_TrustListData
     if(r == UA_STATUSCODE_GOOD && p)
         out->specifiedLists = UA_TRUSTLISTMASKS_ALL;
     return r == UA_STATUSCODE_GOOD ? GDS_OK : gds_ua_status(r);
+}
+
+gds_status gds_server_set_trust_list(gds_server *s, const UA_NodeId *groupId,
+                                     const UA_TrustListDataType *tl) {
+    if(!s || !groupId || !tl)
+        return GDS_EINVAL;
+    if((tl->specifiedLists & ~(UA_UInt32)UA_TRUSTLISTMASKS_ALL) != 0 || !list_ok(tl))
+        return GDS_EINVAL;
+    pthread_mutex_lock(&s->ptlLock);
+    gds_ptl *p = find_group(s, groupId);
+    UA_StatusCode r = UA_STATUSCODE_BADNOTFOUND;
+    if(p) {
+        r = p->cg.setTrustList(&p->cg, tl);
+        p->gen++; /* a writer open now gets Bad_InvalidState at CloseAndUpdate */
+    }
+    pthread_mutex_unlock(&s->ptlLock);
+    if(!p)
+        return GDS_ENOTFOUND;
+    if(r != UA_STATUSCODE_GOOD)
+        return gds_ua_status(r);
+    update_size(s, p, true);
+    return GDS_OK;
 }
 
 void gds_ptl_free(gds_server *s) {
