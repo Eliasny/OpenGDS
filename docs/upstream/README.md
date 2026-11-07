@@ -68,7 +68,9 @@ Each new test was run without the library change (it must fail) and with it
   the GDS headers are installed by open62541, and ConditionRefresh keeps
   EventIds. **Editing these files changes our
   build** (the CI cache key includes them). Drop each one once open62541
-  releases the fix and we move the pin.
+  releases the fix and we move the pin. The Auditor's Flatpak manifest
+  (`packaging/flatpak/org.opengds.Auditor.yml`) lists them too: add or drop
+  a patch there as well, or CTest `packaging_flatpak_pins` fails.
 
 ## How to post (for Elias)
 

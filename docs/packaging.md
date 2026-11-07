@@ -8,6 +8,7 @@ OpenGDS ships as:
 | `opengds-<ver>-1.el9.<arch>.rpm`, `…fc<N>…` | RHEL, Alma and Rocky 9; Fedora | the same |
 | `gdsaudit_…deb`, `gdsaudit-…rpm` | the same distributions | the OpenGDS Auditor command-line tool |
 | `gdsaudit-gui_…deb`, `gdsaudit-gui-…rpm` | distributions with GTK 4.12 or newer | the Auditor's desktop UI (`gdsaudit-gui`, desktop entry `org.opengds.Auditor`); needs `gdsaudit` of the same version |
+| `org.opengds.Auditor` Flatpak (`packaging/flatpak/org.opengds.Auditor.yml`) | any distribution with Flatpak | `gdsaudit-gui` and `gdsaudit` on the GNOME runtime; a client profile trigger runs inside the sandbox, so use the headless `gdsaudit` to start host programs |
 | `opengds-<ver>-deb13-<arch>.tar.gz` | other glibc distributions | every component under `usr/` |
 | `opengds-<ver>.tar.gz` | building from source | `git archive` of the release tag |
 | `ghcr.io/eliasny/opengds:<ver>` | Docker, Podman, Kubernetes | server on a distroless base, amd64 and arm64 |
