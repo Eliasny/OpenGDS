@@ -322,6 +322,64 @@ GDS_MUST_CHECK gds_status gds_server_raise_audit_event(struct gds_server *s,
                                                        const gds_caller *caller,
                                                        const gds_audit_event *ev, int64_t *seq);
 
+/* ---- alarms (UASM ask A16) ----
+ * A plugin raises and clears Part 9 alarms on its own objects, for example
+ * the SKS out of pre-generated keys without a majority, or a cluster node
+ * that lost its majority. gds_server_add_alarm creates an
+ * AlarmConditionType instance (OPC 10000-9 §5.8.2; OffNormalAlarmType,
+ * §5.8.23, by default) as a HasComponent child of sourceNode, which
+ * becomes an event source of the Server object: subscribers of the Server
+ * object get its events, and ConditionRefresh (§5.5.7) replays it while
+ * it is retained. It starts Enabled, Inactive, Acknowledged, Retain false,
+ * Severity 1 and fires no event.
+ *
+ * gds_server_set_alarm sets ActiveState, LastSeverity, Severity and
+ * Message, and Retain (TRUE while Active or unacknowledged), and fires the
+ * alarm's event (§5.8). It is queued: the server thread applies the calls
+ * in order, shortly after; GDS_ETOOBIG while 64 are waiting. Calling it
+ * with an unchanged state reports a new Severity or Message.
+ *
+ * With ackRoles, each activation also sets AckedState Unacknowledged, and
+ * a session holding one of the Roles over SignAndEncrypt may Acknowledge
+ * (§5.7.3) with the alarm's last EventId; the acknowledgement is audited as
+ * AuditConditionAcknowledgeEventType (§5.10.4), visible to ackRoles.
+ * Without ackRoles the alarm needs no acknowledgement: AckedState stays
+ * Acknowledged and nobody may call Acknowledge.
+ *
+ * Both functions are safe from any thread, while the server runs too.
+ * Alarms live until gds_server_delete; the handle is borrowed. */
+#define GDS_MAX_ALARMS 64
+
+typedef struct gds_alarm gds_alarm;
+
+typedef struct {
+    uint32_t abi_major;
+    uint32_t abi_minor;
+    size_t struct_size;
+    /* The condition's NodeId; null: a new numeric one in sourceNode's
+     * namespace. Never in the GDS namespace (GDS_EDENIED). */
+    UA_NodeId alarmId;
+    /* An existing object outside the GDS namespace (SourceNode,
+     * SourceName = its BrowseName). */
+    UA_NodeId sourceNode;
+    /* BrowseName (in sourceNode's namespace) and ConditionName. */
+    const char *name;
+    /* null: OffNormalAlarmType; otherwise a subtype of AlarmConditionType
+     * in the address space. */
+    UA_NodeId alarmType;
+    /* Who may Acknowledge, as gds_method_def.roles; copied. */
+    const UA_NodeId *ackRoles;
+    size_t ackRolesSize;
+} gds_alarm_def;
+
+/* GDS_ENOTFOUND: no such source object; GDS_EEXISTS: the NodeId is taken;
+ * GDS_EINVAL: a bad def, a Role no session can hold, or a type that is
+ * no AlarmConditionType; GDS_ETOOBIG: 64 alarms already. */
+GDS_MUST_CHECK gds_status gds_server_add_alarm(struct gds_server *s, const gds_alarm_def *def,
+                                               gds_alarm **alarm);
+/* severity 1 (lowest) .. 1000; message UTF-8, NULL for none, copied. */
+GDS_MUST_CHECK gds_status gds_server_set_alarm(gds_alarm *alarm, bool active, uint16_t severity,
+                                               const char *message);
 
 /* ---- Directory and CertificateManager for embedders (UASM ask A13,
  * issue #81) ----
