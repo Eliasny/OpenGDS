@@ -120,6 +120,9 @@ struct gds_server {
     /* CertificateManager rights hook (UASM ask A14); fixed before run */
     gds_may_manage_fn mayManage;
     void *mayManageCtx;
+    /* DefaultApplicationGroup TrustList LastUpdateTime (gds_trustlist.c);
+     * server thread only */
+    UA_DateTime tlLastUpdate;
 };
 
 /* ---- caller views (gds_caller.c, issue #17) ---- */
@@ -249,8 +252,9 @@ GDS_MUST_CHECK UA_StatusCode gds_load_app(gds_server *s, const UA_Guid *id,
 GDS_MUST_CHECK UA_StatusCode gds_directory_install(gds_server *s);
 GDS_MUST_CHECK UA_StatusCode gds_certmgr_install(gds_server *s);
 GDS_MUST_CHECK UA_StatusCode gds_trustlist_install(gds_server *s);
-/* The DefaultApplicationGroup trust list (the CA certificate and its CRL),
- * the lists in masks only; *out is a deep copy. Any thread. */
+/* The DefaultApplicationGroup trust list: the CA certificate and its CRL
+ * and the entries an administrator wrote (OPC 10000-12 §7.8.2), the lists
+ * in masks only; *out is a deep copy. Any thread; takes storeLock. */
 GDS_MUST_CHECK UA_StatusCode gds_trustlist_data(gds_server *s, UA_UInt32 masks,
                                                 UA_TrustListDataType *out);
 /* Issuance holds (gds_registrar.c, UASM ask A13): is this application's

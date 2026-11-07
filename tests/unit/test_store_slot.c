@@ -134,6 +134,7 @@ static const gds_store_backend refusingBackend = {
     rf_req_scan,
     rf_cert_revoke, rf_cert_revoke_app, rf_cert_is_revoked,
     NULL, /* no cert_scan */
+    NULL, NULL, /* no trust lists */
 };
 
 static void test_open_backend(void) {
@@ -162,6 +163,16 @@ static void test_open_backend(void) {
         CHECK(gds_store_req_scan(s, GDS_REQ_PENDING, NULL, NULL) == GDS_EUNSUPPORTED);
     gds_store_close(s);
     CHECK_EQ_INT(r.closed, 4);
+    /* a backend without trust lists: they cannot be read back or written */
+    if(CHECK(gds_store_open_backend(&refusingBackend, &r, &s) == GDS_OK && s != NULL)) {
+        gds_buf b = {(uint8_t *)"x", 1};
+        int64_t lu = 0;
+        CHECK(gds_store_tl_get(s, 615, &b, &lu) == GDS_EUNSUPPORTED && b.len == 0);
+        b = (gds_buf){(uint8_t *)"x", 1};
+        CHECK(gds_store_tl_put(s, 615, &b, 1) == GDS_EUNSUPPORTED);
+    }
+    gds_store_close(s);
+    CHECK_EQ_INT(r.closed, 5);
 }
 
 /* ---- calls ---- */

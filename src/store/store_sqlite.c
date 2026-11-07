@@ -610,6 +610,49 @@ static gds_status sq_cert_scan(void *ctx_, gds_cert_scan_cb cb, void *cbCtx) {
     return r;
 }
 
+static gds_status sq_tl_get(void *ctx_, uint32_t groupId, gds_buf *data, int64_t *lastUpdate) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "SELECT data, last_update FROM trust_lists WHERE group_id = ?1",
+                                -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(st, 1, groupId);
+    gds_status r;
+    if(rc != SQLITE_OK) {
+        r = db_err(s, "read trust list", rc);
+    } else if((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        r = column_buf(st, 0, GDS_MAX_TRUSTLIST_SIZE, data);
+        *lastUpdate = sqlite3_column_int64(st, 1);
+    } else {
+        r = rc == SQLITE_DONE ? GDS_ENOTFOUND : db_err(s, "read trust list", rc);
+    }
+    sqlite3_finalize(st);
+    return r;
+}
+
+static gds_status sq_tl_put(void *ctx_, uint32_t groupId, const gds_buf *data,
+                            int64_t lastUpdate) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "INSERT INTO trust_lists (group_id, data, last_update) "
+                                "VALUES (?1, ?2, ?3) ON CONFLICT(group_id) DO UPDATE SET "
+                                "data = excluded.data, last_update = excluded.last_update",
+                                -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(st, 1, groupId);
+    if(rc == SQLITE_OK)
+        rc = bind_buf(st, 2, data);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(st, 3, lastUpdate);
+    if(rc == SQLITE_OK && (rc = sqlite3_step(st)) == SQLITE_DONE)
+        rc = SQLITE_OK;
+    gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "write trust list", rc);
+    sqlite3_finalize(st);
+    return r;
+}
+
 /* One UPDATE binding the application id as ?1 and optionally der as ?2. */
 static gds_status mark_revoked(sq_store *s, const char *sql, const UA_Guid *appId,
                                const gds_buf *der, int *changed) {
@@ -935,6 +978,8 @@ const gds_store_backend gds_store_sqlite_backend = {
     .cert_revoke_app = sq_cert_revoke_app,
     .cert_is_revoked = sq_cert_is_revoked,
     .cert_scan = sq_cert_scan,
+    .tl_get = sq_tl_get,
+    .tl_put = sq_tl_put,
 };
 
 gds_status gds_store_sqlite_open(const char *path, bool readonly, void **ctx) {
