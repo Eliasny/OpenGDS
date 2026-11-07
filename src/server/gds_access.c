@@ -493,9 +493,17 @@ static void live_clear(void) {
     pthread_mutex_unlock(&sessLock);
 }
 
+static gds_session_free_fn sessionFreeHook;
+
+void gds_access_on_session_free(gds_session_free_fn fn) {
+    sessionFreeHook = fn;
+}
+
 static void session_free(gds_session *s) {
     if(!s)
         return;
+    if(sessionFreeHook)
+        sessionFreeHook(s);
     UA_String_clear(&s->clientAppUri);
     UA_ByteString_clear(&s->clientCert);
     UA_String_clear(&s->securityPolicyUri);
