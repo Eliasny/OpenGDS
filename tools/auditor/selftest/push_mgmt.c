@@ -950,6 +950,24 @@ static void persist_queued_cert(void) {
         UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "cannot store the queued pair");
 }
 
+/* UpdateCertificate's checks of the certificate and of the pushed key, if
+ * any; ck receives the key to install */
+static UA_StatusCode update_key_checks(X509 *x, const UA_Variant *input, const UA_NodeId *sessionId,
+                                       UA_ByteString *ck) {
+    const UA_ByteString *key = input[5].data;
+    if(key->length == 0)
+        return update_checks(x, &input[3], sessionId, ck, false);
+    if(!P.acceptKeys)
+        return UA_STATUSCODE_GOOD; /* accept-key-unadvertised: the key is ignored */
+    /* §7.10.5: a key in an advertised format, for this certificate */
+    UA_StatusCode r = pushed_key(x, input[4].data, key, ck);
+    if(r == UA_STATUSCODE_GOOD)
+        r = update_checks(x, &input[3], sessionId, ck, true);
+    if(r == UA_STATUSCODE_GOOD && breaking("update-ignore-key"))
+        secret_clear(ck);
+    return r;
+}
+
 static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
     UNUSED_ARGS;
     UA_StatusCode sec = need_channel(sessionId, true);
@@ -979,16 +997,7 @@ static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
     if(!x)
         return UA_STATUSCODE_BADCERTIFICATEINVALID;
     UA_ByteString ck = UA_BYTESTRING_NULL;
-    UA_StatusCode r = UA_STATUSCODE_GOOD;
-    if(key->length == 0)
-        r = update_checks(x, &input[3], sessionId, &ck, false);
-    else if(P.acceptKeys) { /* §7.10.5: a key in an advertised format, for this certificate */
-        r = pushed_key(x, input[4].data, key, &ck);
-        if(r == UA_STATUSCODE_GOOD)
-            r = update_checks(x, &input[3], sessionId, &ck, true);
-        if(r == UA_STATUSCODE_GOOD && breaking("update-ignore-key"))
-            secret_clear(&ck);
-    } /* else accept-key-unadvertised: the key is ignored */
+    UA_StatusCode r = update_key_checks(x, input, sessionId, &ck);
     X509_free(x);
     if(r != UA_STATUSCODE_GOOD && breaking("fail-aborts-txn") && P.txn && P.hasList &&
        UA_NodeId_equal(&P.owner, sessionId))
