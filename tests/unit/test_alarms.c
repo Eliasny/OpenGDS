@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "ca.h"
@@ -515,6 +516,9 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: %s <dir>\n", argv[0]);
         return 2;
     }
+    /* clients and server share this process (see test_audit.c) */
+    CHECK(setenv("TZ", "UTC", 1) == 0);
+    tzset();
     char db[1024], caDir[1024];
     CHECK(gds_mkdirs(argv[1], 0700) == GDS_OK);
     CHECK(gds_path(db, sizeof(db), "%s/store.db", argv[1]) == GDS_OK);
