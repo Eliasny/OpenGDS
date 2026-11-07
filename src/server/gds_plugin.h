@@ -384,6 +384,11 @@ typedef struct {
     /* Who may Acknowledge, as gds_method_def.roles; copied. */
     const UA_NodeId *ackRoles;
     size_t ackRolesSize;
+    /* Since A19 (older plugins pass a shorter struct_size): who receives
+     * the alarm's events, live and from ConditionRefresh, as
+     * gds_audit_event.visibleTo; 0: every subscriber. */
+    const UA_NodeId *visibleTo;
+    size_t visibleToSize;
 } gds_alarm_def;
 
 /* GDS_ENOTFOUND: no such source object; GDS_EEXISTS: the NodeId is taken;
@@ -394,6 +399,84 @@ GDS_MUST_CHECK gds_status gds_server_add_alarm(struct gds_server *s, const gds_a
 /* severity 1 (lowest) .. 1000; message UTF-8, NULL for none, copied. */
 GDS_MUST_CHECK gds_status gds_server_set_alarm(gds_alarm *alarm, bool active, uint16_t severity,
                                                const char *message);
+
+/* ---- dialogs (UASM ask A19) ----
+ * A plugin asks an operator a question, e.g. "Register and manage this
+ * server?" for a server that fleet discovery found. gds_server_add_dialog
+ * creates a DialogConditionType instance (OPC 10000-9 §5.6.2) as a
+ * HasComponent child of sourceNode, active (DialogState Active, Retain
+ * true) with its Prompt, ResponseOptionSet and Ok/Cancel/DefaultResponse,
+ * and fires its event; ConditionRefresh (§5.5.7) replays it while active.
+ * With visibleTo, only sessions holding one of those Roles receive its
+ * events (live and replayed) and the audit events about it.
+ *
+ * Respond (§5.6.3) and Respond2 (§5.6.4, with a Comment) need one of
+ * respondRoles over SignAndEncrypt; the core checks the response index
+ * (Bad_DialogResponseInvalid), the Comment length and that the dialog is
+ * active (Bad_DialogNotActive; also while another response is being
+ * handled), then calls respond on a plugin worker, never on the network
+ * thread. respond returns Good to accept the response, or
+ * Bad_DialogNotActive / Bad_DialogResponseInvalid (or another Bad code) to
+ * refuse it; the caller gets that code. On Good the core sets LastResponse,
+ * Comment and ClientUserId, makes DialogState Inactive and Retain false and
+ * fires the event. Every call is audited as AuditConditionRespondEventType
+ * (§5.10.6). The dialog stays in the address space until
+ * gds_server_remove_dialog, which closes it first if it is still active
+ * (Retain false, an event). A response already being handled may still
+ * reach respond after remove returned.
+ *
+ * Both functions are safe from any thread except the server thread; on a
+ * STANDBY node Respond answers Bad_InvalidState. */
+#define GDS_MAX_DIALOGS 256
+#define GDS_MAX_DIALOG_OPTIONS 16
+
+/* Accept (Good) or refuse (Bad) a response; may block for a while. */
+typedef UA_StatusCode (*gds_dialog_fn)(void *ctx, const gds_caller *caller,
+                                       const UA_NodeId *dialogId, int32_t selectedResponse,
+                                       const UA_LocalizedText *comment);
+
+typedef struct {
+    uint32_t abi_major;
+    uint32_t abi_minor;
+    size_t struct_size;
+    /* The dialog's NodeId; null: a new numeric one in sourceNode's
+     * namespace. Never in namespace 0 or the GDS namespace. */
+    UA_NodeId dialogId;
+    /* An existing object outside the GDS namespace (SourceNode). */
+    UA_NodeId sourceNode;
+    /* BrowseName (in sourceNode's namespace) and ConditionName. */
+    const char *name;
+    /* Message and Prompt, UTF-8; message may be NULL. Copied. */
+    const char *message;
+    const char *prompt;
+    /* 1 .. GDS_MAX_DIALOG_OPTIONS response texts, UTF-8; copied. */
+    const char *const *responseOptions;
+    size_t responseOptionsSize;
+    /* Indexes into responseOptions, or -1 for none. */
+    int32_t defaultResponse;
+    int32_t okResponse;
+    int32_t cancelResponse;
+    /* 1 (lowest) .. 1000. */
+    uint16_t severity;
+    /* Who may Respond, as gds_method_def.roles; at least one. Copied. */
+    const UA_NodeId *respondRoles;
+    size_t respondRolesSize;
+    /* Who receives its events; 0: every subscriber. Copied. */
+    const UA_NodeId *visibleTo;
+    size_t visibleToSize;
+    gds_dialog_fn respond;
+    void *ctx;
+} gds_dialog_def;
+
+/* *dialogId: the dialog's NodeId (free with UA_NodeId_clear).
+ * GDS_ENOTFOUND: no such source object; GDS_EEXISTS: the NodeId is taken;
+ * GDS_EDENIED: namespace 0 or the GDS namespace; GDS_EINVAL: a bad def or
+ * a Role no session can hold; GDS_ETOOBIG: GDS_MAX_DIALOGS already. */
+GDS_MUST_CHECK gds_status gds_server_add_dialog(struct gds_server *s, const gds_dialog_def *def,
+                                                UA_NodeId *dialogId);
+/* GDS_ENOTFOUND: no such plugin dialog. */
+GDS_MUST_CHECK gds_status gds_server_remove_dialog(struct gds_server *s,
+                                                   const UA_NodeId *dialogId);
 
 /* ---- Directory and CertificateManager for embedders (UASM ask A13,
  * issue #81) ----

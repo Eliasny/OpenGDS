@@ -127,3 +127,8 @@ add_executable(test_plugin_tl test_plugin_tl.c)
 target_link_libraries(test_plugin_tl PRIVATE gds_server OpenSSL::Crypto)
 add_test(NAME unit_plugin_tl COMMAND test_plugin_tl "${CMAKE_CURRENT_BINARY_DIR}/plugin-tl-run")
 set_tests_properties(unit_plugin_tl PROPERTIES TIMEOUT 120)
+
+add_executable(test_dialogs test_dialogs.c)
+target_link_libraries(test_dialogs PRIVATE gds_server)
+add_test(NAME unit_dialogs COMMAND test_dialogs "${CMAKE_CURRENT_BINARY_DIR}/dialogs-run")
+set_tests_properties(unit_dialogs PROPERTIES TIMEOUT 120)

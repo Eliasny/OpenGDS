@@ -24,6 +24,8 @@
 
 typedef struct gds_binding gds_binding;
 typedef struct gds_job gds_job;
+typedef struct gds_cond_vis gds_cond_vis;
+typedef struct gds_dialog gds_dialog;
 typedef struct gds_node_perms gds_node_perms;
 typedef struct gds_role_bool gds_role_bool;
 #define GDS_ALARM_QUEUE 64
@@ -97,6 +99,15 @@ struct gds_server {
     size_t nAlarms;
     gds_alarm_op alarmOps[GDS_ALARM_QUEUE];
     size_t alarmOpHead, nAlarmOps;
+    /* conditions whose events only some Roles receive (A19); visLock is a
+     * leaf lock, taken under open62541's service mutex */
+    pthread_mutex_t visLock;
+    gds_cond_vis *vis;
+    size_t nVis, capVis;
+    /* plugin dialogs (gds_dialogs.c, A19); dialogLock is a leaf lock */
+    pthread_mutex_t dialogLock;
+    gds_dialog **dialogs;
+    size_t nDialogs, capDialogs, dialogsReserved;
     /* issuance holds (gds_registrar.c, UASM ask A13), not replicated */
     pthread_mutex_t holdLock;
     UA_Guid *holds;
@@ -155,6 +166,24 @@ GDS_MUST_CHECK UA_StatusCode gds_embed_defer_rights(gds_server *s, UA_MethodCall
                                                     const UA_NodeId *objectId, const UA_Guid *app,
                                                     size_t inputSize, const UA_Variant *input,
                                                     size_t outputSize, UA_Variant *output);
+/* A core method that runs part of its work on a plugin worker (A19):
+ * run(ctx, caller, inputs) on a worker, then done(s, ctx, run's status) on
+ * the server thread, whose status completes the call (also when the call
+ * was cancelled; done then frees ctx). Good_CompletesAsynchronously, or an
+ * error and ctx stays the caller's. ctxFree frees ctx if the server stops
+ * before done ran. */
+typedef UA_StatusCode (*gds_defer_run_fn)(void *ctx, const gds_caller *caller, size_t nIn,
+                                          const UA_Variant *in);
+typedef UA_StatusCode (*gds_defer_done_fn)(gds_server *s, void *ctx, UA_StatusCode status);
+typedef void (*gds_defer_free_fn)(void *ctx);
+/* Starts the plugin workers if they are not running yet. */
+GDS_MUST_CHECK gds_status gds_embed_pool_start(gds_server *s);
+GDS_MUST_CHECK UA_StatusCode gds_embed_defer(gds_server *s, const UA_NodeId *sessionId,
+                                             void *sessionContext, const UA_NodeId *objectId,
+                                             size_t inputSize, const UA_Variant *input,
+                                             UA_Variant *output, gds_defer_run_fn run,
+                                             gds_defer_done_fn done, gds_defer_free_fn ctxFree,
+                                             void *ctx);
 /* Is a plugin callback bound to this method node? */
 bool gds_embed_bound(gds_server *s, const UA_NodeId *methodId);
 /* Drop the bindings whose method node no longer exists. */
@@ -258,6 +287,27 @@ GDS_MUST_CHECK UA_StatusCode gds_alarm_last_event_id(const gds_alarm *a, UA_Byte
 /* Condition fields, scalar values only (OPC 10000-9 §5.5.2). */
 GDS_MUST_CHECK UA_StatusCode gds_cond_set_field(UA_Server *ua, UA_NodeId c, const char *field,
                                                 const void *v, const UA_DataType *t);
+/* Removes open62541's write hook from a condition field (field/sub), so
+ * that writing it fires no event of its own. */
+GDS_MUST_CHECK UA_StatusCode gds_cond_detach_hook(UA_Server *ua, UA_NodeId c, const char *field,
+                                                  const char *sub);
+/* An array field (UA_Server_setConditionField refuses arrays). */
+GDS_MUST_CHECK UA_StatusCode gds_cond_set_array(UA_Server *ua, UA_NodeId c, const char *field,
+                                                const void *v, size_t n, const UA_DataType *t);
+/* Only sessions holding one of roles receive the events of cond, and the
+ * events whose SourceNode is cond (A19). n == 0: everyone. */
+GDS_MUST_CHECK gds_status gds_cond_restrict(gds_server *s, const UA_NodeId *cond,
+                                            const UA_NodeId *roles, size_t n);
+void gds_cond_unrestrict(gds_server *s, const UA_NodeId *cond);
+void gds_cond_vis_free(gds_server *s);
+/* Plugin dialogs (gds_dialogs.c, A19). Respond / Respond2 on one: server thread, from the
+ * DialogConditionType method callbacks (gds_approvals.c). */
+UA_StatusCode gds_dialog_respond(gds_server *s, const UA_NodeId *sessionId, void *sessionContext,
+                                 const UA_NodeId *objectId, UA_Int32 response,
+                                 const UA_LocalizedText *comment, bool respond2,
+                                 UA_Variant *output);
+/* After UA_Server_delete. */
+void gds_dialogs_free(gds_server *s);
 /* A TwoStateVariable field: its text and its Id. */
 GDS_MUST_CHECK UA_StatusCode gds_cond_set_two_state(UA_Server *ua, UA_NodeId c, const char *field,
                                                     UA_Boolean id, const char *text);
