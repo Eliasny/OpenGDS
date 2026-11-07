@@ -67,4 +67,10 @@ set_target_properties(open62541::open62541 PROPERTIES
     IMPORTED_LOCATION "${OPEN62541_LIBRARY}"
     INTERFACE_INCLUDE_DIRECTORIES "${_o6_inc}"
     INTERFACE_LINK_LIBRARIES "OpenSSL::SSL;OpenSSL::Crypto;Threads::Threads;m")
+if(WIN32)
+    # Winsock and the adapter list (open62541's event loop), the crypto
+    # APIs OpenSSL uses on Windows
+    set_property(TARGET open62541::open62541 APPEND PROPERTY INTERFACE_LINK_LIBRARIES
+        ws2_32 iphlpapi crypt32 bcrypt advapi32 user32)
+endif()
 message(STATUS "open62541 v1.5.10 from ${OPEN62541_PREFIX}")

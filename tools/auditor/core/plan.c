@@ -18,6 +18,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "common/compiler.h"
+#include "common/platform.h"
 
 #include "common/banned.h"
 
@@ -264,7 +266,7 @@ typedef struct {
     bool failed;
 } cursor;
 
-static bool fail(cursor *c, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+GDS_FORMAT(2, 3) static bool fail(cursor *c, const char *fmt, ...);
 static bool fail(cursor *c, const char *fmt, ...) {
     if(c->failed)
         return false;
@@ -697,7 +699,7 @@ ga_plan *ga_plan_parse(const char *text, size_t len, const char *name, char *err
                        size_t errLen) {
     cursor c = {text, text + len, 1, name ? name : "plan", err, errLen, false};
     if(len > GA_PLAN_MAX_FILE) {
-        snprintf(err, errLen, "%s: larger than %zu bytes", c.name, GA_PLAN_MAX_FILE);
+        snprintf(err, errLen, "%s: larger than %u bytes", c.name, (unsigned)GA_PLAN_MAX_FILE);
         return NULL;
     }
     if(memchr(text, '\0', len)) {
@@ -833,7 +835,7 @@ bool ga_plan_save(const ga_plan *p, const char *path, char *err, size_t errLen) 
     }
     bool ok = ga_plan_write(p, f);
     ok = (fclose(f) == 0) && ok;
-    if(!ok || rename(tmp, path) != 0) {
+    if(!ok || gds_rename_replace(tmp, path) != 0) {
         snprintf(err, errLen, "%s: %s", path, ok ? strerror(errno) : "write failed");
         unlink(tmp);
         return false;

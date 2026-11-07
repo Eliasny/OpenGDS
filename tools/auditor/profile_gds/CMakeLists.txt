@@ -23,6 +23,9 @@ add_executable(gdsaudit ../cli/main.c)
 target_link_libraries(gdsaudit PRIVATE gdsaudit_profile_gds gdsaudit_profile_client)
 # next to mock_gds and the self-test targets
 set_target_properties(gdsaudit PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/..")
+if(NOT GDSAUDIT_SELFTESTS) # tests and self-test targets: full Linux builds only
+    return()
+endif()
 
 # The spec tests against the mock GDS. The expected verdicts are pinned in
 # expected/mock_gds.csv: a verdict that changes (also to Pass) fails CI.
@@ -31,3 +34,10 @@ add_test(NAME gds_spec_vs_mock_gds
                  "$<TARGET_FILE_DIR:gdsaudit>" "${CMAKE_CURRENT_BINARY_DIR}/mock-run"
                  "${CMAKE_CURRENT_SOURCE_DIR}/expected/mock_gds.csv")
 set_tests_properties(gds_spec_vs_mock_gds PROPERTIES TIMEOUT 180)
+# The same run from a plan file (gdsaudit run): the same verdicts
+add_test(NAME gds_spec_vs_mock_gds_plan
+         COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/run_vs_mock.sh"
+                 "$<TARGET_FILE_DIR:gdsaudit>" "${CMAKE_CURRENT_BINARY_DIR}/mock-plan-run"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/expected/mock_gds.csv")
+set_tests_properties(gds_spec_vs_mock_gds_plan PROPERTIES TIMEOUT 180
+                     ENVIRONMENT "PLAN=1;GDS_PORT=4997")

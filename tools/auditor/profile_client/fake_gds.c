@@ -25,6 +25,7 @@
 #include <time.h>
 
 #include "common/limits.h"
+#include "common/platform.h"
 #include "common/ua_args.h"
 #include "test_ca.h"
 #include "trigger.h"
@@ -791,7 +792,7 @@ static UA_StatusCode h_tl_close(fg_event *ev, size_t inN, const UA_Variant *in,
 
 /* ---- server glue ----------------------------------------------------- */
 
-#define CALLBACK(name, m, h)                                                                \
+#define FG_CALLBACK(name, m, h)                                                                \
     static UA_StatusCode name(UA_Server *server, const UA_NodeId *sessionId,                \
                               void *sessionContext, const UA_NodeId *methodId,              \
                               void *methodContext, const UA_NodeId *objectId,               \
@@ -802,17 +803,17 @@ static UA_StatusCode h_tl_close(fg_event *ev, size_t inN, const UA_Variant *in,
         (void)methodContext; (void)objectId; (void)objectContext; (void)outputSize;         \
         return dispatch(m, h, sessionId, inputSize, input, output);                                    \
     }
-CALLBACK(cb_find, FG_M_FIND, h_find)
-CALLBACK(cb_register, FG_M_REGISTER, h_register)
-CALLBACK(cb_groups, FG_M_GROUPS, h_groups)
-CALLBACK(cb_status, FG_M_STATUS, h_status)
-CALLBACK(cb_sign, FG_M_SIGN, h_sign)
-CALLBACK(cb_newkeypair, FG_M_NEWKEYPAIR, h_newkeypair)
-CALLBACK(cb_finish, FG_M_FINISH, h_finish)
-CALLBACK(cb_trustlist, FG_M_TRUSTLIST, h_trustlist)
-CALLBACK(cb_tl_open, FG_M_TL_OPEN, h_tl_open)
-CALLBACK(cb_tl_read, FG_M_TL_READ, h_tl_read)
-CALLBACK(cb_tl_close, FG_M_TL_CLOSE, h_tl_close)
+FG_CALLBACK(cb_find, FG_M_FIND, h_find)
+FG_CALLBACK(cb_register, FG_M_REGISTER, h_register)
+FG_CALLBACK(cb_groups, FG_M_GROUPS, h_groups)
+FG_CALLBACK(cb_status, FG_M_STATUS, h_status)
+FG_CALLBACK(cb_sign, FG_M_SIGN, h_sign)
+FG_CALLBACK(cb_newkeypair, FG_M_NEWKEYPAIR, h_newkeypair)
+FG_CALLBACK(cb_finish, FG_M_FINISH, h_finish)
+FG_CALLBACK(cb_trustlist, FG_M_TRUSTLIST, h_trustlist)
+FG_CALLBACK(cb_tl_open, FG_M_TL_OPEN, h_tl_open)
+FG_CALLBACK(cb_tl_read, FG_M_TL_READ, h_tl_read)
+FG_CALLBACK(cb_tl_close, FG_M_TL_CLOSE, h_tl_close)
 
 static gds_status write_files(const fg_config *cfg) {
     gds_buf crl = {0};
@@ -1007,7 +1008,7 @@ static UA_StatusCode bind_methods(void) {
 UA_Server *fg_new_server_quietly(UA_ServerConfig *sc) {
     fflush(stdout);
     int saved = dup(STDOUT_FILENO);
-    int null = open("/dev/null", O_WRONLY | O_CLOEXEC);
+    int null = open(GDS_NULL_DEVICE, O_WRONLY | GDS_O_CLOEXEC);
     if(saved >= 0 && null >= 0)
         (void)dup2(null, STDOUT_FILENO);
     UA_Server *server = UA_Server_newWithConfig(sc);

@@ -164,6 +164,14 @@ static struct {
     char hit[GDS_MAX_PATH];
 } scan;
 
+/* memmem is not in every libc (MinGW) */
+static bool find_bytes(const uint8_t *hay, size_t hayLen, const char *needle, size_t n) {
+    for(size_t i = 0; n > 0 && i + n <= hayLen; i++)
+        if(hay[i] == (uint8_t)needle[0] && memcmp(hay + i, needle, n) == 0)
+            return true;
+    return false;
+}
+
 static int scan_file(const char *path, const struct stat *st, int type, struct FTW *ftw) {
     (void)ftw;
     if(type != FTW_F || !S_ISREG(st->st_mode))
@@ -171,7 +179,7 @@ static int scan_file(const char *path, const struct stat *st, int type, struct F
     gds_buf b = {0};
     size_t n = strlen(scan.needle);
     bool found = gds_file_read(path, (size_t)4 * 1024 * 1024, &b) == GDS_OK && b.len >= n &&
-                 memmem(b.data, b.len, scan.needle, n) != NULL;
+                 find_bytes(b.data, b.len, scan.needle, n);
     gds_buf_free_secret(&b);
     if(found && gds_path(scan.hit, sizeof(scan.hit), "%s", path) != GDS_OK)
         scan.hit[0] = '\0';

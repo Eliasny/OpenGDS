@@ -24,7 +24,10 @@ FIRST=false
 SRV=""
 trap '[ -n "$SRV" ] && kill "$SRV" 2>/dev/null; true' EXIT INT TERM
 
-"$B/gdsaudit" server --work "$W/auditor" --init-only || exit 2
+# GDSAUDIT: another gdsaudit to check against the pins, for example a
+# wrapper that runs the Windows build under Wine (packaging/windows/)
+GA=${GDSAUDIT:-$B/gdsaudit}
+"$GA" server --work "$W/auditor" --init-only || exit 2
 cp "$W/auditor/own/cert.der" "$W/auditor-plain.der"
 cp "$W/auditor/admin/own/cert.der" "$W/auditor-admin.der"
 printf 'operator\n' > "$W/user.pw"
@@ -52,7 +55,7 @@ stop_server() { kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null; SRV=""; }
 audit() { # audit <name> [args]: run the profile, TAP into $W/<name>.tap
     name=$1
     shift
-    "$B/gdsaudit" server --url "opc.tcp://127.0.0.1:$PORT" --tofu --work "$W/auditor" \
+    "$GA" server --url "opc.tcp://127.0.0.1:$PORT" --tofu --work "$W/auditor" \
         --user operator --user-password-file "$W/user.pw" --allow-changes --settle-timeout 40 "$@" \
         > "$W/$name.tap" 2>&1
 }

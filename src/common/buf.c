@@ -10,11 +10,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
 #include <openssl/crypto.h>
 
 #include "limits.h"
+#include "platform.h"
 #include "safeint.h"
 #include "banned.h"
 
@@ -89,7 +89,7 @@ gds_status gds_buf_append(gds_buf *b, const void *data, size_t len, size_t maxLe
 gds_status gds_file_read(const char *path, size_t maxLen, gds_buf *out) {
     out->data = NULL;
     out->len = 0;
-    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    int fd = open(path, O_RDONLY | GDS_O_CLOEXEC | GDS_O_NOFOLLOW);
     if(fd < 0)
         return errno == ENOENT ? GDS_ENOTFOUND : GDS_EIO;
     gds_status ret = GDS_EIO;
@@ -108,7 +108,7 @@ gds_status gds_file_read(const char *path, size_t maxLen, gds_buf *out) {
     }
     size_t got = 0;
     while(got < n) {
-        ssize_t r = read(fd, out->data + got, n - got);
+        ssize_t r = read(fd, out->data + got, GDS_IO_CHUNK(n - got));
         if(r < 0 && errno == EINTR)
             continue;
         if(r <= 0)
@@ -130,29 +130,29 @@ gds_status gds_file_write_atomic(const char *path, const void *data, size_t len,
     gds_status ret = gds_path(tmp, sizeof(tmp), "%s.tmp", path);
     if(ret != GDS_OK)
         return ret;
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, mode);
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | GDS_O_CLOEXEC | GDS_O_NOFOLLOW, mode);
     if(fd < 0)
         return GDS_EIO;
     ret = GDS_EIO;
-    if(fchmod(fd, mode) != 0) /* umask must not widen or narrow the mode */
+    if(gds_fchmod(fd, mode) != 0) /* umask must not widen or narrow the mode */
         goto cleanup;
     const uint8_t *p = data;
     size_t done = 0;
     while(done < len) {
-        ssize_t w = write(fd, p + done, len - done);
+        ssize_t w = write(fd, p + done, GDS_IO_CHUNK(len - done));
         if(w < 0 && errno == EINTR)
             continue;
         if(w <= 0)
             goto cleanup;
         done += (size_t)w;
     }
-    if(fsync(fd) != 0)
+    if(gds_fsync(fd) != 0)
         goto cleanup;
     ret = GDS_OK;
 cleanup:
     if(close(fd) != 0)
         ret = GDS_EIO;
-    if(ret == GDS_OK && rename(tmp, path) != 0)
+    if(ret == GDS_OK && gds_rename_replace(tmp, path) != 0)
         ret = GDS_EIO;
     if(ret != GDS_OK)
         unlink(tmp);
@@ -165,14 +165,21 @@ gds_status gds_mkdirs(const char *path, mode_t mode) {
     if(ret != GDS_OK)
         return ret;
     for(char *p = tmp + 1; *p; p++) {
+#ifdef _WIN32
+        if((*p != '/' && *p != '\\') || p[-1] == ':') /* also "\\"; not "C:" */
+            continue;
+        char sep = *p;
+#else
         if(*p != '/')
             continue;
+        char sep = '/';
+#endif
         *p = '\0';
-        if(mkdir(tmp, mode) != 0 && errno != EEXIST)
+        if(gds_mkdir(tmp, mode) != 0 && errno != EEXIST)
             return GDS_EIO;
-        *p = '/';
+        *p = sep;
     }
-    if(mkdir(tmp, mode) != 0 && errno != EEXIST)
+    if(gds_mkdir(tmp, mode) != 0 && errno != EEXIST)
         return GDS_EIO;
     return GDS_OK;
 }

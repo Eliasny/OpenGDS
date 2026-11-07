@@ -41,6 +41,7 @@
 #include <string.h>
 
 #include "common/limits.h"
+#include "common/platform.h"
 #include "common/safeint.h"
 #include "client_profile.h"
 #include "gdsaudit/plan.h"
@@ -460,14 +461,30 @@ static bool take_front_end_options(int *argc, char **argv, front_end *fe) {
 }
 
 static void on_signal(int sig) {
-    if(sig == SIGUSR1)
+#ifdef SIGUSR1
+    if(sig == SIGUSR1) {
         ga_request_pause(true);
-    else if(sig == SIGUSR2)
+        return;
+    }
+    if(sig == SIGUSR2) {
         ga_request_pause(false);
-    else
-        ga_request_abort();
+        return;
+    }
+#else
+    (void)sig;
+#endif
+    ga_request_abort();
 }
 
+#ifdef _WIN32
+/* Ctrl-C, Ctrl-Break and SIGTERM abort; the handler resets to the default
+ * after one signal, so a second one kills. No pause signals on Windows. */
+static void install_abort_handler(void) {
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
+    signal(SIGBREAK, on_signal);
+}
+#else
 static void install_abort_handler(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -480,6 +497,7 @@ static void install_abort_handler(void) {
     sigaction(SIGUSR1, &sa, NULL);
     sigaction(SIGUSR2, &sa, NULL);
 }
+#endif
 
 static bool start_front_end(front_end *fe, const char *profile) {
     char listen[64];
@@ -500,7 +518,7 @@ static bool start_front_end(front_end *fe, const char *profile) {
             if(gds_mkdirs(dir, 0755) != GDS_OK)
                 fprintf(stderr, "cannot create %s\n", dir); /* fopen reports it */
         }
-        fe->eventsFile = fopen(fe->events, "we"); /* e: not inherited by triggers */
+        fe->eventsFile = fopen(fe->events, GDS_FOPEN_WRITE_CLOEXEC); /* not inherited by triggers */
         if(!fe->eventsFile) {
             perror(fe->events);
             return false;
@@ -549,6 +567,11 @@ static bool plan_command_line(int argc, char **argv, char ***out, int *outc) {
     }
     char dir[GDS_MAX_PATH];
     const char *slash = strrchr(argv[2], '/');
+#ifdef _WIN32
+    const char *bs = strrchr(argv[2], '\\');
+    if(bs && (!slash || bs > slash))
+        slash = bs;
+#endif
     size_t dl = slash ? (size_t)(slash - argv[2]) : 0;
     if(dl >= sizeof(dir)) {
         ga_plan_free(plan);

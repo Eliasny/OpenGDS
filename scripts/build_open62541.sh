@@ -1,6 +1,7 @@
 #!/bin/sh
 # Build the pinned open62541 v1.5.10 into a prefix, with only the features
 # OpenGDS uses and the OpenGDS hardening flags (docs/architecture.md, F2/F6).
+#   TARGET=mingw64  cross-build for 64-bit Windows with MinGW-w64
 # SPDX-License-Identifier: MPL-2.0
 #
 # Usage: scripts/build_open62541.sh <prefix> [<src-dir>]
@@ -77,7 +78,17 @@ fi
 # XML stays on: without it the generated GDS nodeset has no Value attributes,
 # so methods lose their InputArguments and every call fails BadTooManyArguments.
 BUILD="$SRC/build-opengds"
-cmake -S "$SRC" -B "$BUILD" -G "${CMAKE_GENERATOR:-Ninja}" \
+CROSS=""
+if [ "${TARGET:-}" = mingw64 ]; then
+    # The Auditor's Windows build (packaging/windows/README.md): PE has no
+    # PIE/relro/stack-clash; ASLR and DEP come from the linker flags
+    BUILD="$SRC/build-opengds-mingw64"
+    CROSS="-DCMAKE_TOOLCHAIN_FILE=$(cd "$(dirname "$0")/.." && pwd)/packaging/windows/mingw64.cmake"
+    HARDEN="-O2 -fstack-protector-strong"
+    LDHARDEN="-Wl,--dynamicbase -Wl,--high-entropy-va -Wl,--nxcompat"
+fi
+# shellcheck disable=SC2086
+cmake -S "$SRC" -B "$BUILD" -G "${CMAKE_GENERATOR:-Ninja}" $CROSS \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" \
     -DCMAKE_C_FLAGS="$HARDEN" \

@@ -54,14 +54,40 @@ add_library(gds_common STATIC
     src/common/buf.c
     src/common/ids.c
     src/common/safeint.c
-    src/common/sandbox.c
     src/common/ua_args.c)
+if(NOT WIN32)
+    target_sources(gds_common PRIVATE src/common/sandbox.c)
+endif()
 target_include_directories(gds_common PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_compile_definitions(gds_common PUBLIC _DEFAULT_SOURCE)
 target_link_libraries(gds_common PUBLIC gds_hardening open62541::open62541)
 
 # seccomp in the sandbox (src/common/sandbox.c) needs libseccomp (LGPL 2.1).
 # Optional: without it only Landlock applies. ON makes it required.
+# Only the headless Auditor: the Windows build and the static Linux build
+# (Auditor plan AT5, packaging/windows/, packaging/static/). The GDS, its
+# signer and store are Linux services built in the full tree; so are the
+# Auditor's tests and self-test targets.
+if(WIN32)
+    set(_gds_auditor_only ON)
+else()
+    set(_gds_auditor_only OFF)
+endif()
+option(OPENGDS_AUDITOR_ONLY "Build only the headless Auditor, without tests" ${_gds_auditor_only})
+if(WIN32 AND NOT OPENGDS_AUDITOR_ONLY)
+    message(FATAL_ERROR "On Windows only the Auditor is built: set OPENGDS_AUDITOR_ONLY=ON")
+endif()
+if(OPENGDS_AUDITOR_ONLY)
+    set(GDSAUDIT_SELFTESTS OFF)
+    if(WIN32)
+        # MinGW-w64: C99 printf (%zu), Windows 10 APIs
+        add_compile_definitions(__USE_MINGW_ANSI_STDIO=1 _WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN)
+    endif()
+    add_subdirectory(tools/auditor)
+    return()
+endif()
+set(GDSAUDIT_SELFTESTS ON)
+
 set(OPENGDS_SECCOMP AUTO CACHE STRING "Use libseccomp for the seccomp filter (AUTO, ON, OFF)")
 if(NOT OPENGDS_SECCOMP STREQUAL "OFF")
     find_package(PkgConfig QUIET)

@@ -16,6 +16,9 @@ add_library(gdsaudit_profile_client STATIC
     client_main.c)
 target_include_directories(gdsaudit_profile_client PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(gdsaudit_profile_client PUBLIC gdsaudit_core)
+if(NOT GDSAUDIT_SELFTESTS) # tests and self-test targets: full Linux builds only
+    return()
+endif()
 
 # The client profile against the good pull test client (pinned verdicts) and
 # against each of its --break mutants (each must trip its own test).
