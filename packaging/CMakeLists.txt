@@ -80,6 +80,10 @@ if(SYSTEMD_ANALYZE AND TARGET opengdsd)
         set_tests_properties(packaging_exposure_${unit} PROPERTIES SKIP_RETURN_CODE 77)
     endforeach()
 endif()
+# The Flatpak manifest repeats the OpenSSL and open62541 pins and the patch
+# list: a new patch in docs/upstream/patches must be added there too.
+add_test(NAME packaging_flatpak_pins
+         COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_flatpak_pins.sh" "${PROJECT_SOURCE_DIR}")
 add_test(NAME packaging_install_layout
          COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_install_layout.sh"
                  "${PROJECT_BINARY_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/layout-run")
