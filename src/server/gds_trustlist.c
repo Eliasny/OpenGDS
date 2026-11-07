@@ -229,7 +229,8 @@ UA_StatusCode gds_trustlist_data(gds_server *s, UA_UInt32 masks, UA_TrustListDat
         if(out->specifiedLists & listMask[i])
             continue;
         size_t *n = NULL;
-        UA_Array_delete(list_of(out, i, &n), *n, &UA_TYPES[UA_TYPES_BYTESTRING]);
+        void *list = list_of(out, i, &n); /* sets n: not in the same call (order) */
+        UA_Array_delete(list, *n, &UA_TYPES[UA_TYPES_BYTESTRING]);
         *list_ptr(out, i) = NULL;
         *n = 0;
     }
