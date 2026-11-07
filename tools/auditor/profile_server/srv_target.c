@@ -978,12 +978,18 @@ UA_StatusCode st_peer_connect(const srv_target *t, const gds_buf *cert, const gd
     char uri[256];
     if(x509_san_uri(cert, uri, sizeof(uri)) != GDS_OK)
         return UA_STATUSCODE_BADINTERNALERROR;
-    gds_buf trust[2];
-    size_t n = 0;
+    gds_buf trust[2 + ST_MAX_TARGET_TRUST], crls[1 + ST_MAX_TARGET_TRUST];
+    size_t n = 0, nc = 0;
     trust[n++] = t->caDer;
-    if(t->pinned.len)
+    crls[nc++] = t->caCrl;
+    if(t->pinned.len) { /* and the issuers of a CA-issued pinned certificate */
         trust[n++] = t->pinned;
-    UA_Client *c = uac_new_secure_mode(cert, key, trust, n, &t->caCrl, 1, uri, POLICY_RSAPSS,
+        for(size_t i = 0; i < t->targetTrustN; i++)
+            trust[n++] = t->targetTrust[i];
+        for(size_t i = 0; i < t->targetCrlN; i++)
+            crls[nc++] = t->targetCrl[i];
+    }
+    UA_Client *c = uac_new_secure_mode(cert, key, trust, n, crls, nc, uri, POLICY_RSAPSS,
                                        UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
     if(!c)
         return UA_STATUSCODE_BADOUTOFMEMORY;
