@@ -294,7 +294,7 @@ int main(int argc, char **argv) {
     char jpath[1100];
     CHECK(gds_path(jpath, sizeof(jpath), "%s/" GDS_JOURNAL_FILE, caDir) == GDS_OK);
     (void)unlink(jpath);
-    gds_signer s = {NULL, open_direct_ca(caDir), NULL};
+    gds_signer s = {NULL, open_direct_ca(caDir), NULL, false};
     CHECK(gds_store_open_readonly(db, &s.store) == GDS_OK);
     CHECK(gds_journal_open(jpath, &s.journal) == GDS_OK);
     gds_journal *second = NULL;
