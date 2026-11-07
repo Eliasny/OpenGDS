@@ -1,0 +1,112 @@
+# Flatpak of the OpenGDS Auditor desktop UI (Auditor plan AT5, "UI: .deb,
+# Flatpak and a Windows installer"): gdsaudit-gui and the gdsaudit engine it
+# runs, with the pinned OpenSSL and open62541 linked statically.
+# SPDX-License-Identifier: MPL-2.0
+#
+#   flatpak-builder --user --install-deps-from=flathub --repo=repo build \
+#       packaging/flatpak/org.opengds.Auditor.yml
+#   flatpak build-bundle repo gdsaudit.flatpak org.opengds.Auditor
+#
+# The pins (OpenSSL version and SHA-256, open62541 tag and commit, the
+# patches in docs/upstream/patches/v1.5.10) must match scripts/build_openssl.sh
+# and scripts/build_open62541.sh: CTest packaging_flatpak_pins checks them.
+#
+# In the sandbox the Auditor reaches the network and opens files through the
+# file chooser portal. A client profile trigger runs inside the sandbox, so
+# it cannot start programs on the host; use the headless gdsaudit for that.
+id: org.opengds.Auditor
+runtime: org.gnome.Platform
+runtime-version: '48'
+sdk: org.gnome.Sdk
+command: gdsaudit-gui
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+cleanup:
+  - /deps
+modules:
+  - name: openssl
+    buildsystem: simple
+    build-commands:
+      # Static libraries only; the same options as scripts/build_openssl.sh
+      - ./Configure --prefix=/app/deps --libdir=lib --openssldir=/etc/ssl no-shared no-tests
+        no-docs no-legacy no-weak-ssl-ciphers no-ssl3 no-comp -fPIC -fstack-protector-strong
+      - make -j${FLATPAK_BUILDER_N_JOBS} build_libs
+      - make install_dev
+    sources:
+      - type: archive
+        url: https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz
+        sha256: 603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
+
+  - name: open62541
+    buildsystem: simple
+    build-commands:
+      - for p in opengds-patches/*.patch; do git apply "$p"; done
+      # The same options as scripts/build_open62541.sh
+      - cmake -S . -B build-opengds -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        -DCMAKE_INSTALL_PREFIX=/app/deps -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF -DBUILD_SHARED_LIBS=OFF
+        -DUA_NAMESPACE_ZERO=FULL -DUA_ENABLE_ENCRYPTION=OPENSSL -DOPENSSL_ROOT_DIR=/app/deps
+        -DOPENSSL_USE_STATIC_LIBS=TRUE -DUA_ENABLE_GDS_PUSHMANAGEMENT=ON
+        -DUA_INFORMATION_MODEL_AUTOLOAD=GDS -DUA_ENABLE_SUBSCRIPTIONS_EVENTS=ON
+        -DUA_ENABLE_SUBSCRIPTIONS_ALARMS_CONDITIONS=ON -DUA_MULTITHREADING=100
+        -DUA_ENABLE_PUBSUB=OFF -DUA_ENABLE_HISTORIZING=OFF -DUA_ENABLE_XML_ENCODING=ON
+        -DUA_ENABLE_JSON_ENCODING=ON -DUA_ENABLE_MQTT=OFF -DUA_BUILD_EXAMPLES=OFF
+        -DUA_BUILD_UNIT_TESTS=OFF
+      - cmake --build build-opengds
+      - cmake --install build-opengds
+      # cmake/open62541.cmake checks which patches the library carries
+      - mkdir -p /app/deps/share/opengds
+      - for p in opengds-patches/*.patch; do sha256sum "$p" | cut -d' ' -f1; done
+        > /app/deps/share/opengds/open62541-patches.sha256
+    sources:
+      - type: git
+        url: https://github.com/open62541/open62541.git
+        tag: v1.5.10
+        commit: 93c3bdfc9ea4718b503c6cbf57876237addd0f2c
+      - type: file
+        path: ../../docs/upstream/patches/v1.5.10/0001-filestore-store-key-in-use.patch
+        dest: opengds-patches
+      - type: file
+        path: ../../docs/upstream/patches/v1.5.10/0002-secure-policies-none-discovery.patch
+        dest: opengds-patches
+      - type: file
+        path: ../../docs/upstream/patches/v1.5.10/0003-install-autoload-headers.patch
+        dest: opengds-patches
+      - type: file
+        path: ../../docs/upstream/patches/v1.5.10/0004-condition-refresh-keep-eventid.patch
+        dest: opengds-patches
+      - type: file
+        path: ../../docs/upstream/patches/v1.5.10/0005-findservers-peers.patch
+        dest: opengds-patches
+      - type: file
+        path: ../../docs/upstream/patches/v1.5.10/0006-access-control-receive-event.patch
+        dest: opengds-patches
+
+  - name: gdsaudit
+    buildsystem: simple
+    build-commands:
+      - cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        -DOPEN62541_PREFIX=/app/deps -DOPENSSL_ROOT_DIR=/app/deps
+        -DOPENGDS_BUILD_TESTS=OFF -DOPENGDS_BUILD_AUDITOR_GUI=ON -DOPENGDS_SECCOMP=OFF
+      - cmake --build build --target gdsaudit gdsaudit-gui
+      # the UI runs the gdsaudit next to it
+      - install -Dm755 build/tools/auditor/gdsaudit /app/bin/gdsaudit
+      - install -Dm755 build/tools/auditor/gdsaudit-gui /app/bin/gdsaudit-gui
+      - install -Dm644 packaging/desktop/org.opengds.Auditor.desktop
+        /app/share/applications/org.opengds.Auditor.desktop
+      - install -Dm644 packaging/desktop/org.opengds.Auditor.metainfo.xml
+        /app/share/metainfo/org.opengds.Auditor.metainfo.xml
+      - install -Dm644 packaging/desktop/org.opengds.Auditor.svg
+        /app/share/icons/hicolor/scalable/apps/org.opengds.Auditor.svg
+      - install -Dm644 LICENSE /app/share/licenses/org.opengds.Auditor/LICENSE
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .git
+          - build
+          - .flatpak-builder
