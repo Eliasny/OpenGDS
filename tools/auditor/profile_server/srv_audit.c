@@ -295,6 +295,39 @@ static void t_aud_trustlist(ga_ctx *ctx, void *p) {
                 write, add, rem);
 }
 
+/* UpdateCertificate with a CA-issued certificate for a key the target does
+ * not hold: the result (Good if the target accepted it) */
+static UA_StatusCode update_wrong_key(srv_target *t) {
+    gds_buf wrong = {0};
+    EVP_PKEY *k = EVP_RSA_gen(2048);
+    gds_status gs = k ? st_make_leaf(&t->ca, k, "t-aud-wrongkey", t->targetUri, -3600, 86400L,
+                                     false, 0, &wrong)
+                      : GDS_ECRYPTO;
+    EVP_PKEY_free(k);
+    ERR_clear_error();
+    bool acr = false;
+    UA_StatusCode bad = gds_status_to_ua(gs);
+    if(bad == UA_STATUSCODE_GOOD && (bad = st_admin(t)) == UA_STATUSCODE_GOOD)
+        bad = st_update_cert(t, t->client, &wrong, &t->caDer, 1, &acr);
+    gds_buf_free(&wrong);
+    return bad;
+}
+
+/* Does the target present cert within APPLY_WAIT_MS? Pumps the watcher. */
+static bool wait_presented(srv_target *t, watcher *w, const gds_buf *cert) {
+    gds_buf now = {0};
+    for(long waited = 0;; waited += 200) {
+        gds_buf_free(&now);
+        UA_StatusCode pr = st_presented(t, &now);
+        if((pr == UA_STATUSCODE_GOOD && same(&now, cert)) || waited >= APPLY_WAIT_MS)
+            break;
+        pump(w, 200);
+    }
+    bool inUse = same(&now, cert);
+    gds_buf_free(&now);
+    return inUse;
+}
+
 /* SRV-AUD-02 (12 §7.10.27): one CertificateUpdatedAuditEventType per
  * changed certificate, with SourceNode the ServerConfiguration Object, and
  * none for a failed UpdateCertificate. */
@@ -316,18 +349,9 @@ static void t_aud_cert(ga_ctx *ctx, void *p) {
     pump(&w, 300);
     counts_reset(&w);
     /* 1. a failing call: a certificate for a key the target does not hold */
-    gds_buf wrong = {0}, good = {0}, csr = {0};
-    EVP_PKEY *k = EVP_RSA_gen(2048);
-    gds_status gs = k ? st_make_leaf(&t->ca, k, "t-aud-wrongkey", t->targetUri, -3600, 86400L,
-                                     false, 0, &wrong)
-                      : GDS_ECRYPTO;
-    EVP_PKEY_free(k);
-    ERR_clear_error();
+    gds_buf good = {0}, csr = {0};
     bool acr = false;
-    UA_StatusCode bad = gds_status_to_ua(gs);
-    if(bad == UA_STATUSCODE_GOOD && (bad = st_admin(t)) == UA_STATUSCODE_GOOD)
-        bad = st_update_cert(t, t->client, &wrong, &t->caDer, 1, &acr);
-    gds_buf_free(&wrong);
+    UA_StatusCode bad = update_wrong_key(t);
     if(bad == UA_STATUSCODE_GOOD) { /* accepted: SRV-UPD-02 fails it; undo */
         st_close(t);
         unwatch(&w);
@@ -359,16 +383,7 @@ static void t_aud_cert(ga_ctx *ctx, void *p) {
                       UA_StatusCode_name(r));
         return;
     }
-    gds_buf now = {0};
-    for(long waited = 0;; waited += 200) {
-        gds_buf_free(&now);
-        UA_StatusCode pr = st_presented(t, &now);
-        if((pr == UA_STATUSCODE_GOOD && same(&now, &good)) || waited >= APPLY_WAIT_MS)
-            break;
-        pump(&w, 200);
-    }
-    bool inUse = same(&now, &good);
-    gds_buf_free(&now);
+    bool inUse = wait_presented(t, &w, &good);
     if(inUse) { /* the target's certificate from here on */
         gds_buf_free(&t->tGood);
         t->tGood = good;
