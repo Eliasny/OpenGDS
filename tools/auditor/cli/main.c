@@ -57,7 +57,9 @@ static int usage(const char *argv0) {
             "   or: %s server --url URL (--server-cert SRV.der | --tofu)\n"
             "       [--admin-cert C --admin-key K | --admin-user U --admin-password-file F]\n"
             "       [--user U --user-password-file F] [--work DIR] [--allow-changes] [--only PREFIX]\n"
+            "       [--target-trust CA.der]... [--target-crl CRL]...\n"
             "       [--expect FILE.csv] [--list] [--init-only] [--slow] [--stop-after ID]\n"
+            "       [--settle-timeout S]\n"
             "       %s client --help\n"
             "Every subcommand also takes --events FILE (JSON Lines) and --report DIR.\n",
             argv0, argv0, argv0);
@@ -301,6 +303,17 @@ static int server_main(int argc, char **argv) {
         else if(!strcmp(a, "--user")) t.userName = v;
         else if(!strcmp(a, "--user-password-file")) userPwFile = v;
         else if(!strcmp(a, "--server-cert")) serverCert = v;
+        else if(!strcmp(a, "--target-trust") || !strcmp(a, "--target-crl")) {
+            bool crl = !strcmp(a, "--target-crl");
+            gds_buf *list = crl ? t.targetCrl : t.targetTrust;
+            size_t *n = crl ? &t.targetCrlN : &t.targetTrustN;
+            if(*n >= ST_MAX_TARGET_TRUST ||
+               gds_file_read(v, crl ? GDS_MAX_CRL_SIZE : GDS_MAX_CERT_SIZE, &list[*n]) != GDS_OK) {
+                fprintf(stderr, "%s %s: cannot read (at most %d)\n", a, v, ST_MAX_TARGET_TRUST);
+                goto cleanup;
+            }
+            (*n)++;
+        }
         else if(!strcmp(a, "--work")) work = v;
         else if(!strcmp(a, "--only")) opt.only = t.only = v;
         else if(!strcmp(a, "--expect")) opt.expectCsv = v;
@@ -311,8 +324,16 @@ static int server_main(int argc, char **argv) {
             if(k == nTests)
                 return usage(argv[0]);
             nTests = k + 1;
+        } else if(!strcmp(a, "--settle-timeout")) {
+            char *end = NULL;
+            long sec = strtol(v, &end, 10);
+            if(!end || *end || sec < 1 || sec > 3600)
+                return usage(argv[0]);
+            t.settleSec = sec;
         } else return usage(argv[0]);
     }
+    if(t.settleSec == 0)
+        t.settleSec = 300;
     if(!initOnly && (!t.url || (!serverCert == !tofu))) {
         fprintf(stderr, "--url and one of --server-cert or --tofu (test setups only) are needed\n");
         goto cleanup;

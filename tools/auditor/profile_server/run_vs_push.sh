@@ -53,7 +53,7 @@ audit() { # audit <name> [args]: run the profile, TAP into $W/<name>.tap
     name=$1
     shift
     "$B/gdsaudit" server --url "opc.tcp://127.0.0.1:$PORT" --tofu --work "$W/auditor" \
-        --user operator --user-password-file "$W/user.pw" --allow-changes "$@" \
+        --user operator --user-password-file "$W/user.pw" --allow-changes --settle-timeout 40 "$@" \
         > "$W/$name.tap" 2>&1
 }
 
