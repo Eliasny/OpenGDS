@@ -1,0 +1,3 @@
+ApplicationUri,ApplicationName,ApplicationType
+urn:a,"multi
+line",ClientAndServer

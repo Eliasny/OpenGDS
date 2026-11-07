@@ -30,6 +30,9 @@ gds_fuzz_target(fuzz_signer_msg gds_signer)
 gds_fuzz_target(fuzz_daemon_config gds_daemon)
 gds_fuzz_target(fuzz_users gds_server)
 gds_fuzz_target(fuzz_trustlist gds_client)
+gds_fuzz_target(fuzz_import gds_server)
+target_sources(fuzz_import PRIVATE "${PROJECT_SOURCE_DIR}/src/daemon/gdsadm_import.c")
+target_include_directories(fuzz_import PRIVATE "${PROJECT_SOURCE_DIR}/src/daemon")
 
 # Writes the binary seeds; run by hand (see gen_seeds.c), not by the tests
 add_executable(fuzz_gen_seeds gen_seeds.c)

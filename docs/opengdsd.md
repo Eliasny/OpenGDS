@@ -104,6 +104,37 @@ gdsadm apps unregister urn:example:device CONNECTION
 
 CONNECTION is the same as for `gdsadm push now`: `--gds URL --cert DER --key DER --trust DER [--crl DER] --user NAME --password-file FILE`.
 
+## Importing applications
+
+`gdsadm apps import` registers many applications at once, as a user with DiscoveryAdmin. Each record is one standard RegisterApplication call (OPC 10000-12 §6.5.5), so the GDS checks it exactly as it checks any other registration.
+
+```sh
+gdsadm apps import plant.csv --dry-run      # check the file; nothing is sent
+gdsadm apps import plant.csv CONNECTION
+```
+
+A CSV file (RFC 4180, UTF-8) starts with a header row that names its columns, in any order:
+
+| Column | Required | Value |
+|---|---|---|
+| `ApplicationUri` | yes | the application's URI |
+| `ApplicationName` | yes | its name |
+| `ApplicationType` | yes | `Server`, `Client` or `ClientAndServer` |
+| `ApplicationNameLocale` | no | the name's locale, default `en` |
+| `ProductUri` | no | |
+| `DiscoveryUrls` | Servers | URLs separated by spaces |
+| `ServerCapabilities` | no | Annex D identifiers separated by spaces, e.g. `DA LDS` |
+
+```csv
+ApplicationUri,ApplicationName,ApplicationType,DiscoveryUrls,ServerCapabilities
+urn:plant:press1,"Press 1, hall B",Server,opc.tcp://press1.plant:4840,DA
+urn:plant:hmi,HMI,Client,,
+```
+
+A JSON file is `{"Applications": [...]}` with each element an ApplicationRecordDataType in the OPC UA JSON encoding (OPC 10000-6 §5.4), for example `{"ApplicationUri": "urn:plant:hmi", "ApplicationType": 1, "ApplicationNames": [{"Locale": "en", "Text": "HMI"}]}`. An ApplicationId in the file is ignored, because the GDS assigns it.
+
+The report has one tab-separated line per record: the line number in the file (or the element number in JSON), the ApplicationUri, and `registered` with the new ApplicationId, `exists`, `invalid` or `failed` with the status code. A record whose ApplicationUri is registered already is left as it is, so an import can be run again after fixing the failed rows. The exit code is 1 when any record was invalid or failed. The file may hold at most 100,000 records and 16 MiB.
+
 ## Inspecting a running GDS
 
 ```sh

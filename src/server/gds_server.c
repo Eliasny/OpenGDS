@@ -181,6 +181,9 @@ static UA_StatusCode set_listen_url(UA_ServerConfig *c, const gds_server_config 
 typedef UA_StatusCode (*add_policy_fn)(UA_ServerConfig *, const UA_ByteString *,
                                        const UA_ByteString *);
 
+static UA_StatusCode find_servers_peers(UA_Server *server, void *context,
+                                        UA_ApplicationDescription **out, size_t *n);
+
 static UA_StatusCode configure(UA_ServerConfig *c, const gds_server_config *cfg,
                                const gds_buf *caCert, gds_server *s) {
     UA_StatusCode r = UA_ServerConfig_setBasics_withPort(c, cfg->port);
@@ -227,6 +230,8 @@ static UA_StatusCode configure(UA_ServerConfig *c, const gds_server_config *cfg,
         return r;
     c->securityPolicyNoneDiscoveryOnly = true;
     c->allowNonePolicyPassword = false;
+    c->findServersPeers = find_servers_peers;
+    c->findServersPeersContext = s;
     for(size_t i = 0; i < c->securityPoliciesSize && r == UA_STATUSCODE_GOOD; i++) {
         const UA_SecurityPolicy *p = &c->securityPolicies[i];
         bool none = UA_String_equal(&p->policyUri, &UA_SECURITY_POLICY_NONE_URI);
@@ -239,6 +244,64 @@ static UA_StatusCode configure(UA_ServerConfig *c, const gds_server_config *cfg,
     if(r == UA_STATUSCODE_GOOD)
         r = set_listen_url(c, cfg);
     return r;
+}
+
+/* ---- FindServers peers (UASM ask A15) ---- */
+
+/* open62541 calls this under its service mutex (patch 0005). */
+static UA_StatusCode find_servers_peers(UA_Server *server, void *context,
+                                        UA_ApplicationDescription **out, size_t *n) {
+    (void)server;
+    gds_server *s = context;
+    pthread_mutex_lock(&s->peerLock);
+    UA_StatusCode r = UA_Array_copy(s->peers, s->nPeers, (void **)out,
+                                    &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]);
+    *n = r == UA_STATUSCODE_GOOD ? s->nPeers : 0;
+    pthread_mutex_unlock(&s->peerLock);
+    return r;
+}
+
+static bool peer_ok(const UA_ApplicationDescription *p, const UA_String *self) {
+    if(p->applicationUri.length == 0 || p->applicationUri.length > GDS_MAX_APPLICATION_URI ||
+       UA_String_equal(&p->applicationUri, self) || p->discoveryUrlsSize == 0 ||
+       p->discoveryUrlsSize > GDS_MAX_ARRAY_FIELD)
+        return false;
+    if(p->applicationType != UA_APPLICATIONTYPE_SERVER &&
+       p->applicationType != UA_APPLICATIONTYPE_CLIENTANDSERVER &&
+       p->applicationType != UA_APPLICATIONTYPE_DISCOVERYSERVER)
+        return false;
+    for(size_t i = 0; i < p->discoveryUrlsSize; i++)
+        if(p->discoveryUrls[i].length == 0)
+            return false;
+    return true;
+}
+
+gds_status gds_server_set_peer_servers(gds_server *s, const UA_ApplicationDescription *peers,
+                                       size_t n) {
+    if(!s || (n && !peers))
+        return GDS_EINVAL;
+    if(n > GDS_MAX_PEER_SERVERS)
+        return GDS_ETOOBIG;
+    const UA_String *self = &UA_Server_getConfig(s->ua)->applicationDescription.applicationUri;
+    for(size_t i = 0; i < n; i++) {
+        if(!peer_ok(&peers[i], self))
+            return GDS_EINVAL;
+        for(size_t j = 0; j < i; j++)
+            if(UA_String_equal(&peers[i].applicationUri, &peers[j].applicationUri))
+                return GDS_EINVAL;
+    }
+    UA_ApplicationDescription *copy = NULL;
+    if(n && UA_Array_copy(peers, n, (void **)&copy, &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]) !=
+                UA_STATUSCODE_GOOD)
+        return GDS_ENOMEM;
+    pthread_mutex_lock(&s->peerLock);
+    UA_ApplicationDescription *old = s->peers;
+    size_t oldN = s->nPeers;
+    s->peers = copy;
+    s->nPeers = n;
+    pthread_mutex_unlock(&s->peerLock);
+    UA_Array_delete(old, oldN, &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]);
+    return GDS_OK;
 }
 
 /* ---- lifecycle ---- */
@@ -291,6 +354,8 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
     pthread_mutex_init(&s->plugLock, NULL);
     pthread_mutex_init(&s->bindLock, NULL);
     pthread_mutex_init(&s->alarmLock, NULL);
+    pthread_mutex_init(&s->holdLock, NULL);
+    pthread_mutex_init(&s->peerLock, NULL);
     pthread_cond_init(&s->plugCond, NULL);
     s->store = cfg->store;
     s->ca = cfg->ca;
@@ -406,6 +471,10 @@ void gds_server_delete(gds_server *s) {
     pthread_mutex_destroy(&s->plugLock);
     pthread_mutex_destroy(&s->bindLock);
     pthread_mutex_destroy(&s->alarmLock);
+    gds_holds_free(s);
+    pthread_mutex_destroy(&s->holdLock);
+    UA_Array_delete(s->peers, s->nPeers, &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]);
+    pthread_mutex_destroy(&s->peerLock);
     pthread_cond_destroy(&s->workCond);
     pthread_mutex_destroy(&s->roleLock);
     pthread_mutex_destroy(&s->workLock);
