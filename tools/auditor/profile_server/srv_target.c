@@ -38,15 +38,22 @@ static void free_out(UA_Variant *out, size_t outN) {
 
 UA_Client *st_new_client(const srv_target *t, st_role role, bool withPinned,
                          const char *policyUri, UA_MessageSecurityMode mode) {
-    gds_buf trust[3];
-    size_t n = 0;
+    gds_buf trust[2 + ST_MAX_TARGET_TRUST], crls[1 + ST_MAX_TARGET_TRUST];
+    size_t n = 0, nc = 0;
     trust[n++] = t->caDer;
-    if(withPinned && t->pinned.len)
-        trust[n++] = t->pinned;
+    crls[nc++] = t->caCrl;
+    if(withPinned) { /* the target's own chain (a CA-issued target certificate) */
+        if(t->pinned.len)
+            trust[n++] = t->pinned;
+        for(size_t i = 0; i < t->targetTrustN; i++)
+            trust[n++] = t->targetTrust[i];
+        for(size_t i = 0; i < t->targetCrlN; i++)
+            crls[nc++] = t->targetCrl[i];
+    }
     bool adminApp = role == ST_ADMIN && !t->adminUser && t->adminCert.len;
     const gds_buf *c = adminApp ? &t->adminCert : &t->cert;
     const gds_buf *k = adminApp ? &t->adminKey : &t->key;
-    return uac_new_secure_mode(c, k, trust, n, &t->caCrl, 1, t->appUri,
+    return uac_new_secure_mode(c, k, trust, n, crls, nc, t->appUri,
                                policyUri ? policyUri : POLICY_RSAPSS, mode);
 }
 
@@ -122,6 +129,10 @@ void st_clear(srv_target *t) {
     gds_buf_free(&t->cert);
     gds_buf_free_secret(&t->key);
     gds_buf_free(&t->pinned);
+    for(size_t i = 0; i < t->targetTrustN; i++)
+        gds_buf_free(&t->targetTrust[i]);
+    for(size_t i = 0; i < t->targetCrlN; i++)
+        gds_buf_free(&t->targetCrl[i]);
     gds_buf_free(&t->caDer);
     gds_buf_free(&t->caCrl);
     gds_buf_free(&t->peerCert);
