@@ -2,6 +2,12 @@
  * SPDX-License-Identifier: MPL-2.0 */
 #include "srv_target.h"
 
+#include <errno.h>
+#include <stdio.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+
 #include <open62541/client_config_default.h>
 #include <open62541/client_highlevel.h>
 #include <open62541/plugin/log_stdout.h>
@@ -961,4 +967,95 @@ EVP_PKEY *st_tgood_key(const srv_target *t) {
     X509_free(x);
     ERR_clear_error();
     return k;
+}
+
+/* An anonymous session over SignAndEncrypt with the application identity
+ * cert/key, trusting the test CA (which issues t-good) and the pinned
+ * certificate. *out is NULL unless the session is activated. */
+UA_StatusCode st_peer_connect(const srv_target *t, const gds_buf *cert, const gds_buf *key,
+                              UA_Client **out) {
+    *out = NULL;
+    char uri[256];
+    if(x509_san_uri(cert, uri, sizeof(uri)) != GDS_OK)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    gds_buf trust[2];
+    size_t n = 0;
+    trust[n++] = t->caDer;
+    if(t->pinned.len)
+        trust[n++] = t->pinned;
+    UA_Client *c = uac_new_secure_mode(cert, key, trust, n, &t->caCrl, 1, uri, POLICY_RSAPSS,
+                                       UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
+    if(!c)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    UA_StatusCode r = UA_Client_connect(c, t->url);
+    if(r == UA_STATUSCODE_GOOD)
+        *out = c;
+    else
+        st_client_free(c);
+    return r;
+}
+
+/* A refusal that names the certificate, or hides it (Part 4 §6.1.3,
+ * Part 6 §6.7.5: Bad_SecurityChecksFailed may stand for any of them).
+ * Closed connections are how a server can end an OpenSecureChannel. */
+bool st_cert_refusal(UA_StatusCode r) {
+    static const UA_StatusCode codes[] = {
+        UA_STATUSCODE_BADSECURITYCHECKSFAILED,       UA_STATUSCODE_BADCERTIFICATEUNTRUSTED,
+        UA_STATUSCODE_BADCERTIFICATEREVOKED,         UA_STATUSCODE_BADCERTIFICATEINVALID,
+        UA_STATUSCODE_BADCERTIFICATECHAININCOMPLETE, UA_STATUSCODE_BADCERTIFICATEREVOCATIONUNKNOWN,
+        UA_STATUSCODE_BADCONNECTIONCLOSED,           UA_STATUSCODE_BADSECURECHANNELCLOSED,
+    };
+    for(size_t i = 0; i < GDS_ARRAY_SIZE(codes); i++)
+        if(r == codes[i])
+            return true;
+    return false;
+}
+
+static UA_StatusCode run_restart_cmd(const char *cmd) {
+    fflush(NULL);
+    pid_t pid = fork();
+    if(pid < 0)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    if(pid == 0) {
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+    int st = 0;
+    while(waitpid(pid, &st, 0) < 0)
+        if(errno != EINTR)
+            return UA_STATUSCODE_BADINTERNALERROR;
+    return WIFEXITED(st) && WEXITSTATUS(st) == 0 ? UA_STATUSCODE_GOOD
+                                                  : UA_STATUSCODE_BADINTERNALERROR;
+}
+
+UA_StatusCode st_restart(srv_target *t, ga_ctx *ctx) {
+    st_close(t);
+    UA_StatusCode r;
+    if(t->restartCmd) {
+        r = run_restart_cmd(t->restartCmd);
+        ga_note(ctx, "--restart-cmd -> %s", r == UA_STATUSCODE_GOOD ? "exit 0" : "failed");
+        if(r != UA_STATUSCODE_GOOD)
+            return r;
+    } else if(isatty(STDIN_FILENO)) {
+        fprintf(stderr, "Restart the target now, then press Enter: ");
+        int ch;
+        while((ch = getchar()) != EOF && ch != '\n')
+            ;
+    } else {
+        return UA_STATUSCODE_BADNOTSUPPORTED;
+    }
+    time_t start = time(NULL);
+    for(;;) {
+        UA_EndpointDescription *eps = NULL;
+        size_t n = 0;
+        r = st_endpoints(t, &eps, &n);
+        UA_Array_delete(eps, n, &UA_TYPES[UA_TYPES_ENDPOINTDESCRIPTION]);
+        if(r == UA_STATUSCODE_GOOD || (long)(time(NULL) - start) > t->settleSec)
+            break;
+        struct timespec ts = {0, 500000000L};
+        nanosleep(&ts, NULL);
+    }
+    ga_note(ctx, "target back after %ld s (GetEndpoints -> %s)", (long)(time(NULL) - start),
+            UA_StatusCode_name(r));
+    return r;
 }
