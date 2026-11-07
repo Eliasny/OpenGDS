@@ -485,6 +485,15 @@ size_t gds_access_sessions_with(unsigned roles, bool anonymous, bool authenticat
     return n;
 }
 
+bool gds_access_session_live(const UA_NodeId *sessionId) {
+    bool found = false;
+    pthread_mutex_lock(&sessLock);
+    for(size_t i = 0; i < nLive && !found; i++)
+        found = UA_NodeId_equal(&live[i].id, sessionId);
+    pthread_mutex_unlock(&sessLock);
+    return found;
+}
+
 static void live_clear(void) {
     pthread_mutex_lock(&sessLock);
     for(size_t i = 0; i < nLive; i++)
@@ -779,6 +788,10 @@ static UA_Boolean executable_on(UA_Server *server, UA_AccessControl *ac, const U
     if(methodId->namespaceIndex == 0 && methodId->identifierType == UA_NODEIDTYPE_NUMERIC &&
        methodId->identifier.numeric == UA_NS0ID_ACKNOWLEDGEABLECONDITIONTYPE_ACKNOWLEDGE)
         return gds_alarm_may_ack(s, sctx, objectId);
+
+    /* FileType / TrustListType methods on a plugin trust list (A18) */
+    if(gds_ptl_is_list(s, objectId, NULL))
+        return gds_ptl_is_list(s, objectId, methodId) && gds_ptl_may_call(s, sctx, objectId);
     /* RolePermissions of embedder nodes (issue #49): Call on the object
      * and on the method node */
     return gds_method_executable(s, sctx, methodId) && gds_node_call_allowed(s, sctx, objectId) &&

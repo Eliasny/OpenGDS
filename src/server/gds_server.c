@@ -465,6 +465,7 @@ void gds_server_delete(gds_server *s) {
         UA_Server_delete(s->ua); /* closes every session, cancels plugin calls */
     gds_embed_free(s);
     gds_alarms_free(s);
+    gds_ptl_free(s);
     gds_access_uninstall();
     gds_buf_free(&s->caCert);
     pthread_cond_destroy(&s->plugCond);

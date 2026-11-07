@@ -35,6 +35,8 @@ typedef struct {
     char *message;
 } gds_alarm_op;
 
+typedef struct gds_ptl gds_ptl;
+
 struct gds_server {
     UA_Server *ua;
     UA_UInt16 ns;
@@ -60,6 +62,8 @@ struct gds_server {
     bool workPending, workStop;
     bool plugStop; /* plugin workers stop (plugLock); here for packing */
     bool started;  /* gds_server_run was called (__atomic); here for packing */
+    bool ptlBound;            /* ptlLock; here for packing */
+    bool alarmDrainScheduled; /* alarmLock; here for packing */
     /* plugin privilege providers, fixed before the server runs */
     gds_privilege_provider privProviders[GDS_MAX_PRIVILEGE_PROVIDERS];
     size_t nPrivProviders;
@@ -74,6 +78,11 @@ struct gds_server {
     size_t nPerms, capPerms;
     gds_role_bool *roleBools; /* A17, also under bindLock */
     size_t nRoleBools, capRoleBools;
+    /* plugin trust lists (gds_plugin_tl.c, A18): ptlLock, a leaf lock,
+     * guards the list and each file store; handles are server thread only */
+    pthread_mutex_t ptlLock;
+    gds_ptl *ptls[GDS_MAX_PLUGIN_TRUST_LISTS];
+    size_t nPtls;
     pthread_mutex_t plugLock;
     pthread_cond_t plugCond;
     pthread_t plugThreads[GDS_PLUGIN_WORKERS];
@@ -88,7 +97,6 @@ struct gds_server {
     size_t nAlarms;
     gds_alarm_op alarmOps[GDS_ALARM_QUEUE];
     size_t alarmOpHead, nAlarmOps;
-    bool alarmDrainScheduled;
     /* issuance holds (gds_registrar.c, UASM ask A13), not replicated */
     pthread_mutex_t holdLock;
     UA_Guid *holds;
@@ -253,6 +261,15 @@ GDS_MUST_CHECK UA_StatusCode gds_cond_set_field(UA_Server *ua, UA_NodeId c, cons
 /* A TwoStateVariable field: its text and its Id. */
 GDS_MUST_CHECK UA_StatusCode gds_cond_set_two_state(UA_Server *ua, UA_NodeId c, const char *field,
                                                     UA_Boolean id, const char *text);
+
+/* Plugin trust lists (gds_plugin_tl.c). Is this one of the FileType /
+ * TrustListType methods they bind? */
+/* The group's file store, a deep copy; *found false when no plugin list
+ * has this group. Thread safe. */
+GDS_MUST_CHECK gds_status gds_ptl_get(gds_server *s, const UA_NodeId *groupId,
+                                      UA_TrustListDataType *out, bool *found);
+/* After UA_Server_delete. */
+void gds_ptl_free(gds_server *s);
 /* Policy (gds_policy.c): Received (approved) or Pending for a request made
  * by sessionContext. Takes storeLock. */
 GDS_MUST_CHECK gds_status gds_policy_initial_state(gds_server *s, const void *sessionContext,

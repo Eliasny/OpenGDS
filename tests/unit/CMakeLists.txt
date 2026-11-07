@@ -122,3 +122,8 @@ add_executable(test_dca_rights test_dca_rights.c)
 target_link_libraries(test_dca_rights PRIVATE gds_server)
 add_test(NAME unit_dca_rights COMMAND test_dca_rights "${CMAKE_CURRENT_BINARY_DIR}/dca-run")
 set_tests_properties(unit_dca_rights PROPERTIES TIMEOUT 120)
+
+add_executable(test_plugin_tl test_plugin_tl.c)
+target_link_libraries(test_plugin_tl PRIVATE gds_server OpenSSL::Crypto)
+add_test(NAME unit_plugin_tl COMMAND test_plugin_tl "${CMAKE_CURRENT_BINARY_DIR}/plugin-tl-run")
+set_tests_properties(unit_plugin_tl PROPERTIES TIMEOUT 120)
