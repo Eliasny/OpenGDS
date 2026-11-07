@@ -7,6 +7,13 @@
 #   SANITIZE=address,undefined  also instrument the library (ASan CI job)
 #   CC=clang                    compiler
 #   OPENSSL_ROOT=<prefix>       OpenSSL 3.5 from scripts/build_openssl.sh (required)
+#   MODELS="DI;GDS"             information models to autoload, ';'-separated
+#                               (default GDS, which must stay in the list).
+#                               An embedder such as UASM adds the companion
+#                               models it instantiates, e.g. DI for the OPC
+#                               10000-100 SoftwareUpdate AddIn; open62541
+#                               knows DI, Onboarding and the other models in
+#                               deps/ua-nodeset (UASM ask A12).
 set -eu
 
 TAG=v1.5.10
@@ -16,6 +23,11 @@ PREFIX=${1:?usage: build_open62541.sh <prefix> [<src-dir>]}
 SRC=${2:-$PREFIX/src/open62541}
 SANITIZE=${SANITIZE:-}
 OPENSSL_ROOT=${OPENSSL_ROOT:?set OPENSSL_ROOT to an OpenSSL 3.5 prefix (scripts/build_openssl.sh)}
+MODELS=${MODELS:-GDS}
+case ";$MODELS;" in
+    *";GDS;"*) ;;
+    *) echo "MODELS must include GDS: $MODELS" >&2; exit 1 ;;
+esac
 
 if [ ! -d "$SRC/.git" ]; then
     git clone --quiet --depth 1 --branch "$TAG" --recurse-submodules \
@@ -77,7 +89,7 @@ cmake -S "$SRC" -B "$BUILD" -G "${CMAKE_GENERATOR:-Ninja}" \
     -DOPENSSL_ROOT_DIR="$OPENSSL_ROOT" \
     -DOPENSSL_USE_STATIC_LIBS=TRUE \
     -DUA_ENABLE_GDS_PUSHMANAGEMENT=ON \
-    -DUA_INFORMATION_MODEL_AUTOLOAD=GDS \
+    -DUA_INFORMATION_MODEL_AUTOLOAD="$MODELS" \
     -DUA_ENABLE_SUBSCRIPTIONS_EVENTS=ON \
     -DUA_ENABLE_SUBSCRIPTIONS_ALARMS_CONDITIONS=ON \
     -DUA_MULTITHREADING=100 \

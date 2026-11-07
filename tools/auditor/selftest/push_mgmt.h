@@ -35,6 +35,9 @@ void pm_accept_keys(bool on);
 bool pm_breaking(const char *name);
 /* A Session ended: its transaction and file handles are discarded (§7.10.2). */
 void pm_session_closed(const UA_NodeId *sessionId);
+/* Called after a trust list is put in use (ApplyChanges, AddCertificate,
+ * RemoveCertificate), with the server lock held. */
+void pm_on_list_installed(void (*fn)(void));
 void pm_clear(void);
 
 bool pm_mutant_known(const char *name);

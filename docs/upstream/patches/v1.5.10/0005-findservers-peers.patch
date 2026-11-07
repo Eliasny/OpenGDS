@@ -1,0 +1,128 @@
+From 545a7866e186c5e215283da89f35ba048c511331 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Elias=20Nyk=C3=A4nen?=
+ <61413159+Eliasny@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 18:10:29 +0000
+Subject: [PATCH] feat(server): FindServers returns configured peer servers
+
+A server of a non-transparent redundant server set returns every server
+of the set from FindServers, each with its own DiscoveryUrls (Part 4,
+6.6.2.4.5.1). The only way to add entries was RegisterServer, which needs
+a remote DiscoveryServer registration and expires.
+
+Add UA_ServerConfig.findServersPeers: a callback whose servers FindServers
+appends after the server itself, filtered by serverUris. Also mirror the
+request's EndpointUrl back only into the server's own description: Part 4,
+5.5.2.2 has the EndpointUrl choose the DiscoveryUrls a server returns for
+itself, and other servers keep their own.
+---
+ include/open62541/server.h         | 12 ++++++
+ src/server/ua_services_discovery.c | 63 ++++++++++++++++++++++++++++--
+ 2 files changed, 72 insertions(+), 3 deletions(-)
+
+diff --git a/include/open62541/server.h b/include/open62541/server.h
+index e2e57ba..cec2b6a 100644
+--- a/include/open62541/server.h
++++ b/include/open62541/server.h
+@@ -2257,6 +2257,18 @@ struct UA_ServerConfig {
+ 
+     /* Discovery
+      * ~~~~~~~~~ */
++
++    /* Further servers that FindServers returns after the server itself, e.g.
++     * the other servers of a non-transparent redundant server set (Part 4,
++     * 6.6.2.4.5.1). Called under the service mutex: it must not call back into
++     * the server. Fills *servers (allocated with UA_Array_new or NULL) and
++     * *serversSize; the server takes the array. The serverUris filter of the
++     * request applies to them, and they keep their own DiscoveryUrls. */
++    UA_StatusCode (*findServersPeers)(UA_Server *server, void *context,
++                                      UA_ApplicationDescription **servers,
++                                      size_t *serversSize);
++    void *findServersPeersContext;
++
+ #ifdef UA_ENABLE_DISCOVERY
+     /* Timeout in seconds when to automatically remove a registered server from
+      * the list, if it doesn't re-register within the given time frame. A value
+diff --git a/src/server/ua_services_discovery.c b/src/server/ua_services_discovery.c
+index 41b6ef8..6dd7eae 100644
+--- a/src/server/ua_services_discovery.c
++++ b/src/server/ua_services_discovery.c
+@@ -83,6 +83,55 @@ setApplicationDescriptionFromRegisteredServer(const UA_FindServersRequest *reque
+ }
+ #endif
+ 
++static UA_Boolean
++serverUriRequested(const UA_FindServersRequest *request, const UA_String *uri) {
++    if(request->serverUrisSize == 0)
++        return true;
++    for(size_t i = 0; i < request->serverUrisSize; i++)
++        if(UA_String_equal(&request->serverUris[i], uri))
++            return true;
++    return false;
++}
++
++static UA_StatusCode
++appendPeers(UA_Server *server, const UA_FindServersRequest *request,
++            UA_FindServersResponse *response) {
++    UA_ServerConfig *sc = &server->config;
++    UA_ApplicationDescription *peers = NULL;
++    size_t peersSize = 0;
++    UA_StatusCode res = sc->findServersPeers(server, sc->findServersPeersContext,
++                                             &peers, &peersSize);
++    if(res != UA_STATUSCODE_GOOD || peersSize == 0) {
++        UA_Array_delete(peers, peersSize, &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]);
++        return res;
++    }
++    UA_ApplicationDescription *all = (UA_ApplicationDescription*)
++        UA_Array_new(response->serversSize + peersSize,
++                     &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]);
++    if(!all) {
++        UA_Array_delete(peers, peersSize, &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]);
++        return UA_STATUSCODE_BADOUTOFMEMORY;
++    }
++    size_t pos = 0;
++    for(size_t i = 0; i < response->serversSize; i++)
++        all[pos++] = response->servers[i]; /* moved */
++    for(size_t i = 0; i < peersSize; i++) {
++        if(serverUriRequested(request, &peers[i].applicationUri)) {
++            all[pos++] = peers[i]; /* moved */
++            UA_ApplicationDescription_init(&peers[i]);
++        }
++    }
++    UA_Array_delete(peers, peersSize, &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]);
++    UA_free(response->servers);
++    if(pos == 0) {
++        UA_free(all);
++        all = NULL;
++    }
++    response->servers = all;
++    response->serversSize = pos;
++    return UA_STATUSCODE_GOOD;
++}
++
+ UA_Boolean
+ Service_FindServers(UA_Server *server, UA_Session *session,
+                     const UA_FindServersRequest *request,
+@@ -180,9 +229,17 @@ Service_FindServers(UA_Server *server, UA_Session *session,
+     response->serversSize = pos;
+ #endif
+ 
+-    /* Mirror back the expected EndpointUrl */
+-    if(request->endpointUrl.length > 0) {
+-        for(size_t i = 0; i < response->serversSize; i++) {
++    /* Append the configured peers */
++    if(response->responseHeader.serviceResult == UA_STATUSCODE_GOOD &&
++       sc->findServersPeers)
++        response->responseHeader.serviceResult =
++            appendPeers(server, request, response);
++
++    /* Mirror back the expected EndpointUrl. Only for the server itself: Part
++     * 4, 5.5.2.2 has the EndpointUrl choose the DiscoveryUrls the server
++     * returns for itself; other servers keep their own. */
++    if(request->endpointUrl.length > 0 && foundSelf && response->serversSize > 0) {
++        for(size_t i = 0; i < 1; i++) {
+             UA_ApplicationDescription *ad = &response->servers[i];
+             UA_Array_delete(ad->discoveryUrls, ad->discoveryUrlsSize,
+                             &UA_TYPES[UA_TYPES_STRING]);
+-- 
+2.43.0
+

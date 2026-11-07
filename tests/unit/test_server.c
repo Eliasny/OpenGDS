@@ -17,6 +17,13 @@
 #include "store.h"
 #include "common/banned.h"
 
+#if defined(__has_include)
+#if __has_include(<open62541/nodeids_di.h>)
+#include <open62541/nodeids_di.h>
+#define HAVE_DI 1
+#endif
+#endif
+
 #define TEST_URI "urn:opengds:test:server"
 
 static bool own_cert(UA_ByteString *cert, UA_ByteString *key) {
@@ -173,6 +180,42 @@ static void test_find(gds_server *s) {
     UA_CallMethodResult_clear(&res);
 }
 
+/* Companion models next to GDS (UASM ask A12, scripts/build_open62541.sh
+ * MODELS): the GDS namespace index is looked up by URI, so it is right
+ * whatever else is autoloaded; with DI loaded, an embedder can instantiate
+ * DI types such as the OPC 10000-100 SoftwareUpdateType. */
+static void test_models(gds_server *s) {
+    UA_Server *ua = gds_server_ua(s);
+    size_t gdsNs = 0;
+    UA_String gdsUri = UA_STRING_STATIC(GDS_NS_URI);
+    CHECK(UA_Server_getNamespaceByName(ua, gdsUri, &gdsNs) == UA_STATUSCODE_GOOD);
+    CHECK_EQ_INT(gdsNs, s->ns);
+    UA_QualifiedName bn;
+    CHECK(UA_Server_readBrowseName(ua, UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY), &bn) ==
+          UA_STATUSCODE_GOOD);
+    UA_QualifiedName_clear(&bn);
+#ifdef HAVE_DI
+    size_t di = 0;
+    UA_String diUri = UA_STRING_STATIC("http://opcfoundation.org/UA/DI/");
+    UA_String typeName = UA_STRING_STATIC("SoftwareUpdateType");
+    if(!CHECK(UA_Server_getNamespaceByName(ua, diUri, &di) == UA_STATUSCODE_GOOD))
+        return;
+    UA_NodeId type = UA_NODEID_NUMERIC((UA_UInt16)di, UA_DIID_SOFTWAREUPDATETYPE);
+    CHECK(UA_Server_readBrowseName(ua, type, &bn) == UA_STATUSCODE_GOOD &&
+          UA_String_equal(&bn.name, &typeName));
+    UA_QualifiedName_clear(&bn);
+    UA_ObjectAttributes oa = UA_ObjectAttributes_default;
+    UA_NodeId out = UA_NODEID_NULL;
+    CHECK(UA_Server_addObjectNode(ua, UA_NODEID_NULL, UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+                                  UA_QUALIFIEDNAME((UA_UInt16)di, "SoftwareUpdate"), type, oa, NULL,
+                                  &out) == UA_STATUSCODE_GOOD);
+    CHECK(UA_Server_deleteNode(ua, out, true) == UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&out);
+    printf("# DI model loaded (namespace %zu)\n", di);
+#endif
+}
+
 int main(int argc, char **argv) {
     if(argc < 2) {
         fprintf(stderr, "usage: %s <dir>\n", argv[0]);
@@ -221,6 +264,7 @@ int main(int argc, char **argv) {
         test_service_level(s);
         test_read_only(s);
         test_find(s);
+        test_models(s);
     }
     gds_server_delete(s);
     UA_ByteString_clear(&cert);

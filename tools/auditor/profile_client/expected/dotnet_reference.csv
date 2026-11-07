@@ -1,0 +1,69 @@
+# Expected verdicts of gdsaudit client against the .NET pull client
+# (reference/dotnet_pull_client on Opc.Ua.Gds.Client.Common, UA-.NETStandard
+# 1.5.378.182). CI (reference-client workflow) fails when one changes.
+# Reference deviations, from the library itself:
+# - CLI-TL-01 fail: GlobalDiscoveryServerClient.ReadTrustListAsync ends the
+#   download at the first Read shorter than requested (4096 bytes); only an
+#   empty result is the end of the file (10000-20 §4.2.4).
+# - CLI-FLT-08 fail: the same loop takes a Read longer than requested as the
+#   end and installs that (rogue) list.
+# - CLI-TRU-02 fail: follows from CLI-FLT-08. After the rogue list the
+#   client's own certificate no longer validates, so it does not start;
+#   run alone (--only CLI-TRU-02) it passes. CLI-FLT-09 is Not tested here
+#   for the same reason; alone it passes.
+# CLI-CSR-05 and CLI-REG-03 are Not supported: the client is a pure Client.
+# The slow tests are Not tested: the hook has no own schedule.
+CLI-CSR-01,pass
+CLI-CSR-02,pass
+CLI-CSR-03,pass
+CLI-CSR-04,pass
+CLI-CSR-05,not_supported
+CLI-CSR-06,pass
+CLI-CSR-07,pass
+CLI-CSR-08,pass
+CLI-CSR-09,pass
+CLI-REG-01,pass
+CLI-REG-02,pass
+CLI-REG-03,not_supported
+CLI-REG-04,pass
+CLI-REG-05,pass
+CLI-PEN-01,pass
+CLI-PEN-02,pass
+CLI-PEN-03,pass
+CLI-PEN-04,pass
+CLI-PEN-05,pass
+CLI-PEN-06,pass
+CLI-PEN-07,pass
+CLI-PEN-08,not_tested
+CLI-REN-01,pass
+CLI-REN-02,pass
+CLI-REN-03,not_tested
+CLI-REN-05,pass
+CLI-TL-01,fail
+CLI-TL-02,pass
+CLI-TL-03,pass
+CLI-TL-04,pass
+CLI-TL-05,pass
+CLI-TL-06,pass
+CLI-TL-07,pass
+CLI-TL-08,not_tested
+CLI-INS-01,pass
+CLI-INS-02,pass
+CLI-INS-03,pass
+CLI-REN-04,pass
+CLI-FLT-03,pass
+CLI-FLT-04,pass
+CLI-FLT-05,pass
+CLI-FLT-06,pass
+CLI-FLT-01,pass
+CLI-FLT-02,pass
+CLI-FLT-07,pass
+CLI-FLT-08,fail
+CLI-FLT-09,not_tested
+CLI-TRU-01,pass
+CLI-TRU-02,fail
+CLI-TRU-03,pass
+CLI-TRU-04,pass
+CLI-TRU-05,pass
+CLI-TRU-06,pass
+CLI-TRU-07,pass

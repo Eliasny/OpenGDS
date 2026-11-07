@@ -7,6 +7,9 @@
  * trust list carries) and GetCertificateStatus then asks for an update.
  * Revoking again succeeds and adds nothing. Unregistering an application
  * puts all of its certificates on the CRL. A STANDBY refuses.
+ * GetCertificates (§7.9.8) returns the valid certificate and no revoked
+ * one; CheckRevocationStatus (§7.9.11) tells Good, revoked, a broken
+ * signature, garbage and a certificate of another issuer apart.
  * SPDX-License-Identifier: MPL-2.0 */
 #include <open62541/plugin/create_certificate.h>
 #include <open62541/plugin/log_stdout.h>
@@ -219,6 +222,75 @@ static void test_revoke(gds_server *s, gds_ca *ca, const UA_NodeId *a, const UA_
     UA_ByteString_clear(&certA);
 }
 
+/* CheckRevocationStatus (§7.9.11): status and ValidityTime */
+static UA_StatusCode check(gds_server *s, const UA_ByteString *cert, UA_DateTime *validity) {
+    UA_Variant in;
+    UA_Variant_setScalar(&in, (void *)(uintptr_t)cert, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    UA_CallMethodResult res = call_as(s, &registrar, UA_GDSID_DIRECTORY_CHECKREVOCATIONSTATUS,
+                                      &in, 1);
+    UA_StatusCode st = UA_STATUSCODE_BADINTERNALERROR;
+    if(CHECK(res.statusCode == UA_STATUSCODE_GOOD) && CHECK(res.outputArgumentsSize == 2) &&
+       CHECK(UA_Variant_hasScalarType(&res.outputArguments[0], &UA_TYPES[UA_TYPES_STATUSCODE])) &&
+       CHECK(UA_Variant_hasScalarType(&res.outputArguments[1], &UA_TYPES[UA_TYPES_DATETIME]))) {
+        st = *(UA_StatusCode *)res.outputArguments[0].data;
+        *validity = *(UA_DateTime *)res.outputArguments[1].data;
+    }
+    UA_CallMethodResult_clear(&res);
+    return st;
+}
+
+/* GetCertificates (§7.9.8): the number of certificates, or -1 on refusal */
+static int get_certs(gds_server *s, gds_session *as, const UA_NodeId *app,
+                     const UA_ByteString *want, UA_StatusCode *code) {
+    UA_NodeId nullGroup = UA_NODEID_NULL;
+    UA_Variant in[2];
+    UA_Variant_setScalar(&in[0], (void *)(uintptr_t)app, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[1], &nullGroup, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_CallMethodResult res = call_as(s, as, UA_GDSID_DIRECTORY_GETCERTIFICATES, in, 2);
+    *code = res.statusCode;
+    int n = -1;
+    if(res.statusCode == UA_STATUSCODE_GOOD && CHECK(res.outputArgumentsSize == 2)) {
+        n = (int)res.outputArguments[1].arrayLength;
+        CHECK_EQ_INT(res.outputArguments[0].arrayLength, (size_t)n);
+        if(n == 1) {
+            UA_NodeId rsa = UA_NS0ID(RSASHA256APPLICATIONCERTIFICATETYPE);
+            CHECK(UA_NodeId_equal(res.outputArguments[0].data, &rsa));
+            CHECK(UA_ByteString_equal(res.outputArguments[1].data, want));
+        }
+    }
+    UA_CallMethodResult_clear(&res);
+    return n;
+}
+
+static void test_get_and_check(gds_server *s, const UA_NodeId *app, const UA_ByteString *own) {
+    UA_ByteString cert = UA_BYTESTRING_NULL;
+    if(!issue(s, app, &cert))
+        return;
+    UA_StatusCode code = UA_STATUSCODE_GOOD;
+    CHECK_EQ_INT(get_certs(s, &admin, app, &cert, &code), 1);
+    CHECK_EQ_INT(get_certs(s, &registrar, app, &cert, &code), -1); /* neither CA admin nor it */
+    CHECK_EQ_INT(code, UA_STATUSCODE_BADUSERACCESSDENIED);
+
+    UA_DateTime v = 0;
+    CHECK_EQ_INT(check(s, &cert, &v), UA_STATUSCODE_GOOD);
+    CHECK(v > UA_DateTime_now()); /* the CRL's nextUpdate */
+    v = 1;
+    CHECK_EQ_INT(check(s, own, &v), UA_STATUSCODE_BADCERTIFICATEREVOCATIONUNKNOWN); /* not ours */
+    CHECK_EQ_INT(v, 0);
+    UA_ByteString junk = UA_BYTESTRING("not a certificate");
+    CHECK_EQ_INT(check(s, &junk, &v), UA_STATUSCODE_BADCERTIFICATEINVALID);
+    UA_ByteString broken;
+    if(CHECK(UA_ByteString_copy(&cert, &broken) == UA_STATUSCODE_GOOD)) {
+        broken.data[broken.length - 8] ^= 0x5a; /* in the signature */
+        CHECK_EQ_INT(check(s, &broken, &v), UA_STATUSCODE_BADCERTIFICATEINVALID);
+        UA_ByteString_clear(&broken);
+    }
+    CHECK_EQ_INT(revoke_cert(s, &admin, app, &cert), UA_STATUSCODE_GOOD);
+    CHECK_EQ_INT(check(s, &cert, &v), UA_STATUSCODE_BADCERTIFICATEREVOKED);
+    CHECK_EQ_INT(get_certs(s, &admin, app, &cert, &code), 0); /* only valid ones */
+    UA_ByteString_clear(&cert);
+}
+
 static void test_unregister(gds_server *s, gds_ca *ca, const UA_NodeId *b) {
     UA_ByteString c1 = UA_BYTESTRING_NULL, c2 = UA_BYTESTRING_NULL;
     if(!issue(s, b, &c1) || !issue(s, b, &c2)) {
@@ -290,11 +362,14 @@ int main(int argc, char **argv) {
     gds_server *s = NULL;
     if(CHECK(gds_server_new(&cfg, &s) == GDS_OK) && s) {
         UA_Server_setAdminSessionContext(gds_server_ua(s), &admin);
-        UA_NodeId a = UA_NODEID_NULL, b = UA_NODEID_NULL;
-        if(register_app(s, TEST_URI ":a", &a) && register_app(s, TEST_URI ":b", &b)) {
+        UA_NodeId a = UA_NODEID_NULL, b = UA_NODEID_NULL, c = UA_NODEID_NULL;
+        if(register_app(s, TEST_URI ":a", &a) && register_app(s, TEST_URI ":b", &b) &&
+           register_app(s, TEST_URI ":c", &c)) {
             test_revoke(s, ca, &a, &b);
+            test_get_and_check(s, &c, &cert);
             test_unregister(s, ca, &b);
         }
+        UA_NodeId_clear(&c);
         UA_NodeId_clear(&a);
         UA_NodeId_clear(&b);
         UA_Server_setAdminSessionContext(gds_server_ua(s), NULL);

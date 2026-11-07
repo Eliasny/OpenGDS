@@ -20,6 +20,13 @@
  *          §7.9.6) -> UpdateCertificate, then ApplyChanges (§7.7.2)
  *       5. check the device now presents the issued certificate
  *
+ *   gdsadm apps import FILE [--dry-run] [CONNECTION]
+ *       one RegisterApplication per record of a CSV or JSON file
+ *       (gdsadm_import.h), with a report line per record. A record whose
+ *       ApplicationUri is registered already (Bad_AlreadyExists) is reported
+ *       and left as it is, so an import can be run again. --dry-run checks
+ *       the file only and needs no CONNECTION.
+ *
  *   gdsadm apps unregister URI CONNECTION
  *       UnregisterApplication (§6.5.8) as DiscoveryAdmin; the GDS revokes the
  *       application's certificates
@@ -41,6 +48,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "gds_internal.h" /* gds_validate_record */
+#include "gdsadm_import.h"
 #include "client/gdsc_gds.h"
 #include "client/gdsc_push.h"
 #include "client/gdsc_session.h"
@@ -285,6 +294,103 @@ int gdsadm_apps_register(int argc, char **argv) {
     return rc;
 }
 
+/* ---- apps import ---- */
+
+typedef struct {
+    size_t registered, exists, failed;
+} import_counts;
+
+static void print_uri(const UA_ApplicationRecordDataType *rec) {
+    printf("%.*s", (int)(rec->applicationUri.length > 200 ? 200 : rec->applicationUri.length),
+           rec->applicationUri.data ? (const char *)rec->applicationUri.data : "");
+}
+
+/* One record: checked here first, then RegisterApplication when gds is set */
+static void import_one(UA_Client *gds, UA_UInt16 ns, const gdsadm_import *im, size_t i,
+                       import_counts *n) {
+    const UA_ApplicationRecordDataType *rec = &im->recs[i];
+    printf("%zu\t", im->lines[i]);
+    print_uri(rec);
+    UA_StatusCode r = gds_validate_record(rec);
+    if(r != UA_STATUSCODE_GOOD) {
+        printf("\tinvalid (a required field is missing, too long, or a Server without "
+               "DiscoveryUrls)\n");
+        n->failed++;
+        return;
+    }
+    if(!gds) {
+        printf("\tok\n");
+        n->registered++;
+        return;
+    }
+    UA_NodeId id;
+    UA_NodeId_init(&id);
+    r = gdsc_register_application(gds, ns, rec, &id);
+    if(r == UA_STATUSCODE_GOOD) {
+        UA_String s = UA_STRING_NULL;
+        (void)UA_NodeId_print(&id, &s);
+        printf("\tregistered\t%.*s\n", (int)s.length, s.data ? (const char *)s.data : "");
+        UA_String_clear(&s);
+        n->registered++;
+    } else if(r == UA_STATUSCODE_BADALREADYEXISTS) {
+        printf("\texists\n");
+        n->exists++;
+    } else {
+        printf("\tfailed\t%s\n", UA_StatusCode_name(r));
+        n->failed++;
+    }
+    UA_NodeId_clear(&id);
+}
+
+static int import_usage(void) {
+    fprintf(stderr, "usage: gdsadm apps import FILE --dry-run\n"
+                    "       gdsadm apps import FILE CONNECTION\n");
+    return 2;
+}
+
+int gdsadm_apps_import(int argc, char **argv) {
+    if(argc < 4 || argv[3][0] == '-')
+        return import_usage();
+    bool dry = argc == 5 && strcmp(argv[4], "--dry-run") == 0;
+    adm_args a;
+    if(!dry && !parse_args(argc, argv, 4, &a))
+        return import_usage();
+    gds_buf file = {NULL, 0};
+    gds_status s = gds_file_read(argv[3], GDSADM_IMPORT_MAX_FILE, &file);
+    if(s != GDS_OK)
+        return reportg(argv[3], s);
+    gdsadm_import im;
+    char err[256];
+    s = gdsadm_import_parse(&file, &im, err, sizeof(err));
+    gds_buf_free(&file);
+    if(s != GDS_OK) {
+        fprintf(stderr, "gdsadm: %s: %s\n", argv[3], err[0] ? err : gds_status_name(s));
+        return 1;
+    }
+    adm_files f;
+    memset(&f, 0, sizeof(f));
+    gdsc_session *gds = NULL;
+    UA_UInt16 ns = 0;
+    int rc = dry ? 0 : open_gds(&a, &f, &gds, &ns);
+    import_counts n = {0, 0, 0};
+    if(rc == 0) {
+        printf("# line\tApplicationUri\tresult\n");
+        for(size_t i = 0; i < im.n; i++)
+            import_one(dry ? NULL : gdsc_session_client(gds), ns, &im, i, &n);
+        if(dry)
+            printf("# %zu record(s) ok, %zu invalid (dry run: nothing registered)\n",
+                   n.registered, n.failed);
+        else
+            printf("# %zu registered, %zu already registered, %zu failed\n", n.registered,
+                   n.exists, n.failed);
+        rc = n.failed ? 1 : 0;
+    }
+    gdsc_session_close(gds);
+    files_clear(&f);
+    gdsadm_import_clear(&im);
+    return rc;
+}
+
 /* ---- push now ---- */
 
 typedef struct {
@@ -398,7 +504,7 @@ static int push_to_device(const adm_args *a, adm_files *f, sign_ctx *sc, const c
     print_report(&rep, url);
     int rc = s == GDS_OK ? 0 : 1;
     if(rc == 0 && rep.certificateUpdated) {
-        r = gdsc_wait_presents(url, &rep.issued, PRESENT_TIMEOUT_MS);
+        r = gdsc_wait_presents(url, &job.certificateType, &rep.issued, PRESENT_TIMEOUT_MS);
         if(r == UA_STATUSCODE_GOOD)
             printf("the device presents the issued certificate\n");
         else

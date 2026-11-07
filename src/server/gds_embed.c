@@ -52,7 +52,15 @@ struct gds_binding {
 
 struct gds_job {
     struct gds_job *next;
-    const gds_binding *b;
+    const gds_binding *b; /* NULL for a rights check (A14) */
+    gds_server *s;
+    /* A rights check (gds_embed_defer_rights): the GDS method to run on
+     * the server thread once may_manage allowed app */
+    UA_MethodCallback gdsMethod;
+    UA_NodeId methodId;
+    UA_Guid app;
+    bool allowed;
+    size_t outSize; /* a rights check writes open62541's outputs itself */
     UA_NodeId sessionId;
     gds_session snap; /* the session as it was at the call; job-owned */
     UA_NodeId objectId;
@@ -89,6 +97,8 @@ static void job_free(gds_job *j) {
     UA_Array_delete(j->out, j->nOut, &UA_TYPES[UA_TYPES_VARIANT]);
     UA_String_clear(&j->snap.clientAppUri);
     UA_String_clear(&j->snap.securityPolicyUri);
+    UA_ByteString_clear(&j->snap.clientCert);
+    UA_NodeId_clear(&j->methodId);
     free(j);
 }
 
@@ -113,7 +123,22 @@ static bool caller_allowed(const gds_binding *b, const gds_caller *c) {
     return false;
 }
 
+/* A14: the embedder's may_manage hook, on a worker. */
+static void run_rights(gds_job *j) {
+    gds_caller_buf cb;
+    gds_status st = gds_caller_build(j->s, &j->sessionId, &j->snap, &cb);
+    UA_NodeId app = UA_NODEID_GUID(j->s->ns, j->app);
+    j->allowed = st == GDS_OK && j->s->mayManage(j->s->mayManageCtx, &cb.view, &app);
+    j->status = j->allowed ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADUSERACCESSDENIED;
+    if(st == GDS_OK)
+        gds_caller_buf_clear(&cb);
+}
+
 static void run_job(gds_job *j) {
+    if(j->gdsMethod) {
+        run_rights(j);
+        return;
+    }
     gds_caller_buf cb;
     gds_status st = gds_caller_build(j->b->s, &j->sessionId, &j->snap, &cb);
     if(st != GDS_OK) {
@@ -187,7 +212,20 @@ static void drain(UA_Server *server, void *data) {
     while(list) {
         gds_job *j = list;
         list = j->next;
-        if(j->output) {
+        if(j->output && j->gdsMethod) {
+            /* A14: the GDS method itself, on the server thread, with the
+             * hook's answer on the job's copy of the session */
+            UA_StatusCode r = j->status;
+            if(j->allowed) {
+                j->snap.managedGranted = true;
+                j->snap.managedApp = j->app;
+                r = j->gdsMethod(server, &j->sessionId, &j->snap, &j->methodId, s, &j->objectId,
+                                 NULL, j->nIn, j->in, j->outSize, j->output);
+                if(r == UA_STATUSCODE_GOODCOMPLETESASYNCHRONOUSLY)
+                    r = UA_STATUSCODE_BADINTERNALERROR; /* never deferred twice */
+            }
+            (void)UA_Server_setAsyncCallMethodResult(server, j->output, r);
+        } else if(j->output) {
             for(size_t i = 0; i < j->nOut; i++) {
                 j->output[i] = j->out[i]; /* moved */
                 UA_Variant_init(&j->out[i]);
@@ -255,11 +293,16 @@ static UA_StatusCode job_new(const gds_binding *b, const gds_session *ss,
                              const UA_NodeId *sessionId, const UA_NodeId *objectId,
                              size_t inputSize, const UA_Variant *input, size_t outputSize,
                              gds_job **out) {
+    if(!ss)
+        return UA_STATUSCODE_BADSESSIONIDINVALID;
     gds_job *j = calloc(1, sizeof(*j));
     if(!j)
         return UA_STATUSCODE_BADOUTOFMEMORY;
-    __atomic_add_fetch(&((gds_binding *)(uintptr_t)b)->refs, 1, __ATOMIC_ACQ_REL);
-    j->b = b;
+    if(b) {
+        __atomic_add_fetch(&((gds_binding *)(uintptr_t)b)->refs, 1, __ATOMIC_ACQ_REL);
+        j->b = b;
+        j->s = b->s;
+    }
     j->snap.anonymous = gds_session_anonymous(ss); /* an expired X.509 user too */
     memcpy(j->snap.user, ss->user, sizeof(j->snap.user));
     j->snap.roles = gds_session_roles(ss);
@@ -267,6 +310,8 @@ static UA_StatusCode job_new(const gds_binding *b, const gds_session *ss,
     UA_StatusCode r = UA_String_copy(&ss->clientAppUri, &j->snap.clientAppUri);
     if(r == UA_STATUSCODE_GOOD)
         r = UA_String_copy(&ss->securityPolicyUri, &j->snap.securityPolicyUri);
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_ByteString_copy(&ss->clientCert, &j->snap.clientCert);
     if(r == UA_STATUSCODE_GOOD)
         r = UA_NodeId_copy(sessionId, &j->sessionId);
     if(r == UA_STATUSCODE_GOOD)
@@ -276,7 +321,8 @@ static UA_StatusCode job_new(const gds_binding *b, const gds_session *ss,
         if(r == UA_STATUSCODE_GOOD)
             j->nIn = inputSize;
     }
-    if(r == UA_STATUSCODE_GOOD && outputSize > 0) {
+    j->outSize = outputSize;
+    if(r == UA_STATUSCODE_GOOD && b && outputSize > 0) {
         j->out = UA_Array_new(outputSize, &UA_TYPES[UA_TYPES_VARIANT]);
         if(j->out)
             j->nOut = outputSize;
@@ -293,6 +339,15 @@ static UA_StatusCode job_new(const gds_binding *b, const gds_session *ss,
 
 /* ---- the method trampoline (server thread) ---- */
 
+static UA_StatusCode enqueue(gds_server *s, size_t slot, gds_job *j, UA_Variant *output);
+
+static size_t free_slot(const gds_server *s) {
+    for(size_t i = 0; i < GDS_PLUGIN_QUEUE; i++)
+        if(!s->plugInflight[i])
+            return i;
+    return GDS_PLUGIN_QUEUE;
+}
+
 static UA_StatusCode call_cb(UA_Server *server, const UA_NodeId *sessionId, void *sessionContext,
                              const UA_NodeId *methodId, void *methodContext,
                              const UA_NodeId *objectId, void *objectContext, size_t inputSize,
@@ -304,10 +359,7 @@ static UA_StatusCode call_cb(UA_Server *server, const UA_NodeId *sessionId, void
         return UA_STATUSCODE_BADUSERACCESSDENIED;
     if(!(b->flags & GDS_METHOD_READ_ONLY) && gds_server_role(s) == GDS_NODE_STANDBY)
         return UA_STATUSCODE_BADINVALIDSTATE;
-    size_t slot = GDS_PLUGIN_QUEUE;
-    for(size_t i = 0; i < GDS_PLUGIN_QUEUE && slot == GDS_PLUGIN_QUEUE; i++)
-        if(!s->plugInflight[i])
-            slot = i;
+    size_t slot = free_slot(s);
     if(slot == GDS_PLUGIN_QUEUE)
         return UA_STATUSCODE_BADSERVERTOOBUSY;
 
@@ -316,6 +368,11 @@ static UA_StatusCode call_cb(UA_Server *server, const UA_NodeId *sessionId, void
                               outputSize, &j);
     if(r != UA_STATUSCODE_GOOD)
         return r;
+    return enqueue(s, slot, j, output);
+}
+
+/* Server thread: hand j to the workers; the call completes later. */
+static UA_StatusCode enqueue(gds_server *s, size_t slot, gds_job *j, UA_Variant *output) {
     j->output = output;
     s->plugInflight[slot] = j;
     pthread_mutex_lock(&s->plugLock);
@@ -602,4 +659,49 @@ gds_status gds_server_add_object(gds_server *s, const UA_NodeId *nodeId, const U
     UA_QualifiedName bn = UA_QUALIFIEDNAME(nodeId->namespaceIndex, (char *)(uintptr_t)browseName);
     return gds_ua_status(
         UA_Server_addObjectNode(s->ua, *nodeId, *parentId, ref, bn, type, oa, NULL, NULL));
+}
+
+/* ---- CertificateManager rights (UASM ask A14, issue #87) ---- */
+
+UA_StatusCode gds_embed_defer_rights(gds_server *s, UA_MethodCallback fn, const UA_NodeId *sessionId,
+                                     void *sessionContext, const UA_NodeId *methodId,
+                                     const UA_NodeId *objectId, const UA_Guid *app,
+                                     size_t inputSize, const UA_Variant *input, size_t outputSize,
+                                     UA_Variant *output) {
+    const gds_session *ss = sessionContext;
+    if(!s->mayManage || !ss || ss->managedGranted)
+        return UA_STATUSCODE_BADUSERACCESSDENIED; /* no hook, or it was asked already */
+    if(s->plugWorkers == 0)
+        return UA_STATUSCODE_BADUSERACCESSDENIED;
+    size_t slot = free_slot(s);
+    if(slot == GDS_PLUGIN_QUEUE)
+        return UA_STATUSCODE_BADSERVERTOOBUSY;
+    gds_job *j = NULL;
+    UA_StatusCode r =
+        job_new(NULL, ss, sessionId, objectId, inputSize, input, outputSize, &j);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    j->s = s;
+    j->gdsMethod = fn;
+    j->app = *app;
+    r = UA_NodeId_copy(methodId, &j->methodId);
+    if(r != UA_STATUSCODE_GOOD) {
+        job_free(j);
+        return r;
+    }
+    return enqueue(s, slot, j, output);
+}
+
+gds_status gds_server_set_application_rights_hook(gds_server *s, gds_may_manage_fn fn,
+                                                  void *ctx) {
+    if(!s)
+        return GDS_EINVAL;
+    if(__atomic_load_n(&s->started, __ATOMIC_ACQUIRE))
+        return GDS_ESTATE;
+    gds_status st = fn ? pool_start(s) : GDS_OK;
+    if(st != GDS_OK)
+        return st;
+    s->mayManage = fn;
+    s->mayManageCtx = ctx;
+    return GDS_OK;
 }

@@ -63,26 +63,42 @@ static gds_status set_validity(X509 *x, int days) {
     return GDS_OK;
 }
 
-static gds_status testca_create(testca_t *ca, const char *cn) {
+/* A CA certificate: self-signed, or issued by `parent` (an intermediate) */
+static gds_status ca_build(testca_t *ca, const testca_t *parent, const char *cn) {
     ca->key = EVP_RSA_gen(2048);
     ca->cert = X509_new();
     if(!ca->key || !ca->cert)
         return GDS_ECRYPTO;
     X509 *c = ca->cert;
+    X509 *issuer = parent ? parent->cert : c;
     gds_status r;
     if(X509_set_version(c, 2) != 1 || X509_set_pubkey(c, ca->key) != 1)
         return GDS_ECRYPTO;
     if((r = set_random_serial(c)) != GDS_OK || (r = set_validity(c, TESTCA_MAX_DAYS)) != GDS_OK ||
        (r = set_name(X509_get_subject_name(c), cn)) != GDS_OK)
         return r;
-    if(X509_set_issuer_name(c, X509_get_subject_name(c)) != 1)
+    if(X509_set_issuer_name(c, X509_get_subject_name(issuer)) != 1)
         return GDS_ECRYPTO;
     if((r = add_ext(c, c, NID_basic_constraints, "critical,CA:TRUE")) != GDS_OK ||
        (r = add_ext(c, c, NID_key_usage, "critical,keyCertSign,cRLSign")) != GDS_OK ||
        (r = add_ext(c, c, NID_subject_key_identifier, "hash")) != GDS_OK ||
-       (r = add_ext(c, c, NID_authority_key_identifier, "keyid:always")) != GDS_OK)
+       (r = add_ext(c, issuer, NID_authority_key_identifier, "keyid:always")) != GDS_OK)
         return r;
-    return X509_sign(c, ca->key, EVP_sha256()) > 0 ? GDS_OK : GDS_ECRYPTO;
+    return X509_sign(c, parent ? parent->key : ca->key, EVP_sha256()) > 0 ? GDS_OK : GDS_ECRYPTO;
+}
+
+static gds_status testca_create(testca_t *ca, const char *cn) {
+    return ca_build(ca, NULL, cn);
+}
+
+gds_status testca_create_sub(testca_t *ca, const testca_t *parent, const char *cn) {
+    memset(ca, 0, sizeof(*ca));
+    gds_status r = ca_build(ca, parent, cn);
+    if(r != GDS_OK) {
+        x509_drain_errors("testca_create_sub");
+        testca_free(ca);
+    }
+    return r;
 }
 
 gds_status testca_load_or_create(testca_t *ca, const char *dir, const char *cn) {

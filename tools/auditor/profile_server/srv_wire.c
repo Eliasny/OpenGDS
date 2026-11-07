@@ -3,8 +3,14 @@
  * Catalogue: docs/auditor/server-profile.md, "On the wire".
  * SPDX-License-Identifier: MPL-2.0 */
 #include <string.h>
+#include <time.h>
 
 #include <open62541/client_config_default.h>
+#include <open62541/client_highlevel.h>
+#include <open62541/client_subscriptions.h>
+
+#include <openssl/err.h>
+#include <openssl/x509v3.h>
 
 #include "srv_target.h"
 #include "srv_tests.h"
@@ -112,9 +118,595 @@ static void t_wire_new_cert(ga_ctx *ctx, void *p) {
         ga_pass(ctx, "all %zu endpoint(s) of the updated CertificateType present t-good", w.checked);
 }
 
+/* ---------------- SRV-WIRE-02, -03: channels after a new certificate ---------------- */
+
+#define CHAN_WARN_SEC 30
+
+/* What the watched client saw: its channel left OPEN (closed by the server,
+ * or by the client because a renewal presented another certificate), and
+ * the shutdown notice in ServerStatus before that. One client at a time. */
+static struct {
+    UA_Client *c;
+    bool closed, notice;
+    UA_UInt32 seconds;
+    char reason[96];
+} W;
+
+static void chan_state(UA_Client *c, UA_SecureChannelState cs, UA_SessionState ss,
+                       UA_StatusCode st) {
+    (void)ss, (void)st;
+    if(c == W.c && cs != UA_SECURECHANNELSTATE_OPEN)
+        W.closed = true;
+}
+
+/* An admin client that trusts only the test CA (t-good's issuer), watched. */
+static UA_StatusCode chan_open(const srv_target *t, UA_Client **out) {
+    memset(&W, 0, sizeof(W));
+    *out = st_new_client(t, ST_ADMIN, false, NULL, UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
+    if(!*out)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    UA_StatusCode r = st_connect(t, ST_ADMIN, *out);
+    if(r != UA_STATUSCODE_GOOD) {
+        st_client_free(*out);
+        *out = NULL;
+        return r;
+    }
+    UA_Client_getConfig(*out)->stateCallback = chan_state;
+    W.c = *out;
+    return r;
+}
+
+static void chan_free(UA_Client *c) {
+    W.c = NULL;
+    st_client_free(c);
+}
+
+/* A new certificate from ca for the key in use, put in use on c with
+ * UpdateCertificate and ApplyChanges; t->tGood follows it. *setup is false
+ * if the failure came before ApplyChanges. */
+static UA_StatusCode chan_renew(srv_target *t, UA_Client *c, const char *cn, bool *setup) {
+    *setup = true;
+    EVP_PKEY *pub = st_tgood_key(t);
+    gds_buf cert = {0};
+    gds_status gs = pub ? st_make_leaf(&t->ca, pub, cn, t->targetUri, -3600,
+                                       TESTCA_MAX_DAYS * 86400L, false, 0, &cert)
+                        : GDS_ECRYPTO;
+    EVP_PKEY_free(pub);
+    UA_StatusCode r = gds_status_to_ua(gs);
+    bool acr = false;
+    if(r == UA_STATUSCODE_GOOD)
+        r = st_update_cert(t, c, &cert, &t->caDer, 1, &acr);
+    if(r != UA_STATUSCODE_GOOD) {
+        gds_buf_free(&cert);
+        return r;
+    }
+    *setup = false;
+    r = st_apply(c);
+    if(r == UA_STATUSCODE_BADNOTHINGTODO && !acr)
+        r = UA_STATUSCODE_GOOD; /* no transactions: in use at once */
+    if(r == UA_STATUSCODE_GOOD) {
+        gds_buf_free(&t->tGood);
+        t->tGood = cert;
+    } else {
+        gds_buf_free(&cert);
+    }
+    return r;
+}
+
+/* Iterate c until its channel left OPEN or the settle timeout; the seconds
+ * waited. */
+static long chan_watch(const srv_target *t, UA_Client *c) {
+    time_t start = time(NULL);
+    long waited = 0;
+    while(!W.closed && waited <= t->settleSec) {
+        (void)UA_Client_run_iterate(c, 200);
+        waited = (long)(time(NULL) - start);
+    }
+    return waited;
+}
+
+/* SRV-WIRE-02 (12 §7.10.9): once the ApplyChanges response is returned the
+ * Server forces the SecureChannels affected to renegotiate. The admin
+ * channel that applied a new certificate is watched: the server closes it,
+ * or a renewal presents the new certificate (which the client takes as a
+ * changed certificate and closes). */
+static void t_wire_channels(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!t->applied) {
+        ga_not_tested(ctx, "builds on SRV-TXN-03 (the test CA's t-good in use)");
+        return;
+    }
+    st_close(t); /* nothing else holds a transaction */
+    UA_Client *c = NULL;
+    bool setup = true;
+    UA_StatusCode r = chan_open(t, &c);
+    if(r == UA_STATUSCODE_GOOD)
+        r = chan_renew(t, c, "t-wire-02", &setup);
+    if(r != UA_STATUSCODE_GOOD) {
+        bool early = W.closed;
+        chan_free(c);
+        if(setup)
+            ga_not_tested(ctx, "setup: admin session, UpdateCertificate(t-wire-02) -> %s",
+                          UA_StatusCode_name(r));
+        else if(early)
+            ga_fail(ctx, "the channel closed before the ApplyChanges response (%s)",
+                    UA_StatusCode_name(r));
+        else
+            ga_not_tested(ctx, "ApplyChanges -> %s (SRV-TXN-03 checks it)", UA_StatusCode_name(r));
+        return;
+    }
+    long waited = chan_watch(t, c);
+    bool closed = W.closed;
+    chan_free(c);
+    if(!closed)
+        ga_fail(ctx, "the channel that applied t-wire-02 is still open on the old certificate "
+                     "after the settle timeout (%ld s)",
+                t->settleSec);
+    else if(waited > CHAN_WARN_SEC)
+        ga_warn(ctx, "the channel that applied t-wire-02 was renegotiated only after %ld s", waited);
+    else
+        ga_pass(ctx, "the channel that applied t-wire-02 was closed or renegotiated within %ld s",
+                waited);
+}
+
+static void notice_change(UA_Client *c, UA_UInt32 subId, void *subCtx, UA_UInt32 monId,
+                          void *monCtx, UA_DataValue *v) {
+    (void)subId, (void)subCtx, (void)monId, (void)monCtx;
+    if(c != W.c || W.closed || !v->hasValue)
+        return;
+    if(UA_Variant_hasScalarType(&v->value, &UA_TYPES[UA_TYPES_UINT32])) {
+        UA_UInt32 s = *(const UA_UInt32 *)v->value.data;
+        if(s > 0) {
+            W.notice = true;
+            W.seconds = s;
+        }
+    } else if(UA_Variant_hasScalarType(&v->value, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT])) {
+        const UA_String *txt = &((const UA_LocalizedText *)v->value.data)->text;
+        if(txt->length > 0) {
+            W.notice = true;
+            size_t n = txt->length < sizeof(W.reason) - 1 ? txt->length : sizeof(W.reason) - 1;
+            memcpy(W.reason, txt->data, n);
+            W.reason[n] = '\0';
+        }
+    }
+}
+
+/* Subscribe to SecondsTillShutdown and ShutdownReason, fastest rates. */
+static UA_StatusCode notice_subscribe(UA_Client *c) {
+    UA_CreateSubscriptionRequest sreq = UA_CreateSubscriptionRequest_default();
+    sreq.requestedPublishingInterval = 100.0;
+    UA_CreateSubscriptionResponse sres = UA_Client_Subscriptions_create(c, sreq, NULL, NULL, NULL);
+    UA_StatusCode r = sres.responseHeader.serviceResult;
+    UA_UInt32 sub = sres.subscriptionId;
+    UA_CreateSubscriptionResponse_clear(&sres);
+    const UA_UInt32 ids[2] = {UA_NS0ID_SERVER_SERVERSTATUS_SECONDSTILLSHUTDOWN,
+                              UA_NS0ID_SERVER_SERVERSTATUS_SHUTDOWNREASON};
+    for(size_t i = 0; r == UA_STATUSCODE_GOOD && i < 2; i++) {
+        UA_MonitoredItemCreateRequest mreq =
+            UA_MonitoredItemCreateRequest_default(UA_NODEID_NUMERIC(0, ids[i]));
+        mreq.requestedParameters.samplingInterval = 0.0; /* the fastest the server offers */
+        UA_MonitoredItemCreateResult mres = UA_Client_MonitoredItems_createDataChange(
+            c, sub, UA_TIMESTAMPSTORETURN_NEITHER, mreq, NULL, notice_change, NULL);
+        r = mres.statusCode;
+        UA_MonitoredItemCreateResult_clear(&mres);
+    }
+    for(int i = 0; r == UA_STATUSCODE_GOOD && i < 5; i++) /* the initial values */
+        (void)UA_Client_run_iterate(c, 100);
+    return r;
+}
+
+/* SRV-WIRE-03 (12 §7.10.9): a server that interrupts connections advertises
+ * it first in ServerStatus SecondsTillShutdown and ShutdownReason. A Warn
+ * at most: a notice published too late for the client to see is timing. */
+static void t_wire_notice(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!t->applied) {
+        ga_not_tested(ctx, "builds on SRV-TXN-03 (the test CA's t-good in use)");
+        return;
+    }
+    st_close(t);
+    UA_Client *c = NULL;
+    bool setup = true;
+    UA_StatusCode r = chan_open(t, &c);
+    if(r == UA_STATUSCODE_GOOD)
+        r = notice_subscribe(c);
+    if(r == UA_STATUSCODE_GOOD && W.notice) {
+        chan_free(c);
+        ga_not_tested(ctx, "ServerStatus announces a shutdown before the test (%u s, \"%s\")",
+                      W.seconds, W.reason);
+        return;
+    }
+    if(r == UA_STATUSCODE_GOOD)
+        r = chan_renew(t, c, "t-wire-03", &setup);
+    if(r != UA_STATUSCODE_GOOD) {
+        chan_free(c);
+        ga_not_tested(ctx, "setup: admin session subscribed to ServerStatus, t-wire-03 applied "
+                           "-> %s",
+                      UA_StatusCode_name(r));
+        return;
+    }
+    (void)chan_watch(t, c);
+    bool closed = W.closed, notice = W.notice;
+    chan_free(c);
+    if(!closed)
+        ga_pass(ctx, "the connection stayed open: nothing to announce (SRV-WIRE-02 checks it)");
+    else if(notice)
+        ga_pass(ctx, "before the channel closed: SecondsTillShutdown %u, ShutdownReason \"%s\"",
+                W.seconds, W.reason);
+    else
+        ga_warn(ctx, "the channel closed with no SecondsTillShutdown or ShutdownReason first");
+}
+
+/* ---------------- SRV-WIRE-04 to -06: client certificates ---------------- */
+
+#define PEER_REVOKED_URI "urn:opengds:auditor:peer-revoked"
+#define PEER_UNKNOWN_URI "urn:opengds:auditor:peer-unknown"
+
+/* An anonymous session over SignAndEncrypt with the application identity
+ * cert/key, trusting the test CA (which issues t-good) and the pinned
+ * certificate. *out is NULL unless the session is activated. */
+static UA_StatusCode peer_connect(const srv_target *t, const gds_buf *cert, const gds_buf *key,
+                                  UA_Client **out) {
+    *out = NULL;
+    char uri[256];
+    if(x509_san_uri(cert, uri, sizeof(uri)) != GDS_OK)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    gds_buf trust[2];
+    size_t n = 0;
+    trust[n++] = t->caDer;
+    if(t->pinned.len)
+        trust[n++] = t->pinned;
+    UA_Client *c = uac_new_secure_mode(cert, key, trust, n, &t->caCrl, 1, uri, POLICY_RSAPSS,
+                                       UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
+    if(!c)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    UA_StatusCode r = UA_Client_connect(c, t->url);
+    if(r == UA_STATUSCODE_GOOD)
+        *out = c;
+    else
+        st_client_free(c);
+    return r;
+}
+
+/* A refusal that names the certificate, or hides it (Part 4 §6.1.3,
+ * Part 6 §6.7.5: Bad_SecurityChecksFailed may stand for any of them).
+ * Closed connections are how a server can end an OpenSecureChannel. */
+static bool cert_refusal(UA_StatusCode r) {
+    static const UA_StatusCode codes[] = {
+        UA_STATUSCODE_BADSECURITYCHECKSFAILED,       UA_STATUSCODE_BADCERTIFICATEUNTRUSTED,
+        UA_STATUSCODE_BADCERTIFICATEREVOKED,         UA_STATUSCODE_BADCERTIFICATEINVALID,
+        UA_STATUSCODE_BADCERTIFICATECHAININCOMPLETE, UA_STATUSCODE_BADCERTIFICATEREVOCATIONUNKNOWN,
+        UA_STATUSCODE_BADCONNECTIONCLOSED,           UA_STATUSCODE_BADSECURECHANNELCLOSED,
+    };
+    for(size_t i = 0; i < GDS_ARRAY_SIZE(codes); i++)
+        if(r == codes[i])
+            return true;
+    return false;
+}
+
+/* SRV-WIRE-04: with ca in the applied trust list (SRV-TXN-03), peer-good
+ * gets a session. */
+static void t_wire_peer_good(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!t->applied) {
+        ga_not_tested(ctx, "builds on SRV-TXN-03 (a trust list with ca applied)");
+        return;
+    }
+    UA_Client *c = NULL;
+    UA_StatusCode r = peer_connect(t, &t->peerCert, &t->peerKey, &c);
+    st_client_free(c);
+    if(r == UA_STATUSCODE_GOOD)
+        ga_pass(ctx, "session created as peer-good (issued by ca)");
+    else if(cert_refusal(r))
+        ga_fail(ctx, "peer-good refused although ca is in the applied trust list: %s",
+                UA_StatusCode_name(r));
+    else
+        ga_not_tested(ctx, "peer-good session -> %s (not a certificate refusal)",
+                      UA_StatusCode_name(r));
+}
+
+/* A CRL from the test CA that lists `revoked` (number 2: it replaces the
+ * empty one). */
+static gds_status revoking_crl(const testca_t *ca, const gds_buf *revoked, gds_buf *out) {
+    gds_status ret = GDS_ECRYPTO;
+    out->data = NULL;
+    out->len = 0;
+    X509 *x = x509_parse_cert(revoked);
+    X509_CRL *crl = X509_CRL_new();
+    X509_REVOKED *rv = X509_REVOKED_new();
+    ASN1_TIME *now = ASN1_TIME_adj(NULL, time(NULL), 0, -3600);
+    ASN1_TIME *next = ASN1_TIME_adj(NULL, time(NULL), TESTCA_MAX_DAYS, 0);
+    ASN1_INTEGER *num = ASN1_INTEGER_new();
+    X509_EXTENSION *ex = NULL;
+    unsigned char *der = NULL;
+    X509V3_CTX v3;
+    bool ok = x && crl && rv && now && next && num &&
+              X509_CRL_set_version(crl, 1) == 1 &&
+              X509_CRL_set_issuer_name(crl, X509_get_subject_name(ca->cert)) == 1 &&
+              X509_CRL_set1_lastUpdate(crl, now) == 1 && X509_CRL_set1_nextUpdate(crl, next) == 1 &&
+              X509_REVOKED_set_serialNumber(rv, X509_get_serialNumber(x)) == 1 &&
+              X509_REVOKED_set_revocationDate(rv, now) == 1 && X509_CRL_add0_revoked(crl, rv) == 1;
+    if(ok)
+        rv = NULL; /* owned by crl */
+    if(ok) {
+        X509V3_set_ctx_nodb(&v3);
+        X509V3_set_ctx(&v3, ca->cert, NULL, NULL, crl, 0);
+        ex = X509V3_EXT_conf_nid(NULL, &v3, NID_authority_key_identifier, "keyid:always");
+        ok = ex && X509_CRL_add_ext(crl, ex, -1) == 1 && ASN1_INTEGER_set(num, 2) == 1 &&
+             X509_CRL_add1_ext_i2d(crl, NID_crl_number, num, 0, 0) == 1 &&
+             X509_CRL_sort(crl) == 1 && X509_CRL_sign(crl, ca->key, EVP_sha256()) > 0;
+    }
+    int n = ok ? i2d_X509_CRL(crl, &der) : 0;
+    if(n > 0 && der)
+        ret = gds_buf_dup(der, (size_t)n, out);
+    OPENSSL_free(der);
+    X509_EXTENSION_free(ex);
+    ASN1_INTEGER_free(num);
+    ASN1_TIME_free(now);
+    ASN1_TIME_free(next);
+    X509_REVOKED_free(rv);
+    X509_CRL_free(crl);
+    X509_free(x);
+    ERR_clear_error();
+    return ret;
+}
+
+/* l with every copy of `old` among the CRLs replaced by `crl` */
+static UA_StatusCode swap_crl(UA_TrustListDataType *l, const gds_buf *old, const gds_buf *crl) {
+    UA_ByteString o = {old->len, old->data}, nw = {crl->len, crl->data};
+    UA_ByteString *lists[2] = {l->trustedCrls, l->issuerCrls};
+    size_t sizes[2] = {l->trustedCrlsSize, l->issuerCrlsSize};
+    size_t swapped = 0;
+    for(size_t k = 0; k < 2; k++)
+        for(size_t i = 0; i < sizes[k]; i++)
+            if(UA_ByteString_equal(&lists[k][i], &o)) {
+                UA_ByteString_clear(&lists[k][i]);
+                if(UA_ByteString_copy(&nw, &lists[k][i]) != UA_STATUSCODE_GOOD)
+                    return UA_STATUSCODE_BADOUTOFMEMORY;
+                swapped++;
+            }
+    return swapped ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNOTFOUND;
+}
+
+/* SRV-WIRE-05: ca's CRL listing peer-revoked applied; peer-revoked is refused. */
+static void t_wire_revoked(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!t->applied) {
+        ga_not_tested(ctx, "builds on SRV-TXN-03 (a trust list with ca applied)");
+        return;
+    }
+    gds_buf cert = {0}, key = {0}, crl = {0};
+    UA_TrustListDataType l;
+    UA_TrustListDataType_init(&l);
+    UA_StatusCode r = st_admin(t);
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_status_to_ua(testca_issue(&t->ca, "peer-revoked", PEER_REVOKED_URI, "localhost",
+                                          TESTCA_MAX_DAYS, &cert, &key));
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_status_to_ua(revoking_crl(&t->ca, &cert, &crl));
+    if(r == UA_STATUSCODE_GOOD)
+        r = st_read_trustlist(t->client, ST_MASK_ALL, &l);
+    if(r == UA_STATUSCODE_GOOD)
+        r = swap_crl(&l, &t->caCrl, &crl);
+    bool acr = false;
+    if(r == UA_STATUSCODE_GOOD)
+        r = st_write_trustlist(t->client, &l, 4096, &acr, ctx);
+    if(r == UA_STATUSCODE_GOOD)
+        r = st_apply(t->client);
+    UA_TrustListDataType_clear(&l);
+    gds_buf_free(&crl);
+    if(r != UA_STATUSCODE_GOOD) {
+        gds_buf_free(&cert);
+        gds_buf_free_secret(&key);
+        ga_not_tested(ctx, "setup: apply the trust list with a CRL that lists peer-revoked -> %s",
+                      UA_StatusCode_name(r));
+        return;
+    }
+    UA_Client *c = NULL;
+    r = peer_connect(t, &cert, &key, &c);
+    st_client_free(c);
+    gds_buf_free(&cert);
+    gds_buf_free_secret(&key);
+    if(r == UA_STATUSCODE_GOOD)
+        ga_fail(ctx, "session created as peer-revoked although ca's applied CRL lists it");
+    else if(cert_refusal(r))
+        ga_pass(ctx, "peer-revoked refused: %s", UA_StatusCode_name(r));
+    else
+        ga_not_tested(ctx, "peer-revoked session -> %s (not a certificate refusal)",
+                      UA_StatusCode_name(r));
+}
+
+/* SRV-WIRE-06: a self-signed client certificate the target never trusted */
+static void t_wire_unknown(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    EVP_PKEY *k = EVP_RSA_gen(2048);
+    gds_buf cert = {0}, key = {0};
+    gds_status gs = k ? st_make_leaf(NULL, k, "peer-unknown", PEER_UNKNOWN_URI, -3600,
+                                     7 * 86400L, false, 0, &cert)
+                      : GDS_ECRYPTO;
+    if(gs == GDS_OK)
+        gs = x509_key_to_der(k, &key);
+    EVP_PKEY_free(k);
+    ERR_clear_error();
+    if(gs != GDS_OK) {
+        gds_buf_free(&cert);
+        ga_not_tested(ctx, "setup: peer-unknown: %s", gds_status_name(gs));
+        return;
+    }
+    UA_Client *c = NULL;
+    UA_StatusCode r = peer_connect(t, &cert, &key, &c);
+    st_client_free(c);
+    gds_buf_free(&cert);
+    gds_buf_free_secret(&key);
+    if(r == UA_STATUSCODE_GOOD)
+        ga_fail(ctx, "session created as peer-unknown (self-signed, never trusted)");
+    else if(cert_refusal(r))
+        ga_pass(ctx, "peer-unknown refused: %s", UA_StatusCode_name(r));
+    else
+        ga_not_tested(ctx, "peer-unknown session -> %s (not a certificate refusal)",
+                      UA_StatusCode_name(r));
+}
+
+/* ---------------- SRV-WIRE-07, -08: sessions after a trust list change ---------------- */
+
+#define WATCH_WARN_SEC 30
+#define TL_OBJ UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST
+
+static void nap_ms(long ms) {
+    struct timespec ts = {ms / 1000, (ms % 1000) * 1000000L};
+    nanosleep(&ts, NULL);
+}
+
+/* Write l on the admin session and apply it (Bad_NothingToDo: the target
+ * has no transactions and put it in use at once). */
+static UA_StatusCode push_apply(srv_target *t, const UA_TrustListDataType *l, ga_ctx *ctx) {
+    UA_StatusCode r = st_admin(t);
+    bool acr = false;
+    if(r == UA_STATUSCODE_GOOD)
+        r = st_write_trustlist(t->client, l, 4096, &acr, ctx);
+    if(r == UA_STATUSCODE_GOOD)
+        r = st_apply(t->client);
+    return r == UA_STATUSCODE_BADNOTHINGTODO ? UA_STATUSCODE_GOOD : r;
+}
+
+/* Read ServerStatus/State on c until the Read fails: the session is gone.
+ * Within 30 s passes, within the settle timeout warns, else fails. */
+static void watch_closed(ga_ctx *ctx, const srv_target *t, UA_Client *c, const char *what) {
+    time_t start = time(NULL);
+    long waited = 0;
+    UA_StatusCode r = UA_STATUSCODE_GOOD;
+    while(waited <= t->settleSec) {
+        UA_Variant v;
+        UA_Variant_init(&v);
+        r = UA_Client_readValueAttribute(c, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERSTATUS_STATE),
+                                         &v);
+        UA_Variant_clear(&v);
+        if(r != UA_STATUSCODE_GOOD)
+            break;
+        nap_ms(500);
+        waited = (long)(time(NULL) - start);
+    }
+    if(r == UA_STATUSCODE_GOOD)
+        ga_fail(ctx, "the session of %s is still open after the settle timeout (%ld s)", what,
+                t->settleSec);
+    else if(waited > WATCH_WARN_SEC)
+        ga_warn(ctx, "the session of %s was closed only after %ld s (%s)", what, waited,
+                UA_StatusCode_name(r));
+    else
+        ga_pass(ctx, "the session of %s was closed within %ld s (Read -> %s)", what, waited,
+                UA_StatusCode_name(r));
+}
+
+static UA_StatusCode remove_trusted(UA_Client *c, const gds_buf *cert) {
+    char tp[X509_THUMBPRINT_LEN];
+    if(x509_thumbprint(cert, tp) != GDS_OK)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    UA_String thumb = UA_STRING(tp);
+    UA_Boolean tr = true;
+    UA_Variant in[2];
+    UA_Variant_setScalar(&in[0], &thumb, &UA_TYPES[UA_TYPES_STRING]);
+    UA_Variant_setScalar(&in[1], &tr, &UA_TYPES[UA_TYPES_BOOLEAN]);
+    size_t outN = 0;
+    UA_Variant *out = NULL;
+    UA_StatusCode r = UA_Client_call(
+        c, UA_NODEID_NUMERIC(0, TL_OBJ),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_REMOVECERTIFICATE),
+        2, in, &outN, &out);
+    UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
+    return r;
+}
+
+/* SRV-WIRE-07 (12 §7.8.2.5): peer-good trusted on its own (ca only as an
+ * issuer), a session as peer-good, RemoveCertificate(peer-good), apply. */
+static void t_wire_removed(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!t->applied) {
+        ga_not_tested(ctx, "builds on SRV-TXN-03 (the test CA's t-good in use)");
+        return;
+    }
+    UA_TrustListDataType l;
+    UA_TrustListDataType_init(&l);
+    UA_ByteString ca = {t->caDer.len, t->caDer.data}, crl = {t->caCrl.len, t->caCrl.data};
+    UA_StatusCode r = st_list_copy_add(&t->snap, &t->peerCert, NULL, &l);
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Array_appendCopy((void **)&l.issuerCertificates, &l.issuerCertificatesSize, &ca,
+                                &UA_TYPES[UA_TYPES_BYTESTRING]);
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Array_appendCopy((void **)&l.issuerCrls, &l.issuerCrlsSize, &crl,
+                                &UA_TYPES[UA_TYPES_BYTESTRING]);
+    if(r == UA_STATUSCODE_GOOD)
+        r = push_apply(t, &l, ctx);
+    UA_TrustListDataType_clear(&l);
+    UA_Client *c = NULL;
+    if(r == UA_STATUSCODE_GOOD)
+        r = peer_connect(t, &t->peerCert, &t->peerKey, &c);
+    UA_StatusCode rm = r == UA_STATUSCODE_GOOD ? remove_trusted(t->client, &t->peerCert) : r;
+    UA_StatusCode ra = rm == UA_STATUSCODE_GOOD ? st_apply(t->client) : rm;
+    if(ra == UA_STATUSCODE_BADNOTHINGTODO)
+        ra = UA_STATUSCODE_GOOD; /* RemoveCertificate was in use at once */
+    if(r != UA_STATUSCODE_GOOD || rm != UA_STATUSCODE_GOOD || ra != UA_STATUSCODE_GOOD) {
+        st_client_free(c);
+        ga_not_tested(ctx, "setup: peer-good trusted and connected -> %s; RemoveCertificate -> "
+                           "%s; ApplyChanges -> %s",
+                      UA_StatusCode_name(r), UA_StatusCode_name(rm), UA_StatusCode_name(ra));
+        return;
+    }
+    watch_closed(ctx, t, c, "peer-good after RemoveCertificate");
+    st_client_free(c);
+}
+
+/* SRV-WIRE-08: ca trusted with its empty CRL, a session as peer-good, then a
+ * CRL from ca that lists peer-good is applied. */
+static void t_wire_crl_session(ga_ctx *ctx, void *p) {
+    srv_target *t = p;
+    if(!t->applied) {
+        ga_not_tested(ctx, "builds on SRV-TXN-03 (the test CA's t-good in use)");
+        return;
+    }
+    UA_TrustListDataType l;
+    UA_TrustListDataType_init(&l);
+    gds_buf crl = {0};
+    UA_Client *c = NULL;
+    UA_StatusCode r = push_apply(t, &t->pushed, ctx);
+    if(r == UA_STATUSCODE_GOOD)
+        r = peer_connect(t, &t->peerCert, &t->peerKey, &c);
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_status_to_ua(revoking_crl(&t->ca, &t->peerCert, &crl));
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_TrustListDataType_copy(&t->pushed, &l);
+    if(r == UA_STATUSCODE_GOOD)
+        r = swap_crl(&l, &t->caCrl, &crl);
+    if(r == UA_STATUSCODE_GOOD)
+        r = push_apply(t, &l, ctx);
+    UA_TrustListDataType_clear(&l);
+    gds_buf_free(&crl);
+    if(r != UA_STATUSCODE_GOOD) {
+        st_client_free(c);
+        ga_not_tested(ctx, "setup: peer-good connected, then a CRL listing it applied -> %s",
+                      UA_StatusCode_name(r));
+        return;
+    }
+    watch_closed(ctx, t, c, "peer-good after a CRL that lists it");
+    st_client_free(c);
+}
+
 const ga_test srv_wire_tests[] = {
     {"SRV-WIRE-01", "12 §7.10.9, §7.8.4.8, §7.8.4.9",
      "Every endpoint of the updated CertificateType presents the new certificate", true, false,
      t_wire_new_cert},
+    {"SRV-WIRE-02", "12 §7.10.9", "Channels on the old certificate are renegotiated after ApplyChanges",
+     true, false, t_wire_channels},
+    {"SRV-WIRE-03", "12 §7.10.9", "Connections are interrupted only after a shutdown notice", true,
+     false, t_wire_notice},
+    {"SRV-WIRE-04", "12 §7.10.9; 4 §6.1.3", "A client certificate from a CA in the applied list is accepted",
+     true, false, t_wire_peer_good},
+    {"SRV-WIRE-05", "12 §7.10.9; 4 §6.1.3", "A client certificate in an applied CRL is refused", true,
+     false, t_wire_revoked},
+    {"SRV-WIRE-06", "4 §6.1.3", "An untrusted client certificate is refused", false, false,
+     t_wire_unknown},
+    {"SRV-WIRE-07", "12 §7.8.2.5", "Sessions of a removed client certificate are closed", true,
+     false, t_wire_removed},
+    {"SRV-WIRE-08", "12 §7.8.2.5; 4 §6.1.3", "Sessions of a newly revoked client are closed", true,
+     false, t_wire_crl_session},
 };
 const size_t srv_wire_count = GDS_ARRAY_SIZE(srv_wire_tests);

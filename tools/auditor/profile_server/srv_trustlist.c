@@ -335,8 +335,9 @@ static void t_tl_close(ga_ctx *ctx, void *p) {
 }
 
 /* SRV-TL-07 and -08: a list with one bad entry is refused and discarded */
+/* acceptWarns: an accepted list is a Warn, not a Fail (decision D2) */
 static void refuse_entry(ga_ctx *ctx, srv_target *t, const gds_buf *bad, const char *what,
-                         UA_StatusCode want) {
+                         UA_StatusCode want, bool acceptWarns) {
     UA_TrustListDataType l0, l1, in;
     UA_TrustListDataType_init(&l1);
     UA_TrustListDataType_init(&in);
@@ -355,6 +356,10 @@ static void refuse_entry(ga_ctx *ctx, srv_target *t, const gds_buf *bad, const c
     UA_TrustListDataType_clear(&l1);
     if(r != UA_STATUSCODE_GOOD)
         ga_not_tested(ctx, "setup -> %s", UA_StatusCode_name(r));
+    else if(w == UA_STATUSCODE_GOOD && acceptWarns)
+        ga_warn(ctx, "CloseAndUpdate accepted a list with %s: Validity Period is a suppressible "
+                     "error (4 §6.1.3 Table 100), which §7.8.2.5 lets a server ignore",
+                what);
     else if(w == UA_STATUSCODE_GOOD)
         ga_fail(ctx, "CloseAndUpdate accepted a list with %s", what);
     else if(!same)
@@ -380,7 +385,7 @@ static void t_tl_badsig(ga_ctx *ctx, void *p) {
     }
     bad.data[bad.len - 1] ^= 0x01; /* t-badsig: the signature's last byte */
     refuse_entry(ctx, t, &bad, "t-badsig (signature broken)",
-                 UA_STATUSCODE_BADCERTIFICATEINVALID);
+                 UA_STATUSCODE_BADCERTIFICATEINVALID, false);
     gds_buf_free(&bad);
 }
 
@@ -398,8 +403,8 @@ static void t_tl_expired(ga_ctx *ctx, void *p) {
         ga_not_tested(ctx, "setup: expired CA certificate -> %s", gds_status_name(s));
         return;
     }
-    /* decision D2: any refusal passes, an accepted expired certificate fails */
-    refuse_entry(ctx, t, &ca, "an expired CA certificate", UA_STATUSCODE_GOOD);
+    /* decision D2: any refusal passes, an accepted expired certificate warns */
+    refuse_entry(ctx, t, &ca, "an expired CA certificate", UA_STATUSCODE_GOOD, true);
     gds_buf_free(&ca);
 }
 

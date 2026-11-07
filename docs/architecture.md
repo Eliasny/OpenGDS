@@ -248,6 +248,7 @@ Release builds also use LTO and are reproducible (`-ffile-prefix-map`, `SOURCE_D
 - `fuzz_signer_msg.c`: the signer protocol, both sides (`gds_signer_handle` and the reply decoder).
 - `fuzz_daemon_config.c`: the daemon config parser.
 - `fuzz_users.c`: the users file parser.
+- `fuzz_import.c`: `gdsadm apps import` CSV and JSON files.
 - `fuzz_auditor_responses.c`: the Auditor's handling of hostile method results.
 
 ## Run-time containment
@@ -276,6 +277,7 @@ The plugin API (`include/opengds/`) is the seam UASM builds on, so its shape dec
 - The CA slot runs in the signer, so CA plugins (UASM ceremonies, HSM profiles) get the signer's protections; store, policy, events, push and cluster plugins run in `opengdsd`.
 - The cluster slot (`opengds_set_role`) is the only way to change the node role; on a standby the core refuses state-changing methods with `Bad_InvalidState` before any plugin sees them.
 - Plugin API headers compile cleanly under `-std=c11 -Wpedantic -Werror` and C++17, and contain no open62541 types except stable ones (`UA_StatusCode`, `UA_NodeId`, `UA_ByteString`, and for method plugins `UA_Variant` and `UA_Argument`, which carry method arguments in OPC UA's own encoding), so a library upgrade does not break the ABI.
+- Companion information models (UASM ask A12): an embedder that instantiates types of another model chooses it at open62541 build time with `MODELS` in `scripts/build_open62541.sh`. For example, `MODELS="DI;GDS"` gives the OPC 10000-100 SoftwareUpdate AddIn its DI types, and Part 21 onboarding adds `Onboarding`. The default build stays `GDS`, so OpenGDS on its own exposes no other namespace. The core finds the GDS namespace index by URI, so extra models never move it. A model open62541 does not ship is compiled with the nodeset compiler, and loaded with `gds_server_load_nodeset(s, namespace_<name>_generated)` (A5) before `gds_server_run`; this needs no new API.
 
 ## The Auditor under these rules
 
@@ -312,6 +314,7 @@ New or changed files, in the plan's file-by-file style.
 | `src/signer/checks.c` | Re-reads record and approval from the store, rate limits |
 | `src/signer/journal.c` | Signer's own hash-chained issuance log |
 | `src/gdsctl/verify_audit.c`, `main.c` | `gdsctl verify-audit`: one store against the journals of every node's signer |
+| `src/gdsctl/backup.c` | `gdsctl backup` / `restore`: an online store snapshot and the CA directory (key, certificate, CRL, issuance journal) in one AES-256-GCM archive keyed by scrypt of a backup passphrase. Restore authenticates the archive, then puts it in place only if `verify-audit` finds nothing but "signed, not committed" (other nodes' journals can be given) |
 | `packaging/systemd/opengds-signer@.service`, `opengds-signer.socket` | Signer unit (one instance per opengdsd connection, `Accept=yes`) and the socket between the two |
 | `docs/memory-safety.md` | Published memory-safety roadmap (F1) |
 | `docs/locking.md` | Lock order and thread ownership |

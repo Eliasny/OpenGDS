@@ -58,12 +58,14 @@ GDS_MUST_CHECK gds_status gds_store_app_update(gds_store *s, const UA_Guid *id,
 /* Remove the record with its requests and certificates. GDS_ENOTFOUND if
  * unknown. (Revocation of its certificates comes with REVOKE in T2.) */
 GDS_MUST_CHECK gds_status gds_store_app_delete(gds_store *s, const UA_Guid *id);
-/* Visit records in record-id order from fromRecordId; the record id is the
- * QueryApplications counter (OPC 10000-12 §6.5.10). rec->applicationId has
+/* Visit the records whose record id is greater than afterRecordId, in
+ * record-id order. The record id is the QueryApplications counter (OPC
+ * 10000-12 §6.5.10): every create and update gives the record a new, higher
+ * one (schema 3). rec->applicationId has
  * namespace 0; the callback borrows rec and returns false to stop. */
 typedef bool (*gds_store_scan_cb)(void *ctx, int64_t recordId,
                                   const UA_ApplicationRecordDataType *rec);
-GDS_MUST_CHECK gds_status gds_store_app_scan(gds_store *s, int64_t fromRecordId,
+GDS_MUST_CHECK gds_status gds_store_app_scan(gds_store *s, int64_t afterRecordId,
                                              gds_store_scan_cb cb, void *ctx);
 
 /* Certificate requests: [Pending ->] Received -> Issued -> Delivered, or
@@ -200,7 +202,7 @@ typedef struct {
                                UA_ApplicationRecordDataType **out, size_t *n);
     gds_status (*app_update)(void *ctx, const UA_Guid *id, const UA_ApplicationRecordDataType *rec);
     gds_status (*app_delete)(void *ctx, const UA_Guid *id);
-    gds_status (*app_scan)(void *ctx, int64_t fromRecordId, gds_store_scan_cb cb, void *cbCtx);
+    gds_status (*app_scan)(void *ctx, int64_t afterRecordId, gds_store_scan_cb cb, void *cbCtx);
     gds_status (*req_insert)(void *ctx, const gds_request *r);
     gds_status (*req_get)(void *ctx, const UA_Guid *id, gds_request *out);
     gds_status (*req_next_received)(void *ctx, gds_request *out);

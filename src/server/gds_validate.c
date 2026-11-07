@@ -131,3 +131,35 @@ UA_StatusCode gds_install_methods(gds_server *s, const gds_method_entry *m, size
     }
     return UA_STATUSCODE_GOOD;
 }
+
+static UA_StatusCode make_args(const gds_method_arg *a, size_t n, UA_Argument *out) {
+    for(size_t i = 0; i < n; i++) {
+        UA_Argument_init(&out[i]);
+        out[i].name = UA_STRING((char *)(uintptr_t)a[i].name);
+        out[i].dataType = UA_NODEID_NUMERIC(0, a[i].dataType);
+        out[i].valueRank = a[i].array ? UA_VALUERANK_ONE_DIMENSION : UA_VALUERANK_SCALAR;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
+UA_StatusCode gds_add_directory_method(gds_server *s, UA_UInt32 id, const char *name,
+                                       const gds_method_arg *in, size_t nIn,
+                                       const gds_method_arg *out, size_t nOut) {
+    UA_NodeId node = UA_NODEID_NUMERIC(s->ns, id);
+    UA_NodeClass nc = UA_NODECLASS_UNSPECIFIED;
+    if(UA_Server_readNodeClass(s->ua, node, &nc) == UA_STATUSCODE_GOOD)
+        return nc == UA_NODECLASS_METHOD ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNODECLASSINVALID;
+    UA_Argument inArgs[4], outArgs[4];
+    if(nIn > GDS_ARRAY_SIZE(inArgs) || nOut > GDS_ARRAY_SIZE(outArgs))
+        return UA_STATUSCODE_BADINTERNALERROR;
+    (void)make_args(in, nIn, inArgs);
+    (void)make_args(out, nOut, outArgs);
+    UA_MethodAttributes ma = UA_MethodAttributes_default;
+    ma.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)name);
+    ma.executable = true;
+    ma.userExecutable = true;
+    return UA_Server_addMethodNode(s->ua, node, UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY),
+                                   UA_NS0ID(HASCOMPONENT),
+                                   UA_QUALIFIEDNAME(s->ns, (char *)(uintptr_t)name), ma, NULL, nIn,
+                                   inArgs, nOut, outArgs, NULL, NULL);
+}

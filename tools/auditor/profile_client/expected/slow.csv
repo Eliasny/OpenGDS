@@ -1,0 +1,9 @@
+# The slow tests (gdsaudit client --slow --cycle-period 20) against the good
+# pull test client ("-") and the mutant each must trip.
+# mutant,test,verdict,extra pull_test_client options
+-,CLI-PEN-08,pass,--poll-seconds 20
+no-cycle-jitter,CLI-PEN-08,warn,--poll-seconds 20
+-,CLI-TL-08,pass,--poll-seconds 20
+ignore-update-frequency,CLI-TL-08,warn,--poll-seconds 20
+-,CLI-REN-03,pass,--poll-seconds 20
+no-expiry-renewal,CLI-REN-03,warn,--poll-seconds 20
