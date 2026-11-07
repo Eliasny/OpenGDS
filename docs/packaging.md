@@ -7,6 +7,7 @@ OpenGDS ships as:
 | `opengds_<ver>-1~deb13_<arch>.deb`, `…~ubuntu24.04…` | Debian 13, Ubuntu 24.04 | server: `opengdsd`, `opengds-signer`, `gdsadm`, systemd units |
 | `opengds-<ver>-1.el9.<arch>.rpm`, `…fc<N>…` | RHEL, Alma and Rocky 9; Fedora | the same |
 | `gdsaudit_…deb`, `gdsaudit-…rpm` | the same distributions | the OpenGDS Auditor command-line tool |
+| `gdsaudit-gui_…deb`, `gdsaudit-gui-…rpm` | distributions with GTK 4.12 or newer | the Auditor's desktop UI (`gdsaudit-gui`, desktop entry `org.opengds.Auditor`); needs `gdsaudit` of the same version |
 | `opengds-<ver>-deb13-<arch>.tar.gz` | other glibc distributions | every component under `usr/` |
 | `opengds-<ver>.tar.gz` | building from source | `git archive` of the release tag |
 | `ghcr.io/eliasny/opengds:<ver>` | Docker, Podman, Kubernetes | server on a distroless base, amd64 and arm64 |
@@ -26,6 +27,9 @@ OpenSSL 3.5 (decision G2) and open62541 v1.5.10 are linked statically, so the pa
 | `/usr/lib/systemd/system/opengds-signer.socket`, `opengds-signer@.service` | the signer, user `opengds-ca`, started per `opengdsd` connection |
 | `/usr/lib/sysusers.d/opengds.conf` | the `opengds` and `opengds-ca` system users |
 | `/usr/share/doc/opengds/` | `opengds.conf.example`, `opengdsd.md`, this file, the license |
+| `/usr/bin/gdsaudit` | the Auditor (package `gdsaudit`) |
+| `/usr/bin/gdsaudit-gui` | the Auditor's desktop UI (package `gdsaudit-gui`) |
+| `/usr/share/applications/org.opengds.Auditor.desktop`, `/usr/share/metainfo/org.opengds.Auditor.metainfo.xml`, `/usr/share/icons/hicolor/scalable/apps/org.opengds.Auditor.svg` | its desktop entry, AppStream metadata and icon |
 
 Created at run time, never shipped in a package:
 
