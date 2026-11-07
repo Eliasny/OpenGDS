@@ -599,6 +599,19 @@ typedef struct {
 GDS_MUST_CHECK gds_status gds_server_add_trust_list(struct gds_server *s,
                                                     const gds_trust_list_def *def);
 
+/* Replaces the lists of a plugin trust list that tl->specifiedLists
+ * selects (UASM ask A20), e.g. a cluster node bringing its copy in line
+ * with the replicated one; checked as CloseAndUpdate checks (GDS_EINVAL).
+ * A writer that opened the TrustList before this call gets
+ * Bad_InvalidState at CloseAndUpdate, so a stale edit never lands. Any
+ * thread, on a STANDBY node too. GDS_ENOTFOUND: no plugin trust list has
+ * this group.
+ * On a STANDBY node (gds_server_set_role) the TrustList is read-only over
+ * OPC UA: Open for writing, CloseAndUpdate, AddCertificate and
+ * RemoveCertificate answer Bad_InvalidState. */
+GDS_MUST_CHECK gds_status gds_server_set_trust_list(struct gds_server *s, const UA_NodeId *groupId,
+                                                    const UA_TrustListDataType *tl);
+
 #ifdef __cplusplus
 }
 #endif
