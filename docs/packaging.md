@@ -13,7 +13,7 @@ OpenGDS ships as:
 
 Architectures: amd64 (x86_64) and arm64 (aarch64). Each binary artifact has an SPDX 2.3 SBOM next to it (`<artifact>.spdx.json`).
 
-OpenSSL 3.5 (decision G2) and open62541 v1.5.10 are linked statically, so the packages depend only on glibc, SQLite and systemd 252 or newer. On EL 9, whose SQLite 3.34 is older than the store needs (3.37), SQLite is linked statically as well, from the version pinned in `scripts/build_sqlite.sh`.
+OpenSSL 3.5 (decision G2) and open62541 v1.5.10 are linked statically, so the packages depend only on glibc, SQLite, libseccomp 2.5 or newer (the signer's seccomp filter, src/common/sandbox.c; release builds set `-DOPENGDS_SECCOMP=ON` so it is never left out) and systemd 252 or newer. On EL 9, whose SQLite 3.34 is older than the store needs (3.37), SQLite is linked statically as well, from the version pinned in `scripts/build_sqlite.sh`.
 
 ## Installed files
 
@@ -114,7 +114,7 @@ Signing adds bytes: an RPM carries its signature inside, so compare the unsigned
 - the OpenGDS source at the release commit;
 - OpenSSL, with the version and the tarball SHA-256 pinned in `scripts/build_openssl.sh`;
 - open62541, with the commit pinned in `scripts/build_open62541.sh`, the patches carried from `docs/upstream/patches/`, and the git submodules that are compiled in;
-- glibc and SQLite, as dynamic dependencies, at the versions of the build system.
+- glibc, SQLite and libseccomp, as dynamic dependencies, at the versions of the build system.
 
 ## Verifying a release
 
