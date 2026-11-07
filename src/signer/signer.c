@@ -12,11 +12,17 @@
 #include "proto.h"
 #include "common/banned.h"
 
+static gds_status store_result(gds_signer *s, gds_status r) {
+    if(r == GDS_EIO)
+        s->storeFailed = true;
+    return r;
+}
+
 /* SIGN_CSR: re-read everything from the store, then sign. */
 static gds_status sign_from_store(gds_signer *s, const UA_Guid *reqId, gds_ca_issued *out) {
     gds_request q;
     memset(&q, 0, sizeof(q));
-    gds_status r = gds_store_req_get(s->store, reqId, &q);
+    gds_status r = store_result(s, gds_store_req_get(s->store, reqId, &q));
     if(r != GDS_OK)
         return r;
     UA_ApplicationRecordDataType rec;
@@ -24,7 +30,7 @@ static gds_status sign_from_store(gds_signer *s, const UA_Guid *reqId, gds_ca_is
     if(q.state != GDS_REQ_RECEIVED) {
         r = GDS_ESTATE; /* already signed, delivered or failed: never twice */
     } else {
-        r = gds_store_app_get(s->store, &q.appId, &rec);
+        r = store_result(s, gds_store_app_get(s->store, &q.appId, &rec));
     }
     if(r == GDS_OK) {
         gds_ca_subject subj = {reqId, &rec, q.groupId, q.certType};
@@ -55,7 +61,7 @@ static gds_status journal(gds_signer *s, const UA_Guid *reqId, gds_status r,
  * arbitrary serial on the CRL. Replies with the new CRL. */
 static gds_status revoke_from_store(gds_signer *s, const gds_buf *serial, gds_buf *crl) {
     bool revoked = false;
-    gds_status r = gds_store_cert_is_revoked(s->store, serial, &revoked);
+    gds_status r = store_result(s, gds_store_cert_is_revoked(s->store, serial, &revoked));
     if(r != GDS_OK)
         return r;
     if(!revoked)
@@ -121,6 +127,8 @@ gds_status gds_signer_serve(gds_signer *s, int fd) {
         if(r == GDS_OK && send(fd, reply.data, reply.len, MSG_NOSIGNAL) != (ssize_t)reply.len)
             r = GDS_EIO;
         gds_buf_free(&reply);
+        if(r == GDS_OK && s->storeFailed)
+            r = GDS_EIO; /* the reply went out; a restart reopens the store */
         if(r != GDS_OK)
             break;
     }
