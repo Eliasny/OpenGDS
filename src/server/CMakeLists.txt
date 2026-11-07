@@ -10,6 +10,7 @@ add_library(gds_server STATIC
     gds_directory.c
     gds_embed.c
     gds_nodes.c
+    gds_plugin_tl.c
     gds_policy.c
     gds_registrar.c
     gds_revoke.c

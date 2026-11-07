@@ -457,8 +457,9 @@ GDS_MUST_CHECK gds_status gds_server_sign_request(struct gds_server *s, const ch
                                                   UA_ByteString **issuers, size_t *nIssuers);
 
 /* The trust list of a CertificateGroup (NULL or a null NodeId: the
- * DefaultApplicationGroup), as GetTrustList and the TrustList file give it
- * (OPC 10000-12 §7.9.9, §7.8.2.1): every list, a deep copy. */
+ * DefaultApplicationGroup; or a group from gds_server_add_trust_list), as
+ * GetTrustList and the TrustList file give it (OPC 10000-12 §7.9.9,
+ * §7.8.2.1): every list, a deep copy. */
 GDS_MUST_CHECK gds_status gds_server_get_trust_list(struct gds_server *s, const UA_NodeId *groupId,
                                                     UA_TrustListDataType *out);
 
@@ -482,6 +483,38 @@ typedef bool (*gds_may_manage_fn)(void *ctx, const gds_caller *caller,
                                   const UA_NodeId *applicationId);
 GDS_MUST_CHECK gds_status gds_server_set_application_rights_hook(struct gds_server *s,
                                                                  gds_may_manage_fn fn, void *ctx);
+
+/* ---- plugin trust lists (UASM ask A18) ----
+ * A CertificateGroup of the plugin's own (OPC 10000-12 §7.8.3.1), for
+ * example the SKS's push targets: a CertificateGroupType object `name`
+ * (BrowseName in groupId's namespace) under parentId, whose TrustList
+ * (TrustListType, §7.8.2) sessions holding one of `roles` over
+ * SignAndEncrypt read and change with Open, OpenWithMasks, Read, Write,
+ * Close, CloseAndUpdate, AddCertificate and RemoveCertificate. The lists
+ * live in an open62541 file store under pkiDir (created, mode 0700;
+ * Annex F.1 layout), so they survive restarts; changes are live at once
+ * (applyChangesRequired FALSE). gds_server_get_trust_list(s, &groupId)
+ * reads them. Before or while the server runs, from any thread; groupId
+ * not in namespace 0 or the GDS namespace (GDS_EDENIED), parentId an
+ * existing object (GDS_ENOTFOUND); at most 8 lists (GDS_ETOOBIG). */
+#define GDS_MAX_PLUGIN_TRUST_LISTS 8
+
+typedef struct {
+    uint32_t abi_major;
+    uint32_t abi_minor;
+    size_t struct_size;
+    UA_NodeId groupId;  /* the CertificateGroupType object to create */
+    UA_NodeId parentId; /* the plugin's object */
+    const char *name;
+    const char *pkiDir;
+    /* Who may call the TrustList methods (for example SecurityAdmin), as
+     * gds_method_def.roles; at least one; copied. */
+    const UA_NodeId *roles;
+    size_t rolesSize;
+} gds_trust_list_def;
+
+GDS_MUST_CHECK gds_status gds_server_add_trust_list(struct gds_server *s,
+                                                    const gds_trust_list_def *def);
 
 #ifdef __cplusplus
 }
