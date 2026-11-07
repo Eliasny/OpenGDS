@@ -71,6 +71,19 @@ static void emit(const ga_event *ev) {
         sinks[i].fn(ev, sinks[i].user);
 }
 
+static ga_prompt_fn promptFn;
+static void *promptUser;
+static size_t promptSeq;
+
+void ga_set_prompt_handler(ga_prompt_fn fn, void *user) {
+    promptFn = fn;
+    promptUser = user;
+}
+
+bool ga_prompt_available(void) {
+    return promptFn != NULL;
+}
+
 /* Between two tests: wait while a pause is asked for. */
 static void wait_if_paused(void) {
     if(!ga_pause_requested() || ga_abort_requested())
@@ -137,6 +150,43 @@ void ga_note(ga_ctx *ctx, const char *fmt, ...) {
         ga_event ev = {.kind = GA_EV_NOTE, .n = ctx->n, .text = line};
         emit(&ev);
     }
+}
+
+ga_answer ga_prompt(ga_ctx *ctx, char *note, size_t noteLen, const char *fmt, ...) {
+    char text[GA_EVIDENCE];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(text, sizeof(text), fmt, ap); /* NOLINT(clang-analyzer-valist.Uninitialized): va_start above */
+    va_end(ap);
+    sanitize(text);
+    char answerNote[GA_EVIDENCE] = "";
+    ga_answer a = GA_ANSWER_SKIP;
+    size_t seq = ++promptSeq;
+    ga_note(ctx, "operator prompt %zu: %s", seq, text);
+    ga_event ev = {.kind = GA_EV_PROMPT, .n = ctx ? ctx->n : 0, .seq = seq, .text = text};
+    emit(&ev);
+    fflush(stdout);
+    if(!promptFn) {
+        snprintf(answerNote, sizeof(answerNote), "no operator to ask");
+    } else if(ga_abort_requested() ||
+              !promptFn(seq, text, &a, answerNote, sizeof(answerNote), promptUser)) {
+        a = GA_ANSWER_SKIP;
+        snprintf(answerNote, sizeof(answerNote), "no answer from the operator");
+    }
+    if((size_t)a >= GA_ANSWER_COUNT)
+        a = GA_ANSWER_SKIP;
+    sanitize(answerNote);
+    ga_event done = {.kind = GA_EV_PROMPT_ANSWERED, .n = ev.n, .seq = seq, .answer = a,
+                     .text = answerNote};
+    emit(&done);
+    ga_note(ctx, "operator: %s%s%s", ga_answer_name(a), answerNote[0] ? ": " : "", answerNote);
+    if(ctx && a == GA_ANSWER_SKIP)
+        ga_not_tested(ctx, "operator step skipped: %s", text);
+    else if(ctx && a == GA_ANSWER_FAIL)
+        ga_fail(ctx, "operator reports failure: %s", answerNote[0] ? answerNote : text);
+    if(note && noteLen)
+        snprintf(note, noteLen, "%s", answerNote);
+    return a;
 }
 
 bool ga_decided(const ga_ctx *ctx) {
@@ -260,6 +310,7 @@ static int run_tests(const ga_test *tests, size_t n, void *profile, const ga_run
 
 int ga_run(const ga_test *tests, size_t n, void *profile, const ga_run_options *opt) {
     size_t counts[GA_VERDICT_COUNT] = {0};
+    promptSeq = 0; /* prompt numbers count from 1 in each run */
     int rc = run_tests(tests, n, profile, opt, counts);
     char when[32];
     utc_now(when, sizeof(when));

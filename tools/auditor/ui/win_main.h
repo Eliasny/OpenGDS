@@ -40,4 +40,13 @@ typedef void (*dlg_allow_changes_done)(gboolean allowed, gpointer user);
 void dlg_allow_changes_run(GtkWindow *parent, const char *endpoint, const char *thumbprint,
                            gboolean tofu, dlg_allow_changes_done done, gpointer user);
 
+/* An operator step (ui/dlg_prompt.c): shows the instruction of prompt seq
+ * and calls done once with the person's answer and note, then closes. The
+ * caller may destroy the returned window first (the engine stopped
+ * waiting); done is then not called. */
+typedef void (*dlg_prompt_done)(ga_answer answer, const char *note, gpointer user);
+GtkWindow *dlg_prompt_present(GtkWindow *parent, size_t seq, const char *testId,
+                              const char *testTitle, const char *text, dlg_prompt_done done,
+                              gpointer user);
+
 #endif
