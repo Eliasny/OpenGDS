@@ -59,6 +59,7 @@ struct gds_job {
     UA_MethodCallback gdsMethod;
     UA_NodeId methodId;
     UA_Guid app;
+    bool approval; /* A22: the approval hook, not may_manage */
     bool allowed;
     size_t outSize; /* a rights check writes open62541's outputs itself */
     UA_NodeId sessionId;
@@ -136,8 +137,11 @@ static void run_rights(gds_job *j) {
     gds_caller_buf cb;
     gds_status st = gds_caller_build(j->s, &j->sessionId, &j->snap, &cb);
     UA_NodeId app = UA_NODEID_GUID(j->s->ns, j->app);
-    j->allowed = st == GDS_OK && j->s->mayManage(j->s->mayManageCtx, &cb.view, &app);
-    j->status = j->allowed ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADUSERACCESSDENIED;
+    if(j->approval)
+        j->allowed = st == GDS_OK && j->s->approve(j->s->approveCtx, &cb.view, &app);
+    else
+        j->allowed = st == GDS_OK && j->s->mayManage(j->s->mayManageCtx, &cb.view, &app);
+    j->status = j->allowed || j->approval ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADUSERACCESSDENIED;
     if(st == GDS_OK)
         gds_caller_buf_clear(&cb);
 }
@@ -227,6 +231,27 @@ static gds_status pool_start(gds_server *s) {
     return GDS_OK;
 }
 
+/* A14/A22: the GDS method itself, on the server thread, with the hook's
+ * answer on the job's copy of the session. */
+static void rerun_gds_method(UA_Server *server, gds_server *s, gds_job *j) {
+    UA_StatusCode r = j->status;
+    if(j->approval) { /* A22: run again either way, with the answer */
+        j->snap.approvalAsked = true;
+        j->snap.approvalGranted = j->allowed;
+        j->snap.approvalApp = j->app;
+    } else if(j->allowed) {
+        j->snap.managedGranted = true;
+        j->snap.managedApp = j->app;
+    }
+    if(j->allowed || j->approval)
+        r = j->gdsMethod(server, &j->sessionId, &j->snap, &j->methodId, s, &j->objectId, NULL,
+                         j->nIn, j->in, j->outSize, j->output);
+    /* deferred again (rights, then approval): the new job answers; the
+     * session copy's flags keep it from asking twice */
+    if(r != UA_STATUSCODE_GOODCOMPLETESASYNCHRONOUSLY)
+        (void)UA_Server_setAsyncCallMethodResult(server, j->output, r);
+}
+
 /* Server thread (or the deleting thread once the loop stopped). */
 static void drain(UA_Server *server, void *data) {
     gds_server *s = data;
@@ -244,18 +269,7 @@ static void drain(UA_Server *server, void *data) {
             if(j->output)
                 (void)UA_Server_setAsyncCallMethodResult(server, j->output, r);
         } else if(j->output && j->gdsMethod) {
-            /* A14: the GDS method itself, on the server thread, with the
-             * hook's answer on the job's copy of the session */
-            UA_StatusCode r = j->status;
-            if(j->allowed) {
-                j->snap.managedGranted = true;
-                j->snap.managedApp = j->app;
-                r = j->gdsMethod(server, &j->sessionId, &j->snap, &j->methodId, s, &j->objectId,
-                                 NULL, j->nIn, j->in, j->outSize, j->output);
-                if(r == UA_STATUSCODE_GOODCOMPLETESASYNCHRONOUSLY)
-                    r = UA_STATUSCODE_BADINTERNALERROR; /* never deferred twice */
-            }
-            (void)UA_Server_setAsyncCallMethodResult(server, j->output, r);
+            rerun_gds_method(server, s, j);
         } else if(j->output) {
             for(size_t i = 0; i < j->nOut; i++) {
                 j->output[i] = j->out[i]; /* moved */
@@ -338,6 +352,12 @@ static UA_StatusCode job_new(const gds_binding *b, const gds_session *ss,
     memcpy(j->snap.user, ss->user, sizeof(j->snap.user));
     j->snap.roles = gds_session_roles(ss);
     j->snap.securityMode = ss->securityMode;
+    /* a job's copy re-deferred (A14 then A22) keeps the answers so far */
+    j->snap.managedGranted = ss->managedGranted;
+    j->snap.managedApp = ss->managedApp;
+    j->snap.approvalAsked = ss->approvalAsked;
+    j->snap.approvalGranted = ss->approvalGranted;
+    j->snap.approvalApp = ss->approvalApp;
     UA_StatusCode r = UA_String_copy(&ss->clientAppUri, &j->snap.clientAppUri);
     if(r == UA_STATUSCODE_GOOD)
         r = UA_String_copy(&ss->securityPolicyUri, &j->snap.securityPolicyUri);
@@ -723,6 +743,35 @@ UA_StatusCode gds_embed_defer_rights(gds_server *s, UA_MethodCallback fn, const 
     return enqueue(s, slot, j, output);
 }
 
+UA_StatusCode gds_embed_defer_approval(gds_server *s, UA_MethodCallback fn,
+                                       const UA_NodeId *sessionId, void *sessionContext,
+                                       const UA_NodeId *methodId, const UA_NodeId *objectId,
+                                       const UA_Guid *app, size_t inputSize,
+                                       const UA_Variant *input, size_t outputSize,
+                                       UA_Variant *output) {
+    const gds_session *ss = sessionContext;
+    if(!s->approve || !ss || ss->approvalAsked || s->plugWorkers == 0)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    size_t slot = free_slot(s);
+    if(slot == GDS_PLUGIN_QUEUE)
+        return UA_STATUSCODE_BADSERVERTOOBUSY;
+    gds_job *j = NULL;
+    UA_StatusCode r =
+        job_new(NULL, ss, sessionId, objectId, inputSize, input, outputSize, &j);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    j->s = s;
+    j->gdsMethod = fn;
+    j->approval = true;
+    j->app = *app;
+    r = UA_NodeId_copy(methodId, &j->methodId);
+    if(r != UA_STATUSCODE_GOOD) {
+        job_free(j);
+        return r;
+    }
+    return enqueue(s, slot, j, output);
+}
+
 gds_status gds_embed_pool_start(gds_server *s) {
     pthread_mutex_lock(&s->bindLock); /* one starter at a time */
     gds_status st = pool_start(s);
@@ -763,5 +812,18 @@ gds_status gds_server_set_application_rights_hook(gds_server *s, gds_may_manage_
         return st;
     s->mayManage = fn;
     s->mayManageCtx = ctx;
+    return GDS_OK;
+}
+
+gds_status gds_server_set_approval_hook(gds_server *s, gds_approve_fn fn, void *ctx) {
+    if(!s)
+        return GDS_EINVAL;
+    if(__atomic_load_n(&s->started, __ATOMIC_ACQUIRE))
+        return GDS_ESTATE;
+    gds_status st = fn ? pool_start(s) : GDS_OK;
+    if(st != GDS_OK)
+        return st;
+    s->approve = fn;
+    s->approveCtx = ctx;
     return GDS_OK;
 }

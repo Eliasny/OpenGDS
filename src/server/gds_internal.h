@@ -120,6 +120,9 @@ struct gds_server {
     /* CertificateManager rights hook (UASM ask A14); fixed before run */
     gds_may_manage_fn mayManage;
     void *mayManageCtx;
+    /* Approval hook (UASM ask A22); fixed before run */
+    gds_approve_fn approve;
+    void *approveCtx;
 };
 
 /* ---- caller views (gds_caller.c, issue #17) ---- */
@@ -166,6 +169,25 @@ GDS_MUST_CHECK UA_StatusCode gds_embed_defer_rights(gds_server *s, UA_MethodCall
                                                     const UA_NodeId *objectId, const UA_Guid *app,
                                                     size_t inputSize, const UA_Variant *input,
                                                     size_t outputSize, UA_Variant *output);
+/* A22: StartSigningRequest for app would wait for an administrator; ask
+ * the embedder's approval hook on a worker, then run fn again on the
+ * server thread with the answer on the session copy (approvalAsked).
+ * Good_CompletesAsynchronously, or Bad_InternalError when there is no
+ * hook or no worker (the caller then leaves the request pending). */
+GDS_MUST_CHECK UA_StatusCode gds_embed_defer_approval(gds_server *s, UA_MethodCallback fn,
+                                                      const UA_NodeId *sessionId,
+                                                      void *sessionContext,
+                                                      const UA_NodeId *methodId,
+                                                      const UA_NodeId *objectId, const UA_Guid *app,
+                                                      size_t inputSize, const UA_Variant *input,
+                                                      size_t outputSize, UA_Variant *output);
+/* The audit event of a certificate method (gds_registrar.c): type is
+ * CertificateRequested or CertificateDelivered, actor the ClientUserId,
+ * msg NULL or a note. */
+GDS_MUST_CHECK gds_status gds_cert_audit(gds_server *s, const char *actor, UA_UInt32 type,
+                                         UA_UInt32 method, UA_UInt32 certType,
+                                         const UA_Variant *args, size_t nArgs, bool ok,
+                                         const char *msg);
 /* A core method that runs part of its work on a plugin worker (A19):
  * run(ctx, caller, inputs) on a worker, then done(s, ctx, run's status) on
  * the server thread, whose status completes the call (also when the call

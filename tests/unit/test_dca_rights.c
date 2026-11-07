@@ -42,7 +42,8 @@ typedef struct {
 
 static pair device, stranger;
 static UA_NodeId deviceApp, otherApp;
-static int hookCalls, sawCert;
+static int hookCalls, sawCert, approveCalls;
+static bool approveAnswer = true; /* atomic */
 static UA_Boolean running = true;
 
 /* ---- the embedder ---- */
@@ -56,6 +57,17 @@ static bool may_manage(void *ctx, const gds_caller *c, const UA_NodeId *app) {
     bool isDevice = c->clientCertificateSize == device.cert.length &&
                     memcmp(c->clientCertificate, device.cert.data, device.cert.length) == 0;
     return isDevice && UA_NodeId_equal(app, &deviceApp);
+}
+
+/* A22: the device's own requests skip the administrator (OPC 10000-21
+ * §4.3.3) while approveAnswer says so. */
+static bool approve(void *ctx, const gds_caller *c, const UA_NodeId *app) {
+    (void)ctx;
+    __atomic_add_fetch(&approveCalls, 1, __ATOMIC_SEQ_CST);
+    bool isDevice = c->clientCertificate && c->clientCertificateSize == device.cert.length &&
+                    memcmp(c->clientCertificate, device.cert.data, device.cert.length) == 0;
+    return isDevice && UA_NodeId_equal(app, &deviceApp) &&
+           __atomic_load_n(&approveAnswer, __ATOMIC_SEQ_CST);
 }
 
 static gds_status grant(void *ctx, const gds_caller *c, gds_privilege_set *set) {
@@ -172,8 +184,9 @@ static gds_status make_csr(UA_ByteString *out) {
     return r;
 }
 
-/* StartSigningRequest, then FinishRequest until the worker has signed. */
-static UA_StatusCode sign_flow(UA_Client *c, UA_UInt16 ns, const UA_NodeId *app) {
+/* StartSigningRequest, then FinishRequest until the worker has signed;
+ * with pending, FinishRequest once (its answer). */
+static UA_StatusCode sign_flow(UA_Client *c, UA_UInt16 ns, const UA_NodeId *app, bool pending) {
     UA_ByteString csr;
     if(make_csr(&csr) != GDS_OK)
         return UA_STATUSCODE_BADINTERNALERROR;
@@ -196,13 +209,14 @@ static UA_StatusCode sign_flow(UA_Client *c, UA_UInt16 ns, const UA_NodeId *app)
     UA_Variant fin[2];
     UA_Variant_setScalar(&fin[0], (void *)(uintptr_t)app, &UA_TYPES[UA_TYPES_NODEID]);
     UA_Variant_setScalar(&fin[1], &req, &UA_TYPES[UA_TYPES_NODEID]);
+    bool signed_ = false;
     for(int i = 0; i < 200 && r == UA_STATUSCODE_GOOD; i++) {
         r = call(c, ns, UA_GDSID_DIRECTORY_FINISHREQUEST, fin, 2, &out, &n);
-        bool signed_ = r == UA_STATUSCODE_GOOD && n == 3 &&
+        signed_ = r == UA_STATUSCODE_GOOD && n == 3 &&
                        UA_Variant_hasScalarType(&out[0], &UA_TYPES[UA_TYPES_BYTESTRING]) &&
                        ((UA_ByteString *)out[0].data)->length > 0;
         UA_Array_delete(out, n, &UA_TYPES[UA_TYPES_VARIANT]);
-        if(signed_)
+        if(signed_ || pending)
             break;
         if(r == UA_STATUSCODE_BADNOTHINGTODO) {
             r = UA_STATUSCODE_GOOD;
@@ -210,7 +224,22 @@ static UA_StatusCode sign_flow(UA_Client *c, UA_UInt16 ns, const UA_NodeId *app)
         }
     }
     UA_NodeId_clear(&req);
-    return r;
+    return r == UA_STATUSCODE_GOOD && !signed_ && !pending ? UA_STATUSCODE_BADTIMEOUT : r;
+}
+
+static bool count_req(void *ctx, const gds_request *r) {
+    (void)r;
+    (*(int *)ctx)++;
+    return true;
+}
+
+/* Requests waiting for an administrator, read under the store lock. */
+static int pending_requests(gds_server *s) {
+    int n = 0;
+    gds_lock(s);
+    gds_status st = gds_store_req_scan(s->store, GDS_REQ_PENDING, count_req, &n);
+    gds_unlock(s);
+    return st == GDS_OK ? n : -1;
 }
 
 /* ---- the tests ---- */
@@ -226,8 +255,16 @@ static void test_device(gds_server *s, const char *url) {
                  UA_STATUSCODE_GOOD);
     CHECK_EQ_INT(app_call(c, ns, UA_GDSID_DIRECTORY_GETTRUSTLIST, &deviceApp, 1),
                  UA_STATUSCODE_GOOD);
-    CHECK_EQ_INT(sign_flow(c, ns, &deviceApp), UA_STATUSCODE_GOOD);
+    /* policy "renewals" would hold this first request: the approval hook
+     * (A22, asked after may_manage) lets it through */
+    CHECK_EQ_INT(sign_flow(c, ns, &deviceApp, false), UA_STATUSCODE_GOOD);
+    CHECK_EQ_INT(__atomic_load_n(&approveCalls, __ATOMIC_SEQ_CST), 1);
     CHECK(__atomic_load_n(&sawCert, __ATOMIC_SEQ_CST) == 1);
+    /* the hook says no: the request waits for an administrator */
+    __atomic_store_n(&approveAnswer, false, __ATOMIC_SEQ_CST);
+    CHECK_EQ_INT(sign_flow(c, ns, &deviceApp, true), UA_STATUSCODE_BADNOTHINGTODO);
+    CHECK_EQ_INT(__atomic_load_n(&approveCalls, __ATOMIC_SEQ_CST), 2);
+    CHECK_EQ_INT(pending_requests(s), 1);
     /* another application: refused */
     CHECK_EQ_INT(status_of(c, ns, &otherApp), UA_STATUSCODE_BADUSERACCESSDENIED);
     CHECK_EQ_INT(app_call(c, ns, UA_GDSID_DIRECTORY_GETTRUSTLIST, &otherApp, 1),
@@ -274,6 +311,7 @@ static void serve(gds_server *s, UA_UInt16 port) {
                                         sizeof(gds_privilege_provider), NULL, grant};
     CHECK(gds_server_add_privilege_provider(s, &pp) == GDS_OK);
     CHECK(gds_server_set_application_rights_hook(s, may_manage, NULL) == GDS_OK);
+    CHECK(gds_server_set_approval_hook(s, approve, NULL) == GDS_OK);
     if(!register_apps(s))
         return;
     pthread_t loop;
@@ -285,6 +323,7 @@ static void serve(gds_server *s, UA_UInt16 port) {
     test_stranger(s, url);
     /* fixed once the server runs */
     CHECK(gds_server_set_application_rights_hook(s, NULL, NULL) == GDS_ESTATE);
+    CHECK(gds_server_set_approval_hook(s, NULL, NULL) == GDS_ESTATE);
     (void)UA_Server_addTimedCallback(gds_server_ua(s), stop_cb, &running,
                                      UA_DateTime_nowMonotonic(), NULL);
     (void)pthread_join(loop, NULL);
@@ -332,7 +371,7 @@ int main(int argc, char **argv) {
     cfg.store = st;
     cfg.ca = ca;
     cfg.users = &users;
-    cfg.approval = GDS_APPROVE_ALL;
+    cfg.approval = GDS_APPROVE_RENEWALS; /* first requests wait (A22) */
     gds_server *s = NULL;
     if(CHECK(gds_server_new(&cfg, &s) == GDS_OK) && s)
         serve(s, port);
