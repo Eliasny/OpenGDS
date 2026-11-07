@@ -334,10 +334,14 @@ static UA_StatusCode set_fields(UA_Server *ua, UA_NodeId c, const gds_dialog_def
     UA_Boolean retain = true;
     /* the core fires the events itself: one per state change */
     UA_StatusCode r = gds_cond_detach_hook(ua, c, "EnabledState", "Id");
+    /* open62541's Severity hook fires an event and overwrites Message
+     * ("The alarm severity has increased"); Severity first, then Message */
     if(r == UA_STATUSCODE_GOOD)
-        r = gds_cond_set_field(ua, c, "Message", &message, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
+        r = gds_cond_detach_hook(ua, c, "Severity", NULL);
     if(r == UA_STATUSCODE_GOOD)
         r = gds_cond_set_field(ua, c, "Severity", &sev, &UA_TYPES[UA_TYPES_UINT16]);
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_cond_set_field(ua, c, "Message", &message, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
     if(r == UA_STATUSCODE_GOOD)
         r = gds_cond_set_field(ua, c, "Prompt", &prompt, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
     if(r == UA_STATUSCODE_GOOD)

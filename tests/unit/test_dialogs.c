@@ -291,7 +291,9 @@ static UA_StatusCode respond(UA_Client *c, const UA_NodeId *d, UA_Int32 resp, co
     return r;
 }
 
-static bool read_bool(UA_Client *c, const UA_NodeId *d, const char *a, const char *b) {
+/* The value of d's child a (or its child b); *out cleared on failure. */
+static bool read_child(UA_Client *c, const UA_NodeId *d, const char *a, const char *b,
+                       UA_Variant *out) {
     UA_BrowsePath bp;
     UA_BrowsePath_init(&bp);
     UA_RelativePathElement el[2];
@@ -311,18 +313,39 @@ static bool read_bool(UA_Client *c, const UA_NodeId *d, const char *a, const cha
     req.browsePathsSize = 1;
     UA_TranslateBrowsePathsToNodeIdsResponse res =
         UA_Client_Service_translateBrowsePathsToNodeIds(c, req);
-    bool v = false;
-    if(res.resultsSize == 1 && res.results[0].targetsSize == 1) {
-        UA_Variant val;
-        UA_Variant_init(&val);
-        if(UA_Client_readValueAttribute(c, res.results[0].targets[0].targetId.nodeId, &val) ==
-               UA_STATUSCODE_GOOD &&
-           val.data && UA_Variant_hasScalarType(&val, &UA_TYPES[UA_TYPES_BOOLEAN]))
-            v = *(UA_Boolean *)val.data;
-        UA_Variant_clear(&val);
-    }
+    UA_Variant_init(out);
+    bool ok = res.resultsSize == 1 && res.results[0].targetsSize == 1 &&
+              UA_Client_readValueAttribute(c, res.results[0].targets[0].targetId.nodeId, out) ==
+                  UA_STATUSCODE_GOOD;
     UA_TranslateBrowsePathsToNodeIdsResponse_clear(&res);
+    if(!ok)
+        UA_Variant_clear(out);
+    return ok;
+}
+
+static bool read_bool(UA_Client *c, const UA_NodeId *d, const char *a, const char *b) {
+    UA_Variant val;
+    bool v = read_child(c, d, a, b, &val) && val.data &&
+             UA_Variant_hasScalarType(&val, &UA_TYPES[UA_TYPES_BOOLEAN]) &&
+             *(UA_Boolean *)val.data;
+    UA_Variant_clear(&val);
     return v;
+}
+
+/* Message and Severity as the definition gave them (Severity's hook would
+ * overwrite Message). */
+static bool fields_kept(UA_Client *c, const UA_NodeId *d) {
+    UA_Variant m, s;
+    bool ok = read_child(c, d, "Message", NULL, &m) && read_child(c, d, "Severity", NULL, &s);
+    const char *want = "Found opc.tcp://plc-7:4840";
+    ok = ok && UA_Variant_hasScalarType(&m, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]) &&
+         UA_Variant_hasScalarType(&s, &UA_TYPES[UA_TYPES_UINT16]) &&
+         ((UA_LocalizedText *)m.data)->text.length == strlen(want) &&
+         memcmp(((UA_LocalizedText *)m.data)->text.data, want, strlen(want)) == 0 &&
+         *(UA_UInt16 *)s.data == 300;
+    UA_Variant_clear(&m);
+    UA_Variant_clear(&s);
+    return ok;
 }
 
 /* ---- clients ---- */
@@ -446,6 +469,7 @@ static void test_clients(gds_server *s, UA_Client *admin, UA_Client *plain) {
     CHECK(gds_server_add_dialog(s, &d, &hidden) == GDS_OK);
     CHECK(wait_both(admin, 1, plain, 0));
     CHECK(seen_is(&seenAdmin, 0, DIALOG_TYPE, true, true));
+    CHECK(fields_kept(admin, &hidden));
     seen_reset();
     d = def_of("RegisterPlc8", false);
     d.dialogId = UA_NODEID_STRING(ns, "RegisterPlc8");
