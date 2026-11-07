@@ -237,6 +237,7 @@ static size_t collect_server(ga_test *all) {
                 {srv_wire_tests, srv_wire_count},
                 {srv_rejected_tests, srv_rejected_count},
                 {srv_persistence_tests, srv_persistence_count},
+                {srv_audit_tests, srv_audit_count},
                 {srv_setup_tests, srv_setup_count}, /* only with --only SRV-SET */
                 {srv_restore_tests, srv_restore_count}}; /* restore stays last */
     size_t n = 0;
