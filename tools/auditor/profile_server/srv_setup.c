@@ -41,8 +41,11 @@ static bool absent(UA_StatusCode r) {
            r == UA_STATUSCODE_BADNOTSUPPORTED;
 }
 
-/* Selected with --only SRV-SET..., and the target reset by the hook. */
-static bool selected(ga_ctx *ctx, srv_target *t) {
+/* Selected with --only SRV-SET..., and the target reset by the hook. A
+ * test that opens sessions (session) also needs a secure endpoint that
+ * presents a certificate: without one the client stack would build a
+ * SecureChannel on an empty certificate (SRV-SET-02 reports it). */
+static bool selected(ga_ctx *ctx, srv_target *t, bool session) {
     if(!t->only || strncmp(t->only, SETUP_PREFIX, strlen(SETUP_PREFIX)) != 0) {
         ga_not_tested(ctx, "runs only with --only " SETUP_PREFIX
                            ": the target must be in application setup first");
@@ -52,6 +55,16 @@ static bool selected(ga_ctx *ctx, srv_target *t) {
     if(r != UA_STATUSCODE_GOOD) {
         ga_not_tested(ctx, "--setup-cmd failed or the target did not come back within %ld s (%s)",
                       t->settleSec, UA_StatusCode_name(r));
+        return false;
+    }
+    if(!session)
+        return true;
+    gds_buf presented = {0};
+    r = st_presented(t, &presented);
+    gds_buf_free(&presented);
+    if(r == UA_STATUSCODE_BADNOTFOUND) {
+        ga_not_tested(ctx, "no secure endpoint presents a certificate, so no secure session "
+                           "(SRV-SET-02 checks it)");
         return false;
     }
     return true;
@@ -107,7 +120,7 @@ static const char *state_name(UA_ServerState s) {
  * NoConfiguration. */
 static void t_set_state(ga_ctx *ctx, void *p) {
     srv_target *t = p;
-    if(!selected(ctx, t))
+    if(!selected(ctx, t, true))
         return;
     bool inSetup = false;
     UA_ServerState s = UA_SERVERSTATE_UNKNOWN;
@@ -130,7 +143,7 @@ static void t_set_state(ga_ctx *ctx, void *p) {
  * certificate (the default one), so a client can open a secure channel. */
 static void t_set_cert(ga_ctx *ctx, void *p) {
     srv_target *t = p;
-    if(!selected(ctx, t))
+    if(!selected(ctx, t, false))
         return;
     UA_EndpointDescription *eps = NULL;
     size_t n = 0, secure = 0, bare = 0;
@@ -204,7 +217,7 @@ static UA_StatusCode push_and_apply(srv_target *t, ga_ctx *ctx) {
  * end setup while the SecurityAdmin Role has no identity. */
 static void t_set_no_role(ga_ctx *ctx, void *p) {
     srv_target *t = p;
-    if(!selected(ctx, t))
+    if(!selected(ctx, t, true))
         return;
     bool inSetup = false;
     UA_ServerState s = UA_SERVERSTATE_UNKNOWN;
@@ -254,7 +267,7 @@ static UA_StatusCode add_identity(UA_Client *c, const UA_IdentityMappingRuleType
  * admin application certificate. */
 static void t_set_role(ga_ctx *ctx, void *p) {
     srv_target *t = p;
-    if(!selected(ctx, t))
+    if(!selected(ctx, t, true))
         return;
     if(!t->setupPushed) {
         ga_not_tested(ctx, "builds on SRV-SET-03 (trust list and t-good applied in setup)");
@@ -310,7 +323,7 @@ static void t_set_role(ga_ctx *ctx, void *p) {
  * clients its trust list allows. */
 static void t_set_closed(ga_ctx *ctx, void *p) {
     srv_target *t = p;
-    if(!selected(ctx, t))
+    if(!selected(ctx, t, true))
         return;
     if(!t->setupEnded) {
         ga_not_tested(ctx, "builds on SRV-SET-04 (setup ended)");
@@ -401,7 +414,7 @@ static UA_StatusCode setup_after_reset(srv_target *t, bool shutdown, bool *inSet
  * with a ShutdownReason, and it comes back in application setup. */
 static void t_set_reset(ga_ctx *ctx, void *p) {
     srv_target *t = p;
-    if(!selected(ctx, t))
+    if(!selected(ctx, t, true))
         return;
     if(!t->allowReset) {
         ga_not_tested(ctx, "needs --allow-reset: ResetToServerDefaults wipes the target's "
