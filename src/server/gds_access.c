@@ -775,6 +775,9 @@ static UA_Boolean executable_on(UA_Server *server, UA_AccessControl *ac, const U
                                 const UA_NodeId *objectId, void *octx) {
     (void)ac, (void)sid, (void)mctx, (void)octx;
     struct gds_server *s = UA_Server_getConfig(server)->context;
+    /* Respond / Respond2 on a plugin dialog: its respondRoles (A19) */
+    if(gds_dialog_is(s, objectId))
+        return gds_dialog_may_call(s, sctx, objectId, methodId);
     /* Acknowledge on a plugin alarm: its ackRoles (gds_alarms.c, A16) */
     if(methodId->namespaceIndex == 0 && methodId->identifierType == UA_NODEIDTYPE_NUMERIC &&
        methodId->identifier.numeric == UA_NS0ID_ACKNOWLEDGEABLECONDITIONTYPE_ACKNOWLEDGE)
@@ -783,6 +786,14 @@ static UA_Boolean executable_on(UA_Server *server, UA_AccessControl *ac, const U
      * and on the method node */
     return gds_method_executable(s, sctx, methodId) && gds_node_call_allowed(s, sctx, objectId) &&
            gds_node_call_allowed(s, sctx, methodId);
+}
+
+/* ReceiveEvents (Part 3, 8.55): the events of a plugin alarm or dialog
+ * with visibleTo Roles, and those about it (A19). */
+static UA_Boolean receive_event(UA_Server *server, UA_AccessControl *ac, const UA_NodeId *sid,
+                                void *sctx, const UA_NodeId *source, const UA_NodeId *instance) {
+    (void)ac, (void)sid;
+    return gds_cond_may_receive(UA_Server_getConfig(server)->context, sctx, source, instance);
 }
 
 void gds_access_uninstall(void) {
@@ -827,6 +838,7 @@ gds_status gds_access_install(UA_ServerConfig *config, const gds_users *users,
     config->accessControl.getUserAccessLevel = read_only;
     config->accessControl.getUserExecutable = executable;
     config->accessControl.getUserExecutableOnObject = executable_on;
+    config->accessControl.allowReceiveEvent = receive_event; /* patch 0006 */
     /* X.509 user tokens only with a user certificate trust list */
     x509Enabled = x509Users;
     UA_AccessControl *ac = &config->accessControl;

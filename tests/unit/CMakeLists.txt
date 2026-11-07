@@ -118,3 +118,8 @@ add_executable(test_dca_rights test_dca_rights.c)
 target_link_libraries(test_dca_rights PRIVATE gds_server)
 add_test(NAME unit_dca_rights COMMAND test_dca_rights "${CMAKE_CURRENT_BINARY_DIR}/dca-run")
 set_tests_properties(unit_dca_rights PROPERTIES TIMEOUT 120)
+
+add_executable(test_dialogs test_dialogs.c)
+target_link_libraries(test_dialogs PRIVATE gds_server)
+add_test(NAME unit_dialogs COMMAND test_dialogs "${CMAKE_CURRENT_BINARY_DIR}/dialogs-run")
+set_tests_properties(unit_dialogs PROPERTIES TIMEOUT 120)

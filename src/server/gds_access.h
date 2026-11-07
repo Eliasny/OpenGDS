@@ -194,6 +194,14 @@ struct gds_server;
 bool gds_node_call_allowed(struct gds_server *s, const void *sessionContext,
                            const UA_NodeId *nodeId);
 
+/* A19: may this session receive an event of source / instance (plugin
+ * conditions with visibleTo Roles)? Is objectId a plugin dialog, and may
+ * this session call methodId on it? Any thread. */
+bool gds_cond_may_receive(struct gds_server *s, const void *sessionContext,
+                          const UA_NodeId *source, const UA_NodeId *instance);
+bool gds_dialog_is(struct gds_server *s, const UA_NodeId *objectId);
+bool gds_dialog_may_call(struct gds_server *s, const void *sessionContext,
+                         const UA_NodeId *objectId, const UA_NodeId *methodId);
 /* May this session Acknowledge this plugin alarm (gds_alarms.c)? One of
  * its ackRoles over SignAndEncrypt. Thread safe. */
 bool gds_alarm_may_ack(struct gds_server *s, const void *sessionContext,
