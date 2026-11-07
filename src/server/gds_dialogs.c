@@ -258,6 +258,8 @@ UA_StatusCode gds_dialog_respond(gds_server *s, const UA_NodeId *sessionId, void
                                  const UA_NodeId *objectId, UA_Int32 response,
                                  const UA_LocalizedText *comment, bool respond2,
                                  UA_Variant *output) {
+    if(!objectId)
+        return UA_STATUSCODE_BADMETHODINVALID; /* and no audit event without a source */
     const gds_session *ss = gds_session_get(sessionContext);
     const char *user = ss && ss->user[0] ? ss->user : "";
     respond_job *j = NULL;
