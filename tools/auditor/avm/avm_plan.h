@@ -73,6 +73,12 @@ char **avm_plan_argv(const AvmPlan *p, const char *engine, const char *events,
  * returns FALSE if the file cannot be read. */
 gboolean avm_plan_save(const AvmPlan *p, const char *path, GError **error);
 gboolean avm_plan_load(AvmPlan *p, const char *path, GError **error);
+/* The same fields in one group of a key file (saved targets keep one plan
+ * per group); from_keyfile keeps the current values for missing keys. */
+void avm_plan_to_keyfile(const AvmPlan *p, GKeyFile *k, const char *group);
+void avm_plan_from_keyfile(AvmPlan *p, GKeyFile *k, const char *group);
+/* Save a key file, creating its folder (0700). */
+gboolean avm_keyfile_save(GKeyFile *k, const char *path, GError **error);
 /* <user config>/gdsaudit/last-plan.ini; g_free it. */
 char *avm_plan_default_path(void);
 

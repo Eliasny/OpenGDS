@@ -256,70 +256,80 @@ char *avm_plan_thumbprint(const AvmPlan *p) {
     X("trigger", triggerCmd)                                                   \
     X("client_user", clientUser)
 
-gboolean avm_plan_save(const AvmPlan *p, const char *path, GError **error) {
-    GKeyFile *k = g_key_file_new();
-    g_key_file_set_string(k, GROUP, "profile", avm_profile_name(p->profile));
-    g_key_file_set_integer(k, GROUP, "preset", (gint)p->preset);
-    g_key_file_set_boolean(k, GROUP, "allow_changes", p->allowChanges);
-    g_key_file_set_boolean(k, GROUP, "tofu", p->tofu);
-    g_key_file_set_integer(k, GROUP, "listen_port", (gint)p->listenPort);
-#define SAVE(key, member) g_key_file_set_string(k, GROUP, key, p->member ? p->member : "");
+void avm_plan_to_keyfile(const AvmPlan *p, GKeyFile *k, const char *group) {
+    g_key_file_set_string(k, group, "profile", avm_profile_name(p->profile));
+    g_key_file_set_integer(k, group, "preset", (gint)p->preset);
+    g_key_file_set_boolean(k, group, "allow_changes", p->allowChanges);
+    g_key_file_set_boolean(k, group, "tofu", p->tofu);
+    g_key_file_set_integer(k, group, "listen_port", (gint)p->listenPort);
+#define SAVE(key, member) g_key_file_set_string(k, group, key, p->member ? p->member : "");
     PLAN_STRINGS(SAVE)
 #undef SAVE
+}
+
+gboolean avm_keyfile_save(GKeyFile *k, const char *path, GError **error) {
     char *dir = g_path_get_dirname(path);
-    gboolean ok = g_mkdir_with_parents(dir, 0700) == 0 &&
-                  g_key_file_save_to_file(k, path, error);
+    gboolean ok = g_mkdir_with_parents(dir, 0700) == 0 && g_key_file_save_to_file(k, path, error);
     if(!ok && error && !*error)
         g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "cannot create %s", dir);
     g_free(dir);
+    return ok;
+}
+
+gboolean avm_plan_save(const AvmPlan *p, const char *path, GError **error) {
+    GKeyFile *k = g_key_file_new();
+    avm_plan_to_keyfile(p, k, GROUP);
+    gboolean ok = avm_keyfile_save(k, path, error);
     g_key_file_unref(k);
     return ok;
 }
 
-static void load_numbers(AvmPlan *p, GKeyFile *k) {
+static void load_numbers(AvmPlan *p, GKeyFile *k, const char *group) {
     GError *e = NULL;
-    gint preset = g_key_file_get_integer(k, GROUP, "preset", &e);
+    gint preset = g_key_file_get_integer(k, group, "preset", &e);
     if(!e && preset >= 0 && preset < AVM_PRESET_COUNT)
         avm_plan_apply_preset(p, (AvmPreset)preset);
     g_clear_error(&e);
-    gboolean b = g_key_file_get_boolean(k, GROUP, "allow_changes", &e);
+    gboolean b = g_key_file_get_boolean(k, group, "allow_changes", &e);
     if(!e)
         p->allowChanges = b;
     g_clear_error(&e);
-    b = g_key_file_get_boolean(k, GROUP, "tofu", &e);
+    b = g_key_file_get_boolean(k, group, "tofu", &e);
     if(!e)
         p->tofu = b;
     g_clear_error(&e);
-    gint port = g_key_file_get_integer(k, GROUP, "listen_port", &e);
+    gint port = g_key_file_get_integer(k, group, "listen_port", &e);
     if(!e && port > 0 && port <= 65535)
         p->listenPort = (guint)port;
     g_clear_error(&e);
 }
 
-static void load_string(GKeyFile *k, const char *key, char **member) {
-    char *v = g_key_file_get_string(k, GROUP, key, NULL);
+static void load_string(GKeyFile *k, const char *group, const char *key, char **member) {
+    char *v = g_key_file_get_string(k, group, key, NULL);
     if(v)
         avm_plan_set(member, v);
     g_free(v);
 }
 
-gboolean avm_plan_load(AvmPlan *p, const char *path, GError **error) {
-    GKeyFile *k = g_key_file_new();
-    if(!g_key_file_load_from_file(k, path, G_KEY_FILE_NONE, error)) {
-        g_key_file_unref(k);
-        return FALSE;
-    }
-    char *profile = g_key_file_get_string(k, GROUP, "profile", NULL);
+void avm_plan_from_keyfile(AvmPlan *p, GKeyFile *k, const char *group) {
+    char *profile = g_key_file_get_string(k, group, "profile", NULL);
     for(int i = 0; profile && i < 3; i++)
         if(!strcmp(profile, avm_profile_name((AvmProfile)i)))
             p->profile = (AvmProfile)i;
     g_free(profile);
-    load_numbers(p, k);
-#define LOAD(key, member) load_string(k, key, &p->member);
+    load_numbers(p, k, group);
+#define LOAD(key, member) load_string(k, group, key, &p->member);
     PLAN_STRINGS(LOAD)
 #undef LOAD
+}
+
+gboolean avm_plan_load(AvmPlan *p, const char *path, GError **error) {
+    GKeyFile *k = g_key_file_new();
+    gboolean ok = g_key_file_load_from_file(k, path, G_KEY_FILE_NONE, error);
+    if(ok)
+        avm_plan_from_keyfile(p, k, GROUP);
     g_key_file_unref(k);
-    return TRUE;
+    return ok;
 }
 
 char *avm_plan_default_path(void) {
