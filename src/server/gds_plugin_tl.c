@@ -4,9 +4,13 @@
  *
  * gds_server_add_trust_list creates a CertificateGroupType object (OPC
  * 10000-12 §7.8.3.1) under the plugin's object; its TrustList
- * (TrustListType, §7.8.2.1) is kept in an open62541 file store, the way
- * the DefaultUserTokenGroup's is (Annex F.1 layout), so it survives
- * restarts. The TrustList methods are OpenGDS's:
+ * (TrustListType, §7.8.2.1) is kept in an open62541 memory store and
+ * saved after every change, as one encoded TrustListDataType, to
+ * pkiDir/trustlist.bin (written atomically, mode 0600), so it survives
+ * restarts. (open62541 v1.5.10's file store appends the group NodeId to
+ * its directory without terminating the string, so its directory name
+ * changes from run to run and the lists were lost.) The TrustList methods
+ * are OpenGDS's:
  * - Open (FileType; mode Read 0x01 or Write|EraseExisting 0x06, §7.8.2.1)
  *   and OpenWithMasks (§7.8.2.2) take a snapshot to read; one writer at a
  *   time, and no writer while anyone reads (Bad_NotWritable /
@@ -20,6 +24,9 @@
  *   the TrustList is open (Bad_InvalidState);
  * - RemoveCertificate (§7.8.2.5) removes a certificate by its SHA-1
  *   thumbprint (hex), with the CRLs of a CA (Bad_InvalidArgument if none).
+ * - On a STANDBY node the writing calls answer Bad_InvalidState; the
+ *   embedder keeps the lists in line with gds_server_set_trust_list (A20),
+ *   which also makes a writer opened before it fail at CloseAndUpdate.
  * Handles belong to the session that opened them; a handle of a session
  * that has closed is dropped when it is in the way. Only sessions with
  * one of the group's Roles over SignAndEncrypt may call the methods
@@ -39,6 +46,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "common/buf.h"
 #include "common/limits.h"
 #include "gds_internal.h"
 #include "common/banned.h"
@@ -53,6 +61,7 @@ typedef struct {
     UA_UInt32 handle; /* 0 = free */
     UA_NodeId session;
     bool write;
+    UA_UInt64 gen; /* p->gen when a writer opened */
     UA_ByteString file;
     size_t pos;
 } ptl_handle;
@@ -61,10 +70,12 @@ struct gds_ptl {
     UA_NodeId group, tl;
     UA_NodeId sizeNode, openCountNode, lastUpdateNode;
     UA_CertificateGroup cg; /* under ptlLock */
+    UA_UInt64 gen;          /* replacements by the embedder (A20), ptlLock */
     unsigned roleBits;
     bool anon, auth;
     ptl_handle h[PTL_HANDLES]; /* server thread only */
     UA_NodeId mids[10];        /* the methods of this TrustList, as METHODS[] */
+    char file[GDS_MAX_PATH];   /* pkiDir/trustlist.bin */
 };
 
 typedef struct {
@@ -164,6 +175,50 @@ static bool list_ok(const UA_TrustListDataType *tl) {
         if(!crl_ok(&tl->issuerCrls[i]))
             return false;
     return true;
+}
+
+/* ---- persistence ---- */
+
+/* Saves the whole list after a change; ptlLock held. The change stays in
+ * memory when the file cannot be written: Bad_InternalError tells the
+ * caller it is not durable. */
+static UA_StatusCode persist(gds_ptl *p, UA_StatusCode changed) {
+    if(changed != UA_STATUSCODE_GOOD)
+        return changed;
+    UA_TrustListDataType tl;
+    UA_TrustListDataType_init(&tl);
+    UA_ByteString enc = UA_BYTESTRING_NULL;
+    UA_StatusCode r = p->cg.getTrustList(&p->cg, &tl);
+    tl.specifiedLists = UA_TRUSTLISTMASKS_ALL;
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_encodeBinary(&tl, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], &enc, NULL);
+    if(r == UA_STATUSCODE_GOOD &&
+       gds_file_write_atomic(p->file, enc.data, enc.length, 0600) != GDS_OK)
+        r = UA_STATUSCODE_BADINTERNALERROR;
+    UA_ByteString_clear(&enc);
+    UA_TrustListDataType_clear(&tl);
+    return r;
+}
+
+/* The saved list, if any (*tl empty when there is none yet). */
+static gds_status load(const char *file, UA_TrustListDataType *tl) {
+    UA_TrustListDataType_init(tl);
+    gds_buf b = {0};
+    gds_status st = gds_file_read(file, PTL_MAX_FILE, &b);
+    if(st == GDS_ENOTFOUND)
+        return GDS_OK;
+    if(st != GDS_OK)
+        return st;
+    UA_ByteString enc = {b.len, b.data};
+    if(UA_decodeBinary(&enc, tl, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], NULL) !=
+           UA_STATUSCODE_GOOD ||
+       !list_ok(tl)) {
+        UA_TrustListDataType_clear(tl);
+        st = GDS_EINVAL;
+    }
+    gds_buf_free(&b);
+    tl->specifiedLists = UA_TRUSTLISTMASKS_ALL;
+    return st;
 }
 
 /* SHA-1 thumbprint as hex (OPC 10000-12 §7.8.2.5), either case. */
@@ -316,6 +371,9 @@ static UA_StatusCode open_handle(gds_server *s, gds_ptl *p, const UA_NodeId *ses
         h->handle = UA_UInt32_random();
     } while(h->handle == 0 || handle_of(p, session, h->handle) != h);
     h->write = write;
+    pthread_mutex_lock(&s->ptlLock);
+    h->gen = p->gen;
+    pthread_mutex_unlock(&s->ptlLock);
     *out = h->handle;
     update_open_count(s, p);
     return UA_STATUSCODE_GOOD;
@@ -360,6 +418,8 @@ static UA_StatusCode m_open(gds_server *s, gds_ptl *p, const UA_NodeId *sid, siz
             return UA_STATUSCODE_BADINVALIDARGUMENT; /* §7.8.2.1 */
         write = mode != MODE_READ;
     }
+    if(write && gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINVALIDSTATE;
     UA_StatusCode r = open_handle(s, p, sid, write, m, &handle);
     if(r == UA_STATUSCODE_GOOD)
         r = set_out(out, nOut, &handle, &UA_TYPES[UA_TYPES_UINT32]);
@@ -427,9 +487,13 @@ static UA_StatusCode m_close_and_update(gds_server *s, gds_ptl *p, ptl_handle *h
         r = UA_STATUSCODE_BADINVALIDARGUMENT;
     else if(!list_ok(&tl))
         r = UA_STATUSCODE_BADCERTIFICATEINVALID;
+    else if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
+        r = UA_STATUSCODE_BADINVALIDSTATE;
     if(r == UA_STATUSCODE_GOOD) {
         pthread_mutex_lock(&s->ptlLock);
-        r = p->cg.setTrustList(&p->cg, &tl);
+        /* replaced by the embedder since this writer opened (A20) */
+        r = h->gen == p->gen ? persist(p, p->cg.setTrustList(&p->cg, &tl))
+                             : UA_STATUSCODE_BADINVALIDSTATE;
         pthread_mutex_unlock(&s->ptlLock);
     }
     UA_TrustListDataType_clear(&tl);
@@ -446,6 +510,8 @@ static UA_StatusCode m_add(gds_server *s, gds_ptl *p, size_t n, const UA_Variant
     if(n != 2 || !UA_Variant_hasScalarType(&in[0], &UA_TYPES[UA_TYPES_BYTESTRING]) ||
        !UA_Variant_hasScalarType(&in[1], &UA_TYPES[UA_TYPES_BOOLEAN]))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINVALIDSTATE;
     drop_stale(p);
     if(any_open(p, false))
         return UA_STATUSCODE_BADINVALIDSTATE;
@@ -465,7 +531,7 @@ static UA_StatusCode m_add(gds_server *s, gds_ptl *p, size_t n, const UA_Variant
         tl.issuerCertificatesSize = 1;
     }
     pthread_mutex_lock(&s->ptlLock);
-    UA_StatusCode r = p->cg.addToTrustList(&p->cg, &tl);
+    UA_StatusCode r = persist(p, p->cg.addToTrustList(&p->cg, &tl));
     pthread_mutex_unlock(&s->ptlLock);
     if(r == UA_STATUSCODE_GOOD)
         update_size(s, p, true);
@@ -503,6 +569,8 @@ static UA_StatusCode m_remove(gds_server *s, gds_ptl *p, size_t n, const UA_Vari
     if(n != 2 || !UA_Variant_hasScalarType(&in[0], &UA_TYPES[UA_TYPES_STRING]) ||
        !UA_Variant_hasScalarType(&in[1], &UA_TYPES[UA_TYPES_BOOLEAN]))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINVALIDSTATE;
     drop_stale(p);
     if(any_open(p, false))
         return UA_STATUSCODE_BADINVALIDSTATE;
@@ -534,7 +602,7 @@ static UA_StatusCode m_remove(gds_server *s, gds_ptl *p, size_t n, const UA_Vari
         } else {
             UA_Array_delete(crls, nCrls, &UA_TYPES[UA_TYPES_BYTESTRING]);
         }
-        r = p->cg.removeFromTrustList(&p->cg, &rm);
+        r = persist(p, p->cg.removeFromTrustList(&p->cg, &rm));
     }
     pthread_mutex_unlock(&s->ptlLock);
     UA_TrustListDataType_clear(&all);
@@ -698,6 +766,24 @@ static gds_status create_nodes(gds_server *s, const gds_trust_list_def *def, gds
     return st;
 }
 
+/* A memory store holding the saved lists. */
+static UA_StatusCode open_store(gds_server *s, gds_ptl *p, const UA_NodeId *groupId,
+                                const UA_TrustListDataType *saved) {
+    UA_NodeId gid = *groupId;
+    UA_UInt32 maxSize = (UA_UInt32)PTL_MAX_FILE;
+    UA_KeyValuePair kv;
+    kv.key = UA_QUALIFIEDNAME(0, "max-trust-listsize");
+    UA_Variant_setScalar(&kv.value, &maxSize, &UA_TYPES[UA_TYPES_UINT32]);
+    UA_KeyValueMap params = {1, &kv};
+    UA_StatusCode r = UA_CertificateGroup_Memorystore(&p->cg, &gid, NULL,
+                                                      UA_Server_getConfig(s->ua)->logging, &params);
+    bool any = saved->trustedCertificatesSize || saved->issuerCertificatesSize ||
+               saved->trustedCrlsSize || saved->issuerCrlsSize;
+    if(r == UA_STATUSCODE_GOOD && any)
+        r = p->cg.setTrustList(&p->cg, saved);
+    return r;
+}
+
 gds_status gds_server_add_trust_list(gds_server *s, const gds_trust_list_def *def) {
     if(!s || !def_ok(def))
         return GDS_EINVAL;
@@ -715,12 +801,15 @@ gds_status gds_server_add_trust_list(gds_server *s, const gds_trust_list_def *de
     gds_status st = gds_role_bits(s, def->roles, def->rolesSize, &p->roleBits, &p->anon, &p->auth);
     if(st == GDS_OK && gds_mkdirs(def->pkiDir, 0700) != GDS_OK)
         st = GDS_EIO;
-    UA_NodeId gid = def->groupId;
-    if(st == GDS_OK &&
-       UA_CertificateGroup_Filestore(&p->cg, &gid, UA_STRING((char *)(uintptr_t)def->pkiDir),
-                                     UA_Server_getConfig(s->ua)->logging, NULL) !=
-           UA_STATUSCODE_GOOD)
+    if(st == GDS_OK)
+        st = gds_path(p->file, sizeof(p->file), "%s/trustlist.bin", def->pkiDir);
+    UA_TrustListDataType saved;
+    UA_TrustListDataType_init(&saved);
+    if(st == GDS_OK)
+        st = load(p->file, &saved);
+    if(st == GDS_OK && open_store(s, p, &def->groupId, &saved) != UA_STATUSCODE_GOOD)
         st = GDS_EIO;
+    UA_TrustListDataType_clear(&saved);
     if(st == GDS_OK)
         st = create_nodes(s, def, p);
     if(st == GDS_OK && bind_methods(s) != UA_STATUSCODE_GOOD)
@@ -757,6 +846,28 @@ gds_status gds_ptl_get(gds_server *s, const UA_NodeId *groupId, UA_TrustListData
     if(r == UA_STATUSCODE_GOOD && p)
         out->specifiedLists = UA_TRUSTLISTMASKS_ALL;
     return r == UA_STATUSCODE_GOOD ? GDS_OK : gds_ua_status(r);
+}
+
+gds_status gds_server_set_trust_list(gds_server *s, const UA_NodeId *groupId,
+                                     const UA_TrustListDataType *tl) {
+    if(!s || !groupId || !tl)
+        return GDS_EINVAL;
+    if((tl->specifiedLists & ~(UA_UInt32)UA_TRUSTLISTMASKS_ALL) != 0 || !list_ok(tl))
+        return GDS_EINVAL;
+    pthread_mutex_lock(&s->ptlLock);
+    gds_ptl *p = find_group(s, groupId);
+    UA_StatusCode r = UA_STATUSCODE_BADNOTFOUND;
+    if(p) {
+        r = persist(p, p->cg.setTrustList(&p->cg, tl));
+        p->gen++; /* a writer open now gets Bad_InvalidState at CloseAndUpdate */
+    }
+    pthread_mutex_unlock(&s->ptlLock);
+    if(!p)
+        return GDS_ENOTFOUND;
+    if(r != UA_STATUSCODE_GOOD)
+        return gds_ua_status(r);
+    update_size(s, p, true);
+    return GDS_OK;
 }
 
 void gds_ptl_free(gds_server *s) {

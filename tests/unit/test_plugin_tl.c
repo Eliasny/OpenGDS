@@ -328,6 +328,86 @@ static void test_replace(gds_server *s, fixture *f, UA_Client *admin, UA_Client 
 
 }
 
+/* Encodes a TrustListDataType with these trusted certificates. */
+static bool encode_trusted(UA_ByteString *certs, size_t n, UA_ByteString *file) {
+    UA_TrustListDataType put;
+    UA_TrustListDataType_init(&put);
+    put.specifiedLists = UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES;
+    put.trustedCertificates = certs;
+    put.trustedCertificatesSize = n;
+    *file = UA_BYTESTRING_NULL;
+    return UA_encodeBinary(&put, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], file, NULL) ==
+           UA_STATUSCODE_GOOD;
+}
+
+static gds_status set_trusted(gds_server *s, const UA_NodeId *group, UA_ByteString *cert) {
+    UA_TrustListDataType put;
+    UA_TrustListDataType_init(&put);
+    put.specifiedLists = UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES;
+    put.trustedCertificates = cert;
+    put.trustedCertificatesSize = 1;
+    return gds_server_set_trust_list(s, group, &put);
+}
+
+static bool trusted_is(gds_server *s, const UA_ByteString *cert) {
+    UA_TrustListDataType got;
+    UA_TrustListDataType_init(&got);
+    bool ok = get_list(s, &got) && got.trustedCertificatesSize == 1 &&
+              UA_ByteString_equal(&got.trustedCertificates[0], cert);
+    UA_TrustListDataType_clear(&got);
+    return ok;
+}
+
+/* gds_server_set_trust_list and the STANDBY rule (A20). Expects trusted
+ * [b] and leaves it so. */
+static void test_sync(gds_server *s, fixture *f, UA_Client *admin, const UA_NodeId *tlp) {
+    UA_NodeId tl = *tlp, group = group_id(), other = UA_NODEID_NUMERIC(ns, 4242);
+    UA_TrustListDataType bad;
+    UA_TrustListDataType_init(&bad);
+    CHECK(set_trusted(s, &other, &f->a) == GDS_ENOTFOUND);
+    UA_ByteString junk = UA_BYTESTRING("not a certificate");
+    CHECK(set_trusted(s, &group, &junk) == GDS_EINVAL);
+    bad.specifiedLists = 0x40;
+    CHECK(gds_server_set_trust_list(s, &group, &bad) == GDS_EINVAL);
+    CHECK(trusted_is(s, &f->b));
+
+    /* a writer that opened before a replacement cannot land its edit */
+    UA_UInt32 h = 0;
+    UA_ByteString file;
+    UA_Variant arg;
+    CHECK_EQ_INT(open_tl(admin, &tl, 0x06, &h), UA_STATUSCODE_GOOD);
+    CHECK(set_trusted(s, &group, &f->a) == GDS_OK);
+    CHECK(trusted_is(s, &f->a));
+    if(CHECK(encode_trusted(&f->c, 1, &file))) {
+        UA_Variant_setScalar(&arg, &file, &UA_TYPES[UA_TYPES_BYTESTRING]);
+        CHECK_EQ_INT(h_call(admin, &tl, UA_NS0ID_FILETYPE_WRITE, h, &arg, NULL),
+                     UA_STATUSCODE_GOOD);
+    }
+    CHECK_EQ_INT(h_call(admin, &tl, UA_NS0ID_TRUSTLISTTYPE_CLOSEANDUPDATE, h, NULL, NULL),
+                 UA_STATUSCODE_BADINVALIDSTATE);
+    CHECK(trusted_is(s, &f->a));
+    /* a writer that opened after it can */
+    CHECK_EQ_INT(open_tl(admin, &tl, 0x06, &h), UA_STATUSCODE_GOOD);
+    UA_Variant_setScalar(&arg, &file, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    CHECK_EQ_INT(h_call(admin, &tl, UA_NS0ID_FILETYPE_WRITE, h, &arg, NULL), UA_STATUSCODE_GOOD);
+    CHECK_EQ_INT(h_call(admin, &tl, UA_NS0ID_TRUSTLISTTYPE_CLOSEANDUPDATE, h, NULL, NULL),
+                 UA_STATUSCODE_GOOD);
+    CHECK(trusted_is(s, &f->c));
+    UA_ByteString_clear(&file);
+
+    /* STANDBY: read-only over OPC UA, the embedder still syncs */
+    gds_node_role was = gds_server_role(s);
+    CHECK(gds_server_set_role(s, GDS_NODE_STANDBY, 100, 0) == GDS_OK);
+    CHECK_EQ_INT(open_tl(admin, &tl, 0x06, &h), UA_STATUSCODE_BADINVALIDSTATE);
+    CHECK_EQ_INT(add_cert(admin, &tl, &f->a, true), UA_STATUSCODE_BADINVALIDSTATE);
+    CHECK_EQ_INT(remove_cert(admin, &tl, &f->c, true), UA_STATUSCODE_BADINVALIDSTATE);
+    CHECK_EQ_INT(open_tl(admin, &tl, 1, &h), UA_STATUSCODE_GOOD);
+    CHECK_EQ_INT(h_call(admin, &tl, UA_NS0ID_FILETYPE_CLOSE, h, NULL, NULL), UA_STATUSCODE_GOOD);
+    CHECK(set_trusted(s, &group, &f->b) == GDS_OK);
+    CHECK(trusted_is(s, &f->b));
+    CHECK(gds_server_set_role(s, was, 255, 0) == GDS_OK);
+}
+
 static void test_methods(gds_server *s, fixture *f, const char *url) {
     UA_NodeId tl = tl_of(s);
     UA_Client *admin = connect_as("admin", url, &f->cert);
@@ -373,6 +453,7 @@ static void test_methods(gds_server *s, fixture *f, const char *url) {
     CHECK_EQ_INT(h_call(admin, &tl, UA_NS0ID_FILETYPE_CLOSE, h, NULL, NULL), UA_STATUSCODE_GOOD);
 
     test_replace(s, f, admin, admin2, &tl);
+    test_sync(s, f, admin, &tl);
 
     /* RemoveCertificate */
     CHECK_EQ_INT(remove_cert(admin, &tl, &f->b, true), UA_STATUSCODE_GOOD);
@@ -474,6 +555,28 @@ static void served(fixture *f, gds_users *users, bool first) {
     gds_server_delete(s);
 }
 
+/* A damaged saved list: the trust list is refused, not started empty. */
+static void damaged(fixture *f, gds_users *users) {
+    char file[1100];
+    CHECK(gds_path(file, sizeof(file), "%s/trustlist.bin", f->pki) == GDS_OK);
+    gds_buf saved = {0};
+    CHECK(gds_file_read(file, 1u << 22, &saved) == GDS_OK && saved.len > 0);
+    gds_buf_free(&saved);
+    CHECK(gds_file_write_atomic(file, "junk", 4, 0600) == GDS_OK);
+    gds_server *s = new_server(f, users, (UA_UInt16)(46000 + getpid() % 1000 + 2));
+    if(!s)
+        return;
+    CHECK(gds_server_add_namespace(s, PLUGIN_NS, &ns) == GDS_OK);
+    UA_NodeId src = UA_NODEID_STRING(ns, "KeyService");
+    UA_NodeId objects = UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER);
+    CHECK(gds_server_add_object(s, &src, &objects, "KeyService", NULL) == GDS_OK);
+    static const UA_NodeId secAdmin = {0, UA_NODEIDTYPE_NUMERIC,
+                                       {UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN}};
+    gds_trust_list_def d = def_of(f, &secAdmin, 1);
+    CHECK(gds_server_add_trust_list(s, &d) == GDS_EINVAL);
+    gds_server_delete(s);
+}
+
 int main(int argc, char **argv) {
     if(argc != 2) {
         fprintf(stderr, "usage: %s <dir>\n", argv[0]);
@@ -511,6 +614,7 @@ int main(int argc, char **argv) {
         f.caCert = (UA_ByteString){caBuf.len, caBuf.data};
         served(&f, &users, true);
         served(&f, &users, false);
+        damaged(&f, &users);
     }
     UA_ByteString_clear(&k);
     gds_buf_free(&caBuf);

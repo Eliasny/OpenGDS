@@ -18,6 +18,11 @@ add_test(NAME signer_refuses_relative_listen
          COMMAND opengds-signer --listen x.sock --store /x --ca-dir /x)
 set_tests_properties(signer_refuses_fd_and_listen signer_refuses_relative_listen
                      PROPERTIES PASS_REGULAR_EXPRESSION "usage: opengds-signer")
+
+add_executable(test_signer_hooks test_signer_hooks.c)
+target_link_libraries(test_signer_hooks PRIVATE gds_signer_main gds_ca_ipc)
+add_test(NAME unit_signer_hooks COMMAND test_signer_hooks "${CMAKE_CURRENT_BINARY_DIR}/signer-hooks-run")
+set_tests_properties(unit_signer_hooks PROPERTIES TIMEOUT 120)
 add_executable(test_server test_server.c)
 target_link_libraries(test_server PRIVATE gds_server)
 add_test(NAME unit_server COMMAND test_server "${CMAKE_CURRENT_BINARY_DIR}/server-run")
@@ -122,8 +127,18 @@ add_executable(test_dca_rights test_dca_rights.c)
 target_link_libraries(test_dca_rights PRIVATE gds_server)
 add_test(NAME unit_dca_rights COMMAND test_dca_rights "${CMAKE_CURRENT_BINARY_DIR}/dca-run")
 set_tests_properties(unit_dca_rights PROPERTIES TIMEOUT 120)
+add_executable(test_trustlist_write test_trustlist_write.c)
+target_link_libraries(test_trustlist_write PRIVATE gds_server)
+add_test(NAME unit_trustlist_write COMMAND test_trustlist_write
+         "${CMAKE_CURRENT_BINARY_DIR}/tlwrite-run")
+set_tests_properties(unit_trustlist_write PROPERTIES TIMEOUT 120)
 
 add_executable(test_plugin_tl test_plugin_tl.c)
 target_link_libraries(test_plugin_tl PRIVATE gds_server OpenSSL::Crypto)
 add_test(NAME unit_plugin_tl COMMAND test_plugin_tl "${CMAKE_CURRENT_BINARY_DIR}/plugin-tl-run")
 set_tests_properties(unit_plugin_tl PROPERTIES TIMEOUT 120)
+
+add_executable(test_dialogs test_dialogs.c)
+target_link_libraries(test_dialogs PRIVATE gds_server)
+add_test(NAME unit_dialogs COMMAND test_dialogs "${CMAKE_CURRENT_BINARY_DIR}/dialogs-run")
+set_tests_properties(unit_dialogs PROPERTIES TIMEOUT 120)
