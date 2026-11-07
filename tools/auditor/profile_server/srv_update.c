@@ -111,14 +111,6 @@ static void expect_refused(ga_ctx *ctx, srv_target *t, UA_StatusCode r, const ch
 /* The public key of t-good, which is the active key: certificates for it
  * are made without another CreateSigningRequest, so a target whose CSR
  * breaks after an accepted certificate does not take the next tests down. */
-static EVP_PKEY *tgood_key(const srv_target *t) {
-    X509 *x = x509_parse_cert(&t->tGood);
-    EVP_PKEY *k = x ? X509_get_pubkey(x) : NULL;
-    X509_free(x);
-    ERR_clear_error();
-    return k;
-}
-
 /* A CSR for the active key (RegeneratePrivateKey FALSE) */
 static UA_StatusCode active_csr(srv_target *t, gds_buf *csr) {
     return st_csr(t, t->client, false, NULL, csr);
@@ -192,7 +184,7 @@ static void t_update_issuer_arg(ga_ctx *ctx, void *p) {
                             : GDS_ECRYPTO;
     if(gs == GDS_OK && !(ca2.cert = x509_parse_cert(&ca2Der)))
         gs = GDS_ECRYPTO;
-    EVP_PKEY *pub = gs == GDS_OK ? tgood_key(t) : NULL;
+    EVP_PKEY *pub = gs == GDS_OK ? st_tgood_key(t) : NULL;
     if(gs == GDS_OK && !pub)
         gs = GDS_ECRYPTO;
     if(gs == GDS_OK)
@@ -294,7 +286,7 @@ static void t_update_expired(ga_ctx *ctx, void *p) {
     if(!queued_or_not_tested(ctx, t))
         return;
     gds_buf cert = {0};
-    EVP_PKEY *pub = tgood_key(t);
+    EVP_PKEY *pub = st_tgood_key(t);
     gds_status gs = pub ? st_make_leaf(&t->ca, pub, "t-expired", t->targetUri, -10 * 86400L,
                                        -86400L, false, 0, &cert)
                         : GDS_ECRYPTO;

@@ -54,6 +54,7 @@ typedef struct {
     bool restored;             /* the snapshot was pushed back */
     bool keyReplaced;          /* SRV-UPD-09 put a key of the Auditor's in use */
     bool slow;                 /* --slow: run the tests flagged slow */
+    long settleSec;            /* --settle-timeout (catalogue Fixtures), default 300 */
     const char *only;          /* --only: tests that run only when selected by name check it */
     char adminPassword[256];
     char userPassword[256];
@@ -187,6 +188,8 @@ GDS_MUST_CHECK gds_status st_make_cert(const testca_t *issuer, EVP_PKEY *key, co
 GDS_MUST_CHECK gds_status st_make_leaf(const testca_t *issuer, EVP_PKEY *key, const char *cn,
                                        const char *uri, long fromSec, long toSec, bool isCa,
                                        size_t pad, gds_buf *out);
+/* The public key of t->tGood (the key the target uses), or NULL. */
+EVP_PKEY *st_tgood_key(const srv_target *t);
 /* t-withkey: a certificate for the target from the test CA, with a key the
  * Auditor generated, as PEM (caller frees pem with gds_buf_free_secret). */
 GDS_MUST_CHECK gds_status st_withkey(const srv_target *t, gds_buf *cert, gds_buf *pem);
