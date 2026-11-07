@@ -59,6 +59,11 @@ typedef struct {
     bool restarted;            /* SRV-PER-01 restarted the target */
     bool lutKnown;             /* lutBefore/lutAfter read around that restart */
     UA_DateTime lutBefore, lutAfter; /* TrustList LastUpdateTime */
+    const char *setupCmd;      /* --setup-cmd: resets the target to application setup (SRV-SET-*) */
+    bool allowReset;           /* --allow-reset: SRV-SET-06 may call ResetToServerDefaults */
+    bool setupPrepared;        /* st_setup_hook ran */
+    bool setupPushed;          /* SRV-SET-03 applied a trust list and t-good in setup */
+    bool setupEnded;           /* SRV-SET-04 ended setup with a SecurityAdmin identity */
     const char *only;          /* --only: tests that run only when selected by name check it */
     char adminPassword[256];
     char userPassword[256];
@@ -205,6 +210,10 @@ bool st_cert_refusal(UA_StatusCode r);
  * timeout. The admin session is closed first. Bad_NotSupported: no way to
  * restart. */
 GDS_MUST_CHECK UA_StatusCode st_restart(srv_target *t, ga_ctx *ctx);
+/* Once per run before the setup tests: run --setup-cmd, or ask the operator
+ * at a terminal to reset the target, then wait for GetEndpoints. Without
+ * either the operator reset it beforehand (Good). */
+GDS_MUST_CHECK UA_StatusCode st_setup_hook(srv_target *t, ga_ctx *ctx);
 /* The public key of t->tGood (the key the target uses), or NULL. */
 EVP_PKEY *st_tgood_key(const srv_target *t);
 /* t-withkey: a certificate for the target from the test CA, with a key the
