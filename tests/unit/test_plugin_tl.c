@@ -555,6 +555,28 @@ static void served(fixture *f, gds_users *users, bool first) {
     gds_server_delete(s);
 }
 
+/* A damaged saved list: the trust list is refused, not started empty. */
+static void damaged(fixture *f, gds_users *users) {
+    char file[1100];
+    CHECK(gds_path(file, sizeof(file), "%s/trustlist.bin", f->pki) == GDS_OK);
+    gds_buf saved = {0};
+    CHECK(gds_file_read(file, 1u << 22, &saved) == GDS_OK && saved.len > 0);
+    gds_buf_free(&saved);
+    CHECK(gds_file_write_atomic(file, "junk", 4, 0600) == GDS_OK);
+    gds_server *s = new_server(f, users, (UA_UInt16)(46000 + getpid() % 1000 + 2));
+    if(!s)
+        return;
+    CHECK(gds_server_add_namespace(s, PLUGIN_NS, &ns) == GDS_OK);
+    UA_NodeId src = UA_NODEID_STRING(ns, "KeyService");
+    UA_NodeId objects = UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER);
+    CHECK(gds_server_add_object(s, &src, &objects, "KeyService", NULL) == GDS_OK);
+    static const UA_NodeId secAdmin = {0, UA_NODEIDTYPE_NUMERIC,
+                                       {UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN}};
+    gds_trust_list_def d = def_of(f, &secAdmin, 1);
+    CHECK(gds_server_add_trust_list(s, &d) == GDS_EINVAL);
+    gds_server_delete(s);
+}
+
 int main(int argc, char **argv) {
     if(argc != 2) {
         fprintf(stderr, "usage: %s <dir>\n", argv[0]);
@@ -592,6 +614,7 @@ int main(int argc, char **argv) {
         f.caCert = (UA_ByteString){caBuf.len, caBuf.data};
         served(&f, &users, true);
         served(&f, &users, false);
+        damaged(&f, &users);
     }
     UA_ByteString_clear(&k);
     gds_buf_free(&caBuf);
