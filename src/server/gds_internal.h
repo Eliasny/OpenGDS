@@ -25,6 +25,14 @@
 typedef struct gds_binding gds_binding;
 typedef struct gds_job gds_job;
 typedef struct gds_node_perms gds_node_perms;
+#define GDS_ALARM_QUEUE 64
+/* A queued gds_server_set_alarm (gds_alarms.c). */
+typedef struct {
+    gds_alarm *a;
+    bool active;
+    UA_UInt16 severity;
+    char *message;
+} gds_alarm_op;
 
 struct gds_server {
     UA_Server *ua;
@@ -70,6 +78,14 @@ struct gds_server {
     gds_job *plugQueue, *plugQueueTail, *plugDone;
     size_t plugQueued;
     gds_job *plugInflight[GDS_PLUGIN_QUEUE];
+    /* plugin alarms (gds_alarms.c): alarmLock, a leaf lock, guards the
+     * list and the queue that the server thread drains */
+    pthread_mutex_t alarmLock;
+    gds_alarm *alarms[GDS_MAX_ALARMS];
+    size_t nAlarms;
+    gds_alarm_op alarmOps[GDS_ALARM_QUEUE];
+    size_t alarmOpHead, nAlarmOps;
+    bool alarmDrainScheduled;
     /* issuance holds (gds_registrar.c, UASM ask A13), not replicated */
     pthread_mutex_t holdLock;
     UA_Guid *holds;
@@ -218,6 +234,22 @@ GDS_MUST_CHECK UA_StatusCode gds_approvals_raise(gds_server *s, const gds_reques
 /* The node role changed: re-synchronise the dialogs with the store on the
  * server thread (none on a STANDBY). Any thread. */
 void gds_approvals_role_changed(gds_server *s);
+/* Plugin alarms (gds_alarms.c): the Acknowledge handler and the event
+ * queue size for ConditionRefresh; before the server runs. */
+GDS_MUST_CHECK UA_StatusCode gds_alarms_install(gds_server *s);
+/* After UA_Server_delete. */
+void gds_alarms_free(gds_server *s);
+/* (Re)binds OpenGDS's Acknowledge handler: after every
+ * UA_Server_createCondition, which binds open62541's. */
+UA_StatusCode gds_alarms_bind_ack(gds_server *s);
+/* The EventId of the alarm's last event (a copy). Server thread. */
+GDS_MUST_CHECK UA_StatusCode gds_alarm_last_event_id(const gds_alarm *a, UA_ByteString *out);
+/* Condition fields, scalar values only (OPC 10000-9 §5.5.2). */
+GDS_MUST_CHECK UA_StatusCode gds_cond_set_field(UA_Server *ua, UA_NodeId c, const char *field,
+                                                const void *v, const UA_DataType *t);
+/* A TwoStateVariable field: its text and its Id. */
+GDS_MUST_CHECK UA_StatusCode gds_cond_set_two_state(UA_Server *ua, UA_NodeId c, const char *field,
+                                                    UA_Boolean id, const char *text);
 /* Policy (gds_policy.c): Received (approved) or Pending for a request made
  * by sessionContext. Takes storeLock. */
 GDS_MUST_CHECK gds_status gds_policy_initial_state(gds_server *s, const void *sessionContext,

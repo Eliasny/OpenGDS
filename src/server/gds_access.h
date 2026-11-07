@@ -194,6 +194,11 @@ struct gds_server;
 bool gds_node_call_allowed(struct gds_server *s, const void *sessionContext,
                            const UA_NodeId *nodeId);
 
+/* May this session Acknowledge this plugin alarm (gds_alarms.c)? One of
+ * its ackRoles over SignAndEncrypt. Thread safe. */
+bool gds_alarm_may_ack(struct gds_server *s, const void *sessionContext,
+                       const UA_NodeId *conditionId);
+
 /* The activated sessions with any of these Roles (or every session when
  * anonymous, every non-anonymous one when authenticated): their ids are
  * copied to out (at most max; the caller clears them). Thread safe. */
