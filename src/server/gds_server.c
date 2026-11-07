@@ -181,19 +181,34 @@ static UA_StatusCode set_listen_url(UA_ServerConfig *c, const gds_server_config 
 typedef UA_StatusCode (*add_policy_fn)(UA_ServerConfig *, const UA_ByteString *,
                                        const UA_ByteString *);
 
+static UA_StatusCode find_servers_peers(UA_Server *server, void *context,
+                                        UA_ApplicationDescription **out, size_t *n);
+
 static UA_StatusCode configure(UA_ServerConfig *c, const gds_server_config *cfg,
                                const gds_buf *caCert, gds_server *s) {
     UA_StatusCode r = UA_ServerConfig_setBasics_withPort(c, cfg->port);
     if(r != UA_STATUSCODE_GOOD)
         return r;
     gds_embed_configure(c, s);
-    /* Accept-all at channel and session level; see the file comment. */
+    /* Accept-all at channel level (see the file comment); user
+     * certificates only with a DefaultUserTokenGroup trust list. */
     if(c->secureChannelPKI.clear)
         c->secureChannelPKI.clear(&c->secureChannelPKI);
     UA_CertificateGroup_AcceptAll(&c->secureChannelPKI);
     if(c->sessionPKI.clear)
         c->sessionPKI.clear(&c->sessionPKI);
-    UA_CertificateGroup_AcceptAll(&c->sessionPKI);
+    if(cfg->userPkiDir) {
+        /* user certificates: the DefaultUserTokenGroup trust list */
+        UA_NodeId group =
+            UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP);
+        r = UA_CertificateGroup_Filestore(&c->sessionPKI, &group,
+                                          UA_STRING((char *)(uintptr_t)cfg->userPkiDir),
+                                          c->logging, NULL);
+        if(r != UA_STATUSCODE_GOOD)
+            return r;
+    } else {
+        UA_CertificateGroup_AcceptAll(&c->sessionPKI);
+    }
 
     UA_ByteString cert = {cfg->ownCert.len, cfg->ownCert.data};
     UA_ByteString key = {cfg->ownKey.len, cfg->ownKey.data};
@@ -208,13 +223,15 @@ static UA_StatusCode configure(UA_ServerConfig *c, const gds_server_config *cfg,
         return r;
     /* Before None is added: the user token policies are made for the
      * secure policies only, so no password ever travels over None. */
-    if(gds_access_install(c, cfg->users, caCert) != GDS_OK)
+    if(gds_access_install(c, cfg->users, caCert, cfg->userPkiDir != NULL) != GDS_OK)
         return UA_STATUSCODE_BADINTERNALERROR;
     r = UA_ServerConfig_addSecurityPolicyNone(c, &cert);
     if(r != UA_STATUSCODE_GOOD)
         return r;
     c->securityPolicyNoneDiscoveryOnly = true;
     c->allowNonePolicyPassword = false;
+    c->findServersPeers = find_servers_peers;
+    c->findServersPeersContext = s;
     for(size_t i = 0; i < c->securityPoliciesSize && r == UA_STATUSCODE_GOOD; i++) {
         const UA_SecurityPolicy *p = &c->securityPolicies[i];
         bool none = UA_String_equal(&p->policyUri, &UA_SECURITY_POLICY_NONE_URI);
@@ -227,6 +244,64 @@ static UA_StatusCode configure(UA_ServerConfig *c, const gds_server_config *cfg,
     if(r == UA_STATUSCODE_GOOD)
         r = set_listen_url(c, cfg);
     return r;
+}
+
+/* ---- FindServers peers (UASM ask A15) ---- */
+
+/* open62541 calls this under its service mutex (patch 0005). */
+static UA_StatusCode find_servers_peers(UA_Server *server, void *context,
+                                        UA_ApplicationDescription **out, size_t *n) {
+    (void)server;
+    gds_server *s = context;
+    pthread_mutex_lock(&s->peerLock);
+    UA_StatusCode r = UA_Array_copy(s->peers, s->nPeers, (void **)out,
+                                    &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]);
+    *n = r == UA_STATUSCODE_GOOD ? s->nPeers : 0;
+    pthread_mutex_unlock(&s->peerLock);
+    return r;
+}
+
+static bool peer_ok(const UA_ApplicationDescription *p, const UA_String *self) {
+    if(p->applicationUri.length == 0 || p->applicationUri.length > GDS_MAX_APPLICATION_URI ||
+       UA_String_equal(&p->applicationUri, self) || p->discoveryUrlsSize == 0 ||
+       p->discoveryUrlsSize > GDS_MAX_ARRAY_FIELD)
+        return false;
+    if(p->applicationType != UA_APPLICATIONTYPE_SERVER &&
+       p->applicationType != UA_APPLICATIONTYPE_CLIENTANDSERVER &&
+       p->applicationType != UA_APPLICATIONTYPE_DISCOVERYSERVER)
+        return false;
+    for(size_t i = 0; i < p->discoveryUrlsSize; i++)
+        if(p->discoveryUrls[i].length == 0)
+            return false;
+    return true;
+}
+
+gds_status gds_server_set_peer_servers(gds_server *s, const UA_ApplicationDescription *peers,
+                                       size_t n) {
+    if(!s || (n && !peers))
+        return GDS_EINVAL;
+    if(n > GDS_MAX_PEER_SERVERS)
+        return GDS_ETOOBIG;
+    const UA_String *self = &UA_Server_getConfig(s->ua)->applicationDescription.applicationUri;
+    for(size_t i = 0; i < n; i++) {
+        if(!peer_ok(&peers[i], self))
+            return GDS_EINVAL;
+        for(size_t j = 0; j < i; j++)
+            if(UA_String_equal(&peers[i].applicationUri, &peers[j].applicationUri))
+                return GDS_EINVAL;
+    }
+    UA_ApplicationDescription *copy = NULL;
+    if(n && UA_Array_copy(peers, n, (void **)&copy, &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]) !=
+                UA_STATUSCODE_GOOD)
+        return GDS_ENOMEM;
+    pthread_mutex_lock(&s->peerLock);
+    UA_ApplicationDescription *old = s->peers;
+    size_t oldN = s->nPeers;
+    s->peers = copy;
+    s->nPeers = n;
+    pthread_mutex_unlock(&s->peerLock);
+    UA_Array_delete(old, oldN, &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]);
+    return GDS_OK;
 }
 
 /* ---- lifecycle ---- */
@@ -256,6 +331,8 @@ static gds_status install(gds_server *s) {
         r = install_role_nodes(s);
     if(r == UA_STATUSCODE_GOOD)
         r = gds_approvals_install(s);
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_alarms_install(s);
     if(r != UA_STATUSCODE_GOOD) {
         fprintf(stderr, "opengds: installing the GDS methods failed: %s\n", UA_StatusCode_name(r));
         return GDS_ENOTFOUND;
@@ -276,6 +353,9 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
     pthread_cond_init(&s->workCond, NULL);
     pthread_mutex_init(&s->plugLock, NULL);
     pthread_mutex_init(&s->bindLock, NULL);
+    pthread_mutex_init(&s->alarmLock, NULL);
+    pthread_mutex_init(&s->holdLock, NULL);
+    pthread_mutex_init(&s->peerLock, NULL);
     pthread_cond_init(&s->plugCond, NULL);
     s->store = cfg->store;
     s->ca = cfg->ca;
@@ -314,7 +394,60 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
     return GDS_OK;
 }
 
+/* ---- embedder Roles (A10, issue #63) ---- */
+
+/* OPC 10000-18 §4.2: the Server's Roles are the components of
+ * ServerCapabilities/RoleSet. A Role node the embedder already loaded (a
+ * NodeSet such as Opc.Ua.Onboarding) is linked there; otherwise a RoleType
+ * object is created under it. */
+static UA_StatusCode role_node(gds_server *s, const char *name, const UA_NodeId *id) {
+    const UA_NodeId roleSet = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
+    const UA_NodeId hasComponent = UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT);
+    UA_NodeClass nc = UA_NODECLASS_UNSPECIFIED;
+    UA_StatusCode r = UA_Server_readNodeClass(s->ua, *id, &nc);
+    if(r == UA_STATUSCODE_GOOD) {
+        if(nc != UA_NODECLASS_OBJECT)
+            return UA_STATUSCODE_BADNODECLASSINVALID;
+        UA_ExpandedNodeId target = UA_EXPANDEDNODEID_NULL;
+        target.nodeId = *id;
+        r = UA_Server_addReference(s->ua, roleSet, hasComponent, target, true);
+        return r == UA_STATUSCODE_BADDUPLICATEREFERENCENOTALLOWED ? UA_STATUSCODE_GOOD : r;
+    }
+    if(r != UA_STATUSCODE_BADNODEIDUNKNOWN)
+        return r;
+    UA_ObjectAttributes oa = UA_ObjectAttributes_default;
+    oa.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)name);
+    return UA_Server_addObjectNode(s->ua, *id, roleSet, hasComponent,
+                                   UA_QUALIFIEDNAME(id->namespaceIndex, (char *)(uintptr_t)name),
+                                   UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE), oa, NULL, NULL);
+}
+
+gds_status gds_server_add_role(gds_server *s, const char *name, const UA_NodeId *roleId) {
+    if(!s || !name || !roleId)
+        return GDS_EINVAL;
+    if(__atomic_load_n(&s->started, __ATOMIC_ACQUIRE))
+        return GDS_ESTATE;
+    if(roleId->namespaceIndex == s->ns)
+        return GDS_EDENIED; /* the GDS namespace has its own Roles */
+    gds_status st = gds_access_add_role(name, roleId, s->ns);
+    if(st != GDS_OK)
+        return st;
+    UA_StatusCode r = role_node(s, name, roleId);
+    if(r != UA_STATUSCODE_GOOD) {
+        fprintf(stderr, "opengds: Role %s: %s\n", name, UA_StatusCode_name(r));
+        gds_access_drop_last_role();
+        return r == UA_STATUSCODE_BADNODECLASSINVALID || r == UA_STATUSCODE_BADNODEIDINVALID
+                   ? GDS_EINVAL
+                   : GDS_EIO;
+    }
+    return GDS_OK;
+}
+
 gds_status gds_server_run(gds_server *s, volatile UA_Boolean *running) {
+    __atomic_store_n(&s->started, true, __ATOMIC_RELEASE);
+    gds_status st = gds_access_check_users();
+    if(st != GDS_OK)
+        return st;
     UA_StatusCode r = UA_Server_run(s->ua, running);
     if(r != UA_STATUSCODE_GOOD) {
         fprintf(stderr, "opengds: server stopped: %s\n", UA_StatusCode_name(r));
@@ -331,11 +464,18 @@ void gds_server_delete(gds_server *s) {
     if(s->ua)
         UA_Server_delete(s->ua); /* closes every session, cancels plugin calls */
     gds_embed_free(s);
+    gds_alarms_free(s);
+    gds_ptl_free(s);
     gds_access_uninstall();
     gds_buf_free(&s->caCert);
     pthread_cond_destroy(&s->plugCond);
     pthread_mutex_destroy(&s->plugLock);
     pthread_mutex_destroy(&s->bindLock);
+    pthread_mutex_destroy(&s->alarmLock);
+    gds_holds_free(s);
+    pthread_mutex_destroy(&s->holdLock);
+    UA_Array_delete(s->peers, s->nPeers, &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]);
+    pthread_mutex_destroy(&s->peerLock);
     pthread_cond_destroy(&s->workCond);
     pthread_mutex_destroy(&s->roleLock);
     pthread_mutex_destroy(&s->workLock);

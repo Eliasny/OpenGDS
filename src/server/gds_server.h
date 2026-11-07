@@ -36,6 +36,13 @@ typedef struct {
     const char *applicationName;
     gds_buf ownCert; /* DER application instance certificate */
     gds_buf ownKey;  /* DER private key */
+    /* User certificates (UASM ask A11): the PKI folder of the
+     * DefaultUserTokenGroup (OPC 10000-12 §7.8.3.3; layout of Annex F.1,
+     * UserTokenCerts/trusted, issuer, crl). X509IdentityTokens are offered
+     * and checked against it only when set; the users file then maps each
+     * certificate to a user. SecurityAdmin may change it over
+     * ServerConfiguration. NULL: no X.509 user tokens. */
+    const char *userPkiDir;
     gds_store *store; /* borrowed, read-write */
     gds_ca *ca;       /* borrowed: ca_ipc (signer) or in-process */
     const gds_users *users;
@@ -81,6 +88,19 @@ GDS_MUST_CHECK gds_status gds_server_set_role(gds_server *s, gds_node_role role,
 GDS_MUST_CHECK gds_status gds_server_set_service_level(gds_server *s, UA_Byte level,
                                                        UA_DateTime estimatedReturnTime);
 gds_node_role gds_server_role(gds_server *s);
+
+/* The other servers of a non-transparent redundant server set, which
+ * FindServers returns after this server, each with its own DiscoveryUrls
+ * (OPC 10000-4 §6.6.2.4.5.1; the serverUris filter of §5.5.2.2 applies to
+ * them; UASM ask A15). Replaces the list atomically; n == 0 clears it.
+ * Each needs an ApplicationUri other than this server's, a server
+ * ApplicationType and at least one DiscoveryUrl. Copied; any thread.
+ * GDS_EINVAL for a bad entry or a repeated ApplicationUri, GDS_ETOOBIG
+ * above GDS_MAX_PEER_SERVERS. */
+#define GDS_MAX_PEER_SERVERS 16
+GDS_MUST_CHECK gds_status gds_server_set_peer_servers(gds_server *s,
+                                                      const UA_ApplicationDescription *peers,
+                                                      size_t n);
 
 /* ---- plugin privileges (UASM ask A6, issue #17) ----
  * Adds a privilege provider (gds_plugin.h); the struct is copied, ctx is

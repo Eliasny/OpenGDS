@@ -1,0 +1,2 @@
+ApplicationUri,ApplicationName,ApplicationType
+urn:a,"open,Client

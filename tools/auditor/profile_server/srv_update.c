@@ -111,14 +111,6 @@ static void expect_refused(ga_ctx *ctx, srv_target *t, UA_StatusCode r, const ch
 /* The public key of t-good, which is the active key: certificates for it
  * are made without another CreateSigningRequest, so a target whose CSR
  * breaks after an accepted certificate does not take the next tests down. */
-static EVP_PKEY *tgood_key(const srv_target *t) {
-    X509 *x = x509_parse_cert(&t->tGood);
-    EVP_PKEY *k = x ? X509_get_pubkey(x) : NULL;
-    X509_free(x);
-    ERR_clear_error();
-    return k;
-}
-
 /* A CSR for the active key (RegeneratePrivateKey FALSE) */
 static UA_StatusCode active_csr(srv_target *t, gds_buf *csr) {
     return st_csr(t, t->client, false, NULL, csr);
@@ -167,14 +159,11 @@ static void t_update_wrong_uri(ga_ctx *ctx, void *p) {
     bool acr = false;
     r = st_update_cert(t, t->client, &cert, &t->caDer, 1, &acr);
     gds_buf_free(&cert);
-    if(r == UA_STATUSCODE_GOOD) {
-        /* Decision D3: Fail only after a UA-.NETStandard reference run confirms
-         * the reading (§7.10.5 does not ask for the check, Part 6 §6.2.2 does);
-         * until then an accepted certificate is a Warn. */
+    if(r == UA_STATUSCODE_GOOD) { /* decision D3 */
         requeue(ctx, t);
-        ga_warn(ctx, "UpdateCertificate accepted t-wronguri (SAN URI " WRONG_URI "): the target "
-                     "would present a certificate that breaks Part 6 §6.2.2 (Fail once the "
-                     "reference run of decision D3 confirms)");
+        ga_fail(ctx, "UpdateCertificate accepted t-wronguri (SAN URI " WRONG_URI "): the target "
+                     "would present a certificate that breaks Part 6 §6.2.2, and a URI mismatch "
+                     "may not be suppressed (4 §6.1.3 Table 100)");
         return;
     }
     static const UA_StatusCode ok[] = {UA_STATUSCODE_BADCERTIFICATEURIINVALID,
@@ -195,7 +184,7 @@ static void t_update_issuer_arg(ga_ctx *ctx, void *p) {
                             : GDS_ECRYPTO;
     if(gs == GDS_OK && !(ca2.cert = x509_parse_cert(&ca2Der)))
         gs = GDS_ECRYPTO;
-    EVP_PKEY *pub = gs == GDS_OK ? tgood_key(t) : NULL;
+    EVP_PKEY *pub = gs == GDS_OK ? st_tgood_key(t) : NULL;
     if(gs == GDS_OK && !pub)
         gs = GDS_ECRYPTO;
     if(gs == GDS_OK)
@@ -297,7 +286,7 @@ static void t_update_expired(ga_ctx *ctx, void *p) {
     if(!queued_or_not_tested(ctx, t))
         return;
     gds_buf cert = {0};
-    EVP_PKEY *pub = tgood_key(t);
+    EVP_PKEY *pub = st_tgood_key(t);
     gds_status gs = pub ? st_make_leaf(&t->ca, pub, "t-expired", t->targetUri, -10 * 86400L,
                                        -86400L, false, 0, &cert)
                         : GDS_ECRYPTO;
@@ -309,6 +298,12 @@ static void t_update_expired(ga_ctx *ctx, void *p) {
     bool acr = false;
     UA_StatusCode r = st_update_cert(t, t->client, &cert, &t->caDer, 1, &acr);
     gds_buf_free(&cert);
+    if(r == UA_STATUSCODE_GOOD) { /* decision D2 */
+        requeue(ctx, t);
+        ga_warn(ctx, "UpdateCertificate accepted t-expired: Validity Period is a suppressible "
+                     "error (4 §6.1.3 Table 100), which §7.10.5 lets a server ignore");
+        return;
+    }
     expect_refused(ctx, t, r, "t-expired (valid until yesterday)", NULL, 0);
 }
 

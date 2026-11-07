@@ -31,6 +31,7 @@
 #define OPENGDS_GDS_PLUGIN_H
 
 #include <open62541/server.h>
+#include <open62541/types_gds_generated.h>
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -44,7 +45,7 @@ extern "C" {
 #endif
 
 #define GDS_PLUGIN_ABI_MAJOR 1u
-#define GDS_PLUGIN_ABI_MINOR 0u
+#define GDS_PLUGIN_ABI_MINOR 1u /* 1: gds_caller.clientCertificate (A14) */
 
 /* The values of MessageSecurityMode (OPC 10000-4 §7.20). */
 typedef enum {
@@ -81,6 +82,13 @@ typedef struct {
     size_t privilegesSize;
     gds_security_mode securityMode;
     const char *securityPolicyUri; /* NUL-terminated */
+    /* minor 1 (UASM ask A14): the SecureChannel's client certificate
+     * (DER), whoever issued it, for every Sign or SignAndEncrypt session;
+     * NULL and 0 otherwise. A privilege provider can recognise e.g. an
+     * OPC 10000-21 DeviceIdentity certificate by it. Check struct_size
+     * before reading. */
+    const uint8_t *clientCertificate;
+    size_t clientCertificateSize;
 } gds_caller;
 
 bool gds_caller_has_role(const gds_caller *c, const UA_NodeId *role);
@@ -248,6 +256,40 @@ bool gds_caller_permitted(struct gds_server *s, const gds_caller *caller,
  * RolePermissions. Namespace 0 and the GDS namespace: GDS_EDENIED. */
 GDS_MUST_CHECK gds_status gds_server_remove_node(struct gds_server *s, const UA_NodeId *nodeId);
 
+/* A Boolean variable whose value depends on who reads it (UASM ask A17):
+ * TRUE for a session that holds any of these Roles, FALSE for any other
+ * session, as OpenGDS decides UserExecutable. For example the
+ * UserWritable Property of an OPC 10000-20 FileType (§4.2.1) that only
+ * RegistrarAdmin may write (OPC 10000-21 §9.2.10). Roles are as for
+ * gds_method_def.roles; Anonymous makes it TRUE for every session and
+ * AuthenticatedUser for every session with user credentials. The node
+ * must be an existing Boolean variable outside namespace 0 and the GDS
+ * namespace (GDS_EDENIED); its value is computed from now on and writes
+ * are refused. Calling again replaces the Roles. Thread safe. */
+GDS_MUST_CHECK gds_status gds_server_set_role_boolean(struct gds_server *s,
+                                                      const UA_NodeId *nodeId,
+                                                      const UA_NodeId *roles, size_t n);
+
+/* ---- embedder Roles (UASM ask A10, issue #63) ----
+ * Roles that OpenGDS does not define, such as the OPC 10000-21
+ * RegistrarAdmin (§9.2.10, §9.2.12) and SoftwareUpdateAdmin (§9.2.5).
+ * gds_server_add_role must come before gds_server_run, on the thread that
+ * runs the server; afterwards it fails with GDS_ESTATE. Once added:
+ *   - the users file grants the Role by name (the file may be loaded
+ *     before the Role is added; gds_server_run refuses to start with
+ *     GDS_EINVAL while a name in it is no Role);
+ *   - gds_caller.roles carries roleId for the sessions that hold it;
+ *   - gds_method_def.roles and gds_role_permission.roleId may name it;
+ *   - the Role is a component of Server/ServerCapabilities/RoleSet (OPC
+ *     10000-18 §4.2): an existing Object with roleId (from a NodeSet) is
+ *     linked there, otherwise a RoleType object named `name` is created.
+ * name: letters, digits, '.', '_', '-', at most 64 characters. A name or
+ * NodeId that is taken (a built-in Role, Anonymous, AuthenticatedUser or
+ * an earlier embedder Role): GDS_EEXISTS. A NodeId in the GDS namespace:
+ * GDS_EDENIED. More than 16 embedder Roles: GDS_ETOOBIG. */
+GDS_MUST_CHECK gds_status gds_server_add_role(struct gds_server *s, const char *name,
+                                              const UA_NodeId *roleId);
+
 /* ---- audit events of other parts (UASM ask A7, issue #18) ----
  * gds_server_raise_audit_event appends the event to the store's
  * hash-chained audit log (store.h) and then, only once that committed,
@@ -293,6 +335,186 @@ typedef struct {
 GDS_MUST_CHECK gds_status gds_server_raise_audit_event(struct gds_server *s,
                                                        const gds_caller *caller,
                                                        const gds_audit_event *ev, int64_t *seq);
+
+/* ---- alarms (UASM ask A16) ----
+ * A plugin raises and clears Part 9 alarms on its own objects, for example
+ * the SKS out of pre-generated keys without a majority, or a cluster node
+ * that lost its majority. gds_server_add_alarm creates an
+ * AlarmConditionType instance (OPC 10000-9 §5.8.2; OffNormalAlarmType,
+ * §5.8.23, by default) as a HasComponent child of sourceNode, which
+ * becomes an event source of the Server object: subscribers of the Server
+ * object get its events, and ConditionRefresh (§5.5.7) replays it while
+ * it is retained. It starts Enabled, Inactive, Acknowledged, Retain false,
+ * Severity 1 and fires no event.
+ *
+ * gds_server_set_alarm sets ActiveState, LastSeverity, Severity and
+ * Message, and Retain (TRUE while Active or unacknowledged), and fires the
+ * alarm's event (§5.8). It is queued: the server thread applies the calls
+ * in order, shortly after; GDS_ETOOBIG while 64 are waiting. Calling it
+ * with an unchanged state reports a new Severity or Message.
+ *
+ * With ackRoles, each activation also sets AckedState Unacknowledged, and
+ * a session holding one of the Roles over SignAndEncrypt may Acknowledge
+ * (§5.7.3) with the alarm's last EventId; the acknowledgement is audited as
+ * AuditConditionAcknowledgeEventType (§5.10.4), visible to ackRoles.
+ * Without ackRoles the alarm needs no acknowledgement: AckedState stays
+ * Acknowledged and nobody may call Acknowledge.
+ *
+ * Both functions are safe from any thread, while the server runs too.
+ * Alarms live until gds_server_delete; the handle is borrowed. */
+#define GDS_MAX_ALARMS 64
+
+typedef struct gds_alarm gds_alarm;
+
+typedef struct {
+    uint32_t abi_major;
+    uint32_t abi_minor;
+    size_t struct_size;
+    /* The condition's NodeId; null: a new numeric one in sourceNode's
+     * namespace. Never in the GDS namespace (GDS_EDENIED). */
+    UA_NodeId alarmId;
+    /* An existing object outside the GDS namespace (SourceNode,
+     * SourceName = its BrowseName). */
+    UA_NodeId sourceNode;
+    /* BrowseName (in sourceNode's namespace) and ConditionName. */
+    const char *name;
+    /* null: OffNormalAlarmType; otherwise a subtype of AlarmConditionType
+     * in the address space. */
+    UA_NodeId alarmType;
+    /* Who may Acknowledge, as gds_method_def.roles; copied. */
+    const UA_NodeId *ackRoles;
+    size_t ackRolesSize;
+} gds_alarm_def;
+
+/* GDS_ENOTFOUND: no such source object; GDS_EEXISTS: the NodeId is taken;
+ * GDS_EINVAL: a bad def, a Role no session can hold, or a type that is
+ * no AlarmConditionType; GDS_ETOOBIG: 64 alarms already. */
+GDS_MUST_CHECK gds_status gds_server_add_alarm(struct gds_server *s, const gds_alarm_def *def,
+                                               gds_alarm **alarm);
+/* severity 1 (lowest) .. 1000; message UTF-8, NULL for none, copied. */
+GDS_MUST_CHECK gds_status gds_server_set_alarm(gds_alarm *alarm, bool active, uint16_t severity,
+                                               const char *message);
+
+/* ---- Directory and CertificateManager for embedders (UASM ask A13,
+ * issue #81) ----
+ *
+ * What a Part 21 Registrar (OPC 10000-21 §7.2, §7.3, §9.2.8) does inside
+ * the GDS without going through the Part 12 methods. Every call:
+ *   - refuses with GDS_ENOTLEADER on a STANDBY node, as the store does
+ *     (A4), so the embedder answers Bad_InvalidState;
+ *   - names actor (NUL-terminated, non-empty, e.g. "uasm-registrar" or
+ *     the user of the session it acts for) as the ClientUserId of the
+ *     audit events it writes; they go through the hash-chained audit log
+ *     first, as gds_server_raise_audit_event does (A7), and are visible to
+ *     SecurityAdmin and the GDS Role of the matching Part 12 method;
+ *   - is safe from any thread except the server thread; the plugin worker
+ *     that runs a method callback may call it. */
+
+/* Registers rec (its applicationId is ignored) after the checks of
+ * RegisterApplication (OPC 10000-12 §6.5.6). Idempotent per
+ * ApplicationUri: when a record with rec's ApplicationUri exists, *appId
+ * is that record's and *created false, and nothing is changed; otherwise
+ * the record is added, *created is true and an
+ * ApplicationRegistrationChangedAuditEventType event (§6.5.12) is written.
+ * *appId: a GUID NodeId in the GDS namespace. GDS_EINVAL: the record
+ * fails the checks. */
+GDS_MUST_CHECK gds_status gds_server_register_application(struct gds_server *s, const char *actor,
+                                                          const UA_ApplicationRecordDataType *rec,
+                                                          UA_NodeId *appId, bool *created);
+
+/* Holds back (allowed false) or releases the issuance of certificates to
+ * one application, e.g. until its software is updated (OPC 10000-21 §7.2).
+ * While held, StartSigningRequest for it answers Bad_RequestNotAllowed,
+ * a request of it already waiting for the signer fails with that code,
+ * and gds_server_sign_request refuses with GDS_EDENIED. Holds live in
+ * memory only: after a failover the embedder sets them again on the new
+ * primary before it leaves STANDBY (gds_server_set_role). GDS_ENOTFOUND:
+ * no such application (releasing one is always GDS_OK). */
+GDS_MUST_CHECK gds_status gds_server_set_issuance_allowed(struct gds_server *s,
+                                                          const UA_NodeId *appId, bool allowed);
+
+/* Signs a CSR for an application, as StartSigningRequest followed by
+ * FinishRequest would (OPC 10000-12 §7.9.3, §7.9.5; the push model of
+ * §7.10, OPC 10000-21 §7.3), and waits for the result. The request is
+ * stored already approved (the embedder is the approver, so the approval
+ * policy is not asked), signed by the signing worker through the signer
+ * with its checks and issuance journal, and delivered. groupId and typeId
+ * may be NULL or null NodeIds: the DefaultApplicationGroup and its
+ * RsaSha256ApplicationCertificateType. It writes
+ * CertificateRequestedAuditEventType and CertificateDeliveredAuditEventType
+ * events (§7.9.12, §7.9.13). Returns the certificate and the issuer chain
+ * (*issuers: an array of *nIssuers, free with UA_Array_delete).
+ * GDS_EINVAL: a malformed CSR or an unknown group or type; GDS_ENOTFOUND:
+ * no such application; GDS_EDENIED: issuance is held, or the signer
+ * refused (the request is then Failed); GDS_EREMOTE: no answer within
+ * timeoutMs (the request stays
+ * queued and may still be signed; its certificate then appears in the
+ * directory as usual). */
+GDS_MUST_CHECK gds_status gds_server_sign_request(struct gds_server *s, const char *actor,
+                                                  const UA_NodeId *appId, const UA_NodeId *groupId,
+                                                  const UA_NodeId *typeId, const UA_ByteString *csr,
+                                                  uint32_t timeoutMs, UA_ByteString *cert,
+                                                  UA_ByteString **issuers, size_t *nIssuers);
+
+/* The trust list of a CertificateGroup (NULL or a null NodeId: the
+ * DefaultApplicationGroup; or a group from gds_server_add_trust_list), as
+ * GetTrustList and the TrustList file give it (OPC 10000-12 §7.9.9,
+ * §7.8.2.1): every list, a deep copy. */
+GDS_MUST_CHECK gds_status gds_server_get_trust_list(struct gds_server *s, const UA_NodeId *groupId,
+                                                    UA_TrustListDataType *out);
+
+
+/* ---- CertificateManager rights for embedders (UASM ask A14, issue #87) ----
+ * may_manage answers one question: may this caller act for this
+ * ApplicationId in the CertificateManager methods (StartSigningRequest,
+ * FinishRequest, GetCertificateGroups, GetTrustList,
+ * GetCertificateStatus; OPC 10000-12 §7.9)? For example a device with the
+ * OPC 10000-21 DCA Privilege (§4.2.6 Table 4, §9.2.6) acting for its own
+ * ApplicationId over its DeviceIdentity channel.
+ * The core asks only after its own checks refused the call
+ * (CertificateAuthorityAdmin, or the application itself through a
+ * certificate the GDS CA issued, §7.2), so the hook can only add rights;
+ * every other check stays (the application must exist, the certificate
+ * still carries the record's ApplicationUri). It runs on a plugin worker,
+ * the call completing asynchronously; it must not block for long. With no
+ * hook the core keeps its own answer. Set it before gds_server_run;
+ * GDS_ESTATE after. */
+typedef bool (*gds_may_manage_fn)(void *ctx, const gds_caller *caller,
+                                  const UA_NodeId *applicationId);
+GDS_MUST_CHECK gds_status gds_server_set_application_rights_hook(struct gds_server *s,
+                                                                 gds_may_manage_fn fn, void *ctx);
+
+/* ---- plugin trust lists (UASM ask A18) ----
+ * A CertificateGroup of the plugin's own (OPC 10000-12 §7.8.3.1), for
+ * example the SKS's push targets: a CertificateGroupType object `name`
+ * (BrowseName in groupId's namespace) under parentId, whose TrustList
+ * (TrustListType, §7.8.2) sessions holding one of `roles` over
+ * SignAndEncrypt read and change with Open, OpenWithMasks, Read, Write,
+ * Close, CloseAndUpdate, AddCertificate and RemoveCertificate. The lists
+ * live in an open62541 file store under pkiDir (created, mode 0700;
+ * Annex F.1 layout), so they survive restarts; changes are live at once
+ * (applyChangesRequired FALSE). gds_server_get_trust_list(s, &groupId)
+ * reads them. Before or while the server runs, from any thread; groupId
+ * not in namespace 0 or the GDS namespace (GDS_EDENIED), parentId an
+ * existing object (GDS_ENOTFOUND); at most 8 lists (GDS_ETOOBIG). */
+#define GDS_MAX_PLUGIN_TRUST_LISTS 8
+
+typedef struct {
+    uint32_t abi_major;
+    uint32_t abi_minor;
+    size_t struct_size;
+    UA_NodeId groupId;  /* the CertificateGroupType object to create */
+    UA_NodeId parentId; /* the plugin's object */
+    const char *name;
+    const char *pkiDir;
+    /* Who may call the TrustList methods (for example SecurityAdmin), as
+     * gds_method_def.roles; at least one; copied. */
+    const UA_NodeId *roles;
+    size_t rolesSize;
+} gds_trust_list_def;
+
+GDS_MUST_CHECK gds_status gds_server_add_trust_list(struct gds_server *s,
+                                                    const gds_trust_list_def *def);
 
 #ifdef __cplusplus
 }

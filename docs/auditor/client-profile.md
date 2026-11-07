@@ -2,6 +2,8 @@
 
 `gdsaudit client --listen <port>` checks an OPC UA application that pulls its certificate and trust list from a GDS (OPC 10000-12 §7.3, §7.6, Annex G.1). The Auditor runs `fake_gds.c`, a minimal GDS of its own that breaks the rules on cue, and waits for the client to come to it. Each test starts the client's pull cycle with `--trigger-cmd` or an operator prompt and reports Not tested when neither is available. After a cycle the Auditor checks what the client installed by letting it connect to a probe server (below), so every check stays black-box.
 
+The trigger hook is the program after `--` on the `gdsaudit client` command line. The Auditor runs it once per step with `GDSAUDIT_GDS_URL`, `GDSAUDIT_GDS_CA`, `GDSAUDIT_GDS_CRL`, `GDSAUDIT_GDS_USER`, `GDSAUDIT_GDS_PASSWORD_FILE` and `GDSAUDIT_CLIENT_DIR` set. Without `GDSAUDIT_ACTION` the client does one pull cycle. `GDSAUDIT_ACTION=probe` makes it connect to `GDSAUDIT_PROBE_URL`. `GDSAUDIT_ACTION=restart` restarts the client and exits 0, or exits nonzero when the hook cannot restart it; CLI-PEN-04 and CLI-INS-03 are then Not tested. `GDSAUDIT_ACTION=run` with `GDSAUDIT_RUN_SECONDS=N` lets the client run cycles on its own schedule for N seconds and then exit. The slow tests (CLI-PEN-08, CLI-TL-08, CLI-REN-03) use it; they run only with `--slow --cycle-period S`, where S is the cycle period the client is configured with, and are Not tested otherwise. `GDSAUDIT_PROMPT_USER` and `GDSAUDIT_PROMPT_PASSWORD_FILE`, set for one cycle only, are what an operator types at the client's credential prompt; the hook hands them to that prompt.
+
 Spec: OPC 10000-12 v1.05.07 (2026-04-15) unless the clause names another Part. How to read the columns, verdict words and mutants: [README](README.md#how-to-read-a-catalogue).
 
 ## ConformanceUnits
@@ -45,7 +47,7 @@ RegisterApplication needs the DiscoveryAdmin Role or the ApplicationAdmin Privil
 | CLI-REG-02 | 12 §6.5.5 | O | Compare ApplicationType with what the application is (a Client; ClientAndServer if it also serves) | Matches | Warn: different | `register-wrong-type` |
 | CLI-REG-03 | 12 §6.5.5 | O | For a ClientAndServer, call GetEndpoints on every DiscoveryUrl in the record | Each answers with the same ApplicationUri | Fail: another ApplicationUri. Warn: a URL does not answer. Not supported: pure Client | `register-bad-url` |
 | CLI-REG-04 | 12 §6.5.5, §6.5.6 | O | Run a second cycle with the record already present | The client finds its record (FindApplications) or handles Bad_EntryExists and goes on | Warn: the cycle stops on Bad_EntryExists. The spec does not require FindApplications first | `register-every-run` |
-| CLI-REG-05 | 12 Annex G.1 | O | The operator types UserName credentials at the client's prompt in cycle 1; cycle 2 runs without an operator | Cycle 2 does not use those credentials again | Fail: the prompted credentials were persisted | `persist-prompted-creds` |
+| CLI-REG-05 | 12 Annex G.1 | O | In cycle 1 the operator types UserName credentials at the client's prompt (the hook gets them as `GDSAUDIT_PROMPT_USER` and `GDSAUDIT_PROMPT_PASSWORD_FILE`); cycle 2 runs without them. The fake GDS refuses Anonymous in both cycles, so the client has to authenticate | Cycle 2 does not log in with those credentials, and the password is in no file under `GDSAUDIT_CLIENT_DIR` | Fail: the prompted credentials were persisted | `persist-prompted-creds` |
 
 ## Signing request (`cli_csr.c`)
 
@@ -72,7 +74,7 @@ RegisterApplication needs the DiscoveryAdmin Role or the ApplicationAdmin Privil
 | CLI-PEN-05 | 12 §7.9.5, §7.6 | O | FinishRequest returns Bad_RequestNotAllowed | The client never calls FinishRequest for that RequestId again | Fail: it polls the rejected RequestId again | `poll-after-reject` |
 | CLI-PEN-06 | 12 §7.9.5 | O | After StartSigningRequest the fake GDS drops the session; FinishRequest then returns Bad_InvalidArgument | The client recovers with GetCertificates or a new request | Warn: stuck | `pending-stuck-invalid` |
 | CLI-PEN-07 | 12 §6.3 | O | Watch sessions between cycles | The client closes its session when a cycle ends and holds none between cycles | Fail: a session stays open into the next cycle, or longer than 60 s after its last call | `keep-session-open` |
-| CLI-PEN-08 | 12 §6.3 | O, slow | Start the client 3 times at the same moment and record when the second cycle begins | The delay varies between runs and lies between 1 % and at least 10 % of the cycle period | Warn: identical delays, or outside the range. Timing on a shared bench makes a Fail unsafe | `no-cycle-jitter` |
+| CLI-PEN-08 | 12 §6.3 | O, slow | Run the client's own schedule 3 times and record when the second cycle begins | The delay after the cycle period is at least 1 % of the period and varies between runs ("between one and at least ten percent of the cycle period") | Warn: under 1 %, or the same in all runs. Timing on a shared bench makes a Fail unsafe | `no-cycle-jitter` |
 
 ## Installation (`cli_install.c`)
 
@@ -95,7 +97,7 @@ The fake GDS serves a 40 KiB trust list and answers each Read with at most 1 KiB
 | CLI-TL-05 | 12 §7.8.2.8; 4 §6.1.3 | O | Next cycle serves a list without CA X; the probe presents a certificate from X | The client refuses | Fail: still trusts X (it merged instead of replacing) | `trustlist-merge` |
 | CLI-TL-06 | 12 §7.8.2.8; 4 §6.1.3 | O | The probe presents a leaf issued by a CA that is only in IssuerCertificates | The client refuses (the issuer list only builds chains) | Fail: connects | `issuers-trusted` |
 | CLI-TL-07 | 12 §7.6 | O | Leave the list unchanged for two cycles | The client reads LastUpdateTime and skips the download | Warn: downloads every cycle | `always-download` |
-| CLI-TL-08 | 12 §7.6, §7.8.2.1 | O, slow | Set UpdateFrequency to 60 s | The client checks for updates within 2 × UpdateFrequency | Warn: it does not | `ignore-update-frequency` |
+| CLI-TL-08 | 12 §7.6, §7.8.2.1 | O, slow | Set UpdateFrequency to a quarter of the cycle period; run the client's own schedule | The client checks for updates within 2 × UpdateFrequency | Warn: it does not | `ignore-update-frequency` |
 
 ## Renewal (`cli_renew.c`)
 
@@ -103,7 +105,7 @@ The fake GDS serves a 40 KiB trust list and answers each Read with at most 1 KiB
 | --- | --- | --- | --- | --- | --- | --- |
 | CLI-REN-01 | 12 §7.9.10, §7.6 | O | GetCertificateStatus returns UpdateRequired TRUE | The client starts a new signing request in the same cycle | Fail: no request | `ignore-update-required` |
 | CLI-REN-02 | 12 §7.9.10, §7.6 | O | GetCertificateStatus returns UpdateRequired FALSE and the certificate is far from expiry | No new request | Warn: requests anyway | `renew-always` |
-| CLI-REN-03 | 12 §7.6 | O, slow | Issue a 10-minute certificate; let cycles run | The client renews before the certificate expires | Warn: it expires. The spec sets no lead time | `no-expiry-renewal` |
+| CLI-REN-03 | 12 §7.6 | O, slow | Issue a certificate that expires after 3 cycle periods; run the client's own schedule | The client renews before the certificate expires | Warn: it expires. The spec sets no lead time | `no-expiry-renewal` |
 | CLI-REN-04 | 12 §7.6 | O | After a renewal, trigger a connection to the probe | The new certificate is presented | Fail: the old one | `renew-keep-old` |
 | CLI-REN-05 | 12 Annex G.1, §7.6 | O | Watch the identity token used for renewal | The client authenticates with its certificate and Anonymous user (ApplicationSelfAdmin) | Warn: it uses UserName credentials while it holds a valid certificate | `renew-with-password` |
 
@@ -118,7 +120,17 @@ In every fault test the Auditor first lets one good cycle finish, so the client 
 | CLI-FLT-03 | 12 §7.9.5; 4 §6.1.3 | O | FinishRequest returns a certificate from `ca2`, which no list holds | Not installed | Fail: installed | `install-unverified` |
 | CLI-FLT-04 | 12 §7.9.5 | O | FinishRequest returns a certificate whose public key is not the CSR's | Not installed | Fail: installed | `install-wrong-key` |
 | CLI-FLT-05 | 12 §7.9.5; 6 §6.2.2 | O | FinishRequest returns a certificate whose SAN URI is not the client's ApplicationUri | Not installed | Fail: installed | `install-wrong-uri` |
-| CLI-FLT-06 | 12 §7.9.5; 4 §6.1.3 | O | FinishRequest returns an expired certificate | Not installed | Fail: installed ([decision D2](README.md#decisions)) | `install-expired` |
-| CLI-FLT-07 | 12 §7.6 | O, slow | Stop answering in the middle of a FinishRequest | The client gives up the call and is ready for the next cycle within 5 minutes | Warn: it hangs | `no-call-timeout` |
+| CLI-FLT-06 | 12 §7.9.5; 4 §6.1.3 | O | FinishRequest returns an expired certificate | Not installed | Warn: installed, the validity check is suppressible (Part 4 Table 100; [decision D2](README.md#decisions)) | `install-expired` |
+| CLI-FLT-07 | 12 §7.6 | O, slow | Stop answering in the middle of a FinishRequest (the answer is held back 40 s, or until the client process ends) | The client gives up the call within those 40 s and runs the next cycle | Warn: it still waits after 40 s | `no-call-timeout` |
 | CLI-FLT-08 | 12 §7.8.2.4; OPC 10000-20 (FileType Read) | O | Answer a Read with more bytes than requested, and FinishRequest with a 10 000-element IssuerCertificates array | The client keeps running and keeps its last good state | Fail: it crashes or installs | `no-length-check` |
 | CLI-FLT-09 | 12 §6.3 | O | The fake GDS closes the client's session mid-cycle (a GDS may do so when short of resources) | The client retries in its next cycle, not in a tight loop | Warn: more than 3 reconnects within 10 s | `reconnect-storm` |
+
+## Reference runs
+
+Two clients gate the profile (AT3). `selftest/pull_test_client.c` passes every test, and each of its mutants is caught by the test that names it (`expected/pull_test_client.csv`, `ctest -L client_profile`).
+
+The second is a pull client on the OPC Foundation .NET GDS client library (UA-.NETStandard 1.5.378.182, `Opc.Ua.Gds.Client.Common`). UA-.NETStandard ships no ready pull-client application, so `tools/auditor/reference/dotnet_pull_client` is a small trigger hook on that library: one pull cycle per run, the RequestId and new key kept across runs, the trust list fetched only when LastUpdateTime changes. `reference/run_dotnet_client.sh <gdsaudit> <UA-.NETStandard checkout> <workdir>` builds it inside the pinned checkout and runs the profile; the `reference-client` workflow does the same in CI and fails when a verdict in `expected/dotnet_reference.csv` changes. The result is pass 45, fail 3, not supported 2, not tested 4:
+
+- CLI-TL-01 fails and CLI-FLT-08 fails because of the library itself. `GlobalDiscoveryServerClient.ReadTrustListAsync` reads 4096 bytes per call and stops at the first Read whose result length is not 4096. A short Read therefore ends the download early, although only an empty result marks the end of the file (OPC 10000-20 §4.2.4), and a Read longer than requested is taken as the whole list and installed.
+- CLI-TRU-02 fails as a consequence of CLI-FLT-08: after the rogue list the client's own certificate no longer validates, so later runs do not start. Run alone (`--only CLI-TRU-02`) it passes, and so does CLI-FLT-09, which is Not tested in the full run for the same reason.
+- CLI-CSR-05 and CLI-REG-03 are Not supported: the hook is a pure Client with no DiscoveryUrls. The slow tests are Not tested, since the hook has no schedule of its own (`GDSAUDIT_ACTION=run` exits 2).

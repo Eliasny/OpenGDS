@@ -76,6 +76,7 @@ typedef struct SessionFlag {
     UA_NodeId sessionId;
     UA_Boolean admin;
     UA_MessageSecurityMode mode;
+    UA_ByteString cert; /* the client's application certificate */
     struct SessionFlag *next;
 } SessionFlag;
 static SessionFlag *sessionFlags = NULL;
@@ -172,6 +173,12 @@ activateSession( // NOLINT(readability-function-cognitive-complexity)
     }
     f->admin = admin;
     f->mode = ed->securityMode;
+    if(remoteCert && remoteCert->length <= GDS_MAX_CERT_SIZE &&
+       UA_ByteString_copy(remoteCert, &f->cert) != UA_STATUSCODE_GOOD) {
+        UA_NodeId_clear(&f->sessionId);
+        free(f);
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    }
     f->next = sessionFlags;
     sessionFlags = f;
     UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "Session activated, SecurityAdmin=%s (%s)",
@@ -188,12 +195,45 @@ static void closeSession(UA_Server *server, UA_AccessControl *ac, const UA_NodeI
             SessionFlag *d = *pp;
             *pp = d->next;
             UA_NodeId_clear(&d->sessionId);
+            UA_ByteString_clear(&d->cert);
             free(d);
             break;
         }
         pp = &(*pp)->next;
     }
     origClose(server, ac, sessionId, sessionContext);
+}
+
+/* After a trust list change, close the sessions whose application
+ * certificate the new list no longer accepts (12 §7.8.2.5). The library
+ * has no call to close a SecureChannel, so only the session goes. */
+static UA_Server *theServer;
+#define MAX_CLOSE 32
+
+static void reevaluateSessions(void) {
+    UA_CertificateGroup *g = &UA_Server_getConfig(theServer)->secureChannelPKI;
+    UA_NodeId doomed[MAX_CLOSE];
+    size_t n = 0;
+    for(SessionFlag *s = sessionFlags; s && n < MAX_CLOSE; s = s->next) {
+        if(s->cert.length == 0)
+            continue;
+        UA_StatusCode r = g->verifyCertificate(g, &s->cert);
+        if(r == UA_STATUSCODE_GOOD)
+            continue;
+        bool revoked = r == UA_STATUSCODE_BADCERTIFICATEREVOKED;
+        if((revoked && pm_breaking("wire-crl-no-reeval")) ||
+           (!revoked && pm_breaking("wire-keep-removed-sessions")))
+            continue;
+        UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND,
+                    "Closing a session whose certificate is no longer accepted (%s)",
+                    UA_StatusCode_name(r));
+        if(UA_NodeId_copy(&s->sessionId, &doomed[n]) == UA_STATUSCODE_GOOD)
+            n++;
+    }
+    for(size_t i = 0; i < n; i++) { /* closeSession unlinks the flag */
+        (void)UA_Server_closeSession(theServer, &doomed[i]);
+        UA_NodeId_clear(&doomed[i]);
+    }
 }
 
 static UA_Boolean isProtectedObject(const UA_NodeId *objectId) {
@@ -512,6 +552,8 @@ int main(int argc, char **argv) {
         config, (UA_UInt16)port, &cert, &key, UA_STRING((char *)(uintptr_t)pki));
     /* the config holds its own copies now; wipe ours (the wire-old-cert
      * mutant keeps one in push_mgmt.c) */
+    theServer = server;
+    pm_on_list_installed(reevaluateSessions);
     res |= pm_install(server, brk, &key, sessionMode);
     if(res == UA_STATUSCODE_GOOD && pm_breaking("deprecated-policy")) {
         res = UA_ServerConfig_addSecurityPolicyBasic256(config, &cert, &key);

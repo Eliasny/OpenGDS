@@ -127,37 +127,14 @@ static GDS_METHOD(revoke_certificate) {
     return UA_STATUSCODE_GOOD;
 }
 
-/* RevokeCertificate is Optional on CertificateDirectoryType (§7.9.6), so
- * the GDS nodeset does not create it on the Directory object; it is added
- * here with the arguments of RevokeCertificateMethodType. */
-static UA_StatusCode add_method_node(gds_server *s) {
-    UA_NodeId id = UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY_REVOKECERTIFICATE);
-    UA_NodeClass nc = UA_NODECLASS_UNSPECIFIED;
-    if(UA_Server_readNodeClass(s->ua, id, &nc) == UA_STATUSCODE_GOOD)
-        return nc == UA_NODECLASS_METHOD ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNODECLASSINVALID;
-    UA_Argument in[2];
-    UA_Argument_init(&in[0]);
-    in[0].name = UA_STRING("ApplicationId");
-    in[0].dataType = UA_TYPES[UA_TYPES_NODEID].typeId;
-    in[0].valueRank = UA_VALUERANK_SCALAR;
-    UA_Argument_init(&in[1]);
-    in[1].name = UA_STRING("Certificate");
-    in[1].dataType = UA_TYPES[UA_TYPES_BYTESTRING].typeId;
-    in[1].valueRank = UA_VALUERANK_SCALAR;
-    UA_MethodAttributes ma = UA_MethodAttributes_default;
-    ma.displayName = UA_LOCALIZEDTEXT("", "RevokeCertificate");
-    ma.executable = true;
-    ma.userExecutable = true;
-    return UA_Server_addMethodNode(s->ua, id, UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY),
-                                   UA_NS0ID(HASCOMPONENT),
-                                   UA_QUALIFIEDNAME(s->ns, "RevokeCertificate"), ma, NULL, 2, in,
-                                   0, NULL, NULL, NULL);
-}
-
 UA_StatusCode gds_revoke_install(gds_server *s) {
     static const gds_method_entry m[] = {
         {UA_GDSID_DIRECTORY_REVOKECERTIFICATE, revoke_certificate},
     };
-    UA_StatusCode r = add_method_node(s);
+    /* Optional on CertificateDirectoryType (§7.9.6): not in the nodeset */
+    static const gds_method_arg in[] = {{"ApplicationId", UA_NS0ID_NODEID, false},
+                                        {"Certificate", UA_NS0ID_BYTESTRING, false}};
+    UA_StatusCode r = gds_add_directory_method(s, UA_GDSID_DIRECTORY_REVOKECERTIFICATE,
+                                               "RevokeCertificate", in, 2, NULL, 0);
     return r == UA_STATUSCODE_GOOD ? gds_install_methods(s, m, GDS_ARRAY_SIZE(m)) : r;
 }

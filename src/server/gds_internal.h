@@ -19,12 +19,23 @@
 
 #define GDS_NS_URI "http://opcfoundation.org/UA/GDS/"
 #define GDS_MAX_PRIVILEGE_PROVIDERS 8
-/* Anonymous, AuthenticatedUser and every role of gds_role_table */
-#define GDS_MAX_CALLER_ROLES 16
+/* Anonymous, AuthenticatedUser and every built-in and embedder Role */
+#define GDS_MAX_CALLER_ROLES (2 + GDS_ROLE_BUILTIN_COUNT + GDS_MAX_EMBED_ROLES)
 
 typedef struct gds_binding gds_binding;
 typedef struct gds_job gds_job;
 typedef struct gds_node_perms gds_node_perms;
+typedef struct gds_role_bool gds_role_bool;
+#define GDS_ALARM_QUEUE 64
+/* A queued gds_server_set_alarm (gds_alarms.c). */
+typedef struct {
+    gds_alarm *a;
+    bool active;
+    UA_UInt16 severity;
+    char *message;
+} gds_alarm_op;
+
+typedef struct gds_ptl gds_ptl;
 
 struct gds_server {
     UA_Server *ua;
@@ -50,6 +61,9 @@ struct gds_server {
     pthread_cond_t workCond;
     bool workPending, workStop;
     bool plugStop; /* plugin workers stop (plugLock); here for packing */
+    bool started;  /* gds_server_run was called (__atomic); here for packing */
+    bool ptlBound;            /* ptlLock; here for packing */
+    bool alarmDrainScheduled; /* alarmLock; here for packing */
     /* plugin privilege providers, fixed before the server runs */
     gds_privilege_provider privProviders[GDS_MAX_PRIVILEGE_PROVIDERS];
     size_t nPrivProviders;
@@ -62,6 +76,13 @@ struct gds_server {
     size_t nBindings;
     gds_node_perms *perms;
     size_t nPerms, capPerms;
+    gds_role_bool *roleBools; /* A17, also under bindLock */
+    size_t nRoleBools, capRoleBools;
+    /* plugin trust lists (gds_plugin_tl.c, A18): ptlLock, a leaf lock,
+     * guards the list and each file store; handles are server thread only */
+    pthread_mutex_t ptlLock;
+    gds_ptl *ptls[GDS_MAX_PLUGIN_TRUST_LISTS];
+    size_t nPtls;
     pthread_mutex_t plugLock;
     pthread_cond_t plugCond;
     pthread_t plugThreads[GDS_PLUGIN_WORKERS];
@@ -69,6 +90,25 @@ struct gds_server {
     gds_job *plugQueue, *plugQueueTail, *plugDone;
     size_t plugQueued;
     gds_job *plugInflight[GDS_PLUGIN_QUEUE];
+    /* plugin alarms (gds_alarms.c): alarmLock, a leaf lock, guards the
+     * list and the queue that the server thread drains */
+    pthread_mutex_t alarmLock;
+    gds_alarm *alarms[GDS_MAX_ALARMS];
+    size_t nAlarms;
+    gds_alarm_op alarmOps[GDS_ALARM_QUEUE];
+    size_t alarmOpHead, nAlarmOps;
+    /* issuance holds (gds_registrar.c, UASM ask A13), not replicated */
+    pthread_mutex_t holdLock;
+    UA_Guid *holds;
+    size_t nHolds, capHolds;
+    /* FindServers peers (gds_server.c, UASM ask A15); peerLock is a leaf
+     * lock, taken under open62541's service mutex */
+    pthread_mutex_t peerLock;
+    UA_ApplicationDescription *peers;
+    size_t nPeers;
+    /* CertificateManager rights hook (UASM ask A14); fixed before run */
+    gds_may_manage_fn mayManage;
+    void *mayManageCtx;
 };
 
 /* ---- caller views (gds_caller.c, issue #17) ---- */
@@ -105,6 +145,16 @@ void gds_embed_configure(UA_ServerConfig *c, gds_server *s);
 void gds_embed_stop(gds_server *s);
 /* Frees jobs and bindings; after UA_Server_delete. */
 void gds_embed_free(gds_server *s);
+/* A14: the CertificateManager method fn refused the caller for app; ask
+ * the embedder's may_manage hook on a worker and, if it allows, run fn
+ * again on the server thread. Good_CompletesAsynchronously, or
+ * Bad_UserAccessDenied when there is no hook (or it was asked already). */
+GDS_MUST_CHECK UA_StatusCode gds_embed_defer_rights(gds_server *s, UA_MethodCallback fn,
+                                                    const UA_NodeId *sessionId, void *sessionContext,
+                                                    const UA_NodeId *methodId,
+                                                    const UA_NodeId *objectId, const UA_Guid *app,
+                                                    size_t inputSize, const UA_Variant *input,
+                                                    size_t outputSize, UA_Variant *output);
 /* Is a plugin callback bound to this method node? */
 bool gds_embed_bound(gds_server *s, const UA_NodeId *methodId);
 /* Drop the bindings whose method node no longer exists. */
@@ -170,6 +220,17 @@ GDS_MUST_CHECK UA_StatusCode gds_load_app(gds_server *s, const UA_Guid *id,
 GDS_MUST_CHECK UA_StatusCode gds_directory_install(gds_server *s);
 GDS_MUST_CHECK UA_StatusCode gds_certmgr_install(gds_server *s);
 GDS_MUST_CHECK UA_StatusCode gds_trustlist_install(gds_server *s);
+/* The DefaultApplicationGroup trust list (the CA certificate and its CRL),
+ * the lists in masks only; *out is a deep copy. Any thread. */
+GDS_MUST_CHECK UA_StatusCode gds_trustlist_data(gds_server *s, UA_UInt32 masks,
+                                                UA_TrustListDataType *out);
+/* Issuance holds (gds_registrar.c, UASM ask A13): is this application's
+ * issuance held back? Any thread; holdLock is a leaf lock. */
+bool gds_issuance_held(gds_server *s, const UA_Guid *appId);
+void gds_holds_free(gds_server *s);
+/* Audit log + event with ClientUserId user (gds_audit.c). */
+GDS_MUST_CHECK gds_status gds_audit_raise(gds_server *s, const char *user,
+                                          const gds_audit_event *ev, int64_t *seq);
 /* RevokeCertificate (gds_revoke.c). */
 GDS_MUST_CHECK UA_StatusCode gds_revoke_install(gds_server *s);
 /* Revoke every certificate of appId: store first, then the CA's CRL.
@@ -184,6 +245,31 @@ GDS_MUST_CHECK UA_StatusCode gds_approvals_raise(gds_server *s, const gds_reques
 /* The node role changed: re-synchronise the dialogs with the store on the
  * server thread (none on a STANDBY). Any thread. */
 void gds_approvals_role_changed(gds_server *s);
+/* Plugin alarms (gds_alarms.c): the Acknowledge handler and the event
+ * queue size for ConditionRefresh; before the server runs. */
+GDS_MUST_CHECK UA_StatusCode gds_alarms_install(gds_server *s);
+/* After UA_Server_delete. */
+void gds_alarms_free(gds_server *s);
+/* (Re)binds OpenGDS's Acknowledge handler: after every
+ * UA_Server_createCondition, which binds open62541's. */
+UA_StatusCode gds_alarms_bind_ack(gds_server *s);
+/* The EventId of the alarm's last event (a copy). Server thread. */
+GDS_MUST_CHECK UA_StatusCode gds_alarm_last_event_id(const gds_alarm *a, UA_ByteString *out);
+/* Condition fields, scalar values only (OPC 10000-9 §5.5.2). */
+GDS_MUST_CHECK UA_StatusCode gds_cond_set_field(UA_Server *ua, UA_NodeId c, const char *field,
+                                                const void *v, const UA_DataType *t);
+/* A TwoStateVariable field: its text and its Id. */
+GDS_MUST_CHECK UA_StatusCode gds_cond_set_two_state(UA_Server *ua, UA_NodeId c, const char *field,
+                                                    UA_Boolean id, const char *text);
+
+/* Plugin trust lists (gds_plugin_tl.c). Is this one of the FileType /
+ * TrustListType methods they bind? */
+/* The group's file store, a deep copy; *found false when no plugin list
+ * has this group. Thread safe. */
+GDS_MUST_CHECK gds_status gds_ptl_get(gds_server *s, const UA_NodeId *groupId,
+                                      UA_TrustListDataType *out, bool *found);
+/* After UA_Server_delete. */
+void gds_ptl_free(gds_server *s);
 /* Policy (gds_policy.c): Received (approved) or Pending for a request made
  * by sessionContext. Takes storeLock. */
 GDS_MUST_CHECK gds_status gds_policy_initial_state(gds_server *s, const void *sessionContext,
@@ -200,5 +286,17 @@ typedef struct {
 } gds_method_entry;
 GDS_MUST_CHECK UA_StatusCode gds_install_methods(gds_server *s, const gds_method_entry *m,
                                                  size_t n);
+/* An argument of a method node: name, ns 0 DataType id, scalar or array */
+typedef struct {
+    const char *name;
+    UA_UInt32 dataType;
+    bool array;
+} gds_method_arg;
+/* Add an Optional method of the Directory object (12 §7.9) that the GDS
+ * nodeset does not instantiate, with its MethodType's arguments. Nothing
+ * happens when the node exists already. */
+GDS_MUST_CHECK UA_StatusCode gds_add_directory_method(gds_server *s, UA_UInt32 id, const char *name,
+                                                      const gds_method_arg *in, size_t nIn,
+                                                      const gds_method_arg *out, size_t nOut);
 
 #endif

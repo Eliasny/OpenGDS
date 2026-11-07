@@ -28,3 +28,9 @@ foreach(k RANGE 1 4)
   set_tests_properties(srv_profile_vs_push_test_server_${k} PROPERTIES
                        TIMEOUT 1500 ENVIRONMENT "SHARD=${k}/4;PUSH_PORT=${port}")
 endforeach()
+
+# A target with a CA-issued certificate: --target-trust and --target-crl
+add_test(NAME srv_profile_ca_issued_target
+         COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/run_ca_issued.sh"
+                 "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/ca-issued-run" 5871)
+set_tests_properties(srv_profile_ca_issued_target PROPERTIES TIMEOUT 300)

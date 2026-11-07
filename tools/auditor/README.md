@@ -71,3 +71,16 @@ gdsaudit server --work ./w --init-only            # create the identity and test
 gdsaudit server --url opc.tcp://host:4840 --server-cert srv.der --work ./w --allow-changes
 push_test_server --list-mutants                   # the --break faults and the test catching each
 ```
+
+When the target's certificate is CA-issued (a device a GDS has already pushed),
+also give its issuer and that issuer's CRL, or every session fails with
+Bad_CertificateChainIncomplete:
+
+```sh
+gdsaudit server --url opc.tcp://host:4840 --server-cert srv.der \
+    --target-trust gds-ca.der --target-crl gds-ca.crl --work ./w --allow-changes
+```
+
+Both options repeat for an intermediate. They are trusted wherever the pinned
+certificate is, never in the checks that a new certificate from the test CA is
+in use.

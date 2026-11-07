@@ -13,6 +13,9 @@
 #      the device is touched (CancelChanges after a failed step is covered by
 #      tests/integration/test_push_flow.c)
 #   7. gdsadm certs status shows the device's certificate in the store
+#   8-10. certs revoke and apps unregister (the CRL is checked with openssl)
+#   11. gdsadm apps import of a CSV and a JSON file: per-record report,
+#       already registered records left alone, DiscoveryAdmin required
 # Usage: run_push_vs_opengdsd.sh <build-dir> <work-dir>
 # SPDX-License-Identifier: MPL-2.0
 set -u
@@ -93,8 +96,11 @@ conn() { # conn <user> <password-file>
 }
 
 echo "=============== 2. the device, self-signed, trusting the GDS CA ==============="
+# --break deprecated-policy adds Basic128Rsa15/Basic256 endpoints, which
+# present the RsaMinApplicationCertificateType certificate: the push replaces
+# only the RsaSha256 one (12 §7.8.4), and gdsadm must not expect it on them.
 "$DEV" --port "$DEV_PORT" --pki "$W/pki-dev" --trust "$W/ca/ca.der" --crl "$W/ca/ca.crl" \
-    --admin-cert "$ADM_CERT" > "$W/device.log" 2>&1 &
+    --admin-cert "$ADM_CERT" --break deprecated-policy > "$W/device.log" 2>&1 &
 DPID=$!
 wait_log "$DPID" "$W/device.log" push_test_server
 DEV_CERT=$(ls "$W"/pki-dev/ApplCerts/own/certs/selfsigned*.der 2>/dev/null | head -1)
@@ -191,4 +197,43 @@ echo "=============== 10. gdsadm apps unregister revokes the rest ==============
     > "$W/unreg.txt" 2>&1 || { cat "$W/unreg.txt"; fail "apps unregister"; }
 expect "unregistered $DEV_URI" "$W/unreg.txt"
 revoked "$OLDER" || { cat "$W/verify.txt"; fail "unregister left a certificate off the CRL"; }
+
+echo "=============== 11. gdsadm apps import (CSV, then JSON) ==============="
+cat > "$W/import.csv" <<'CSV'
+ApplicationUri,ApplicationName,ApplicationType,DiscoveryUrls,ServerCapabilities
+urn:opengds:test:import:press,"Press 1, hall B",Server,opc.tcp://press.invalid:4840,DA
+urn:opengds:test:import:hmi,HMI,Client,,
+urn:opengds:test:import:nourl,No URL,Server,,
+urn:opengds:test:import:press,Press again,Server,opc.tcp://press.invalid:4840,
+CSV
+"$GDSADM" apps import "$W/import.csv" --dry-run > "$W/import0.txt" 2>&1 && \
+    { cat "$W/import0.txt"; fail "a dry run with an invalid record succeeded"; }
+expect "3 record(s) ok, 1 invalid (dry run" "$W/import0.txt"
+# shellcheck disable=SC2046
+"$GDSADM" apps import "$W/import.csv" $(conn admin "$W/admin.pw") > "$W/import1.txt" 2>&1 && \
+    { cat "$W/import1.txt"; fail "an import with an invalid record succeeded"; }
+cat "$W/import1.txt"
+expect "2 registered, 1 already registered, 1 failed" "$W/import1.txt"
+grep "^4	urn:opengds:test:import:nourl	invalid" "$W/import1.txt" > /dev/null || fail "no line for the invalid record"
+cat > "$W/import.json" <<'JSON'
+{"Applications": [
+  {"ApplicationUri": "urn:opengds:test:import:hmi", "ApplicationType": 1,
+   "ApplicationNames": [{"Locale": "en", "Text": "HMI"}]},
+  {"ApplicationUri": "urn:opengds:test:import:scada", "ApplicationType": 1,
+   "ApplicationNames": [{"Locale": "en", "Text": "SCADA"}]}
+]}
+JSON
+# shellcheck disable=SC2046
+"$GDSADM" apps import "$W/import.json" $(conn admin "$W/admin.pw") > "$W/import2.txt" 2>&1 || \
+    { cat "$W/import2.txt"; fail "JSON import"; }
+expect "1 registered, 1 already registered, 0 failed" "$W/import2.txt"
+# DiscoveryAdmin is needed: the viewer is refused on every record
+# shellcheck disable=SC2046
+"$GDSADM" apps import "$W/import.json" $(conn viewer "$W/viewer.pw") > "$W/import3.txt" 2>&1 && \
+    { cat "$W/import3.txt"; fail "an import without DiscoveryAdmin succeeded"; }
+expect "BadUserAccessDenied" "$W/import3.txt"
+"$GDSADM" apps list --store "$W/data/opengds.db" > "$W/apps.txt" || fail "apps list"
+for u in press hmi scada; do
+    grep -q "urn:opengds:test:import:$u" "$W/apps.txt" || { cat "$W/apps.txt"; fail "import:$u not in the store"; }
+done
 echo "PUSH TRACER PASSED"
