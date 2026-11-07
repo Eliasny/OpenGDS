@@ -222,7 +222,9 @@ ConformanceUnit: Push Model for KeyCredential Service. Every test is Not support
 
 ConformanceUnit: Push Model for Global Certificate and TrustList Management. Every test is Not supported when Server.Auditing is FALSE. This group is new: the plan's file list has no `srv_audit.c` yet.
 
+A second admin session subscribes to the events of the Server Object, and each test makes the changes itself with the calls of the tests it names, counting the events per change. SRV-AUD-02 keeps reading events while ApplyChanges runs, then opens a new channel for that session (the server closes the old one, §7.10.9), so an event the server published before the close is counted. A server that closes its channels before it publishes the event can lose it: the open62541 client does not Republish.
+
 | ID | Clause | Flags | Check | Pass when | Fail / Warn / Not supported | Mutant |
 | --- | --- | --- | --- | --- | --- | --- |
-| SRV-AUD-01 | 12 §7.8.2.1, §7.8.2.13 | W | Subscribe to events on Server; run SRV-TL-02 and SRV-TL-09 | One TrustListUpdatedAuditEventType per completed update | Fail: missing or duplicated | `audit-no-trustlist-event` |
-| SRV-AUD-02 | 12 §7.10.27 | W | Subscribe to events; run SRV-TXN-03 and SRV-UPD-02 | One CertificateUpdatedAuditEventType per changed certificate, with SourceNode the ServerConfiguration Object; none for the failed call | Fail: missing, extra, or raised for the failed call | `audit-no-cert-event` |
+| SRV-AUD-01 | 12 §7.8.2.1, §7.8.2.13 | W | Subscribe to events on Server; write the applied trust list back (as SRV-TL-02), then AddCertificate and RemoveCertificate of a self-signed certificate (as SRV-TL-09) | One TrustListUpdatedAuditEventType per completed update | Fail: missing or duplicated | `audit-no-trustlist-event` |
+| SRV-AUD-02 | 12 §7.10.27 | W | Subscribe to events; UpdateCertificate with a certificate for a key the target does not hold (as SRV-UPD-02), then a new certificate for its CSR, applied (as SRV-TXN-03) | One CertificateUpdatedAuditEventType per changed certificate, with SourceNode the ServerConfiguration Object; none for the failed call | Fail: missing, extra, or raised for the failed call | `audit-no-cert-event` |
