@@ -4,9 +4,13 @@
  *
  * gds_server_add_trust_list creates a CertificateGroupType object (OPC
  * 10000-12 §7.8.3.1) under the plugin's object; its TrustList
- * (TrustListType, §7.8.2.1) is kept in an open62541 file store, the way
- * the DefaultUserTokenGroup's is (Annex F.1 layout), so it survives
- * restarts. The TrustList methods are OpenGDS's:
+ * (TrustListType, §7.8.2.1) is kept in an open62541 memory store and
+ * saved after every change, as one encoded TrustListDataType, to
+ * pkiDir/trustlist.bin (written atomically, mode 0600), so it survives
+ * restarts. (open62541 v1.5.10's file store appends the group NodeId to
+ * its directory without terminating the string, so its directory name
+ * changes from run to run and the lists were lost.) The TrustList methods
+ * are OpenGDS's:
  * - Open (FileType; mode Read 0x01 or Write|EraseExisting 0x06, §7.8.2.1)
  *   and OpenWithMasks (§7.8.2.2) take a snapshot to read; one writer at a
  *   time, and no writer while anyone reads (Bad_NotWritable /
@@ -42,6 +46,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "common/buf.h"
 #include "common/limits.h"
 #include "gds_internal.h"
 #include "common/banned.h"
@@ -70,6 +75,7 @@ struct gds_ptl {
     bool anon, auth;
     ptl_handle h[PTL_HANDLES]; /* server thread only */
     UA_NodeId mids[10];        /* the methods of this TrustList, as METHODS[] */
+    char file[GDS_MAX_PATH];   /* pkiDir/trustlist.bin */
 };
 
 typedef struct {
@@ -169,6 +175,50 @@ static bool list_ok(const UA_TrustListDataType *tl) {
         if(!crl_ok(&tl->issuerCrls[i]))
             return false;
     return true;
+}
+
+/* ---- persistence ---- */
+
+/* Saves the whole list after a change; ptlLock held. The change stays in
+ * memory when the file cannot be written: Bad_InternalError tells the
+ * caller it is not durable. */
+static UA_StatusCode persist(gds_ptl *p, UA_StatusCode changed) {
+    if(changed != UA_STATUSCODE_GOOD)
+        return changed;
+    UA_TrustListDataType tl;
+    UA_TrustListDataType_init(&tl);
+    UA_ByteString enc = UA_BYTESTRING_NULL;
+    UA_StatusCode r = p->cg.getTrustList(&p->cg, &tl);
+    tl.specifiedLists = UA_TRUSTLISTMASKS_ALL;
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_encodeBinary(&tl, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], &enc, NULL);
+    if(r == UA_STATUSCODE_GOOD &&
+       gds_file_write_atomic(p->file, enc.data, enc.length, 0600) != GDS_OK)
+        r = UA_STATUSCODE_BADINTERNALERROR;
+    UA_ByteString_clear(&enc);
+    UA_TrustListDataType_clear(&tl);
+    return r;
+}
+
+/* The saved list, if any (*tl empty when there is none yet). */
+static gds_status load(const char *file, UA_TrustListDataType *tl) {
+    UA_TrustListDataType_init(tl);
+    gds_buf b = {0};
+    gds_status st = gds_file_read(file, PTL_MAX_FILE, &b);
+    if(st == GDS_ENOTFOUND)
+        return GDS_OK;
+    if(st != GDS_OK)
+        return st;
+    UA_ByteString enc = {b.len, b.data};
+    if(UA_decodeBinary(&enc, tl, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], NULL) !=
+           UA_STATUSCODE_GOOD ||
+       !list_ok(tl)) {
+        UA_TrustListDataType_clear(tl);
+        st = GDS_EINVAL;
+    }
+    gds_buf_free(&b);
+    tl->specifiedLists = UA_TRUSTLISTMASKS_ALL;
+    return st;
 }
 
 /* SHA-1 thumbprint as hex (OPC 10000-12 §7.8.2.5), either case. */
@@ -442,7 +492,8 @@ static UA_StatusCode m_close_and_update(gds_server *s, gds_ptl *p, ptl_handle *h
     if(r == UA_STATUSCODE_GOOD) {
         pthread_mutex_lock(&s->ptlLock);
         /* replaced by the embedder since this writer opened (A20) */
-        r = h->gen == p->gen ? p->cg.setTrustList(&p->cg, &tl) : UA_STATUSCODE_BADINVALIDSTATE;
+        r = h->gen == p->gen ? persist(p, p->cg.setTrustList(&p->cg, &tl))
+                             : UA_STATUSCODE_BADINVALIDSTATE;
         pthread_mutex_unlock(&s->ptlLock);
     }
     UA_TrustListDataType_clear(&tl);
@@ -480,7 +531,7 @@ static UA_StatusCode m_add(gds_server *s, gds_ptl *p, size_t n, const UA_Variant
         tl.issuerCertificatesSize = 1;
     }
     pthread_mutex_lock(&s->ptlLock);
-    UA_StatusCode r = p->cg.addToTrustList(&p->cg, &tl);
+    UA_StatusCode r = persist(p, p->cg.addToTrustList(&p->cg, &tl));
     pthread_mutex_unlock(&s->ptlLock);
     if(r == UA_STATUSCODE_GOOD)
         update_size(s, p, true);
@@ -551,7 +602,7 @@ static UA_StatusCode m_remove(gds_server *s, gds_ptl *p, size_t n, const UA_Vari
         } else {
             UA_Array_delete(crls, nCrls, &UA_TYPES[UA_TYPES_BYTESTRING]);
         }
-        r = p->cg.removeFromTrustList(&p->cg, &rm);
+        r = persist(p, p->cg.removeFromTrustList(&p->cg, &rm));
     }
     pthread_mutex_unlock(&s->ptlLock);
     UA_TrustListDataType_clear(&all);
@@ -715,6 +766,24 @@ static gds_status create_nodes(gds_server *s, const gds_trust_list_def *def, gds
     return st;
 }
 
+/* A memory store holding the saved lists. */
+static UA_StatusCode open_store(gds_server *s, gds_ptl *p, const UA_NodeId *groupId,
+                                const UA_TrustListDataType *saved) {
+    UA_NodeId gid = *groupId;
+    UA_UInt32 maxSize = (UA_UInt32)PTL_MAX_FILE;
+    UA_KeyValuePair kv;
+    kv.key = UA_QUALIFIEDNAME(0, "max-trust-listsize");
+    UA_Variant_setScalar(&kv.value, &maxSize, &UA_TYPES[UA_TYPES_UINT32]);
+    UA_KeyValueMap params = {1, &kv};
+    UA_StatusCode r = UA_CertificateGroup_Memorystore(&p->cg, &gid, NULL,
+                                                      UA_Server_getConfig(s->ua)->logging, &params);
+    bool any = saved->trustedCertificatesSize || saved->issuerCertificatesSize ||
+               saved->trustedCrlsSize || saved->issuerCrlsSize;
+    if(r == UA_STATUSCODE_GOOD && any)
+        r = p->cg.setTrustList(&p->cg, saved);
+    return r;
+}
+
 gds_status gds_server_add_trust_list(gds_server *s, const gds_trust_list_def *def) {
     if(!s || !def_ok(def))
         return GDS_EINVAL;
@@ -732,12 +801,15 @@ gds_status gds_server_add_trust_list(gds_server *s, const gds_trust_list_def *de
     gds_status st = gds_role_bits(s, def->roles, def->rolesSize, &p->roleBits, &p->anon, &p->auth);
     if(st == GDS_OK && gds_mkdirs(def->pkiDir, 0700) != GDS_OK)
         st = GDS_EIO;
-    UA_NodeId gid = def->groupId;
-    if(st == GDS_OK &&
-       UA_CertificateGroup_Filestore(&p->cg, &gid, UA_STRING((char *)(uintptr_t)def->pkiDir),
-                                     UA_Server_getConfig(s->ua)->logging, NULL) !=
-           UA_STATUSCODE_GOOD)
+    if(st == GDS_OK)
+        st = gds_path(p->file, sizeof(p->file), "%s/trustlist.bin", def->pkiDir);
+    UA_TrustListDataType saved;
+    UA_TrustListDataType_init(&saved);
+    if(st == GDS_OK)
+        st = load(p->file, &saved);
+    if(st == GDS_OK && open_store(s, p, &def->groupId, &saved) != UA_STATUSCODE_GOOD)
         st = GDS_EIO;
+    UA_TrustListDataType_clear(&saved);
     if(st == GDS_OK)
         st = create_nodes(s, def, p);
     if(st == GDS_OK && bind_methods(s) != UA_STATUSCODE_GOOD)
@@ -786,7 +858,7 @@ gds_status gds_server_set_trust_list(gds_server *s, const UA_NodeId *groupId,
     gds_ptl *p = find_group(s, groupId);
     UA_StatusCode r = UA_STATUSCODE_BADNOTFOUND;
     if(p) {
-        r = p->cg.setTrustList(&p->cg, tl);
+        r = persist(p, p->cg.setTrustList(&p->cg, tl));
         p->gen++; /* a writer open now gets Bad_InvalidState at CloseAndUpdate */
     }
     pthread_mutex_unlock(&s->ptlLock);
