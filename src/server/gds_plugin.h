@@ -574,9 +574,11 @@ GDS_MUST_CHECK gds_status gds_server_set_application_rights_hook(struct gds_serv
  * (TrustListType, §7.8.2) sessions holding one of `roles` over
  * SignAndEncrypt read and change with Open, OpenWithMasks, Read, Write,
  * Close, CloseAndUpdate, AddCertificate and RemoveCertificate. The lists
- * live in an open62541 file store under pkiDir (created, mode 0700;
- * Annex F.1 layout), so they survive restarts; changes are live at once
- * (applyChangesRequired FALSE). gds_server_get_trust_list(s, &groupId)
+ * are saved after every change to pkiDir/trustlist.bin (pkiDir created,
+ * mode 0700; the file an encoded TrustListDataType, written atomically,
+ * mode 0600), so they survive restarts; a damaged file makes this call
+ * fail (GDS_EINVAL). Changes are live at once (applyChangesRequired
+ * FALSE); a change that cannot be saved answers Bad_InternalError. gds_server_get_trust_list(s, &groupId)
  * reads them. Before or while the server runs, from any thread; groupId
  * not in namespace 0 or the GDS namespace (GDS_EDENIED), parentId an
  * existing object (GDS_ENOTFOUND); at most 8 lists (GDS_ETOOBIG). */
