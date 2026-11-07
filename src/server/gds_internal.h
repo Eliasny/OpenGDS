@@ -62,6 +62,8 @@ struct gds_server {
     bool workPending, workStop;
     bool plugStop; /* plugin workers stop (plugLock); here for packing */
     bool started;  /* gds_server_run was called (__atomic); here for packing */
+    bool ptlBound;            /* ptlLock; here for packing */
+    bool alarmDrainScheduled; /* alarmLock; here for packing */
     /* plugin privilege providers, fixed before the server runs */
     gds_privilege_provider privProviders[GDS_MAX_PRIVILEGE_PROVIDERS];
     size_t nPrivProviders;
@@ -81,7 +83,6 @@ struct gds_server {
     pthread_mutex_t ptlLock;
     gds_ptl *ptls[GDS_MAX_PLUGIN_TRUST_LISTS];
     size_t nPtls;
-    bool ptlBound;
     pthread_mutex_t plugLock;
     pthread_cond_t plugCond;
     pthread_t plugThreads[GDS_PLUGIN_WORKERS];
@@ -96,7 +97,6 @@ struct gds_server {
     size_t nAlarms;
     gds_alarm_op alarmOps[GDS_ALARM_QUEUE];
     size_t alarmOpHead, nAlarmOps;
-    bool alarmDrainScheduled;
     /* issuance holds (gds_registrar.c, UASM ask A13), not replicated */
     pthread_mutex_t holdLock;
     UA_Guid *holds;
