@@ -229,5 +229,17 @@ typedef struct {
 } gds_method_entry;
 GDS_MUST_CHECK UA_StatusCode gds_install_methods(gds_server *s, const gds_method_entry *m,
                                                  size_t n);
+/* An argument of a method node: name, ns 0 DataType id, scalar or array */
+typedef struct {
+    const char *name;
+    UA_UInt32 dataType;
+    bool array;
+} gds_method_arg;
+/* Add an Optional method of the Directory object (12 §7.9) that the GDS
+ * nodeset does not instantiate, with its MethodType's arguments. Nothing
+ * happens when the node exists already. */
+GDS_MUST_CHECK UA_StatusCode gds_add_directory_method(gds_server *s, UA_UInt32 id, const char *name,
+                                                      const gds_method_arg *in, size_t nIn,
+                                                      const gds_method_arg *out, size_t nOut);
 
 #endif

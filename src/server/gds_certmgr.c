@@ -1,6 +1,6 @@
 /* OpenGDS - CertificateManager methods (OPC 10000-12 §7.9): StartSigningRequest,
  * FinishRequest, GetCertificateGroups, GetTrustList, GetCertificateStatus,
- * and the signing worker.
+ * GetCertificates, CheckRevocationStatus, and the signing worker.
  *
  * Decision G7: StartSigningRequest checks and stores the request and
  * returns at once; a background worker signs it through the CA slot
@@ -13,6 +13,7 @@
  * certificate carries the record's ApplicationUri, §7.2).
  * SPDX-License-Identifier: MPL-2.0 */
 #include <open62541/nodeids.h>
+#include <openssl/bn.h>
 #include <openssl/x509.h>
 
 #include <errno.h>
@@ -293,6 +294,186 @@ static GDS_METHOD(get_certificate_status) {
     return UA_Variant_setScalarCopy(&output[0], &update, &UA_TYPES[UA_TYPES_BOOLEAN]);
 }
 
+/* ---- GetCertificates (§7.9.8) ---- */
+
+/* The application CertificateTypes of 12 §7.8.4 a certificate may have */
+static const UA_UInt32 appCertTypes[] = {
+    UA_NS0ID_RSAMINAPPLICATIONCERTIFICATETYPE,
+    UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE,
+    UA_NS0ID_ECCNISTP256APPLICATIONCERTIFICATETYPE,
+    UA_NS0ID_ECCNISTP384APPLICATIONCERTIFICATETYPE,
+    UA_NS0ID_ECCBRAINPOOLP256R1APPLICATIONCERTIFICATETYPE,
+    UA_NS0ID_ECCBRAINPOOLP384R1APPLICATIONCERTIFICATETYPE,
+    UA_NS0ID_ECCCURVE25519APPLICATIONCERTIFICATETYPE,
+    UA_NS0ID_ECCCURVE448APPLICATIONCERTIFICATETYPE,
+};
+
+/* The certificate assigned to each CertificateType: the newest unrevoked
+ * one, if it has not expired ("only Certificates that are currently
+ * valid"). A null CertificateGroupId means every group of the application;
+ * DefaultApplicationGroup is the only one so far. */
+static GDS_METHOD(get_certificates) {
+    GDS_METHOD_UNUSED;
+    gds_server *s = gds_ctx(methodContext);
+    UA_Guid appId;
+    UA_UInt32 group = 0;
+    UA_StatusCode r = gds_in_guid(s, inputSize, input, 0, &appId);
+    if(r == UA_STATUSCODE_GOOD)
+        r = check_app(s, sessionContext, &appId, 0);
+    DEFER_IF_DENIED(get_certificates, r, appId);
+    if(r == UA_STATUSCODE_GOOD)
+        r = group_arg(s, inputSize, input, 1, &group);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    UA_NodeId types[GDS_ARRAY_SIZE(appCertTypes)];
+    UA_ByteString certs[GDS_ARRAY_SIZE(appCertTypes)];
+    size_t n = 0;
+    int64_t now = (int64_t)time(NULL);
+    gds_status st = GDS_OK;
+    gds_lock(s);
+    for(size_t i = 0; st == GDS_OK && i < GDS_ARRAY_SIZE(appCertTypes); i++) {
+        gds_buf der = {0};
+        int64_t notAfter = 0;
+        st = gds_store_cert_latest(s->store, &appId, group, appCertTypes[i], &der, &notAfter);
+        if(st == GDS_ENOTFOUND) {
+            st = GDS_OK;
+            continue;
+        }
+        if(st == GDS_OK && notAfter > now) {
+            types[n] = UA_NODEID_NUMERIC(0, appCertTypes[i]);
+            certs[n].data = der.data; /* owned until the copy below */
+            certs[n++].length = der.len;
+        } else {
+            gds_buf_free(&der);
+        }
+    }
+    gds_unlock(s);
+    if(st != GDS_OK)
+        r = gds_status_to_ua(st);
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Variant_setArrayCopy(&output[0], n ? (void *)types : UA_EMPTY_ARRAY_SENTINEL, n,
+                                    &UA_TYPES[UA_TYPES_NODEID]);
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Variant_setArrayCopy(&output[1], n ? (void *)certs : UA_EMPTY_ARRAY_SENTINEL, n,
+                                    &UA_TYPES[UA_TYPES_BYTESTRING]);
+    for(size_t i = 0; i < n; i++) {
+        gds_buf b = {certs[i].data, certs[i].length};
+        gds_buf_free(&b);
+    }
+    return r;
+}
+
+/* ---- CheckRevocationStatus (§7.9.11) ---- */
+
+/* The serial as the store keeps it: big-endian, without leading zeros */
+static gds_status serial_of(const X509 *x, gds_buf *out) {
+    BIGNUM *bn = ASN1_INTEGER_to_BN(X509_get0_serialNumber(x), NULL);
+    int len = bn ? BN_num_bytes(bn) : -1;
+    unsigned char b[GDS_MAX_SERIAL_SIZE];
+    gds_status r = GDS_ECRYPTO;
+    if(len > 0 && (size_t)len <= sizeof(b) && BN_bn2bin(bn, b) == len)
+        r = gds_buf_dup(b, (size_t)len, out);
+    BN_free(bn);
+    return r;
+}
+
+static X509 *parse_der(const gds_buf *b) {
+    const unsigned char *p = b->data;
+    X509 *x = b->len ? d2i_X509(NULL, &p, (long)b->len) : NULL;
+    if(x && p != b->data + b->len) {
+        X509_free(x);
+        x = NULL;
+    }
+    return x;
+}
+
+/* Revoked in the store or on the CA's current CRL; *validity is the CRL's
+ * nextUpdate (when to ask again), 0 if unknown. */
+static UA_StatusCode revocation(gds_server *s, X509 *cert, UA_DateTime *validity) {
+    gds_buf serial = {0}, crlDer = {0};
+    bool revoked = false;
+    gds_status st = serial_of(cert, &serial);
+    if(st == GDS_OK) {
+        gds_lock(s);
+        st = gds_store_cert_is_revoked(s->store, &serial, &revoked);
+        gds_unlock(s);
+    }
+    gds_buf_free(&serial);
+    if(st == GDS_OK)
+        st = gds_ca_get_crl(s->ca, &crlDer); /* outside storeLock */
+    if(st != GDS_OK) {
+        gds_buf_free(&crlDer);
+        return UA_STATUSCODE_BADCERTIFICATEREVOCATIONUNKNOWN;
+    }
+    const unsigned char *p = crlDer.data;
+    X509_CRL *crl = d2i_X509_CRL(NULL, &p, (long)crlDer.len);
+    X509_REVOKED *entry = NULL;
+    if(crl && X509_CRL_get0_by_cert(crl, &entry, cert) == 1)
+        revoked = true;
+    const ASN1_TIME *next = crl ? X509_CRL_get0_nextUpdate(crl) : NULL;
+    struct tm tm;
+    if(next && ASN1_TIME_to_tm(next, &tm) == 1)
+        *validity = UA_DateTime_fromUnixTime((UA_Int64)timegm(&tm));
+    X509_CRL_free(crl);
+    gds_buf_free(&crlDer);
+    if(!crl)
+        return UA_STATUSCODE_BADCERTIFICATEREVOCATIONUNKNOWN;
+    return revoked ? UA_STATUSCODE_BADCERTIFICATEREVOKED : UA_STATUSCODE_GOOD;
+}
+
+/* The first error found: Bad_CertificateInvalid for a certificate that does
+ * not parse or whose signature does not verify ("The CertificateManager
+ * shall check the signature"), Bad_CertificateRevocationUnknown for one
+ * this CA did not issue, Bad_CertificateRevoked, else Good. Any session on
+ * an authenticated channel may call it; opengdsd has no other kind. */
+static GDS_METHOD(check_revocation_status) {
+    GDS_METHOD_UNUSED;
+    (void)sessionContext;
+    gds_server *s = gds_ctx(methodContext);
+    if(inputSize < 1)
+        return UA_STATUSCODE_BADARGUMENTSMISSING;
+    const UA_ByteString *in = NULL;
+    if(gds_arg_bytes(&input[0], GDS_MAX_CERT_SIZE, &in) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    gds_buf der = {in->data, in->length};
+    X509 *cert = parse_der(&der), *ca = parse_der(&s->caCert);
+    EVP_PKEY *caKey = ca ? X509_get0_pubkey(ca) : NULL;
+    UA_StatusCode status;
+    UA_DateTime validity = 0; /* DateTime.MinValue: unknown */
+    bool ours = cert && caKey &&
+                X509_NAME_cmp(X509_get_issuer_name(cert), X509_get_subject_name(ca)) == 0;
+    if(cert && !ours)
+        status = UA_STATUSCODE_BADCERTIFICATEREVOCATIONUNKNOWN; /* not issued by this CA */
+    else if(!cert || X509_verify(cert, caKey) != 1)
+        status = UA_STATUSCODE_BADCERTIFICATEINVALID;
+    else
+        status = revocation(s, cert, &validity);
+    X509_free(cert);
+    X509_free(ca);
+    UA_StatusCode r = UA_Variant_setScalarCopy(&output[0], &status, &UA_TYPES[UA_TYPES_STATUSCODE]);
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Variant_setScalarCopy(&output[1], &validity, &UA_TYPES[UA_TYPES_DATETIME]);
+    return r;
+}
+
+/* GetCertificates and CheckRevocationStatus are Optional (§7.9.8,
+ * §7.9.11): the nodeset does not create them on the Directory object. */
+static UA_StatusCode add_optional_nodes(gds_server *s) {
+    static const gds_method_arg gcIn[] = {{"ApplicationId", UA_NS0ID_NODEID, false},
+                                          {"CertificateGroupId", UA_NS0ID_NODEID, false}};
+    static const gds_method_arg gcOut[] = {{"CertificateTypeIds", UA_NS0ID_NODEID, true},
+                                           {"Certificates", UA_NS0ID_BYTESTRING, true}};
+    static const gds_method_arg crIn[] = {{"Certificate", UA_NS0ID_BYTESTRING, false}};
+    static const gds_method_arg crOut[] = {{"CertificateStatus", UA_NS0ID_STATUSCODE, false},
+                                           {"ValidityTime", UA_NS0ID_UTCTIME, false}};
+    UA_StatusCode r = gds_add_directory_method(s, UA_GDSID_DIRECTORY_GETCERTIFICATES,
+                                               "GetCertificates", gcIn, 2, gcOut, 2);
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_add_directory_method(s, UA_GDSID_DIRECTORY_CHECKREVOCATIONSTATUS,
+                                     "CheckRevocationStatus", crIn, 1, crOut, 2);
+    return r;
+}
+
 UA_StatusCode gds_certmgr_install(gds_server *s) {
     static const gds_method_entry m[] = {
         {UA_GDSID_DIRECTORY_STARTSIGNINGREQUEST, start_signing_request},
@@ -300,8 +481,11 @@ UA_StatusCode gds_certmgr_install(gds_server *s) {
         {UA_GDSID_DIRECTORY_GETCERTIFICATEGROUPS, get_certificate_groups},
         {UA_GDSID_DIRECTORY_GETTRUSTLIST, get_trust_list},
         {UA_GDSID_DIRECTORY_GETCERTIFICATESTATUS, get_certificate_status},
+        {UA_GDSID_DIRECTORY_GETCERTIFICATES, get_certificates},
+        {UA_GDSID_DIRECTORY_CHECKREVOCATIONSTATUS, check_revocation_status},
     };
-    return gds_install_methods(s, m, GDS_ARRAY_SIZE(m));
+    UA_StatusCode r = add_optional_nodes(s);
+    return r == UA_STATUSCODE_GOOD ? gds_install_methods(s, m, GDS_ARRAY_SIZE(m)) : r;
 }
 
 /* ---- signing worker ---- */
