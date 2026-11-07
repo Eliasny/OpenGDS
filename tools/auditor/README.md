@@ -6,11 +6,12 @@ brought under the rules in `docs/architecture.md`.
 
 | Path | Contents |
 | --- | --- |
-| `core/` | X.509 helpers, test CA (`TEST` subjects, 30-day validity), OPC UA client helpers with checked results |
+| `core/` | X.509 helpers, test CA (`TEST` subjects, 30-day validity), OPC UA client helpers with checked results; `plan.c`: plan files (libc only, CTests `auditor_plan_files` and `auditor_run_plan`) |
 | `selftest/` | Known-good targets: `push_test_server` (its PushManagement methods and `--break` mutants in `push_mgmt.c`), `pull_test_client`, and `run_demo.sh` (CTest `selftest_demo_flow`) |
 | `profile_server/` | `gdsaudit server`: the server profile of [docs/auditor/server-profile.md](../../docs/auditor/server-profile.md), with `run_vs_push.sh` (CTest `srv_profile_vs_push_test_server`: pinned verdicts against the good target, every mutant caught). `push_driver`: the demo's CertificateManager script |
 | `profile_client/` | `mock_gds`: plays a minimal GDS for pull clients, loopback only by default (seed of the client profile) |
 | `profile_gds/` | OpenGDS T0 spec test programs (week 1) |
+| `include/gdsaudit/plan.h` | Plan files: load, save, edit by `table.key`, and the command line a plan stands for ([docs/auditor/plan-files.md](../../docs/auditor/plan-files.md)) |
 | `include/gdsaudit/engine.h` | The engine API the front ends use: the event stream (run started, test started, note, verdict, run finished), event sinks, abort, and the JSON Lines schema |
 | `report/` | Result list built from the event stream, the JSON Lines writer and parser, the HTML, JUnit XML, JSON and TAP reports (libc only). CTests `auditor_report_events` and `auditor_report_formats` (`cli/test_reports.sh`: the four reports of a real run agree with the engine) |
 | `avm/` | View-model of the desktop UI (GLib/GIO, no GTK): the plan form, presets and checks (`avm_plan.c`), and a live run of the headless engine (`avm_run.c`). CTests `avm_plan` and `avm_run_vs_push_test_server` (the UI's way of running gives the verdicts pinned for the headless run) |
@@ -53,6 +54,14 @@ the kept runs, opens one (or any folder with an `events.jsonl` from a headless
 `--events` run) and compares two runs test by test. The form is kept between
 sessions in `~/.config/gdsaudit/last-plan.ini` (no passwords: only the paths
 of password files).
+
+A plan file holds a whole run, so a run saved once repeats exactly, headless
+or from the UI ([docs/auditor/plan-files.md](../../docs/auditor/plan-files.md)):
+
+```sh
+gdsaudit run plans/plc.toml               # relative paths are relative to the plan
+gdsaudit run plans/plc.toml --only SRV-TL # options after the plan add to it
+```
 
 Server profile against a push-managed Server (the Auditor's own certificate,
 `<work>/own/cert.der`, must be trusted by the target and mapped to SecurityAdmin):

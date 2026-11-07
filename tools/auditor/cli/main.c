@@ -7,6 +7,10 @@
  *
  *   gdsaudit client [options] -- TRIGGER ARGV...   (profile_client/client_main.c)
  *
+ *   gdsaudit run PLAN.toml [options]   a plan file (gdsaudit/plan.h): the
+ *                profile and options it holds, then the options given here
+ *                (which win where an option takes one value)
+ *
  *   gdsaudit server --url opc.tcp://host:4840 (--server-cert srv.der | --tofu)
  *                [--admin-cert C --admin-key K | --admin-user U --admin-password-file F]
  *                [--user U --user-password-file F] [--work DIR]
@@ -39,6 +43,7 @@
 #include "common/limits.h"
 #include "common/safeint.h"
 #include "client_profile.h"
+#include "gdsaudit/plan.h"
 #include "gds_target.h"
 #include "results.h"
 #include "spec_tests.h"
@@ -62,8 +67,9 @@ static int usage(const char *argv0) {
             "       [--expect FILE.csv] [--list] [--init-only] [--slow] [--stop-after ID]\n"
             "       [--settle-timeout S]\n"
             "       %s client --help\n"
+            "       %s run PLAN.toml [options]   (docs/auditor/plan-files.md)\n"
             "Every subcommand also takes --events FILE (JSON Lines) and --report DIR.\n",
-            argv0, argv0, argv0);
+            argv0, argv0, argv0, argv0);
     return 2;
 }
 
@@ -484,6 +490,16 @@ static bool start_front_end(front_end *fe, const char *profile) {
     }
     ga_set_run_info(profile, target);
     if(fe->events) {
+        /* the events file's folder is created, as --report's is */
+        const char *slash = strrchr(fe->events, '/');
+        char dir[GDS_MAX_PATH];
+        size_t dl = slash ? (size_t)(slash - fe->events) : 0;
+        if(dl > 0 && dl < sizeof(dir)) {
+            memcpy(dir, fe->events, dl);
+            dir[dl] = '\0';
+            if(gds_mkdirs(dir, 0755) != GDS_OK)
+                fprintf(stderr, "cannot create %s\n", dir); /* fopen reports it */
+        }
         fe->eventsFile = fopen(fe->events, "we"); /* e: not inherited by triggers */
         if(!fe->eventsFile) {
             perror(fe->events);
@@ -517,10 +533,78 @@ static int finish_front_end(front_end *fe, int rc) {
     return rc;
 }
 
+/* gdsaudit run PLAN [options]: the plan's command line (relative paths
+ * joined to the plan's folder), then the options given after PLAN, both
+ * before the client's "--" trigger. *out is one allocation: free(*out). */
+static bool plan_command_line(int argc, char **argv, char ***out, int *outc) {
+    if(argc < 3) {
+        fprintf(stderr, "usage: %s run PLAN.toml [options]\n", argv[0]);
+        return false;
+    }
+    char err[512];
+    ga_plan *plan = ga_plan_load(argv[2], err, sizeof(err));
+    if(!plan) {
+        fprintf(stderr, "plan: %s\n", err);
+        return false;
+    }
+    char dir[GDS_MAX_PATH];
+    const char *slash = strrchr(argv[2], '/');
+    size_t dl = slash ? (size_t)(slash - argv[2]) : 0;
+    if(dl >= sizeof(dir)) {
+        ga_plan_free(plan);
+        fprintf(stderr, "plan: path too long\n");
+        return false;
+    }
+    memcpy(dir, argv[2], dl);
+    dir[dl] = '\0';
+    if(slash && dl == 0) /* a plan in / */
+        memcpy(dir, "/", 2);
+    int pc = 0;
+    char **pv = ga_plan_argv(plan, slash ? dir : NULL, &pc);
+    ga_plan_free(plan);
+    if(!pv || pc < 1 || !pv[0]) { /* the profile is always first */
+        fprintf(stderr, "plan: out of memory\n");
+        free((void *)pv);
+        return false;
+    }
+    int extra = argc - 3, split = 0;
+    while(split < pc && strcmp(pv[split], "--") != 0)
+        split++;
+    char **v = (char **)calloc((size_t)pc + (size_t)extra + 2, sizeof(char *));
+    if(!v) {
+        free((void *)pv);
+        return false;
+    }
+    int n = 0;
+    v[n++] = argv[0];
+    for(int i = 0; i < split; i++)
+        v[n++] = pv[i];
+    for(int i = 0; i < extra; i++)
+        v[n++] = argv[3 + i];
+    for(int i = split; i < pc; i++)
+        v[n++] = pv[i];
+    v[n] = NULL;
+    printf("# plan %s:", argv[2]);
+    for(int i = 1; i < n; i++)
+        printf(" %s", v[i]);
+    printf("\n");
+    /* pv's strings live in pv: keep it with v (freed at exit) */
+    out[0] = v;
+    out[1] = (char **)pv;
+    *outc = n;
+    return true;
+}
+
 int main(int argc, char **argv) {
     static front_end fe;
+    static char **planArgs[2]; /* static: still reachable on early returns */
     if(argc < 2)
         return usage(argv[0]);
+    if(strcmp(argv[1], "run") == 0) {
+        if(!plan_command_line(argc, argv, planArgs, &argc))
+            return 2;
+        argv = planArgs[0];
+    }
     const char *profile = argv[1];
     if(strcmp(profile, "client") != 0 && strcmp(profile, "gds") != 0 &&
        strcmp(profile, "server") != 0)
@@ -534,5 +618,8 @@ int main(int argc, char **argv) {
         rc = gds_main(argc, argv);
     else
         rc = server_main(argc, argv);
-    return finish_front_end(&fe, rc);
+    rc = finish_front_end(&fe, rc);
+    free((void *)planArgs[0]);
+    free((void *)planArgs[1]);
+    return rc;
 }
