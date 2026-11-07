@@ -12,6 +12,7 @@ include(GNUInstallDirs)
 # Components:
 #   opengds   opengdsd, opengds-signer, gdsadm, systemd units, sysusers entries
 #   gdsaudit  the OpenGDS Auditor command-line tool
+#   gdsaudit-gui  the Auditor's desktop UI (only where GTK 4.12+ is found)
 set(OPENGDS_LIBEXECDIR "${CMAKE_INSTALL_LIBEXECDIR}/opengds")
 set(OPENGDS_UNITDIR "lib/systemd/system" CACHE STRING "systemd system unit directory (relative to the prefix)")
 set(OPENGDS_SYSUSERSDIR "lib/sysusers.d" CACHE STRING "sysusers.d directory (relative to the prefix)")
@@ -38,6 +39,33 @@ if(TARGET gdsaudit)
     install(TARGETS gdsaudit RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT gdsaudit)
     install(FILES "${PROJECT_SOURCE_DIR}/LICENSE"
             DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/gdsaudit" COMPONENT gdsaudit)
+endif()
+
+# The desktop UI. It runs the gdsaudit next to it (avm_engine_path), so its
+# package depends on gdsaudit of the same version.
+if(TARGET gdsaudit-gui)
+    install(TARGETS gdsaudit-gui RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT gdsaudit-gui)
+    install(FILES desktop/org.opengds.Auditor.desktop
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/applications" COMPONENT gdsaudit-gui)
+    install(FILES desktop/org.opengds.Auditor.metainfo.xml
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/metainfo" COMPONENT gdsaudit-gui)
+    install(FILES desktop/org.opengds.Auditor.svg
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps" COMPONENT gdsaudit-gui)
+    install(FILES "${PROJECT_SOURCE_DIR}/LICENSE"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/gdsaudit-gui" COMPONENT gdsaudit-gui)
+endif()
+
+# The desktop entry and AppStream metadata must pass the validators that
+# software centres and Flathub run.
+find_program(DESKTOP_FILE_VALIDATE desktop-file-validate)
+if(DESKTOP_FILE_VALIDATE)
+    add_test(NAME packaging_desktop_entry
+             COMMAND "${DESKTOP_FILE_VALIDATE}" "${CMAKE_CURRENT_SOURCE_DIR}/desktop/org.opengds.Auditor.desktop")
+endif()
+find_program(APPSTREAMCLI appstreamcli)
+if(APPSTREAMCLI)
+    add_test(NAME packaging_metainfo
+             COMMAND "${APPSTREAMCLI}" validate --no-net "${CMAKE_CURRENT_SOURCE_DIR}/desktop/org.opengds.Auditor.metainfo.xml")
 endif()
 
 # The units' sandbox is part of the product: systemd-analyze must rate each

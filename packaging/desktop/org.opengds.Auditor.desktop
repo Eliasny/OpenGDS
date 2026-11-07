@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MPL-2.0
+[Desktop Entry]
+Type=Application
+Name=OpenGDS Auditor
+GenericName=OPC UA GDS test tool
+Comment=Test GDSs, GDS-ready servers and pull clients against OPC 10000-12
+Exec=gdsaudit-gui
+Icon=org.opengds.Auditor
+Terminal=false
+Categories=Development;
+Keywords=OPC UA;GDS;certificate;trust list;OPC 10000-12;
+StartupNotify=true
