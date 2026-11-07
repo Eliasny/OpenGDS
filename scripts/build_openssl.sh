@@ -6,6 +6,9 @@
 # system libssl. The tarball is checked against the pinned SHA-256.
 #   TARGET=mingw64  cross-build for 64-bit Windows with MinGW-w64 (the
 #                   Auditor's Windows build, packaging/windows/README.md)
+#   TARGET=musl     static libraries for musl-gcc, MUSL_KINC naming the
+#                   kernel headers folder (the static gdsaudit,
+#                   packaging/static/build.sh)
 # SPDX-License-Identifier: MPL-2.0
 set -eu
 VERSION=3.5.9
@@ -33,6 +36,18 @@ if [ "${TARGET:-}" = mingw64 ]; then
     make -j"$(nproc)" build_libs > build.log
     make install_dev > install.log
     echo "OpenSSL $VERSION for Windows (mingw64) installed in $PREFIX"
+    exit 0
+fi
+if [ "${TARGET:-}" = musl ]; then
+    # no-async: musl has no makecontext; no-afalgeng/no-engine: nothing
+    # outside the binary is loaded
+    # shellcheck disable=SC2086
+    CC="musl-gcc -isystem ${MUSL_KINC:?set MUSL_KINC}" ./Configure "linux-$(uname -m)" \
+        --prefix="$PREFIX" --libdir=lib --openssldir=/etc/ssl $OPTS \
+        no-afalgeng no-async no-engine -fPIC -fstack-protector-strong > configure.log
+    make -j"$(nproc)" build_libs > build.log
+    make install_dev > install.log
+    echo "OpenSSL $VERSION for musl installed in $PREFIX"
     exit 0
 fi
 # shellcheck disable=SC2086
