@@ -36,44 +36,7 @@
 #define DIALOG_SEVERITY 500
 #define MAX_COMMENT 1024 /* characters, Part 9 §5.6.4 Bad_InvalidArgument beyond */
 
-/* ---- condition fields ---- */
-
-static UA_StatusCode set_field(UA_Server *ua, UA_NodeId c, const char *field, const void *v,
-                               const UA_DataType *t) {
-    UA_Variant var;
-    UA_Variant_setScalar(&var, (void *)(uintptr_t)v, t);
-    return UA_Server_setConditionField(ua, c, &var,
-                                       UA_QUALIFIEDNAME(0, (char *)(uintptr_t)field));
-}
-
-/* UA_Server_setConditionField refuses arrays in v1.5.10: write the
- * variable directly (spike workaround 2). */
-static UA_StatusCode set_field_array(UA_Server *ua, UA_NodeId c, const char *field,
-                                     const void *v, size_t n, const UA_DataType *t) {
-    UA_Variant var;
-    UA_Variant_setArray(&var, (void *)(uintptr_t)v, n, t);
-    UA_QualifiedName qn = UA_QUALIFIEDNAME(0, (char *)(uintptr_t)field);
-    UA_BrowsePathResult bpr = UA_Server_browseSimplifiedBrowsePath(ua, c, 1, &qn);
-    UA_StatusCode r = bpr.statusCode;
-    if(r == UA_STATUSCODE_GOOD && bpr.targetsSize == 1)
-        r = UA_Server_writeValue(ua, bpr.targets[0].targetId.nodeId, var);
-    else if(r == UA_STATUSCODE_GOOD)
-        r = UA_STATUSCODE_BADNOTFOUND;
-    UA_BrowsePathResult_clear(&bpr);
-    return r;
-}
-
-static UA_StatusCode set_two_state(UA_Server *ua, UA_NodeId c, const char *field, UA_Boolean id,
-                                   const char *text) {
-    UA_LocalizedText lt = UA_LOCALIZEDTEXT("en", (char *)(uintptr_t)text);
-    UA_StatusCode r = set_field(ua, c, field, &lt, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
-    UA_Variant var;
-    UA_Variant_setScalar(&var, &id, &UA_TYPES[UA_TYPES_BOOLEAN]);
-    if(r == UA_STATUSCODE_GOOD)
-        r = UA_Server_setConditionVariableFieldProperty(
-            ua, c, &var, UA_QUALIFIEDNAME(0, (char *)(uintptr_t)field), UA_QUALIFIEDNAME(0, "Id"));
-    return r;
-}
+/* ---- condition fields (gds_cond_* in gds_alarms.c) ---- */
 
 static UA_NodeId source_id(void) {
     return UA_NODEID_STRING(APP_NS, "Approvals");
@@ -100,28 +63,28 @@ static UA_StatusCode dialog_fields(UA_Server *ua, UA_NodeId c, const gds_request
     UA_Int32 def = -1, ok = RESP_APPROVE, cancel = RESP_REJECT, last = -1;
     UA_UInt16 severity = DIALOG_SEVERITY;
     UA_Boolean retain = true;
-    UA_StatusCode r = set_field(ua, c, "Message", &message, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
+    UA_StatusCode r = gds_cond_set_field(ua, c, "Message", &message, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
     if(r == UA_STATUSCODE_GOOD)
-        r = set_field(ua, c, "Severity", &severity, &UA_TYPES[UA_TYPES_UINT16]);
+        r = gds_cond_set_field(ua, c, "Severity", &severity, &UA_TYPES[UA_TYPES_UINT16]);
     if(r == UA_STATUSCODE_GOOD)
-        r = set_field(ua, c, "Prompt", &prompt, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
+        r = gds_cond_set_field(ua, c, "Prompt", &prompt, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
     if(r == UA_STATUSCODE_GOOD)
-        r = set_field_array(ua, c, "ResponseOptionSet", options, 2,
+        r = gds_cond_set_array(ua, c, "ResponseOptionSet", options, 2,
                             &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
     if(r == UA_STATUSCODE_GOOD)
-        r = set_field(ua, c, "DefaultResponse", &def, &UA_TYPES[UA_TYPES_INT32]);
+        r = gds_cond_set_field(ua, c, "DefaultResponse", &def, &UA_TYPES[UA_TYPES_INT32]);
     if(r == UA_STATUSCODE_GOOD)
-        r = set_field(ua, c, "OkResponse", &ok, &UA_TYPES[UA_TYPES_INT32]);
+        r = gds_cond_set_field(ua, c, "OkResponse", &ok, &UA_TYPES[UA_TYPES_INT32]);
     if(r == UA_STATUSCODE_GOOD)
-        r = set_field(ua, c, "CancelResponse", &cancel, &UA_TYPES[UA_TYPES_INT32]);
+        r = gds_cond_set_field(ua, c, "CancelResponse", &cancel, &UA_TYPES[UA_TYPES_INT32]);
     if(r == UA_STATUSCODE_GOOD)
-        r = set_field(ua, c, "LastResponse", &last, &UA_TYPES[UA_TYPES_INT32]);
+        r = gds_cond_set_field(ua, c, "LastResponse", &last, &UA_TYPES[UA_TYPES_INT32]);
     if(r == UA_STATUSCODE_GOOD)
-        r = set_two_state(ua, c, "DialogState", true, "Active");
+        r = gds_cond_set_two_state(ua, c, "DialogState", true, "Active");
     if(r == UA_STATUSCODE_GOOD)
-        r = set_two_state(ua, c, "EnabledState", true, "Enabled");
+        r = gds_cond_set_two_state(ua, c, "EnabledState", true, "Enabled");
     if(r == UA_STATUSCODE_GOOD)
-        r = set_field(ua, c, "Retain", &retain, &UA_TYPES[UA_TYPES_BOOLEAN]);
+        r = gds_cond_set_field(ua, c, "Retain", &retain, &UA_TYPES[UA_TYPES_BOOLEAN]);
     return r;
 }
 
@@ -132,6 +95,7 @@ UA_StatusCode gds_approvals_raise(gds_server *s, const gds_request *q, const UA_
     UA_StatusCode r = UA_Server_createCondition(ua, want, UA_NS0ID(DIALOGCONDITIONTYPE),
                                                 UA_QUALIFIEDNAME(APP_NS, "CertificateRequest"),
                                                 src, UA_NS0ID(HASCOMPONENT), &c);
+    (void)gds_alarms_bind_ack(s); /* createCondition rebound open62541's */
     if(r != UA_STATUSCODE_GOOD)
         return r;
     /* Respond2 is Optional on DialogConditionType and not instantiated
@@ -216,17 +180,17 @@ static UA_StatusCode close_dialog(UA_Server *ua, UA_NodeId c, UA_Int32 resp,
                                   const UA_LocalizedText *comment, const char *user) {
     UA_Boolean retain = false;
     UA_String u = UA_STRING((char *)(uintptr_t)user);
-    UA_StatusCode r = set_field(ua, c, "LastResponse", &resp, &UA_TYPES[UA_TYPES_INT32]);
+    UA_StatusCode r = gds_cond_set_field(ua, c, "LastResponse", &resp, &UA_TYPES[UA_TYPES_INT32]);
     if(r == UA_STATUSCODE_GOOD)
-        r = set_two_state(ua, c, "DialogState", false, "Inactive");
+        r = gds_cond_set_two_state(ua, c, "DialogState", false, "Inactive");
     /* §5.6.4: a NULL Comment is ignored; an empty text with a locale resets it */
     if(r == UA_STATUSCODE_GOOD && comment &&
        (comment->locale.length > 0 || comment->text.length > 0))
-        r = set_field(ua, c, "Comment", comment, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
+        r = gds_cond_set_field(ua, c, "Comment", comment, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
     if(r == UA_STATUSCODE_GOOD)
-        r = set_field(ua, c, "ClientUserId", &u, &UA_TYPES[UA_TYPES_STRING]);
+        r = gds_cond_set_field(ua, c, "ClientUserId", &u, &UA_TYPES[UA_TYPES_STRING]);
     if(r == UA_STATUSCODE_GOOD)
-        r = set_field(ua, c, "Retain", &retain, &UA_TYPES[UA_TYPES_BOOLEAN]);
+        r = gds_cond_set_field(ua, c, "Retain", &retain, &UA_TYPES[UA_TYPES_BOOLEAN]);
     UA_NodeId src = source_id();
     if(r == UA_STATUSCODE_GOOD)
         r = UA_Server_triggerConditionEvent(ua, c, src, NULL);
@@ -269,8 +233,7 @@ static UA_StatusCode respond(gds_server *s, const UA_NodeId *objectId, const voi
 }
 
 static GDS_METHOD(respond2_cb) {
-    (void)server, (void)sessionId, (void)methodId, (void)objectContext, (void)output,
-        (void)outputSize;
+    (void)server, (void)methodId, (void)objectContext, (void)outputSize;
     if(inputSize < 2)
         return UA_STATUSCODE_BADARGUMENTSMISSING;
     if(inputSize > 2)
@@ -278,19 +241,24 @@ static GDS_METHOD(respond2_cb) {
     if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_INT32]) ||
        !UA_Variant_hasScalarType(&input[1], &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(gds_dialog_is(gds_ctx(methodContext), objectId)) /* a plugin's (A19) */
+        return gds_dialog_respond(gds_ctx(methodContext), sessionId, sessionContext, objectId,
+                                  *(const UA_Int32 *)input[0].data, input[1].data, true, output);
     return respond(gds_ctx(methodContext), objectId, sessionContext,
                    *(const UA_Int32 *)input[0].data, input[1].data, true);
 }
 
 static GDS_METHOD(respond_cb) {
-    (void)server, (void)sessionId, (void)methodId, (void)objectContext, (void)output,
-        (void)outputSize;
+    (void)server, (void)methodId, (void)objectContext, (void)outputSize;
     if(inputSize < 1)
         return UA_STATUSCODE_BADARGUMENTSMISSING;
     if(inputSize > 1)
         return UA_STATUSCODE_BADTOOMANYARGUMENTS;
     if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_INT32]))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(gds_dialog_is(gds_ctx(methodContext), objectId)) /* a plugin's (A19) */
+        return gds_dialog_respond(gds_ctx(methodContext), sessionId, sessionContext, objectId,
+                                  *(const UA_Int32 *)input[0].data, NULL, false, output);
     return respond(gds_ctx(methodContext), objectId, sessionContext,
                    *(const UA_Int32 *)input[0].data, NULL, false);
 }
@@ -438,7 +406,7 @@ UA_StatusCode gds_approvals_install(gds_server *s) {
     /* D1: one ConditionRefresh carries every pending dialog */
     UA_ServerConfig *cfg = UA_Server_getConfig(ua);
     if(cfg->queueSizeLimits.max < GDS_MAX_PENDING_APPROVALS + 2u) /* + RefreshStart/End */
-        cfg->queueSizeLimits.max = GDS_MAX_PENDING_APPROVALS + 2u;
+        cfg->queueSizeLimits.max = GDS_MAX_PENDING_APPROVALS + 2u; /* raised for alarms too */
     if(r != UA_STATUSCODE_GOOD)
         return r;
     return sync_dialogs(s);
