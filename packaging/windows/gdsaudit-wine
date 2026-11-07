@@ -1,0 +1,10 @@
+#!/bin/sh
+# Run the Windows gdsaudit.exe under Wine with the arguments given, for the
+# Linux-side checks of the Windows build (check_under_wine.sh).
+#   GDSAUDIT_EXE  the .exe (required)
+# Paths are passed as they are: Wine maps Unix paths for a Windows program.
+# SPDX-License-Identifier: MPL-2.0
+: "${GDSAUDIT_EXE:?set GDSAUDIT_EXE to gdsaudit.exe}"
+WINE=${WINE:-$(command -v wine64 || command -v wine || echo /usr/lib/wine/wine64)}
+export WINEDEBUG=${WINEDEBUG:--all}
+exec "$WINE" "$GDSAUDIT_EXE" "$@"

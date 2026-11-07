@@ -7,27 +7,39 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
 #include <time.h>
+#ifdef _WIN32
+#include "common/platform.h" /* windows.h */
+#else
+#include <spawn.h>
+#include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include "common/buf.h"
 #include "common/limits.h"
 #include "fake_gds.h"
 #include "common/banned.h"
 
-#define TRIG_ENV_MAX 16
+#define TRIG_ENV_MAX 24
 #define TRIG_ENV_LEN (GDS_MAX_PATH + 64)
 
 /* Passed through from the Auditor's own environment (sanitizer settings for
  * the self-test targets, a usable PATH and HOME). Nothing else leaks in. */
+#ifdef _WIN32
+/* Windows programs need these to start at all (SystemRoot) or to find
+ * their profile and temporary folders. */
+static const char *const passThrough[] = {"PATH",        "PATHEXT",      "SystemRoot", "SystemDrive",
+                                          "windir",      "COMSPEC",      "TEMP",       "TMP",
+                                          "USERPROFILE", "LOCALAPPDATA", "APPDATA"};
+#else
 static const char *const passThrough[] = {"PATH",         "HOME",         "ASAN_OPTIONS",
                                           "UBSAN_OPTIONS", "TSAN_OPTIONS", "LSAN_OPTIONS",
                                           "LD_LIBRARY_PATH"};
+#endif
 
 static double now_ms(void) {
     struct timespec ts;
@@ -80,6 +92,156 @@ static gds_status build_env(trig_env *e, const trig_cfg *cfg, const char *user) 
     return r;
 }
 
+#ifdef _WIN32
+/* One argument for CreateProcess's command line, quoted the way the
+ * Microsoft C runtime splits it again (backslashes double only before a
+ * quote). */
+static bool quote_arg(char *out, size_t outLen, size_t *k, const char *arg) {
+    bool plain = *arg && !strpbrk(arg, " \t\n\v\"");
+    size_t need = strlen(arg) * 2 + 4;
+    if(*k + need >= outLen)
+        return false;
+    if(*k)
+        out[(*k)++] = ' ';
+    if(plain) {
+        memcpy(out + *k, arg, strlen(arg));
+        *k += strlen(arg);
+        return true;
+    }
+    out[(*k)++] = '"';
+    for(const char *p = arg;; p++) {
+        size_t bs = 0;
+        while(*p == '\\') {
+            p++;
+            bs++;
+        }
+        if(!*p) {
+            for(size_t i = 0; i < bs * 2; i++)
+                out[(*k)++] = '\\';
+            break;
+        }
+        if(*p == '"')
+            bs = bs * 2 + 1;
+        for(size_t i = 0; i < bs; i++)
+            out[(*k)++] = '\\';
+        out[(*k)++] = *p;
+    }
+    out[(*k)++] = '"';
+    out[*k] = '\0';
+    return true;
+}
+
+static bool is_batch(const char *prog) {
+    size_t n = strlen(prog);
+    return n > 4 && (_stricmp(prog + n - 4, ".bat") == 0 || _stricmp(prog + n - 4, ".cmd") == 0);
+}
+
+/* The environment block: "NAME=value\0...\0\0", sorted by name as Windows
+ * expects. */
+static int env_cmp(const void *a, const void *b) {
+    return _stricmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static HANDLE current; /* the hook trig_run waits for, NULL if none */
+
+static gds_status spawn(const trig_cfg *cfg, trig_env *env, HANDLE *proc) {
+    static char cmd[32768], block[TRIG_ENV_MAX * TRIG_ENV_LEN + 1];
+    size_t k = 0;
+    cmd[0] = '\0';
+    /* a .bat or .cmd runs through cmd.exe /c */
+    const char *comspec = getenv("COMSPEC");
+    if(is_batch(cfg->argv[0]) && (!quote_arg(cmd, sizeof(cmd), &k, comspec ? comspec : "cmd.exe") ||
+                                  !quote_arg(cmd, sizeof(cmd), &k, "/c")))
+        return GDS_ETOOBIG;
+    for(char *const *a = cfg->argv; *a; a++)
+        if(!quote_arg(cmd, sizeof(cmd), &k, *a))
+            return GDS_ETOOBIG;
+    qsort(env->envp, env->n, sizeof(env->envp[0]), env_cmp);
+    size_t b = 0;
+    for(size_t i = 0; i < env->n; i++) {
+        size_t l = strlen(env->envp[i]) + 1;
+        memcpy(block + b, env->envp[i], l);
+        b += l;
+    }
+    block[b] = '\0';
+    SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE}; /* inherited by the hook */
+    HANDLE log = CreateFileA(cfg->logPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                             &sa, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE nul = CreateFileA("NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                             OPEN_EXISTING, 0, NULL);
+    gds_status r = GDS_EIO;
+    if(log != INVALID_HANDLE_VALUE && nul != INVALID_HANDLE_VALUE) {
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        memset(&si, 0, sizeof(si));
+        memset(&pi, 0, sizeof(pi));
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput = nul;
+        si.hStdOutput = log;
+        si.hStdError = log;
+        if(CreateProcessA(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, block, NULL, &si, &pi)) {
+            CloseHandle(pi.hThread);
+            *proc = pi.hProcess;
+            r = GDS_OK;
+        } else {
+            fprintf(stderr, "trigger %s: CreateProcess error %lu\n", cfg->argv[0],
+                    (unsigned long)GetLastError());
+        }
+    }
+    if(log != INVALID_HANDLE_VALUE)
+        CloseHandle(log);
+    if(nul != INVALID_HANDLE_VALUE)
+        CloseHandle(nul);
+    return r;
+}
+
+bool trig_child_running(void) {
+    return current && WaitForSingleObject(current, 0) == WAIT_TIMEOUT;
+}
+
+gds_status trig_run(const trig_cfg *cfg, const char *user, trig_result *res) {
+    memset(res, 0, sizeof(*res));
+    if(!cfg->argv || !cfg->argv[0])
+        return GDS_EINVAL;
+    static trig_env env; /* large: keep it off the stack */
+    gds_status r = build_env(&env, cfg, user);
+    if(r != GDS_OK)
+        return r;
+    HANDLE proc = NULL;
+    double t0 = now_ms();
+    if((r = spawn(cfg, &env, &proc)) != GDS_OK)
+        return r;
+    current = proc;
+    for(;;) {
+        DWORD w = WaitForSingleObject(proc, 0);
+        if(w == WAIT_OBJECT_0) {
+            DWORD code = 0;
+            res->exited = GetExitCodeProcess(proc, &code) != 0;
+            res->exitStatus = (int)code;
+            break;
+        }
+        if(w != WAIT_TIMEOUT) {
+            r = GDS_EIO;
+            break;
+        }
+        if(now_ms() - t0 > 1000.0 * ((double)cfg->timeoutSeconds + (double)cfg->runSeconds)) {
+            /* no SIGTERM for an arbitrary process on Windows */
+            (void)TerminateProcess(proc, 1);
+            (void)WaitForSingleObject(proc, 5000);
+            res->exited = false;
+            break;
+        }
+        serve();
+    }
+    current = NULL;
+    CloseHandle(proc);
+    for(int i = 0; i < 5; i++)
+        serve();
+    res->ms = now_ms() - t0;
+    return r;
+}
+#else
 static gds_status spawn(const trig_cfg *cfg, char *const *envp, pid_t *pid) {
     posix_spawn_file_actions_t fa;
     if(posix_spawn_file_actions_init(&fa) != 0)
@@ -165,3 +327,4 @@ gds_status trig_run(const trig_cfg *cfg, const char *user, trig_result *res) {
     res->ms = now_ms() - t0;
     return r;
 }
+#endif

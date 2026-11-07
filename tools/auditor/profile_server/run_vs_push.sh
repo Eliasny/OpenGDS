@@ -26,7 +26,10 @@ NAME=""
 # the server's pid is in $W/server.pid: --restart-cmd (SRV-PER-*) replaces it
 trap '[ -f "$W/server.pid" ] && kill "$(cat "$W/server.pid")" 2>/dev/null; true' EXIT INT TERM
 
-"$B/gdsaudit" server --work "$W/auditor" --init-only || exit 2
+# GDSAUDIT: another gdsaudit to check against the pins, for example a
+# wrapper that runs the Windows build under Wine (packaging/windows/)
+GA=${GDSAUDIT:-$B/gdsaudit}
+"$GA" server --work "$W/auditor" --init-only || exit 2
 cp "$W/auditor/own/cert.der" "$W/auditor-plain.der"
 cp "$W/auditor/admin/own/cert.der" "$W/auditor-admin.der"
 printf 'operator\n' > "$W/user.pw"
@@ -87,7 +90,7 @@ audit() { # audit <name> [args]: run the profile, TAP into $W/<name>.tap
     else
         set -- --tofu "$@"
     fi
-    "$B/gdsaudit" server --url "opc.tcp://127.0.0.1:$PORT" --work "$W/auditor" \
+    "$GA" server --url "opc.tcp://127.0.0.1:$PORT" --work "$W/auditor" \
         --user operator --user-password-file "$W/user.pw" --allow-changes --settle-timeout 40 \
         --restart-cmd "sh '$W/restart-$NAME.sh'" "$@" \
         > "$W/$name.tap" 2>&1

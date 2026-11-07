@@ -4,6 +4,8 @@
 # Usage: scripts/build_openssl.sh <prefix> [<workdir>]
 # Static libraries only, so binaries carry no runtime dependency on an old
 # system libssl. The tarball is checked against the pinned SHA-256.
+#   TARGET=mingw64  cross-build for 64-bit Windows with MinGW-w64 (the
+#                   Auditor's Windows build, packaging/windows/README.md)
 # SPDX-License-Identifier: MPL-2.0
 set -eu
 VERSION=3.5.9
@@ -22,8 +24,19 @@ echo "$SHA256  $TARBALL" | sha256sum -c -
 rm -rf "openssl-$VERSION"
 tar xzf "$TARBALL"
 cd "openssl-$VERSION"
-./Configure --prefix="$PREFIX" --libdir=lib --openssldir="$PREFIX/ssl" \
-    no-shared no-tests no-docs no-legacy no-weak-ssl-ciphers no-ssl3 no-comp \
+OPTS="no-shared no-tests no-docs no-legacy no-weak-ssl-ciphers no-ssl3 no-comp"
+if [ "${TARGET:-}" = mingw64 ]; then
+    # shellcheck disable=SC2086
+    ./Configure mingw64 --cross-compile-prefix=x86_64-w64-mingw32- --prefix="$PREFIX" \
+        --libdir=lib --openssldir="C:/Program Files/OpenGDS Auditor/ssl" $OPTS \
+        -fstack-protector-strong > configure.log
+    make -j"$(nproc)" build_libs > build.log
+    make install_dev > install.log
+    echo "OpenSSL $VERSION for Windows (mingw64) installed in $PREFIX"
+    exit 0
+fi
+# shellcheck disable=SC2086
+./Configure --prefix="$PREFIX" --libdir=lib --openssldir="$PREFIX/ssl" $OPTS \
     -fPIC -fstack-protector-strong -D_FORTIFY_SOURCE=2 > configure.log
 make -j"$(nproc)" > build.log
 make install_sw > install.log

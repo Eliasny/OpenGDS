@@ -11,6 +11,7 @@
 #undef strcat
 #undef sprintf
 #undef vsprintf
+#undef popen /* MinGW: a macro for _popen */
 #pragma GCC poison strcpy strcat sprintf vsprintf gets strtok
 #pragma GCC poison atoi atol atoll atof
 #pragma GCC poison rand srand

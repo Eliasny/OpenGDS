@@ -23,6 +23,7 @@ add_library(gdsaudit_plan STATIC core/plan.c)
 target_include_directories(gdsaudit_plan PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
     PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(gdsaudit_plan PRIVATE gds_hardening)
+if(GDSAUDIT_SELFTESTS) # tests and self-test targets: full Linux builds only
 add_executable(test_plan core/test_plan.c)
 target_include_directories(test_plan PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(test_plan PRIVATE gdsaudit_plan gds_hardening)
@@ -32,6 +33,7 @@ add_test(NAME auditor_run_plan
          COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/cli/test_run_plan.sh"
                  "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/plan-run")
 set_tests_properties(auditor_run_plan PROPERTIES TIMEOUT 600 ENVIRONMENT "PUSH_PORT=4995")
+endif()
 
 # Engine core shared by every profile and self-test target
 add_library(gdsaudit_core STATIC
@@ -42,6 +44,7 @@ add_library(gdsaudit_core STATIC
 target_include_directories(gdsaudit_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/core")
 target_link_libraries(gdsaudit_core PUBLIC gds_common gdsaudit_report)
 
+if(GDSAUDIT_SELFTESTS) # tests and self-test targets: full Linux builds only
 # Self-test targets: known-good reference implementations (Auditor plan, selftest/)
 add_executable(push_test_server selftest/push_test_server.c selftest/push_mgmt.c
                selftest/push_csr.c
@@ -61,12 +64,14 @@ add_test(NAME selftest_demo_flow
          COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/selftest/run_demo.sh"
                  "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/demo-run")
 set_tests_properties(selftest_demo_flow PROPERTIES TIMEOUT 180)
+endif()
 
 add_subdirectory(profile_client)
 add_subdirectory(profile_gds)
 add_subdirectory(profile_server)
 target_link_libraries(gdsaudit PRIVATE gdsaudit_profile_server gdsaudit_plan)
 
+if(GDSAUDIT_SELFTESTS) # tests and self-test targets: full Linux builds only
 # The event stream round trip, the parser's refusals and the report writers
 add_executable(test_report report/test_report.c)
 target_include_directories(test_report PRIVATE "${CMAKE_SOURCE_DIR}/src")
@@ -95,6 +100,7 @@ add_test(NAME auditor_report_formats
          COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/cli/test_reports.sh"
                  "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/reports-run")
 set_tests_properties(auditor_report_formats PROPERTIES TIMEOUT 600 ENVIRONMENT "PUSH_PORT=4993")
+endif()
 
 # Desktop UI (GTK4): view-model in avm/, window in ui/. Built when GTK 4.12+
 # is found (AUTO), always (ON) or never (OFF); the headless gdsaudit never

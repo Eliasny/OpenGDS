@@ -8,7 +8,11 @@
 
 #if defined(__GNUC__) || defined(__clang__)
 #define GDS_MUST_CHECK __attribute__((warn_unused_result))
+#ifdef __MINGW32__ /* __USE_MINGW_ANSI_STDIO: C99 formats such as %zu */
+#define GDS_FORMAT(fmtIdx, argIdx) __attribute__((format(gnu_printf, fmtIdx, argIdx)))
+#else
 #define GDS_FORMAT(fmtIdx, argIdx) __attribute__((format(printf, fmtIdx, argIdx)))
+#endif
 #define GDS_NORETURN __attribute__((noreturn))
 #define GDS_UNUSED __attribute__((unused))
 #else
