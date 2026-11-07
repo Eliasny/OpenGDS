@@ -16,6 +16,7 @@ add_library(gds_server STATIC
     gds_registrar.c
     gds_revoke.c
     gds_server.c
+    gds_tlcheck.c
     gds_trustlist.c
     gds_validate.c)
 target_include_directories(gds_server PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")

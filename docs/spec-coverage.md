@@ -40,14 +40,14 @@ the service Object, which is itself Optional.
 | CertificateRequestedAuditEventType | Event | M | §7.9.12 | `gds.ev.certificate_requested_delivered` (not_supported) |
 | CertificateDeliveredAuditEventType | Event | M | §7.9.13 | `gds.ev.certificate_requested_delivered` (not_supported) |
 | CertificateRevokedAuditEventType | Event | O | §7.9.14 | `gds.ev.certificate_revoked` (not_supported) |
-| CertificateManager roles | CertificateAuthorityAdmin, self-admin | M | §7.2 | `gds.acc.get_certificates_other` (pass), `gds.acc.revoke_needs_ca_admin` (pass), `gds.acc.sign_other` (pass), `gds.acc.tl_add_needs_ca_admin` (warn), `gds.sec.none_session` (pass) |
-| TrustListType | Object, LastUpdateTime, FileType | M | §7.8.2.1 | `gds.ev.trustlist_updated` (not_tested), `gds.model.certificate_group` (warn), `gds.tl.add_remove` (fail), `gds.tl.close_discards` (fail), `gds.tl.write_update` (fail) |
-| Open | Method (FileType) | M | §7.8.2.2 | `gds.tl.open_bad_mode` (warn), `gds.tl.write_anonymous` (pass) |
+| CertificateManager roles | CertificateAuthorityAdmin, self-admin | M | §7.2 | `gds.acc.get_certificates_other` (pass), `gds.acc.revoke_needs_ca_admin` (pass), `gds.acc.sign_other` (pass), `gds.acc.tl_add_needs_ca_admin` (pass), `gds.sec.none_session` (pass) |
+| TrustListType | Object, LastUpdateTime, FileType | M | §7.8.2.1 | `gds.ev.trustlist_updated` (pass), `gds.model.certificate_group` (warn), `gds.tl.add_remove` (pass), `gds.tl.close_discards` (pass), `gds.tl.write_update` (pass) |
+| Open | Method (FileType) | M | §7.8.2.2 | `gds.tl.open_bad_mode` (pass), `gds.tl.write_anonymous` (pass) |
 | OpenWithMasks | Method | M | §7.8.2.3 | `gds.tl.open_with_masks` (pass) |
 | Read / file position | FileType | M | §7.8.2.4 | `gds.tl.read_bad_handle` (pass), `gds.tl.read_chunked` (pass) |
-| CloseAndUpdate | Method | M | §7.8.2.5 | `gds.tl.write_update` (fail) |
-| AddCertificate | Method | M | §7.8.2.6 | `gds.acc.tl_add_needs_ca_admin` (warn), `gds.tl.add_no_issuer` (warn), `gds.tl.add_remove` (fail), `gds.tl.add_untrusted_flag` (warn), `gds.tl.add_while_open` (not_tested) |
-| RemoveCertificate | Method | M | §7.8.2.7 | `gds.tl.add_remove` (fail), `gds.tl.remove_unknown` (warn) |
+| CloseAndUpdate | Method | M | §7.8.2.5 | `gds.tl.write_update` (pass) |
+| AddCertificate | Method | M | §7.8.2.6 | `gds.acc.tl_add_needs_ca_admin` (pass), `gds.tl.add_no_issuer` (pass), `gds.tl.add_remove` (pass), `gds.tl.add_untrusted_flag` (pass), `gds.tl.add_while_open` (pass) |
+| RemoveCertificate | Method | M | §7.8.2.7 | `gds.tl.add_remove` (pass), `gds.tl.remove_unknown` (pass) |
 | TrustListMasks | DataType | M | §7.8.2.9 | `gds.tl.open_with_masks` (pass) |
 | CertificateGroupType | TrustList, CertificateTypes, alarms | M | §7.8.3.1 | `gds.ev.group_alarms` (not_supported), `gds.model.certificate_group` (warn) |
 | KeyCredentialManagement / KeyCredentialServiceType | Object | O | §8.5.3 | `gds.kc.service` (not_supported) |

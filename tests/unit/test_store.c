@@ -330,7 +330,7 @@ static void test_migrate_from_2(const char *dir) {
     if(!CHECK(sqlite3_open(path, &db) == SQLITE_OK))
         return;
     CHECK(sqlite3_exec(db,
-                       "DROP TRIGGER applications_record_id_insert; "
+                       "DROP TABLE trust_lists; DROP TRIGGER applications_record_id_insert; "
                        "DROP TRIGGER applications_record_id_update; DROP TABLE record_counter; "
                        "DROP INDEX applications_record_id; "
                        "ALTER TABLE applications DROP COLUMN record_id; PRAGMA user_version = 2",
@@ -338,7 +338,7 @@ static void test_migrate_from_2(const char *dir) {
     sqlite3_close(db);
     if(!CHECK(gds_store_open(path, &s) == GDS_OK) || !s)
         return;
-    CHECK_EQ_INT(gds_store_schema_version(s), 3);
+    CHECK_EQ_INT(gds_store_schema_version(s), 4);
     scan_ctx all = {0, 0};
     CHECK(gds_store_app_scan(s, 0, count_cb, &all) == GDS_OK);
     CHECK_EQ_INT(all.n, 2);
@@ -348,6 +348,26 @@ static void test_migrate_from_2(const char *dir) {
     CHECK(gds_store_app_scan(s, all.last, count_cb, &newer) == GDS_OK);
     CHECK_EQ_INT(newer.n, 1);
     gds_store_close(s);
+}
+
+/* Schema 4: one trust list blob per CertificateGroup */
+static void test_trust_lists(gds_store *s) {
+    gds_buf got = {0};
+    int64_t lu = -1;
+    CHECK(gds_store_tl_get(s, 615, &got, &lu) == GDS_ENOTFOUND);
+    CHECK(got.len == 0 && lu == 0);
+    uint8_t a[] = {1, 2, 3}, b[] = {4, 5};
+    gds_buf ba = {a, sizeof(a)}, bb = {b, sizeof(b)}, empty = {0};
+    CHECK(gds_store_tl_put(s, 615, &empty, 1) == GDS_EINVAL);
+    CHECK(gds_store_tl_put(s, 615, &ba, 100) == GDS_OK);
+    CHECK(gds_store_tl_put(s, 616, &bb, 200) == GDS_OK);
+    CHECK(gds_store_tl_get(s, 615, &got, &lu) == GDS_OK);
+    CHECK(got.len == 3 && memcmp(got.data, a, 3) == 0 && lu == 100);
+    gds_buf_free(&got);
+    CHECK(gds_store_tl_put(s, 615, &bb, 300) == GDS_OK); /* replaces */
+    CHECK(gds_store_tl_get(s, 615, &got, &lu) == GDS_OK);
+    CHECK(got.len == 2 && memcmp(got.data, b, 2) == 0 && lu == 300);
+    gds_buf_free(&got);
 }
 
 int main(int argc, char **argv) {
@@ -363,7 +383,7 @@ int main(int argc, char **argv) {
     gds_store *s = NULL;
     if(!CHECK(gds_store_open(path, &s) == GDS_OK) || !s)
         return CHECK_DONE();
-    CHECK_EQ_INT(gds_store_schema_version(s), 3);
+    CHECK_EQ_INT(gds_store_schema_version(s), 4);
     struct stat sb;
     CHECK(stat(path, &sb) == 0 && (sb.st_mode & 0777) == 0640); /* group read: the signer */
 
@@ -375,6 +395,7 @@ int main(int argc, char **argv) {
     test_revoke(s, &id, &id2);
     test_update_delete(s);
     test_audit(s, path);
+    test_trust_lists(s);
     {
         char wal[1040];
         CHECK(gds_path(wal, sizeof(wal), "%s-wal", path) == GDS_OK);
@@ -392,6 +413,10 @@ int main(int argc, char **argv) {
         UA_ApplicationRecordDataType got;
         CHECK(gds_store_app_get(s, &id, &got) == GDS_OK);
         UA_ApplicationRecordDataType_clear(&got);
+        gds_buf tl = {0};
+        int64_t lu = 0;
+        CHECK(gds_store_tl_get(s, 615, &tl, &lu) == GDS_OK && tl.len == 2 && lu == 300);
+        gds_buf_free(&tl);
         gds_store_close(s);
     }
     test_migrate_from_2(argv[1]);

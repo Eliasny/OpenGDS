@@ -127,6 +127,11 @@ add_executable(test_dca_rights test_dca_rights.c)
 target_link_libraries(test_dca_rights PRIVATE gds_server)
 add_test(NAME unit_dca_rights COMMAND test_dca_rights "${CMAKE_CURRENT_BINARY_DIR}/dca-run")
 set_tests_properties(unit_dca_rights PROPERTIES TIMEOUT 120)
+add_executable(test_trustlist_write test_trustlist_write.c)
+target_link_libraries(test_trustlist_write PRIVATE gds_server)
+add_test(NAME unit_trustlist_write COMMAND test_trustlist_write
+         "${CMAKE_CURRENT_BINARY_DIR}/tlwrite-run")
+set_tests_properties(unit_trustlist_write PROPERTIES TIMEOUT 120)
 
 add_executable(test_plugin_tl test_plugin_tl.c)
 target_link_libraries(test_plugin_tl PRIVATE gds_server OpenSSL::Crypto)
