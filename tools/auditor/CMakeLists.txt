@@ -15,6 +15,22 @@ target_include_directories(gdsaudit_report PUBLIC
     PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(gdsaudit_report PRIVATE gds_hardening)
 
+# Plan files (TOML subset): libc only, linked by the headless binary and
+# the desktop UI
+add_library(gdsaudit_plan STATIC core/plan.c)
+target_include_directories(gdsaudit_plan PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(gdsaudit_plan PRIVATE gds_hardening)
+add_executable(test_plan core/test_plan.c)
+target_include_directories(test_plan PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(test_plan PRIVATE gdsaudit_plan gds_hardening)
+add_test(NAME auditor_plan_files COMMAND test_plan)
+# gdsaudit run PLAN gives the run of the command line it stands for
+add_test(NAME auditor_run_plan
+         COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/cli/test_run_plan.sh"
+                 "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/plan-run")
+set_tests_properties(auditor_run_plan PROPERTIES TIMEOUT 600 ENVIRONMENT "PUSH_PORT=4995")
+
 # Engine core shared by every profile and self-test target
 add_library(gdsaudit_core STATIC
     core/x509util.c
@@ -46,7 +62,7 @@ set_tests_properties(selftest_demo_flow PROPERTIES TIMEOUT 180)
 add_subdirectory(profile_client)
 add_subdirectory(profile_gds)
 add_subdirectory(profile_server)
-target_link_libraries(gdsaudit PRIVATE gdsaudit_profile_server)
+target_link_libraries(gdsaudit PRIVATE gdsaudit_profile_server gdsaudit_plan)
 
 # The event stream round trip, the parser's refusals and the report writers
 add_executable(test_report report/test_report.c)
