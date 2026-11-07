@@ -375,8 +375,11 @@ gds_status gds_server_get_trust_list(gds_server *s, const UA_NodeId *groupId,
     if(!s || !out)
         return GDS_EINVAL;
     UA_TrustListDataType_init(out);
-    if(!group_ok(s, groupId))
-        return GDS_ENOTFOUND;
+    if(!group_ok(s, groupId)) {
+        bool found = false; /* a plugin's group (A18) */
+        gds_status st = gds_ptl_get(s, groupId, out, &found);
+        return found ? st : GDS_ENOTFOUND;
+    }
     UA_StatusCode r = gds_trustlist_data(s, (UA_UInt32)UA_TRUSTLISTMASKS_ALL, out);
     return r == UA_STATUSCODE_GOOD ? GDS_OK : gds_ua_status(r);
 }

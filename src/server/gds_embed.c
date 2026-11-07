@@ -70,6 +70,12 @@ struct gds_job {
     size_t nOut;
     UA_Variant *output; /* open62541's; server thread only, NULL once cancelled */
     UA_StatusCode status;
+    /* A deferred core call (gds_embed_defer): run on a worker, done on the
+     * server thread, ctx theirs until done or ctxFree */
+    gds_defer_run_fn run;
+    gds_defer_done_fn done;
+    gds_defer_free_fn ctxFree;
+    void *ctx;
 };
 
 /* ---- the worker pool ---- */
@@ -99,6 +105,8 @@ static void job_free(gds_job *j) {
     UA_String_clear(&j->snap.securityPolicyUri);
     UA_ByteString_clear(&j->snap.clientCert);
     UA_NodeId_clear(&j->methodId);
+    if(j->ctx && j->ctxFree)
+        j->ctxFree(j->ctx);
     free(j);
 }
 
@@ -134,7 +142,24 @@ static void run_rights(gds_job *j) {
         gds_caller_buf_clear(&cb);
 }
 
+static void run_deferred(gds_job *j) {
+    gds_caller_buf cb;
+    gds_status st = gds_caller_build(j->s, &j->sessionId, &j->snap, &cb);
+    if(st != GDS_OK) {
+        j->status = st == GDS_EDENIED ? UA_STATUSCODE_BADUSERACCESSDENIED : gds_status_to_ua(st);
+        return;
+    }
+    j->status = j->run(j->ctx, &cb.view, j->nIn, j->in);
+    if(j->status == UA_STATUSCODE_GOODCOMPLETESASYNCHRONOUSLY)
+        j->status = UA_STATUSCODE_BADINTERNALERROR;
+    gds_caller_buf_clear(&cb);
+}
+
 static void run_job(gds_job *j) {
+    if(j->run) {
+        run_deferred(j);
+        return;
+    }
     if(j->gdsMethod) {
         run_rights(j);
         return;
@@ -212,7 +237,13 @@ static void drain(UA_Server *server, void *data) {
     while(list) {
         gds_job *j = list;
         list = j->next;
-        if(j->output && j->gdsMethod) {
+        if(j->run) {
+            /* done always runs, also when the call was cancelled */
+            UA_StatusCode r = j->done(s, j->ctx, j->status);
+            j->ctx = NULL;
+            if(j->output)
+                (void)UA_Server_setAsyncCallMethodResult(server, j->output, r);
+        } else if(j->output && j->gdsMethod) {
             /* A14: the GDS method itself, on the server thread, with the
              * hook's answer on the job's copy of the session */
             UA_StatusCode r = j->status;
@@ -689,6 +720,35 @@ UA_StatusCode gds_embed_defer_rights(gds_server *s, UA_MethodCallback fn, const 
         job_free(j);
         return r;
     }
+    return enqueue(s, slot, j, output);
+}
+
+gds_status gds_embed_pool_start(gds_server *s) {
+    pthread_mutex_lock(&s->bindLock); /* one starter at a time */
+    gds_status st = pool_start(s);
+    pthread_mutex_unlock(&s->bindLock);
+    return st;
+}
+
+UA_StatusCode gds_embed_defer(gds_server *s, const UA_NodeId *sessionId, void *sessionContext,
+                              const UA_NodeId *objectId, size_t inputSize,
+                              const UA_Variant *input, UA_Variant *output, gds_defer_run_fn run,
+                              gds_defer_done_fn done, gds_defer_free_fn ctxFree, void *ctx) {
+    if(!s || !run || !done || s->plugWorkers == 0)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    size_t slot = free_slot(s);
+    if(slot == GDS_PLUGIN_QUEUE)
+        return UA_STATUSCODE_BADSERVERTOOBUSY;
+    gds_job *j = NULL;
+    UA_StatusCode r =
+        job_new(NULL, sessionContext, sessionId, objectId, inputSize, input, 0, &j);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    j->s = s;
+    j->run = run;
+    j->done = done;
+    j->ctxFree = ctxFree;
+    j->ctx = ctx;
     return enqueue(s, slot, j, output);
 }
 
