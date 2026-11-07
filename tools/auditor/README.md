@@ -12,7 +12,7 @@ brought under the rules in `docs/architecture.md`.
 | `profile_client/` | `mock_gds`: plays a minimal GDS for pull clients, loopback only by default (seed of the client profile) |
 | `profile_gds/` | OpenGDS T0 spec test programs (week 1) |
 | `include/gdsaudit/engine.h` | The engine API the front ends use: the event stream (run started, test started, note, verdict, run finished), event sinks, abort, and the JSON Lines schema |
-| `report/` | Result list built from the event stream, the JSON Lines writer and parser, the HTML and JUnit XML reports (libc only). CTest `auditor_report_events` |
+| `report/` | Result list built from the event stream, the JSON Lines writer and parser, the HTML, JUnit XML, JSON and TAP reports (libc only). CTests `auditor_report_events` and `auditor_report_formats` (`cli/test_reports.sh`: the four reports of a real run agree with the engine) |
 | `avm/` | View-model of the desktop UI (GLib/GIO, no GTK): the plan form, presets and checks (`avm_plan.c`), and a live run of the headless engine (`avm_run.c`). CTests `avm_plan` and `avm_run_vs_push_test_server` (the UI's way of running gives the verdicts pinned for the headless run) |
 | `ui/` | `gdsaudit-gui`, the GTK4 desktop app. CTest `gui_smoke` (the real window on a virtual display) |
 
@@ -28,7 +28,9 @@ cmake --build build && ctest --test-dir build --output-on-failure
 ```
 
 Every subcommand also takes `--events FILE` (the event stream as JSON Lines,
-schema in `engine.h`) and `--report DIR` (`report.html` and `junit.xml`).
+schema in `engine.h`) and `--report DIR`: `report.html`, `junit.xml`,
+`report.json` (schema in [docs/auditor/report-json.md](../../docs/auditor/report-json.md))
+and `report.tap` (TAP version 13 with a YAML block per test).
 SIGINT or SIGTERM aborts a run: later tests are Not tested and the server
 profile still restores the target. SIGUSR1 pauses before the next test (the
 test in progress finishes) and SIGUSR2 resumes. The HTML report has a table
