@@ -50,7 +50,10 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
-SystemCallFilter=@system-service
+# @sandbox (landlock_*, seccomp): the process sandboxes itself further
+# (src/common/sandbox.c); without it libseccomp cannot probe the kernel and
+# refuses the filter, and Landlock looks absent.
+SystemCallFilter=@system-service @sandbox
 SystemCallFilter=~@privileged @resources
 SystemCallErrorNumber=EPERM
 

@@ -47,7 +47,10 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX
 SystemCallArchitectures=native
-SystemCallFilter=@system-service
+# @sandbox (landlock_*, seccomp): the process sandboxes itself further
+# (src/common/sandbox.c); without it libseccomp cannot probe the kernel and
+# refuses the filter, and Landlock looks absent.
+SystemCallFilter=@system-service @sandbox
 SystemCallFilter=~@privileged @resources
 # The signer only talks over the socket systemd hands it on fd 3 (it needs
 # recvmsg/sendmsg/getsockopt from @network-io for that), so it may not open,
