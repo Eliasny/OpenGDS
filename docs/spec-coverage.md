@@ -28,7 +28,7 @@ the service Object, which is itself Optional.
 | ApplicationRegistrationChangedAuditEventType | Event | M | §6.5.12 | `gds.ev.auditing_flag` (not_supported), `gds.ev.registration_changed` (not_supported) |
 | Directory roles | DiscoveryAdmin, self-admin | M | §6.2 | `gds.acc.unregister_other` (pass), `gds.acc.update_other` (pass), `gds.sec.anonymous_register` (pass) |
 | CertificateDirectoryType | member list | M | §7.9.2 | `gds.model.directory` (pass) |
-| StartSigningRequest | Method | M | §7.9.3 | `gds.acc.sign_other` (pass), `gds.acc.sign_sign_only` (pass), `gds.cm.bad_csr` (pass), `gds.cm.csr_wrong_uri` (pass), `gds.cm.sign_bad_group` (pass), `gds.cm.sign_bad_type` (fail), `gds.cm.sign_null_group` (pass), `gds.cm.sign_unknown_app` (pass), `gds.cm.signing_flow` (pass) |
+| StartSigningRequest | Method | M | §7.9.3 | `gds.acc.sign_other` (pass), `gds.acc.sign_sign_only` (pass), `gds.cm.bad_csr` (pass), `gds.cm.csr_wrong_uri` (pass), `gds.cm.sign_bad_group` (pass), `gds.cm.sign_bad_type` (pass), `gds.cm.sign_null_group` (pass), `gds.cm.sign_unknown_app` (pass), `gds.cm.signing_flow` (pass) |
 | StartNewKeyPairRequest | Method | M | §7.9.4 | `gds.acc.keypair_sign_only` (pass), `gds.cm.keypair_bad_format` (pass), `gds.cm.keypair_pem` (pass), `gds.cm.keypair_pfx` (pass), `gds.cm.keypair_unknown_app` (pass) |
 | FinishRequest | Method | M | §7.9.5 | `gds.cm.finish_unknown` (pass), `gds.cm.keypair_pem` (pass), `gds.cm.keypair_pfx` (pass), `gds.cm.signing_flow` (pass) |
 | RevokeCertificate | Method | O | §7.9.6 | `gds.acc.revoke_needs_ca_admin` (pass), `gds.cm.revoke` (pass), `gds.cm.revoke_foreign` (pass), `gds.cm.revoke_unknown_app` (pass), `gds.ev.certificate_revoked` (not_supported) |
@@ -41,7 +41,7 @@ the service Object, which is itself Optional.
 | CertificateDeliveredAuditEventType | Event | M | §7.9.13 | `gds.ev.certificate_requested_delivered` (not_supported) |
 | CertificateRevokedAuditEventType | Event | O | §7.9.14 | `gds.ev.certificate_revoked` (not_supported) |
 | CertificateManager roles | CertificateAuthorityAdmin, self-admin | M | §7.2 | `gds.acc.get_certificates_other` (pass), `gds.acc.revoke_needs_ca_admin` (pass), `gds.acc.sign_other` (pass), `gds.acc.tl_add_needs_ca_admin` (pass), `gds.sec.none_session` (pass) |
-| TrustListType | Object, LastUpdateTime, FileType | M | §7.8.2.1 | `gds.ev.trustlist_updated` (pass), `gds.model.certificate_group` (warn), `gds.tl.add_remove` (pass), `gds.tl.close_discards` (pass), `gds.tl.write_update` (pass) |
+| TrustListType | Object, LastUpdateTime, FileType | M | §7.8.2.1 | `gds.ev.trustlist_updated` (pass), `gds.model.certificate_group` (pass), `gds.tl.add_remove` (pass), `gds.tl.close_discards` (pass), `gds.tl.write_update` (pass) |
 | Open | Method (FileType) | M | §7.8.2.2 | `gds.tl.open_bad_mode` (pass), `gds.tl.write_anonymous` (pass) |
 | OpenWithMasks | Method | M | §7.8.2.3 | `gds.tl.open_with_masks` (pass) |
 | Read / file position | FileType | M | §7.8.2.4 | `gds.tl.read_bad_handle` (pass), `gds.tl.read_chunked` (pass) |
@@ -49,7 +49,7 @@ the service Object, which is itself Optional.
 | AddCertificate | Method | M | §7.8.2.6 | `gds.acc.tl_add_needs_ca_admin` (pass), `gds.tl.add_no_issuer` (pass), `gds.tl.add_remove` (pass), `gds.tl.add_untrusted_flag` (pass), `gds.tl.add_while_open` (pass) |
 | RemoveCertificate | Method | M | §7.8.2.7 | `gds.tl.add_remove` (pass), `gds.tl.remove_unknown` (pass) |
 | TrustListMasks | DataType | M | §7.8.2.9 | `gds.tl.open_with_masks` (pass) |
-| CertificateGroupType | TrustList, CertificateTypes, alarms | M | §7.8.3.1 | `gds.ev.group_alarms` (not_supported), `gds.model.certificate_group` (warn) |
+| CertificateGroupType | TrustList, CertificateTypes, alarms | M | §7.8.3.1 | `gds.ev.group_alarms` (not_supported), `gds.model.certificate_group` (pass) |
 | KeyCredentialManagement / KeyCredentialServiceType | Object | O | §8.5.3 | `gds.kc.service` (not_supported) |
 | StartRequest (KeyCredential) | Method | M if service | §8.5.5 | `gds.kc.policy_without_key` (not_supported), `gds.kc.request_flow` (not_supported), `gds.kc.sign_only` (not_supported), `gds.kc.start_unknown_uri` (not_supported) |
 | FinishRequest (KeyCredential) | Method | M if service | §8.5.6 | `gds.kc.cancel` (not_supported), `gds.kc.finish_unknown` (not_supported), `gds.kc.request_flow` (not_supported) |
