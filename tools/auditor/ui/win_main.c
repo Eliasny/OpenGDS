@@ -38,7 +38,7 @@ typedef struct {
     /* run */
     GtkWidget *pauseBtn;
     gboolean paused;
-    GtkWidget *runBtn, *abortBtn, *exportBtn, *openBtn, *historyBtn, *openFolderBtn;
+    GtkWidget *runBtn, *abortBtn, *exportBtn, *openBtn, *historyBtn, *openFolderBtn, *targetsBtn;
     GtkLabel *banner, *status;
     GtkProgressBar *progress;
     GtkListBox *list;
@@ -364,6 +364,7 @@ static void set_running(Win *w, gboolean running) {
     gtk_widget_set_sensitive(w->exportBtn, !running && w->run != NULL);
     gtk_widget_set_sensitive(GTK_WIDGET(w->profile), !running);
     gtk_widget_set_sensitive(w->historyBtn, !running);
+    gtk_widget_set_sensitive(w->targetsBtn, !running);
     gtk_widget_set_sensitive(w->openFolderBtn, !running);
 }
 
@@ -627,6 +628,25 @@ gboolean win_main_show_run(GtkWindow *win, const char *dir, GError **error) {
 const ga_results *win_main_results(GtkWindow *win) {
     Win *w = g_object_get_data(G_OBJECT(win), "gdsaudit-win");
     return w && w->run && !avm_run_is_running(w->run) ? avm_run_results(w->run) : NULL;
+}
+
+AvmPlan *win_main_plan(GtkWindow *win) {
+    Win *w = g_object_get_data(G_OBJECT(win), "gdsaudit-win");
+    if(!w || avm_run_is_running(w->run))
+        return NULL;
+    sync_plan(w);
+    return &w->plan;
+}
+
+void win_main_plan_changed(GtkWindow *win) {
+    Win *w = g_object_get_data(G_OBJECT(win), "gdsaudit-win");
+    if(w)
+        load_plan_into_form(w);
+}
+
+static void on_targets(GtkButton *b, gpointer data) {
+    (void)b;
+    page_targets_present(((Win *)data)->win);
 }
 
 static void on_history(GtkButton *b, gpointer data) {
@@ -894,11 +914,14 @@ GtkWindow *win_main_new(GtkApplication *app) {
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), w->pauseBtn);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), w->abortBtn);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->exportBtn);
+    w->targetsBtn = button("Tar_gets…", "Find a device's endpoints; saved targets",
+                           G_CALLBACK(on_targets), w);
     w->historyBtn = button("_History…", "Past runs: open one or compare two",
                            G_CALLBACK(on_history), w);
     w->openFolderBtn = button("Open _folder…", "Show a results folder, also of a headless run",
                               G_CALLBACK(on_open_folder), w);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->historyBtn);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->targetsBtn);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->openFolderBtn);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->openBtn);
     gtk_window_set_titlebar(w->win, header);
@@ -919,7 +942,7 @@ GtkWindow *win_main_new(GtkApplication *app) {
 
 gboolean win_main_check(GtkWindow *win) {
     Win *w = g_object_get_data(G_OBJECT(win), "gdsaudit-win");
-    return w && w->runBtn && w->list && w->profile && w->preset && w->historyBtn &&
+    return w && w->runBtn && w->list && w->profile && w->preset && w->historyBtn && w->targetsBtn &&
            gtk_drop_down_get_selected(w->preset) == AVM_PRESET_QUICK &&
            !gtk_check_button_get_active(w->allowChanges);
 }

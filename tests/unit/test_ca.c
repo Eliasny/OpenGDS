@@ -252,7 +252,7 @@ static void no_destroy(void *ctx) {
 
 static void test_pre_sign(const gds_ca_subject *subj, const gds_buf *csr) {
     const gds_ca_backend b = {GDS_CA_ABI_VERSION, refuse_pre_sign, count_sign, no_buf, no_buf,
-                              no_destroy, NULL};
+                              no_destroy, NULL, NULL};
     gds_ca *ca = NULL;
     CHECK(gds_ca_wrap(&b, NULL, &ca) == GDS_OK);
     gds_ca_issued out;

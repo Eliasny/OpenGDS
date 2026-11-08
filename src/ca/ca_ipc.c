@@ -5,6 +5,8 @@
  * SPDX-License-Identifier: MPL-2.0 */
 #include "ca_ipc.h"
 
+#include <openssl/crypto.h>
+
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
@@ -71,6 +73,30 @@ static gds_status ipc_sign_csr(void *ctx, const gds_ca_subject *subj, const gds_
     return call(ctx, GDS_SIGP_SIGN_CSR, subj->requestId, out, NULL);
 }
 
+/* The key is generated and encrypted in the signer; opengdsd only relays
+ * the format and the password. The receive buffer is wiped afterwards. */
+static gds_status ipc_new_key_pair(void *ctx, const gds_ca_subject *subj, const gds_ca_keyreq *kr,
+                                   gds_ca_issued *out, gds_buf *key) {
+    ipc_ca *c = ctx;
+    gds_buf req = {0};
+    gds_status r = gds_sigp_encode_new_key_pair(subj->requestId, kr->format, kr->password, &req);
+    if(r != GDS_OK)
+        return r;
+    pthread_mutex_lock(&c->lock);
+    size_t len = 0;
+    if(send(c->fd, req.data, req.len, MSG_NOSIGNAL) != (ssize_t)req.len)
+        r = GDS_EREMOTE;
+    if(r == GDS_OK)
+        r = recv_reply(c, &len);
+    gds_status remote = GDS_EREMOTE;
+    if(r == GDS_OK)
+        r = gds_sigp_decode_key_reply(c->rx, len, &remote, out, key);
+    OPENSSL_cleanse(c->rx, len);
+    pthread_mutex_unlock(&c->lock);
+    gds_buf_free_secret(&req); /* it carried the password */
+    return r == GDS_OK ? remote : r;
+}
+
 static gds_status ipc_get_ca_cert(void *ctx, gds_buf *out) {
     return call(ctx, GDS_SIGP_GET_CHAIN, NULL, NULL, out);
 }
@@ -109,6 +135,7 @@ static const gds_ca_backend ipc_backend = {
     .get_crl = ipc_get_crl,
     .destroy = ipc_destroy,
     .revoke = ipc_revoke,
+    .new_key_pair = ipc_new_key_pair,
 };
 
 gds_status gds_ca_ipc_open(int fd, int timeoutMs, gds_ca **out) {
