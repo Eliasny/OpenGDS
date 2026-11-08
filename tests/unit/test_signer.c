@@ -236,7 +236,7 @@ static void test_ipc_key_pair(gds_ca *ipc, gds_store *w, const UA_Guid *appId) {
     CHECK(gds_ca_new_key_pair(ipc, &subj, &kr, &out, &key) == GDS_EDENIED && !key.data);
     subj.requestId = &kpReq;
     CHECK(gds_ca_sign_csr(ipc, &subj, &none, &out) != GDS_OK);
-    gds_ca_keyreq bad = {(gds_ca_key_format)7, &pw};
+    gds_ca_keyreq bad = {(gds_ca_key_format)7, &pw}; // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange)
     CHECK(gds_ca_new_key_pair(ipc, &subj, &bad, &out, &key) == GDS_EINVAL);
 }
 
@@ -251,6 +251,7 @@ static void test_key_pair_proto(void) {
     gds_buf tooLong = {longPw, sizeof(longPw)};
     CHECK(gds_sigp_encode_new_key_pair(&id, GDS_CA_KEY_PFX, &tooLong, &msg) == GDS_EINVAL &&
           !msg.data);
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     CHECK(gds_sigp_encode_new_key_pair(&id, (gds_ca_key_format)0, &pw, &msg) == GDS_EINVAL);
     CHECK(gds_sigp_encode_new_key_pair(&id, GDS_CA_KEY_PEM, &pw, &msg) == GDS_OK);
     gds_sigp_request m;
