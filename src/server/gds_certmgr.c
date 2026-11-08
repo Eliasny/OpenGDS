@@ -70,20 +70,45 @@ static UA_StatusCode group_arg(gds_server *s, size_t inputSize, const UA_Variant
     return UA_STATUSCODE_GOOD;
 }
 
-/* Null means the group's default type, RsaSha256ApplicationCertificateType. */
+/* DefaultApplicationGroup.CertificateTypes (12 §7.8.3.1): the types the CA
+ * issues for the group. RsaMin is deprecated with its SecurityPolicies and
+ * the ECC types are not issued yet; the first entry is the default. */
+static const UA_UInt32 groupCertTypes[] = {UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE};
+
+bool gds_group_type(const UA_NodeId *t, UA_UInt32 *type) {
+    if(!t || UA_NodeId_isNull(t)) {
+        *type = groupCertTypes[0];
+        return true;
+    }
+    if(t->namespaceIndex != 0 || t->identifierType != UA_NODEIDTYPE_NUMERIC)
+        return false;
+    for(size_t i = 0; i < GDS_ARRAY_SIZE(groupCertTypes); i++)
+        if(t->identifier.numeric == groupCertTypes[i]) {
+            *type = groupCertTypes[i];
+            return true;
+        }
+    return false; /* §7.9.3, §7.9.4: not a type of the group, Bad_InvalidArgument */
+}
+
+/* Null means the group's default type. */
 static UA_StatusCode type_arg(size_t inputSize, const UA_Variant *input, size_t i, UA_UInt32 *type) {
     const UA_NodeId *t = NULL;
     UA_StatusCode r = gds_in_nodeid(inputSize, input, i, &t);
     if(r != UA_STATUSCODE_GOOD)
         return r;
-    if(UA_NodeId_isNull(t)) {
-        *type = UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE;
-        return UA_STATUSCODE_GOOD;
-    }
-    if(t->namespaceIndex != 0 || t->identifierType != UA_NODEIDTYPE_NUMERIC)
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
-    *type = t->identifier.numeric;
-    return UA_STATUSCODE_GOOD;
+    return gds_group_type(t, type) ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADINVALIDARGUMENT;
+}
+
+static UA_StatusCode set_group_types(gds_server *s) {
+    UA_NodeId ids[GDS_ARRAY_SIZE(groupCertTypes)];
+    for(size_t i = 0; i < GDS_ARRAY_SIZE(groupCertTypes); i++)
+        ids[i] = UA_NODEID_NUMERIC(0, groupCertTypes[i]);
+    UA_Variant v;
+    UA_Variant_setArray(&v, ids, GDS_ARRAY_SIZE(ids), &UA_TYPES[UA_TYPES_NODEID]);
+    return UA_Server_writeValue(
+        s->ua,
+        UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_CERTIFICATETYPES),
+        v);
 }
 
 /* DER CSR whose self-signature verifies (proof of possession). The signer
@@ -600,6 +625,8 @@ UA_StatusCode gds_certmgr_install(gds_server *s) {
         {UA_GDSID_DIRECTORY_CHECKREVOCATIONSTATUS, check_revocation_status},
     };
     UA_StatusCode r = add_optional_nodes(s);
+    if(r == UA_STATUSCODE_GOOD)
+        r = set_group_types(s);
     return r == UA_STATUSCODE_GOOD ? gds_install_methods(s, m, GDS_ARRAY_SIZE(m)) : r;
 }
 

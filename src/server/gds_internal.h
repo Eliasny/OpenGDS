@@ -276,6 +276,9 @@ GDS_MUST_CHECK UA_StatusCode gds_trustlist_data(gds_server *s, UA_UInt32 masks,
  * issuance held back? Any thread; holdLock is a leaf lock. */
 bool gds_issuance_held(gds_server *s, const UA_Guid *appId);
 void gds_holds_free(gds_server *s);
+/* A CertificateTypeId of DefaultApplicationGroup (gds_certmgr.c): null
+ * picks the default type; false if the group does not hold the type. */
+bool gds_group_type(const UA_NodeId *t, UA_UInt32 *type);
 /* StartNewKeyPairRequest secrets (gds_keypair.c). Any thread. add: copies
  * the password (GDS_ETOOBIG when the table is full). password: a copy for
  * the CA call, free it with gds_buf_free_secret. set_key: takes the key and
