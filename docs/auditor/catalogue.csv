@@ -90,7 +90,7 @@ SRV-REJ-04,server,Rejected list,srv_rejected.c,"12 §7.8.3.1, §7.8.3.2",OPC 100
 SRV-SET-01,server,Push setup,srv_setup.c,12 Annex G.2,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,yes,no,setup-state-running,selftest/push_test_server
 SRV-SET-02,server,Push setup,srv_setup.c,12 Annex G.2,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,no,yes,no,setup-no-cert,selftest/push_test_server
 SRV-SET-03,server,Push setup,srv_setup.c,12 Annex G.2,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,yes,no,setup-exit-no-role,selftest/push_test_server
-SRV-SET-04,server,Push setup,srv_setup.c,12 Annex G.2; OPC 10000-18 (role management),OPC 10000-12 v1.05.07,todo,Push Model for Global Certificate and TrustList Management,yes,yes,no,setup-sticky,selftest/push_test_server
+SRV-SET-04,server,Push setup,srv_setup.c,12 Annex G.2; OPC 10000-18 §4.4.3 §4.4.5,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,yes,no,setup-sticky,selftest/push_test_server
 SRV-SET-05,server,Push setup,srv_setup.c,12 §7.5,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,yes,no,setup-open-after,selftest/push_test_server
 SRV-SET-06,server,Push setup,srv_setup.c,12 §7.10.13,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,yes,no,reset-no-shutdown,selftest/push_test_server
 SRV-KC-01,server,KeyCredential push,srv_keycred.c,"12 §8.6.3, §8.6.5",OPC 10000-12 v1.05.07,ref,Push Model for KeyCredential Service,yes,no,no,kc-create-noop,selftest/push_test_server
