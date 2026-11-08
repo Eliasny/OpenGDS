@@ -80,6 +80,10 @@ static const char serverPlan[] =
     "settle_timeout = 30\n"
     "slow = false\n"
     "\n"
+    "[hooks]\n"
+    "restart_cmd = \"ssh plc reboot\"\n"
+    "prompts = \"answers.txt\"\n"
+    "\n"
     "[report]\n"
     "dir = \"out\"\n"
     "events = \"out/events.jsonl\"\n";
@@ -114,10 +118,11 @@ static void server_plan(void) {
                 "--target-crl /plans/certs/gds-ca.crl --work /plans/work "
                 "--admin-user sysadmin --admin-password-file /plans/secrets/admin.pw "
                 "--allow-changes --only SRV-TL --settle-timeout 30 "
+                "--restart-cmd ssh plc reboot --prompts /plans/answers.txt "
                 "--report /plans/out --events /plans/out/events.jsonl"));
     if(s && !strstr(s, "--allow-changes --only"))
         fprintf(stderr, "argv: %s\n", s);
-    CHECK(argc == 26);
+    CHECK(argc == 30);
     free(s);
     free((void *)argv);
     argv = ga_plan_argv(p, NULL, &argc);

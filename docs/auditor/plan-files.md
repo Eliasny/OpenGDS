@@ -78,10 +78,12 @@ user names, test prefixes, the trigger's arguments) are passed as written.
 | `tests.cycle_timeout` | integer | | `--cycle-timeout` | |
 | `tests.cycle_period` | integer | | `--cycle-period` | |
 | `hooks.trigger` | array of strings | | the command after `--` | |
+| `hooks.restart_cmd` | string (a shell command, not a path) | `--restart-cmd` | | |
+| `hooks.prompts` | path | `--prompts` | `--prompts` | `--prompts` |
 | `report.dir` | path | `--report` | `--report` | `--report` |
 | `report.events` | path | `--events` | `--events` | `--events` |
 
-A bool `false` gives no option. The options and their meaning are in
+`hooks.prompts` holds the operator's answers (`<n> done|skip|fail [note]` per line), so a run with operator steps repeats with the same answers headless and in the UI. A bool `false` gives no option. The options and their meaning are in
 the usage `gdsaudit` prints without arguments, `gdsaudit client --help` and `tools/auditor/README.md`.
 When a profile gains an option, its key is added to the table in
 `tools/auditor/core/plan.c` and to this page.

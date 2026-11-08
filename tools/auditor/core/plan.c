@@ -61,6 +61,8 @@ static const key_row keys[] = {
     {"tests.poll_seconds", {NULL, NULL, "--poll-seconds"}, GA_PLAN_INT},
     {"tests.cycle_timeout", {NULL, "--cycle-timeout", NULL}, GA_PLAN_INT},
     {"tests.cycle_period", {NULL, "--cycle-period", NULL}, GA_PLAN_INT},
+    {"hooks.restart_cmd", {"--restart-cmd", NULL, NULL}, GA_PLAN_STRING},
+    {"hooks.prompts", ALL("--prompts"), GA_PLAN_PATH},
     {"report.dir", ALL("--report"), GA_PLAN_PATH},
     {"report.events", ALL("--events"), GA_PLAN_PATH},
     {"hooks.trigger", {NULL, "--", NULL}, GA_PLAN_COMMAND},
