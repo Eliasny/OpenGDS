@@ -20,6 +20,7 @@
 #include "check.h"
 #include "common/buf.h"
 #include "common/ids.h"
+#include "common/limits.h"
 #include "proto.h"
 #include "signer.h"
 #include "store.h"
@@ -267,7 +268,12 @@ static void test_key_pair_proto(void) {
     gds_buf_free_secret(&msg);
     /* the reply carries the key; an OK reply without one is refused */
     uint8_t der[] = {0x30, 0x00}, ser[] = {1}, k[] = {9, 9, 9};
-    gds_ca_issued is = {{ser, 1}, {der, 2}, 1, 2};
+    gds_ca_issued is;
+    memset(&is, 0, sizeof(is));
+    is.serial = (gds_buf){ser, 1};
+    is.der = (gds_buf){der, 2};
+    is.notBefore = 1;
+    is.notAfter = 2;
     gds_buf key = {k, 3}, got = {0}, reply = {0};
     CHECK(gds_sigp_encode_key_reply(GDS_OK, &is, &key, &reply) == GDS_OK);
     gds_status st = GDS_EIO;
@@ -276,7 +282,8 @@ static void test_key_pair_proto(void) {
     CHECK(st == GDS_OK && got.len == 3 && memcmp(got.data, k, 3) == 0 && gi.der.len == 2);
     gds_ca_issued_clear(&gi);
     gds_buf_free_secret(&got);
-    CHECK(gds_sigp_decode_key_reply(reply.data, reply.len - 1, &st, &gi, &got) == GDS_EINVAL);
+    CHECK(gds_sigp_decode_key_reply(reply.data, reply.len - 1, &st, &gi, &got) != GDS_OK &&
+          !got.data);
     gds_buf_free(&reply);
     gds_buf empty = {0};
     CHECK(gds_sigp_encode_key_reply(GDS_OK, &is, &empty, &reply) == GDS_EINVAL);
