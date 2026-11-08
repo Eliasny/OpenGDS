@@ -37,8 +37,6 @@ gds.tl.write_anonymous,pass
 # pinned. Findings in opengdsd today (OPC 10000-12 v1.05.07):
 #   gds.qry.na_excluded      a record with ServerCapabilities NA is returned (§6.5.10 forbids it)
 #   gds.qry.servers          QueryServers returns BadInternalError (Mandatory, §6.5.11)
-#   gds.cm.keypair_*         StartNewKeyPairRequest returns BadInternalError (Mandatory, §7.9.4);
-#                            the thin path should answer BadNotImplemented
 #   gds.cm.sign_bad_type     an HttpsCertificateType request is accepted in DefaultApplicationGroup (§7.9.3)
 #   gds.model.certificate_group  DefaultApplicationGroup.CertificateTypes is empty
 #   gds.ev.*                 Server.Auditing is FALSE; of the audit events only TrustListUpdated
@@ -60,10 +58,10 @@ gds.cm.revoke_unknown_app,pass
 gds.cm.check_good,pass
 gds.cm.check_revoked,pass
 gds.cm.check_bad_signature,pass
-gds.cm.keypair_pfx,fail
-gds.cm.keypair_pem,fail
-gds.cm.keypair_bad_format,warn
-gds.cm.keypair_unknown_app,warn
+gds.cm.keypair_pfx,pass
+gds.cm.keypair_pem,pass
+gds.cm.keypair_bad_format,pass
+gds.cm.keypair_unknown_app,pass
 gds.cm.sign_bad_group,pass
 gds.cm.sign_bad_type,fail
 gds.cm.sign_unknown_app,pass

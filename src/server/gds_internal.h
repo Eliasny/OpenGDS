@@ -39,6 +39,18 @@ typedef struct {
 
 typedef struct gds_ptl gds_ptl;
 
+/* One StartNewKeyPairRequest's secrets (gds_keypair.c), never stored. */
+typedef struct {
+    bool used, ready; /* ready: key holds the generated key, password is gone */
+    gds_ca_key_format format;
+    UA_Guid id;
+    UA_DateTime created; /* monotonic */
+    gds_buf password;
+    gds_buf key;
+} gds_kp_entry;
+/* An entry not collected by FinishRequest within a day is dropped. */
+#define GDS_KEYPAIR_TTL ((UA_DateTime)24 * 3600 * UA_DATETIME_SEC)
+
 struct gds_server {
     UA_Server *ua;
     UA_UInt16 ns;
@@ -123,6 +135,9 @@ struct gds_server {
     /* DefaultApplicationGroup TrustList LastUpdateTime (gds_trustlist.c);
      * server thread only */
     UA_DateTime tlLastUpdate;
+    /* StartNewKeyPairRequest secrets (gds_keypair.c); kpLock is a leaf lock */
+    pthread_mutex_t kpLock;
+    gds_kp_entry kp[GDS_MAX_KEYPAIR_REQUESTS];
 };
 
 /* ---- caller views (gds_caller.c, issue #17) ---- */
@@ -261,6 +276,19 @@ GDS_MUST_CHECK UA_StatusCode gds_trustlist_data(gds_server *s, UA_UInt32 masks,
  * issuance held back? Any thread; holdLock is a leaf lock. */
 bool gds_issuance_held(gds_server *s, const UA_Guid *appId);
 void gds_holds_free(gds_server *s);
+/* StartNewKeyPairRequest secrets (gds_keypair.c). Any thread. add: copies
+ * the password (GDS_ETOOBIG when the table is full). password: a copy for
+ * the CA call, free it with gds_buf_free_secret. set_key: takes the key and
+ * discards the password. take_key: hands the key over and drops the entry.
+ * GDS_ENOTFOUND: no such entry (a restart, a switchover or expiry). */
+GDS_MUST_CHECK gds_status gds_kp_add(gds_server *s, const UA_Guid *id, gds_ca_key_format format,
+                                     const UA_String *password);
+GDS_MUST_CHECK gds_status gds_kp_password(gds_server *s, const UA_Guid *id,
+                                          gds_ca_key_format *format, gds_buf *password);
+GDS_MUST_CHECK gds_status gds_kp_set_key(gds_server *s, const UA_Guid *id, gds_buf *key);
+GDS_MUST_CHECK gds_status gds_kp_take_key(gds_server *s, const UA_Guid *id, gds_buf *key);
+void gds_kp_drop(gds_server *s, const UA_Guid *id);
+void gds_kp_free(gds_server *s);
 /* Audit log + event with ClientUserId user (gds_audit.c). */
 GDS_MUST_CHECK gds_status gds_audit_raise(gds_server *s, const char *user,
                                           const gds_audit_event *ev, int64_t *seq);

@@ -171,7 +171,7 @@ Every value from the network is untrusted until checked, even after open62541 ha
 - Secrets live in `gds_secret` buffers (`src/common/secmem.c`): `mmap`'d pages with `mlock`, `MADV_DONTDUMP`, guard pages, wiped with `OPENSSL_cleanse` on free. OpenSSL's secure heap (`CRYPTO_secure_malloc_init`) is turned on in the signer for private key material.
 - Processes holding secrets set `PR_SET_DUMPABLE` to 0 and `RLIMIT_CORE` to 0.
 - Secrets are never logged, never put in error messages, never passed on a command line or in the environment. The CA passphrase arrives through systemd credentials (`LoadCredentialEncrypted=`), a TPM-sealed blob, or a PKCS#11 PIN file readable only by the signer's user.
-- Generated application keys (StartNewKeyPairRequest) are created in the signer, encrypted under the caller's password inside the signer, and stored only in that encrypted form until FinishRequest delivers them; then deleted.
+- Generated application keys (StartNewKeyPairRequest) are created in the signer and leave it only encoded for delivery: a PFX (AES-256, PBKDF2 600 000 iterations, SHA-256 MAC) or a PKCS #8 PEM, both encrypted under the caller's PrivateKeyPassword when one is given (Part 12 §7.9.4 makes the password optional). Neither the password nor the key is ever written to the store or the journal: opengdsd holds them in memory only (`src/server/gds_keypair.c`, wiped on release), the password until the key exists and the key until FinishRequest delivers it once. The store row has no CSR, which marks a key pair request. After a restart, a switchover, or a day without FinishRequest, the secrets are gone and the request fails with Bad_RequestNotAllowed; the client starts again (§7.9.5).
 
 ### Logging and audit
 
