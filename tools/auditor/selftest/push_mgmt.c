@@ -21,6 +21,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <errno.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include "common/buf.h"
 #include "common/compiler.h"
 #include "common/limits.h"
 #include "push_csr.h"
@@ -127,6 +132,18 @@ static const struct {
     {"selfsigned-overwrite", "SRV-UPD-12",
      "CreateSelfSignedCertificate returns Good on the occupied slot"},
     {"delete-in-use", "SRV-UPD-13", "DeleteCertificate returns Good on the certificate in use"},
+    {"forget-on-restart", "SRV-PER-01",
+     "after a restart the initial self-signed certificate is in use again"},
+    {"lastupdate-reset-now", "SRV-PER-02", "after a restart LastUpdateTime is the start time"},
+    {"csr-key-in-ram", "SRV-PER-03", "the new key pair of CreateSigningRequest is lost on restart"},
+    {"txn-persist-uncommitted", "SRV-PER-04",
+     "a queued certificate is written to the store before ApplyChanges"},
+    {"rejected-not-recorded", "SRV-REJ-01", "refused client certificates are not recorded"},
+    {"rejected-records-invalid", "SRV-REJ-02",
+     "every refused client certificate is recorded, also one with a broken signature"},
+    {"rejected-garbage", "SRV-REJ-03", "GetRejectedList returns an entry that is not a certificate"},
+    {"group-rejected-broken", "SRV-REJ-04",
+     "DefaultApplicationGroup GetRejectedList returns Bad_InternalError"},
     {"apply-required-false", "SRV-TXN-01", "CloseAndUpdate returns ApplyChangesRequired FALSE"},
     {"apply-early", "SRV-TXN-02", "CloseAndUpdate puts the trust list in use before ApplyChanges"},
     {"cancel-keeps-trustlist", "SRV-TXN-04", "CancelChanges puts the queued trust list in use"},
@@ -191,7 +208,6 @@ static struct {
     UA_ByteString newKey, prevKey;
     UA_NodeId newKeySession; /* only for csr-key-per-session */
     pm_mode_fn modeOf;
-    UA_MethodCallback libRejected;
     bool acceptKeys; /* --accept-keys: SupportedPrivateKeyFormats ["PEM"] */
 } P;
 
@@ -210,6 +226,39 @@ void pm_accept_keys(bool on) {
 
 bool pm_breaking(const char *name) {
     return P.brk && strcmp(P.brk, name) == 0;
+}
+
+/* ---------------- Restart state (SRV-PER-01 to -04) ----------------
+ * What a restart must keep beyond the library's file store (trust list,
+ * own certificate and key): LastUpdateTime (§7.8.2.1) and the new key pair
+ * of CreateSigningRequest (§7.10.10), under <pki>/push/. */
+static char storeDir[GDS_MAX_PATH];
+
+void pm_store(const char *pki) {
+    if(gds_path(storeDir, sizeof(storeDir), "%s/push", pki) != GDS_OK ||
+       gds_mkdirs(storeDir, 0700) != GDS_OK)
+        storeDir[0] = '\0';
+}
+
+static gds_status store_path(char *out, size_t len, const char *name) {
+    return storeDir[0] ? gds_path(out, len, "%s/%s", storeDir, name) : GDS_ENOTFOUND;
+}
+
+static void store_put(const char *name, const void *data, size_t len, mode_t mode) {
+    char p[GDS_MAX_PATH];
+    if(store_path(p, sizeof(p), name) != GDS_OK || gds_file_write_atomic(p, data, len, mode) != GDS_OK)
+        UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "cannot store %s", name);
+}
+
+static void store_drop(const char *name) {
+    char p[GDS_MAX_PATH];
+    if(store_path(p, sizeof(p), name) == GDS_OK && unlink(p) != 0 && errno != ENOENT)
+        UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "cannot remove %s", name);
+}
+
+static bool store_get(const char *name, size_t max, gds_buf *out) {
+    char p[GDS_MAX_PATH];
+    return store_path(p, sizeof(p), name) == GDS_OK && gds_file_read(p, max, out) == GDS_OK;
 }
 
 static bool breaking(const char *name) {
@@ -238,6 +287,8 @@ static void secret_clear(UA_ByteString *b) {
         OPENSSL_cleanse(b->data, b->length);
     UA_ByteString_clear(b);
 }
+
+static void reject_clear(void);
 
 static void txn_clear(void) {
     P.txn = false;
@@ -355,6 +406,7 @@ void pm_clear(void) {
         if(P.files[i].used)
             file_free(&P.files[i]);
     txn_clear();
+    reject_clear();
 }
 
 /* ---------------- Trust list helpers ---------------- */
@@ -768,6 +820,10 @@ static void replace_new_key(UA_ByteString *fresh, const UA_NodeId *session) {
     secret_clear(&P.newKey);
     P.newKey = *fresh;
     UA_ByteString_init(fresh);
+    if(P.newKey.length && !breaking("csr-key-in-ram"))
+        store_put("csr-new.key", P.newKey.data, P.newKey.length, 0600);
+    else
+        store_drop("csr-new.key");
     UA_NodeId_clear(&P.newKeySession);
     if(UA_NodeId_copy(session, &P.newKeySession) != UA_STATUSCODE_GOOD)
         UA_NodeId_init(&P.newKeySession);
@@ -859,6 +915,38 @@ static UA_StatusCode update_checks(X509 *x, const UA_Variant *issuers, const UA_
 static UA_StatusCode pushed_key(X509 *x, const UA_String *format, const UA_ByteString *in,
                                 UA_ByteString *out);
 
+/* txn-persist-uncommitted: the queued pair goes to the own store at once,
+ * where the next start finds it (push_test_server loads the newest). */
+static void persist_queued_cert(void) {
+    const UA_ByteString *key = P.certKey.length ? &P.certKey : &P.ownKey;
+    char dir[GDS_MAX_PATH], p[GDS_MAX_PATH];
+    if(store_path(dir, sizeof(dir), "..") != GDS_OK)
+        return;
+    if(gds_path(p, sizeof(p), "%s/ApplCerts/own/certs/queued.der", dir) != GDS_OK ||
+       gds_file_write_atomic(p, P.cert.data, P.cert.length, 0644) != GDS_OK ||
+       gds_path(p, sizeof(p), "%s/ApplCerts/own/private/queued.key", dir) != GDS_OK ||
+       gds_file_write_atomic(p, key->data, key->length, 0600) != GDS_OK)
+        UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "cannot store the queued pair");
+}
+
+/* UpdateCertificate's checks of the certificate and of the pushed key, if
+ * any; ck receives the key to install */
+static UA_StatusCode update_key_checks(X509 *x, const UA_Variant *input, const UA_NodeId *sessionId,
+                                       UA_ByteString *ck) {
+    const UA_ByteString *key = input[5].data;
+    if(key->length == 0)
+        return update_checks(x, &input[3], sessionId, ck, false);
+    if(!P.acceptKeys)
+        return UA_STATUSCODE_GOOD; /* accept-key-unadvertised: the key is ignored */
+    /* §7.10.5: a key in an advertised format, for this certificate */
+    UA_StatusCode r = pushed_key(x, input[4].data, key, ck);
+    if(r == UA_STATUSCODE_GOOD)
+        r = update_checks(x, &input[3], sessionId, ck, true);
+    if(r == UA_STATUSCODE_GOOD && breaking("update-ignore-key"))
+        secret_clear(ck);
+    return r;
+}
+
 static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
     UNUSED_ARGS;
     UA_StatusCode sec = need_channel(sessionId, true);
@@ -888,16 +976,7 @@ static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
     if(!x)
         return UA_STATUSCODE_BADCERTIFICATEINVALID;
     UA_ByteString ck = UA_BYTESTRING_NULL;
-    UA_StatusCode r = UA_STATUSCODE_GOOD;
-    if(key->length == 0)
-        r = update_checks(x, &input[3], sessionId, &ck, false);
-    else if(P.acceptKeys) { /* §7.10.5: a key in an advertised format, for this certificate */
-        r = pushed_key(x, input[4].data, key, &ck);
-        if(r == UA_STATUSCODE_GOOD)
-            r = update_checks(x, &input[3], sessionId, &ck, true);
-        if(r == UA_STATUSCODE_GOOD && breaking("update-ignore-key"))
-            secret_clear(&ck);
-    } /* else accept-key-unadvertised: the key is ignored */
+    UA_StatusCode r = update_key_checks(x, input, sessionId, &ck);
     X509_free(x);
     if(r != UA_STATUSCODE_GOOD && breaking("fail-aborts-txn") && P.txn && P.hasList &&
        UA_NodeId_equal(&P.owner, sessionId))
@@ -918,6 +997,8 @@ static UA_StatusCode scUpdateCertificate(METHOD_ARGS) {
     if(r != UA_STATUSCODE_GOOD)
         return r;
     P.hasCert = true;
+    if(breaking("txn-persist-uncommitted"))
+        persist_queued_cert();
     D.group = true;
     UA_Boolean applyRequired = true;
     return UA_Variant_setScalarCopy(&output[0], &applyRequired, &UA_TYPES[UA_TYPES_BOOLEAN]);
@@ -953,6 +1034,8 @@ static UA_StatusCode install_list(const UA_TrustListDataType *l) {
     UA_DateTime now = breaking("lastupdate-frozen") ? 0 : UA_DateTime_now();
     UA_Variant v;
     UA_Variant_setScalar(&v, &now, &UA_TYPES[UA_TYPES_DATETIME]);
+    if(now)
+        store_put("lastupdate", &now, sizeof(now), 0600);
     if(now)
         r = UA_Server_writeValue(
             P.server,
@@ -1034,6 +1117,7 @@ static UA_StatusCode apply(bool closeNow) {
             UA_ByteString_init(&P.certKey);
             secret_clear(&P.newKey);
             secret_clear(&P.prevKey);
+            store_drop("csr-new.key");
         }
     }
     return r;
@@ -1304,12 +1388,120 @@ static UA_StatusCode optional_methods(UA_Server *server) {
     return r;
 }
 
+/* ---------------- Rejected list (12 §7.8.3.2, §7.10.12) ----------------
+ * The client certificates the server refused, newest last. Only those with
+ * no unsuppressed validation error that are not trusted are added
+ * (§7.8.3.2); the library's own list keeps every refused certificate. */
+#define PM_MAX_REJECTED 32
+
+static struct {
+    UA_ByteString c[PM_MAX_REJECTED];
+    size_t n;
+} R;
+
+/* No signature error that the server can see: a self-signed certificate
+ * verifies with its own key; one whose issuer is in the trust list
+ * verifies with that issuer's key. */
+static bool signature_sound(const UA_ByteString *der) {
+    gds_buf b = {der->data, der->length};
+    X509 *x = x509_parse_cert(&b);
+    if(!x)
+        return false;
+    bool ok;
+    if(X509_check_issued(x, x) == X509_V_OK) {
+        EVP_PKEY *k = X509_get0_pubkey(x);
+        ok = k && X509_verify(x, k) == 1;
+    } else {
+        UA_TrustListDataType l;
+        if(current_list(&l) != UA_STATUSCODE_GOOD) {
+            X509_free(x);
+            return false;
+        }
+        bool sig = false;
+        bool known = issuer_among(x, l.trustedCertificates, l.trustedCertificatesSize, &sig) ||
+                     issuer_among(x, l.issuerCertificates, l.issuerCertificatesSize, &sig);
+        ok = !known || sig;
+        UA_TrustListDataType_clear(&l);
+    }
+    X509_free(x);
+    ERR_clear_error();
+    return ok;
+}
+
+static void reject_note(const UA_ByteString *cert, UA_StatusCode r) {
+    if(r == UA_STATUSCODE_GOOD || breaking("rejected-not-recorded"))
+        return;
+    if(!breaking("rejected-records-invalid") &&
+       (r != UA_STATUSCODE_BADCERTIFICATEUNTRUSTED || !signature_sound(cert)))
+        return;
+    for(size_t i = 0; i < R.n; i++)
+        if(UA_ByteString_equal(&R.c[i], cert))
+            return;
+    if(R.n == PM_MAX_REJECTED) { /* the oldest goes */
+        UA_ByteString_clear(&R.c[0]);
+        memmove(&R.c[0], &R.c[1], (PM_MAX_REJECTED - 1) * sizeof(R.c[0]));
+        R.n--;
+    }
+    if(UA_ByteString_copy(cert, &R.c[R.n]) == UA_STATUSCODE_GOOD)
+        R.n++;
+}
+
+static void reject_clear(void) {
+    for(size_t i = 0; i < R.n; i++)
+        UA_ByteString_clear(&R.c[i]);
+    R.n = 0;
+}
+
+static UA_StatusCode rejected_out(size_t outputSize, UA_Variant *output) {
+    if(outputSize < 1)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    UA_ByteString all[PM_MAX_REJECTED + 1];
+    size_t n = R.n;
+    memcpy(all, R.c, R.n * sizeof(R.c[0]));
+    if(breaking("rejected-garbage"))
+        all[n++] = UA_BYTESTRING("not a certificate");
+    return UA_Variant_setArrayCopy(&output[0], n ? all : UA_EMPTY_ARRAY_SENTINEL, n,
+                                   &UA_TYPES[UA_TYPES_BYTESTRING]);
+}
+
 static UA_StatusCode scGetRejectedList(METHOD_ARGS) {
+    UNUSED_ARGS;
+    (void)inputSize, (void)input;
     UA_StatusCode sec = need_channel(sessionId, false);
     if(sec != UA_STATUSCODE_GOOD)
         return sec;
-    return P.libRejected(server, sessionId, sessionContext, methodId, methodContext, objectId,
-                         objectContext, inputSize, input, outputSize, output);
+    return rejected_out(outputSize, output);
+}
+
+/* GetRejectedList on the DefaultApplicationGroup (§7.8.3.2): the same list */
+static UA_StatusCode groupGetRejectedList(METHOD_ARGS) {
+    UNUSED_ARGS;
+    (void)inputSize, (void)input;
+    UA_StatusCode sec = need_channel(sessionId, false);
+    if(sec != UA_STATUSCODE_GOOD)
+        return sec;
+    if(breaking("group-rejected-broken"))
+        return UA_STATUSCODE_BADINTERNALERROR;
+    return rejected_out(outputSize, output);
+}
+
+/* The library's ns0 may lack the group's Method: add it. */
+static UA_StatusCode group_rejected_method(UA_Server *server) {
+    UA_NodeId id = ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_GETREJECTEDLIST);
+    if(UA_Server_setMethodNodeCallback(server, id, groupGetRejectedList) == UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_GOOD;
+    UA_Argument out;
+    UA_Argument_init(&out);
+    out.name = UA_STRING("Certificates");
+    out.dataType = ns0(UA_NS0ID_BYTESTRING);
+    out.valueRank = UA_VALUERANK_ONE_DIMENSION;
+    UA_MethodAttributes ma = UA_MethodAttributes_default;
+    ma.executable = true;
+    ma.displayName = UA_LOCALIZEDTEXT("", "GetRejectedList");
+    return UA_Server_addMethodNode(
+        server, id, ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP),
+        ns0(UA_NS0ID_HASCOMPONENT), UA_QUALIFIEDNAME(0, "GetRejectedList"), ma,
+        groupGetRejectedList, 0, NULL, 1, &out, NULL, NULL);
 }
 
 /* ---------------- AddCertificate, RemoveCertificate (12 §7.8.2.6, §7.8.2.7) ----------------
@@ -1644,15 +1836,6 @@ static UA_StatusCode tlRemoveCertificate(METHOD_ARGS) {
     return r;
 }
 
-static UA_StatusCode wrap_lib(UA_UInt32 id, UA_MethodCallback *orig, UA_MethodCallback cb) {
-    UA_StatusCode r = UA_Server_getMethodNodeCallback(P.server, ns0(id), orig);
-    if(r == UA_STATUSCODE_GOOD && !*orig)
-        r = UA_STATUSCODE_BADINTERNALERROR;
-    if(r == UA_STATUSCODE_GOOD)
-        r = UA_Server_setMethodNodeCallback(P.server, ns0(id), cb);
-    return r;
-}
-
 /* ---------------- Install ---------------- */
 
 static UA_StatusCode set_cb(UA_UInt32 id, UA_MethodCallback cb) {
@@ -1896,13 +2079,12 @@ static UA_StatusCode verify_client(UA_CertificateGroup *g, const UA_ByteString *
     UA_StatusCode r = libVerify(g, cert);
     if(breaking("wire-ignore-crl") && r == UA_STATUSCODE_BADCERTIFICATEREVOKED)
         return UA_STATUSCODE_GOOD;
+    reject_note(cert, r);
     return r;
 }
 
+/* Every client certificate check goes through verify_client */
 static UA_StatusCode verify_mutants(void) {
-    if(!breaking("wire-trust-all") && !breaking("wire-trustlist-not-loaded") &&
-       !breaking("wire-ignore-crl"))
-        return UA_STATUSCODE_GOOD;
     UA_CertificateGroup *g = pki();
     if(breaking("wire-trustlist-not-loaded")) {
         UA_TrustListDataType l;
@@ -1940,6 +2122,34 @@ static UA_StatusCode structure_mutants(UA_Server *server) {
     return UA_STATUSCODE_GOOD;
 }
 
+/* What the last run left: LastUpdateTime and a pending new key pair. */
+static UA_StatusCode restart_state(UA_Server *server) {
+    gds_buf b = {0};
+    UA_DateTime when = 0;
+    if(store_get("lastupdate", sizeof(when), &b) && b.len == sizeof(when))
+        memcpy(&when, b.data, sizeof(when));
+    gds_buf_free(&b);
+    if(breaking("lastupdate-reset-now"))
+        when = UA_DateTime_now();
+    UA_StatusCode r = UA_STATUSCODE_GOOD;
+    if(when) {
+        UA_Variant v;
+        UA_Variant_setScalar(&v, &when, &UA_TYPES[UA_TYPES_DATETIME]);
+        r = UA_Server_writeValue(
+            server,
+            ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_LASTUPDATETIME),
+            v);
+    }
+    if(r == UA_STATUSCODE_GOOD && store_get("csr-new.key", GDS_MAX_KEY_SIZE, &b)) {
+        UA_ByteString k = {b.len, b.data};
+        r = UA_ByteString_copy(&k, &P.newKey);
+        gds_buf_free_secret(&b);
+        UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND,
+                    "the new key pair of the last CreateSigningRequest is kept");
+    }
+    return r;
+}
+
 UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteString *ownKey,
                          pm_mode_fn modeOf) {
     memset(&P, 0, sizeof(P));
@@ -1963,7 +2173,7 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
     r |= set_cb(TL(GETPOSITION), tlGetPosition);
     r |= set_cb(TL(SETPOSITION), tlSetPosition);
     r |= set_cb(UA_NS0ID_SERVERCONFIGURATION_CREATESIGNINGREQUEST, scCreateSigningRequest);
-    r |= wrap_lib(UA_NS0ID_SERVERCONFIGURATION_GETREJECTEDLIST, &P.libRejected, scGetRejectedList);
+    r |= set_cb(UA_NS0ID_SERVERCONFIGURATION_GETREJECTEDLIST, scGetRejectedList);
     r |= set_cb(TL(ADDCERTIFICATE), tlAddCertificate);
     r |= set_cb(TL(REMOVECERTIFICATE), tlRemoveCertificate);
 #undef TL
@@ -1978,6 +2188,7 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
        structure_mutants(server) != UA_STATUSCODE_GOOD ||
        trustlist_props(server) != UA_STATUSCODE_GOOD || diagnostics(server) != UA_STATUSCODE_GOOD ||
        shutdown_notice(server) != UA_STATUSCODE_GOOD ||
+       group_rejected_method(server) != UA_STATUSCODE_GOOD || restart_state(server) != UA_STATUSCODE_GOOD ||
        verify_mutants() != UA_STATUSCODE_GOOD)
         return UA_STATUSCODE_BADINTERNALERROR;
     return UA_STATUSCODE_GOOD;

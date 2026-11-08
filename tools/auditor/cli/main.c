@@ -61,7 +61,7 @@ static int usage(const char *argv0) {
             "       [--user U --user-password-file F] [--work DIR] [--allow-changes] [--only PREFIX]\n"
             "       [--target-trust CA.der]... [--target-crl CRL]...\n"
             "       [--expect FILE.csv] [--list] [--init-only] [--slow] [--stop-after ID]\n"
-            "       [--settle-timeout S]\n"
+            "       [--settle-timeout S] [--restart-cmd CMD]\n"
             "       %s client --help\n"
             "       %s discover --url URL [--network] [--certs DIR]\n"
             "Every subcommand also takes --events FILE (JSON Lines) and --report DIR.\n",
@@ -236,6 +236,8 @@ static size_t collect_server(ga_test *all) {
                 {srv_update_tests, srv_update_count},
                 {srv_transaction_tests, srv_transaction_count},
                 {srv_wire_tests, srv_wire_count},
+                {srv_rejected_tests, srv_rejected_count},
+                {srv_persistence_tests, srv_persistence_count},
                 {srv_restore_tests, srv_restore_count}}; /* restore stays last */
     size_t n = 0;
     for(size_t s = 0; s < GDS_ARRAY_SIZE(sets); s++)
@@ -333,7 +335,8 @@ static int server_main(int argc, char **argv) {
             if(!end || *end || sec < 1 || sec > 3600)
                 return usage(argv[0]);
             t.settleSec = sec;
-        } else return usage(argv[0]);
+        } else if(!strcmp(a, "--restart-cmd")) t.restartCmd = v; /* SRV-PER-* */
+        else return usage(argv[0]);
     }
     if(t.settleSec == 0)
         t.settleSec = 300;

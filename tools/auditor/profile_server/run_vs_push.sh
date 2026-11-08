@@ -22,7 +22,9 @@ SN=${SHARD#*/}
 FIRST=false
 [ "$SK" = 1 ] && FIRST=true
 SRV=""
-trap '[ -n "$SRV" ] && kill "$SRV" 2>/dev/null; true' EXIT INT TERM
+NAME=""
+# the server's pid is in $W/server.pid: --restart-cmd (SRV-PER-*) replaces it
+trap '[ -f "$W/server.pid" ] && kill "$(cat "$W/server.pid")" 2>/dev/null; true' EXIT INT TERM
 
 "$B/gdsaudit" server --work "$W/auditor" --init-only || exit 2
 cp "$W/auditor/own/cert.der" "$W/auditor-plain.der"
@@ -36,11 +38,24 @@ start_server() {
     name=$1
     shift
     PORT=$((PORT + 1))
+    NAME=$name
+    # restart-<name>.sh stops the server and starts it again on the same PKI
+    {
+        echo '#!/bin/sh'
+        echo "pid=\$(cat '$W/server.pid')"
+        echo 'kill "$pid"; while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done'
+        printf "'%s' " "$B/push_test_server" --port "$PORT" --pki "$W/pki-$name" \
+            --trust "$W/auditor-plain.der" --trust "$W/auditor-admin.der" \
+            --admin-cert "$W/auditor-admin.der" --user operator:operator "$@"
+        echo ">> '$W/server-$name.log' 2>&1 &"
+        echo "echo \$! > '$W/server.pid'"
+    } > "$W/restart-$name.sh"
     "$B/push_test_server" --port "$PORT" --pki "$W/pki-$name" \
         --trust "$W/auditor-plain.der" --trust "$W/auditor-admin.der" \
         --admin-cert "$W/auditor-admin.der" --user operator:operator "$@" \
         > "$W/server-$name.log" 2>&1 &
     SRV=$!
+    echo "$SRV" > "$W/server.pid"
     i=0
     until grep -q "Creating listen socket" "$W/server-$name.log" 2>/dev/null; do
         i=$((i + 1))
@@ -48,12 +63,20 @@ start_server() {
         sleep 0.1
     done
 }
-stop_server() { kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null; SRV=""; }
+stop_server() {
+    pid=$(cat "$W/server.pid")
+    kill "$pid" 2>/dev/null
+    wait "$SRV" 2>/dev/null
+    while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done
+    rm -f "$W/server.pid"
+    SRV=""
+}
 audit() { # audit <name> [args]: run the profile, TAP into $W/<name>.tap
     name=$1
     shift
     "$B/gdsaudit" server --url "opc.tcp://127.0.0.1:$PORT" --tofu --work "$W/auditor" \
-        --user operator --user-password-file "$W/user.pw" --allow-changes --settle-timeout 40 "$@" \
+        --user operator --user-password-file "$W/user.pw" --allow-changes --settle-timeout 40 \
+        --restart-cmd "sh '$W/restart-$NAME.sh'" "$@" \
         > "$W/$name.tap" 2>&1
 }
 
