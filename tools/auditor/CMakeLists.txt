@@ -55,6 +55,13 @@ add_executable(test_report report/test_report.c)
 target_include_directories(test_report PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(test_report PRIVATE gdsaudit_report gds_hardening)
 add_test(NAME auditor_report_events COMMAND test_report)
+# Operator prompts: ga_prompt through the --prompts reader, and its parser
+add_executable(test_prompts cli/test_prompts.c cli/prompts.c)
+target_include_directories(test_prompts PRIVATE "${CMAKE_SOURCE_DIR}/src"
+                                               "${CMAKE_CURRENT_SOURCE_DIR}/cli")
+target_link_libraries(test_prompts PRIVATE gdsaudit_core gds_hardening)
+add_test(NAME auditor_prompts COMMAND test_prompts)
+set_tests_properties(auditor_prompts PROPERTIES TIMEOUT 30)
 # Pause and resume between tests (SIGUSR1/SIGUSR2) against push_test_server.
 add_test(NAME auditor_pause_resume
          COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/cli/test_pause.sh"
@@ -64,7 +71,7 @@ set_tests_properties(auditor_pause_resume PROPERTIES TIMEOUT 600 ENVIRONMENT "PU
 add_test(NAME auditor_discover
          COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/cli/test_discover.sh"
                  "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/discover-run")
-set_tests_properties(auditor_discover PROPERTIES TIMEOUT 120 ENVIRONMENT "PUSH_PORT=4993")
+set_tests_properties(auditor_discover PROPERTIES TIMEOUT 120 ENVIRONMENT "PUSH_PORT=4995")
 
 # The report folder: HTML, JUnit, JSON and TAP agree with the engine's run
 add_test(NAME auditor_report_formats

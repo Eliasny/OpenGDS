@@ -16,6 +16,7 @@
  *   --events FILE  the engine's event stream as JSON Lines (engine.h)
  *   --report DIR   DIR/report.html, junit.xml, report.json and report.tap at
  *                  the end of the run
+ *   --prompts FILE operator answers, one line per prompt (prompts.h)
  * SIGINT and SIGTERM abort the run: later tests are Not tested and the
  * server profile still restores the target; a second signal kills.
  * SIGUSR1 pauses before the next test, SIGUSR2 resumes.
@@ -40,6 +41,7 @@
 #include "common/safeint.h"
 #include "client_profile.h"
 #include "discover.h"
+#include "prompts.h"
 #include "gds_target.h"
 #include "results.h"
 #include "spec_tests.h"
@@ -64,7 +66,8 @@ static int usage(const char *argv0) {
             "       [--settle-timeout S] [--restart-cmd CMD]\n"
             "       %s client --help\n"
             "       %s discover --url URL [--network] [--certs DIR]\n"
-            "Every subcommand also takes --events FILE (JSON Lines) and --report DIR.\n",
+            "Every subcommand also takes --events FILE (JSON Lines), --report DIR and\n"
+            "--prompts FILE (operator answers: \"<n> done|skip|fail [note]\" per line).\n",
             argv0, argv0, argv0, argv0);
     return 2;
 }
@@ -424,7 +427,7 @@ cleanup:
 /* Front-end options every subcommand takes (engine.h): taken out of argv
  * before the subcommand parses the rest. */
 typedef struct {
-    const char *events, *report, *target;
+    const char *events, *report, *target, *prompts;
     FILE *eventsFile;
     ga_results results;
 } front_end;
@@ -440,13 +443,14 @@ static bool take_front_end_options(int *argc, char **argv, front_end *fe) {
             continue;
         }
         bool ev = !strcmp(a, "--events"), rep = !strcmp(a, "--report");
-        if(ev || rep) {
+        bool pr = !strcmp(a, "--prompts");
+        if(ev || rep || pr) {
             if(i + 1 >= *argc) {
                 fprintf(stderr, "%s needs a value\n", a);
                 ok = false;
                 break;
             }
-            *(ev ? &fe->events : &fe->report) = argv[++i];
+            *(ev ? &fe->events : rep ? &fe->report : &fe->prompts) = argv[++i];
             continue;
         }
         if((!strcmp(a, "--url") || !strcmp(a, "--listen")) && i + 1 < *argc)
@@ -498,12 +502,16 @@ static bool start_front_end(front_end *fe, const char *profile) {
     }
     if(fe->report)
         (void)ga_add_event_sink(ga_results_sink, &fe->results);
+    if(fe->prompts && !prompts_open(fe->prompts))
+        return false;
     install_abort_handler();
     return true;
 }
 
 /* Reports after the run; a failed report makes the run unfinished (2). */
 static int finish_front_end(front_end *fe, int rc) {
+    if(fe->prompts)
+        prompts_close();
     if(fe->eventsFile && fclose(fe->eventsFile) != 0) {
         fprintf(stderr, "%s: write failed\n", fe->events);
         rc = 2;

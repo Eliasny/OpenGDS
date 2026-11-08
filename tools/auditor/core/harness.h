@@ -36,6 +36,15 @@ void ga_not_tested(ga_ctx *ctx, const char *fmt, ...) GDS_FORMAT(2, 3);
 void ga_note(ga_ctx *ctx, const char *fmt, ...) GDS_FORMAT(2, 3);
 bool ga_decided(const ga_ctx *ctx);
 
+/* Ask the operator for a manual step (engine.h, operator prompts), e.g.
+ * "Restart the device, then choose Done". Blocks until the answer. The
+ * prompt and the answer are also notes of the test. On SKIP the test is
+ * decided Not tested, on FAIL it is decided Fail with the operator's note;
+ * on DONE nothing is decided and the test goes on. Without a prompt
+ * handler the answer is SKIP ("no operator to ask"). note may be NULL. */
+ga_answer ga_prompt(ga_ctx *ctx, char *note, size_t noteLen, const char *fmt, ...)
+    GDS_FORMAT(4, 5);
+
 typedef struct {
     const char *only;      /* run only ids with this prefix (NULL: all) */
     bool allowChanges;     /* else needsWrite tests are Not tested */

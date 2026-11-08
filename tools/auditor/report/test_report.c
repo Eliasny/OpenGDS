@@ -216,6 +216,10 @@ static void refusals(void) {
         "{\"v\":1,\"ev\":\"note\",\"n\":1,\"text\":\"x\",}",
         "{\"v\":1,\"ev\":\"note\",\"n\":1,\"x\":[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]}",
         "{\"v\":1,\"ev\":\"note\",\"n\":99999999,\"text\":\"x\"}",
+        "{\"v\":1,\"ev\":\"prompt\",\"n\":1,\"text\":\"x\"}", /* no prompt number */
+        "{\"v\":1,\"ev\":\"prompt\",\"n\":1,\"seq\":0,\"text\":\"x\"}",
+        "{\"v\":1,\"ev\":\"prompt_answered\",\"n\":1,\"seq\":1,\"answer\":\"maybe\"}",
+        "{\"v\":1,\"ev\":\"prompt_answered\",\"n\":1,\"seq\":true,\"answer\":\"done\"}",
     };
     for(size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         ga_event ev;
@@ -237,9 +241,48 @@ static void refusals(void) {
     CHECK(ga_jsonl_parse(ok, strlen(ok), &ev, &s) == 1);
     CHECK(ev.kind == GA_EV_NOTE && ev.text && !strcmp(ev.text, "t\xc3\xa4\xf0\x9f\x98\x80"));
     ga_jsonl_strings_free(&s);
-    const char *unknown = "{\"v\":1,\"ev\":\"prompt\",\"n\":1}";
+    const char *unknown = "{\"v\":1,\"ev\":\"hint\",\"n\":1}";
     CHECK(ga_jsonl_parse(unknown, strlen(unknown), &ev, &s) == 0);
     ga_jsonl_strings_free(&s);
+}
+
+/* Operator prompts: both events round trip and leave no result of their
+ * own (the prompt and the answer are also notes of the test). */
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): flat checks
+static void prompts(void) {
+    const ga_event evs[] = {
+        {.kind = GA_EV_PROMPT, .n = 3, .seq = 2, .text = "Restart the device, then \"Done\""},
+        {.kind = GA_EV_PROMPT_ANSWERED, .n = 3, .seq = 2, .answer = GA_ANSWER_FAIL,
+         .text = "it did not come back"},
+    };
+    const char *want[] = {
+        "{\"v\":1,\"ev\":\"prompt\",\"n\":3,\"seq\":2,"
+        "\"text\":\"Restart the device, then \\\"Done\\\"\"}",
+        "{\"v\":1,\"ev\":\"prompt_answered\",\"n\":3,\"seq\":2,\"answer\":\"fail\","
+        "\"text\":\"it did not come back\"}",
+    };
+    for(size_t i = 0; i < 2; i++) {
+        char *line = to_line(&evs[i]);
+        CHECK(line && !strcmp(line, want[i]));
+        if(!line)
+            continue;
+        ga_event ev;
+        ga_jsonl_strings s;
+        CHECK(ga_jsonl_parse(line, strlen(line), &ev, &s) == 1);
+        CHECK(ev.kind == evs[i].kind && ev.n == 3 && ev.seq == 2);
+        CHECK(ev.text && !strcmp(ev.text, evs[i].text));
+        CHECK(ev.answer == evs[i].answer);
+        ga_results r = {0};
+        CHECK(ga_results_apply(&r, &ev) && r.n == 0);
+        ga_results_free(&r);
+        ga_jsonl_strings_free(&s);
+        free(line);
+    }
+    ga_answer a = GA_ANSWER_DONE;
+    CHECK(ga_answer_parse("skip", &a) && a == GA_ANSWER_SKIP);
+    CHECK(!ga_answer_parse("Skip", &a) && !ga_answer_parse("", &a));
+    CHECK(!strcmp(ga_answer_name(GA_ANSWER_DONE), "done"));
+    CHECK(!strcmp(ga_answer_name((ga_answer)7), "invalid")); // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange): on purpose
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity): flat checks
@@ -317,6 +360,7 @@ static void json_check(void) {
 int main(void) {
     roundtrip();
     refusals();
+    prompts();
     units();
     json_check();
     if(failures) {

@@ -39,3 +39,13 @@ add_test(NAME avm_run_vs_push_test_server
                  "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/avm-run"
                  "${CMAKE_CURRENT_SOURCE_DIR}/../profile_server/expected/push_test_server.csv")
 set_tests_properties(avm_run_vs_push_test_server PROPERTIES TIMEOUT 300)
+
+# Operator prompts through avm_run: the answer pipe and the answer line, with
+# a stand-in engine (fake_prompt_engine.sh).
+add_executable(test_avm_prompt test_avm_prompt.c)
+target_include_directories(test_avm_prompt PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(test_avm_prompt PRIVATE gdsaudit_avm gds_hardening)
+add_test(NAME avm_prompt
+         COMMAND test_avm_prompt "${CMAKE_CURRENT_SOURCE_DIR}/fake_prompt_engine.sh"
+                 "${CMAKE_CURRENT_BINARY_DIR}/prompt-run")
+set_tests_properties(avm_prompt PROPERTIES TIMEOUT 30)

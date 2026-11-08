@@ -16,6 +16,8 @@ struct AvmRun {
     GSubprocess *proc;
     GCancellable *cancel;
     GDataInputStream *events, *output;
+    int answerFd;      /* write end of the engine's --prompts pipe, or -1 */
+    size_t pendingSeq; /* the prompt the engine waits on, or 0 */
     FILE *eventsCopy, *outputCopy;
     char *dir;
     ga_results results;
@@ -61,8 +63,14 @@ static void handle_event_line(AvmRun *r, const char *line, gsize len) {
         set_error(r, "the engine sent a line that is not an Auditor event");
     else if(p > 0 && !ga_results_apply(&r->results, &ev))
         set_error(r, "the engine's event stream is out of range");
-    else if(p > 0 && r->cb.event)
-        r->cb.event(r, &ev, r->user);
+    else if(p > 0) {
+        if(ev.kind == GA_EV_PROMPT)
+            r->pendingSeq = ev.seq;
+        else if(ev.kind == GA_EV_PROMPT_ANSWERED && ev.seq == r->pendingSeq)
+            r->pendingSeq = 0;
+        if(r->cb.event)
+            r->cb.event(r, &ev, r->user);
+    }
     ga_jsonl_strings_free(&strs);
 }
 
@@ -132,6 +140,13 @@ static void read_output(AvmRun *r) {
                                         r);
 }
 
+static void close_answers(AvmRun *r) {
+    if(r->answerFd >= 0)
+        close(r->answerFd); /* the engine reads end of file: no more answers */
+    r->answerFd = -1;
+    r->pendingSeq = 0;
+}
+
 static void on_exit(GObject *src, GAsyncResult *res, gpointer data) {
     GError *e = NULL;
     gboolean ok = g_subprocess_wait_finish(G_SUBPROCESS(src), res, &e);
@@ -144,6 +159,7 @@ static void on_exit(GObject *src, GAsyncResult *res, gpointer data) {
         set_error(r, e ? e->message : "lost the engine process");
     g_clear_error(&e);
     r->exited = TRUE;
+    close_answers(r);
     r->exitCode = g_subprocess_get_if_exited(r->proc) ? g_subprocess_get_exit_status(r->proc) : -1;
     maybe_finished(r);
 }
@@ -161,29 +177,76 @@ static FILE *open_in(const char *dir, const char *name) {
     return f;
 }
 
+/* argv with "--prompts AVM_PROMPTS_FD" after the profile name (before any
+ * "--" and the client profile's trigger command). */
+static char **with_prompts(char **argv) {
+    GPtrArray *a = g_ptr_array_new();
+    for(guint i = 0; argv[i]; i++) {
+        g_ptr_array_add(a, (gpointer)argv[i]);
+        if(i == 1) {
+            g_ptr_array_add(a, (gpointer) "--prompts");
+            g_ptr_array_add(a, (gpointer)AVM_PROMPTS_FD);
+        }
+    }
+    g_ptr_array_add(a, NULL);
+    return (char **)g_ptr_array_free(a, FALSE);
+}
+
+/* A write to the answer pipe after the engine died must fail with EPIPE,
+ * not kill the UI. */
+static void ignore_sigpipe(void) {
+    struct sigaction old;
+    if(sigaction(SIGPIPE, NULL, &old) == 0 && old.sa_handler == SIG_DFL) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = SIG_IGN;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGPIPE, &sa, NULL);
+    }
+}
+
+static void close_pair(int fds[2]) {
+    close(fds[0]);
+    close(fds[1]);
+}
+
 AvmRun *avm_run_start(char **argv, const char *runDir, const AvmRunCallbacks *cb, void *user,
                       GError **error) {
+    if(!argv || !argv[0] || !argv[1]) {
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "no engine command line");
+        return NULL;
+    }
     if(g_mkdir_with_parents(runDir, 0700) != 0) {
         g_set_error(error, G_FILE_ERROR, (gint)g_file_error_from_errno(errno), "cannot create %s",
                     runDir);
         return NULL;
     }
-    int fds[2];
+    int fds[2], ans[2];
     if(!g_unix_open_pipe(fds, FD_CLOEXEC, error))
         return NULL;
+    if(!g_unix_open_pipe(ans, FD_CLOEXEC, error)) {
+        close_pair(fds);
+        return NULL;
+    }
+    ignore_sigpipe();
     /* GSubprocessFlags is a flags enum: OR-ing its values is how GIO is used */
     GSubprocessFlags flags = G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_MERGE | // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange)
                              G_SUBPROCESS_FLAGS_STDIN_INHERIT;
     GSubprocessLauncher *l = g_subprocess_launcher_new(flags);
     g_subprocess_launcher_take_fd(l, fds[1], 3); /* the child's --events /dev/fd/3 */
-    GSubprocess *proc = g_subprocess_launcher_spawnv(l, (const char *const *)argv, error);
-    g_object_unref(l); /* closes our copy of the write end */
+    g_subprocess_launcher_take_fd(l, ans[0], 4); /* the child's --prompts /dev/fd/4 */
+    char **full = with_prompts(argv);
+    GSubprocess *proc = g_subprocess_launcher_spawnv(l, (const char *const *)full, error);
+    g_free((gpointer)full); /* only the array: the strings are argv's */
+    g_object_unref(l); /* closes our copies of the child's ends */
     if(!proc) {
         close(fds[0]);
+        close(ans[1]);
         return NULL;
     }
     AvmRun *r = g_new0(AvmRun, 1);
     r->proc = proc;
+    r->answerFd = ans[1];
     r->cancel = g_cancellable_new();
     r->dir = g_strdup(runDir);
     r->cb = *cb;
@@ -282,6 +345,7 @@ AvmRun *avm_run_open(const char *runDir, const AvmRunCallbacks *cb, void *user, 
     r->cb = *cb;
     r->user = user;
     r->exited = r->eventsDone = r->outputDone = TRUE;
+    r->answerFd = -1;
     p->run = r;
     r->replaySource = g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, replay_all, p, replay_free);
     return r;
@@ -295,6 +359,58 @@ void avm_run_abort(AvmRun *run) {
 void avm_run_pause(AvmRun *run, gboolean paused) {
     if(run && !run->exited && run->proc)
         g_subprocess_send_signal(run->proc, paused ? SIGUSR1 : SIGUSR2);
+}
+
+size_t avm_run_pending_prompt(const AvmRun *run) {
+    return run ? run->pendingSeq : 0;
+}
+
+/* Room for the note in one answer line: prompts.h reads lines of up to
+ * GA_PROMPT_LINE (1024) bytes; "<seq> fail " takes at most 32. */
+#define AVM_ANSWER_NOTE 960
+
+static char *clean_note(const char *note) {
+    char *n = g_utf8_make_valid(note ? note : "", -1);
+    for(char *c = n; *c; c++)
+        if((guchar)*c < 0x20 || *c == 0x7f)
+            *c = ' ';
+    if(strlen(n) > AVM_ANSWER_NOTE) {
+        /* cut on a character boundary */
+        const char *end = g_utf8_find_prev_char(n, n + AVM_ANSWER_NOTE + 1);
+        n[end ? end - n : 0] = '\0';
+    }
+    return g_strstrip(n);
+}
+
+gboolean avm_run_answer(AvmRun *run, size_t seq, ga_answer answer, const char *note,
+                        GError **error) {
+    if(!run || run->answerFd < 0 || run->exited) {
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_CLOSED, "the engine is not running");
+        return FALSE;
+    }
+    if(seq == 0 || seq != run->pendingSeq || (size_t)answer >= GA_ANSWER_COUNT) {
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                    "the engine is not waiting for that answer");
+        return FALSE;
+    }
+    char *n = clean_note(note);
+    char *line = g_strdup_printf("%zu %s%s%s\n", seq, ga_answer_name(answer), *n ? " " : "", n);
+    g_free(n);
+    size_t len = strlen(line), off = 0;
+    while(off < len) {
+        ssize_t w = write(run->answerFd, line + off, len - off);
+        if(w < 0 && errno == EINTR)
+            continue;
+        if(w <= 0) {
+            g_set_error(error, G_IO_ERROR, (gint)g_io_error_from_errno(errno),
+                        "cannot send the answer to the engine: %s", g_strerror(errno));
+            g_free(line);
+            return FALSE;
+        }
+        off += (size_t)w;
+    }
+    g_free(line);
+    return TRUE;
 }
 
 gboolean avm_run_is_running(const AvmRun *run) {
@@ -315,6 +431,7 @@ void avm_run_free(AvmRun *run) {
     g_cancellable_cancel(run->cancel);
     if(run->replaySource)
         g_source_remove(run->replaySource);
+    close_answers(run);
     if(!run->exited && run->proc)
         g_subprocess_force_exit(run->proc);
     g_clear_object(&run->events);

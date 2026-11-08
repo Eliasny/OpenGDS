@@ -89,9 +89,12 @@ static void put_key_str(FILE *f, const char *key, const char *val) {
     ga_json_put_string(f, val);
 }
 
+/* By ga_event_kind */
+static const char *const kinds[] = {"run_started", "test_started", "note",
+                                    "verdict",     "run_finished", "paused",
+                                    "resumed",     "prompt",       "prompt_answered"};
+
 bool ga_jsonl_write(FILE *f, const ga_event *ev) {
-    static const char *const kinds[] = {"run_started", "test_started", "note", "verdict",
-                                        "run_finished", "paused", "resumed"};
     if((size_t)ev->kind >= sizeof(kinds) / sizeof(kinds[0]))
         return false;
     fprintf(f, "{\"v\":%d,\"ev\":\"%s\"", GA_EVENTS_SCHEMA, kinds[ev->kind]);
@@ -130,6 +133,15 @@ bool ga_jsonl_write(FILE *f, const ga_event *ev) {
         break;
     case GA_EV_PAUSED:
     case GA_EV_RESUMED:
+        break;
+    case GA_EV_PROMPT:
+        fprintf(f, ",\"n\":%zu,\"seq\":%zu", ev->n, ev->seq);
+        put_key_str(f, "text", ev->text);
+        break;
+    case GA_EV_PROMPT_ANSWERED:
+        fprintf(f, ",\"n\":%zu,\"seq\":%zu,\"answer\":\"%s\"", ev->n, ev->seq,
+                ga_answer_name(ev->answer));
+        put_key_str(f, "text", ev->text);
         break;
     }
     fputs("}\n", f);
@@ -381,7 +393,7 @@ static int string_slot(const char *key) {
     } keys[] = {{"ev", S_EV},         {"profile", S_PROFILE}, {"target", S_TARGET},
                 {"id", S_ID},         {"clause", S_CLAUSE},   {"title", S_TITLE},
                 {"text", S_TEXT},     {"evidence", S_TEXT},   {"time", S_TIME},
-                {"verdict", -2}};
+                {"verdict", -2},      {"answer", -3}};
     for(size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
         if(strcmp(key, keys[i].key) == 0)
             return keys[i].slot;
@@ -402,6 +414,8 @@ static bool scalar_member(const char *key, double d, bool isBool, bool b, ga_eve
         *schema = d;
     else if(!strcmp(key, "n"))
         return !isBool && to_size(d, &ev->n);
+    else if(!strcmp(key, "seq"))
+        return !isBool && to_size(d, &ev->seq);
     else if(!strcmp(key, "planned"))
         return !isBool && to_size(d, &ev->planned);
     else if(!strcmp(key, "ms"))
@@ -445,6 +459,11 @@ static bool member(cursor *c, ga_event *ev, ga_jsonl_strings *strs, double *sche
             free(val);
             goto out;
         }
+        if(slot == -3) {
+            ok = ga_answer_parse(val, &ev->answer);
+            free(val);
+            goto out;
+        }
         free(strs->s[slot]);
         strs->s[slot] = val;
         ok = true;
@@ -463,8 +482,6 @@ out:
 }
 
 static int finish(ga_event *ev, const ga_jsonl_strings *strs, double schema, bool verdictSeen) {
-    static const char *const kinds[] = {"run_started", "test_started", "note", "verdict",
-                                        "run_finished", "paused", "resumed"};
     if(schema < 1 || !strs->s[S_EV])
         return -1;
     int kind = -1;
@@ -486,6 +503,8 @@ static int finish(ga_event *ev, const ga_jsonl_strings *strs, double schema, boo
     if(numbered && ev->n == 0)
         return -1;
     if(ev->kind == GA_EV_VERDICT && !verdictSeen)
+        return -1;
+    if((ev->kind == GA_EV_PROMPT || ev->kind == GA_EV_PROMPT_ANSWERED) && ev->seq == 0)
         return -1;
     return 1;
 }
