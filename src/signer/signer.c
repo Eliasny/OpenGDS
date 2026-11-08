@@ -41,6 +41,33 @@ static gds_status sign_from_store(gds_signer *s, const UA_Guid *reqId, gds_ca_is
     return r;
 }
 
+/* NEW_KEY_PAIR: a Received request without a CSR (StartNewKeyPairRequest);
+ * the record from the store, only format and password from opengdsd. */
+static gds_status key_pair_from_store(gds_signer *s, const gds_sigp_request *m,
+                                      gds_ca_issued *out, gds_buf *key) {
+    gds_request q;
+    memset(&q, 0, sizeof(q));
+    gds_status r = store_result(s, gds_store_req_get(s->store, &m->requestId, &q));
+    if(r != GDS_OK)
+        return r;
+    UA_ApplicationRecordDataType rec;
+    UA_ApplicationRecordDataType_init(&rec);
+    if(q.state != GDS_REQ_RECEIVED)
+        r = GDS_ESTATE;
+    else if(q.csr.len != 0)
+        r = GDS_EDENIED; /* a signing request: its key is the client's */
+    else
+        r = store_result(s, gds_store_app_get(s->store, &q.appId, &rec));
+    if(r == GDS_OK) {
+        gds_ca_subject subj = {&m->requestId, &rec, q.groupId, q.certType};
+        gds_ca_keyreq kr = {m->format, &m->password};
+        r = gds_ca_new_key_pair(s->ca, &subj, &kr, out, key);
+    }
+    UA_ApplicationRecordDataType_clear(&rec);
+    gds_request_clear(&q);
+    return r;
+}
+
 static gds_status journal(gds_signer *s, const UA_Guid *reqId, gds_status r,
                           gds_ca_issued *issued) {
     if(!s->journal)
@@ -72,21 +99,22 @@ static gds_status revoke_from_store(gds_signer *s, const gds_buf *serial, gds_bu
 
 gds_status gds_signer_handle(gds_signer *s, const uint8_t *msg, size_t len, gds_buf *reply) {
     memset(reply, 0, sizeof(*reply));
-    gds_sigp_op op = GDS_SIGP_SIGN_CSR;
-    UA_Guid reqId;
-    gds_buf serial = {0};
-    gds_status r = gds_sigp_decode_request_ex(msg, len, &op, &reqId, &serial);
+    gds_sigp_request m;
+    gds_status r = gds_sigp_decode(msg, len, &m);
     if(r != GDS_OK) /* malformed: answer as SIGN_CSR, the peer drops it */
         return gds_sigp_encode_reply(GDS_SIGP_SIGN_CSR, r, NULL, NULL, reply);
     gds_ca_issued issued;
     memset(&issued, 0, sizeof(issued));
-    gds_buf der = {0};
-    switch(op) {
+    gds_buf der = {0}, key = {0};
+    switch(m.op) {
     case GDS_SIGP_SIGN_CSR:
-        r = journal(s, &reqId, sign_from_store(s, &reqId, &issued), &issued);
+        r = journal(s, &m.requestId, sign_from_store(s, &m.requestId, &issued), &issued);
+        break;
+    case GDS_SIGP_NEW_KEY_PAIR:
+        r = journal(s, &m.requestId, key_pair_from_store(s, &m, &issued, &key), &issued);
         break;
     case GDS_SIGP_REVOKE:
-        r = revoke_from_store(s, &serial, &der);
+        r = revoke_from_store(s, &m.serial, &der);
         break;
     case GDS_SIGP_GET_CHAIN:
         r = gds_ca_get_ca_cert(s->ca, &der);
@@ -98,10 +126,13 @@ gds_status gds_signer_handle(gds_signer *s, const uint8_t *msg, size_t len, gds_
         r = GDS_EUNSUPPORTED;
         break;
     }
-    gds_status e = gds_sigp_encode_reply(op, r, &issued, &der, reply);
+    gds_status e = m.op == GDS_SIGP_NEW_KEY_PAIR
+                       ? gds_sigp_encode_key_reply(r, &issued, &key, reply)
+                       : gds_sigp_encode_reply(m.op, r, &issued, &der, reply);
     gds_ca_issued_clear(&issued);
     gds_buf_free(&der);
-    gds_buf_free(&serial);
+    gds_buf_free_secret(&key);
+    gds_sigp_request_clear(&m);
     return e;
 }
 

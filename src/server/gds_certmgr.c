@@ -1,6 +1,7 @@
 /* OpenGDS - CertificateManager methods (OPC 10000-12 §7.9): StartSigningRequest,
  * FinishRequest, GetCertificateGroups, GetTrustList, GetCertificateStatus,
- * GetCertificates, CheckRevocationStatus, and the signing worker.
+ * GetCertificates, CheckRevocationStatus, StartNewKeyPairRequest, and the
+ * signing worker.
  *
  * Decision G7: StartSigningRequest checks and stores the request and
  * returns at once; a background worker signs it through the CA slot
@@ -69,20 +70,45 @@ static UA_StatusCode group_arg(gds_server *s, size_t inputSize, const UA_Variant
     return UA_STATUSCODE_GOOD;
 }
 
-/* Null means the group's default type, RsaSha256ApplicationCertificateType. */
+/* DefaultApplicationGroup.CertificateTypes (12 §7.8.3.1): the types the CA
+ * issues for the group. RsaMin is deprecated with its SecurityPolicies and
+ * the ECC types are not issued yet; the first entry is the default. */
+static const UA_UInt32 groupCertTypes[] = {UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE};
+
+bool gds_group_type(const UA_NodeId *t, UA_UInt32 *type) {
+    if(!t || UA_NodeId_isNull(t)) {
+        *type = groupCertTypes[0];
+        return true;
+    }
+    if(t->namespaceIndex != 0 || t->identifierType != UA_NODEIDTYPE_NUMERIC)
+        return false;
+    for(size_t i = 0; i < GDS_ARRAY_SIZE(groupCertTypes); i++)
+        if(t->identifier.numeric == groupCertTypes[i]) {
+            *type = groupCertTypes[i];
+            return true;
+        }
+    return false; /* §7.9.3, §7.9.4: not a type of the group, Bad_InvalidArgument */
+}
+
+/* Null means the group's default type. */
 static UA_StatusCode type_arg(size_t inputSize, const UA_Variant *input, size_t i, UA_UInt32 *type) {
     const UA_NodeId *t = NULL;
     UA_StatusCode r = gds_in_nodeid(inputSize, input, i, &t);
     if(r != UA_STATUSCODE_GOOD)
         return r;
-    if(UA_NodeId_isNull(t)) {
-        *type = UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE;
-        return UA_STATUSCODE_GOOD;
-    }
-    if(t->namespaceIndex != 0 || t->identifierType != UA_NODEIDTYPE_NUMERIC)
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
-    *type = t->identifier.numeric;
-    return UA_STATUSCODE_GOOD;
+    return gds_group_type(t, type) ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADINVALIDARGUMENT;
+}
+
+static UA_StatusCode set_group_types(gds_server *s) {
+    UA_NodeId ids[GDS_ARRAY_SIZE(groupCertTypes)];
+    for(size_t i = 0; i < GDS_ARRAY_SIZE(groupCertTypes); i++)
+        ids[i] = UA_NODEID_NUMERIC(0, groupCertTypes[i]);
+    UA_Variant v;
+    UA_Variant_setArray(&v, ids, GDS_ARRAY_SIZE(ids), &UA_TYPES[UA_TYPES_NODEID]);
+    return UA_Server_writeValue(
+        s->ua,
+        UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_CERTIFICATETYPES),
+        v);
 }
 
 /* DER CSR whose self-signature verifies (proof of possession). The signer
@@ -121,6 +147,10 @@ static UA_StatusCode signing_args(gds_server *s, void *sessionContext, size_t in
     return r;
 }
 
+/* Store a request (approved or Pending) and raise its dialog or kick the
+ * worker. Shared by StartSigningRequest and StartNewKeyPairRequest. */
+static UA_StatusCode submit_request(gds_server *s, void *sessionContext, gds_request *q);
+
 static GDS_METHOD(start_signing_request) {
     GDS_METHOD_UNUSED;
     gds_server *s = gds_ctx(methodContext);
@@ -142,34 +172,127 @@ static GDS_METHOD(start_signing_request) {
     q.certType = type;
     q.csr.data = csr->data; /* borrowed for the insert */
     q.csr.len = csr->length;
-    gds_status st = gds_policy_initial_state(s, sessionContext, &q, &q.state);
+    r = submit_request(s, sessionContext, &q);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    UA_NodeId rid = UA_NODEID_GUID(s->ns, q.id);
+    return UA_Variant_setScalarCopy(&output[0], &rid, &UA_TYPES[UA_TYPES_NODEID]);
+}
+
+static UA_StatusCode submit_request(gds_server *s, void *sessionContext, gds_request *q) {
+    gds_status st = gds_policy_initial_state(s, sessionContext, q, &q->state);
     if(st != GDS_OK)
         return gds_status_to_ua(st);
-    if(q.state == GDS_REQ_PENDING && s->pendingApprovals >= GDS_MAX_PENDING_APPROVALS)
+    if(q->state == GDS_REQ_PENDING && s->pendingApprovals >= GDS_MAX_PENDING_APPROVALS)
         return UA_STATUSCODE_BADSERVERTOOBUSY; /* decision D1 */
     gds_lock(s);
-    st = gds_store_req_insert(s->store, &q);
+    st = gds_store_req_insert(s->store, q);
     gds_unlock(s);
     if(st != GDS_OK)
         return gds_status_to_ua(st);
-    if(q.state == GDS_REQ_PENDING) {
-        UA_ApplicationRecordDataType rec;
-        UA_ApplicationRecordDataType_init(&rec);
-        r = gds_load_app(s, &appId, &rec);
-        if(r == UA_STATUSCODE_GOOD)
-            r = gds_approvals_raise(s, &q, &rec.applicationUri);
-        UA_ApplicationRecordDataType_clear(&rec);
-        if(r != UA_STATUSCODE_GOOD) { /* no dialog: nobody could approve it */
-            gds_lock(s);
-            st = gds_store_req_set_state(s->store, &q.id, GDS_REQ_FAILED, NULL, r);
-            gds_unlock(s);
-            if(st != GDS_OK) /* stays Pending: its dialog is raised at the next start */
-                fprintf(stderr, "opengds: failing a request without a dialog: %s\n",
-                        gds_status_name(st));
-            return r;
-        }
-    } else {
+    if(q->state != GDS_REQ_PENDING) {
         gds_worker_kick(s);
+        return UA_STATUSCODE_GOOD;
+    }
+    UA_ApplicationRecordDataType rec;
+    UA_ApplicationRecordDataType_init(&rec);
+    UA_StatusCode r = gds_load_app(s, &q->appId, &rec);
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_approvals_raise(s, q, &rec.applicationUri);
+    UA_ApplicationRecordDataType_clear(&rec);
+    if(r != UA_STATUSCODE_GOOD) { /* no dialog: nobody could approve it */
+        gds_lock(s);
+        st = gds_store_req_set_state(s->store, &q->id, GDS_REQ_FAILED, NULL, r);
+        gds_unlock(s);
+        if(st != GDS_OK) /* stays Pending: its dialog is raised at the next start */
+            fprintf(stderr, "opengds: failing a request without a dialog: %s\n",
+                    gds_status_name(st));
+    }
+    return r;
+}
+
+/* ---- StartNewKeyPairRequest ---- */
+
+/* §7.9.4: PFX and PEM shall be supported; nothing else is offered
+ * (SupportedPrivateKeyFormats). */
+static UA_StatusCode key_format_arg(const UA_Variant *v, gds_ca_key_format *f) {
+    const UA_String *fmt = NULL;
+    if(gds_arg_string(v, GDS_MAX_STRING, &fmt) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    UA_String pfx = UA_STRING_STATIC("PFX"), pem = UA_STRING_STATIC("PEM");
+    if(UA_String_equal(fmt, &pfx))
+        *f = GDS_CA_KEY_PFX;
+    else if(UA_String_equal(fmt, &pem))
+        *f = GDS_CA_KEY_PEM;
+    else
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    return UA_STATUSCODE_GOOD;
+}
+
+/* SubjectName and DomainNames: checked for shape, then ignored; the record
+ * decides both (§7.9.4 allows the GDS to ignore them; decision G5). */
+static UA_StatusCode name_args(const UA_Variant *input) {
+    const UA_String *subject = NULL;
+    const void *names = NULL;
+    size_t n = 0;
+    if(gds_arg_string(&input[3], GDS_MAX_STRING, &subject) != UA_STATUSCODE_GOOD ||
+       gds_arg_array(&input[4], &UA_TYPES[UA_TYPES_STRING], GDS_MAX_ARRAY_FIELD, &names, &n) !=
+           UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    return UA_STATUSCODE_GOOD;
+}
+
+static UA_StatusCode keypair_args(gds_server *s, void *sessionContext, size_t inputSize,
+                                  const UA_Variant *input, gds_request *q, gds_ca_key_format *f,
+                                  const UA_String **password) {
+    const gds_session *ss = sessionContext;
+    if(!ss || ss->securityMode != UA_MESSAGESECURITYMODE_SIGNANDENCRYPT)
+        return UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT; /* the password and key cross */
+    UA_StatusCode r = gds_in_guid(s, inputSize, input, 0, &q->appId);
+    if(r == UA_STATUSCODE_GOOD)
+        r = check_app(s, sessionContext, &q->appId, 0);
+    if(r == UA_STATUSCODE_GOOD)
+        r = group_arg(s, inputSize, input, 1, &q->groupId);
+    if(r == UA_STATUSCODE_GOOD)
+        r = type_arg(inputSize, input, 2, &q->certType);
+    if(r == UA_STATUSCODE_GOOD && inputSize < 7)
+        r = UA_STATUSCODE_BADARGUMENTSMISSING;
+    if(r == UA_STATUSCODE_GOOD)
+        r = name_args(input);
+    if(r == UA_STATUSCODE_GOOD)
+        r = key_format_arg(&input[5], f);
+    if(r == UA_STATUSCODE_GOOD &&
+       gds_arg_string(&input[6], GDS_MAX_KEY_PASSWORD, password) != UA_STATUSCODE_GOOD)
+        r = UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(r == UA_STATUSCODE_GOOD && gds_issuance_held(s, &q->appId))
+        r = UA_STATUSCODE_BADREQUESTNOTALLOWED; /* held by the embedder (A13) */
+    return r;
+}
+
+static GDS_METHOD(start_new_key_pair_request) {
+    GDS_METHOD_UNUSED;
+    gds_server *s = gds_ctx(methodContext);
+    if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINVALIDSTATE;
+    gds_request q;
+    memset(&q, 0, sizeof(q)); /* no CSR: a key pair request */
+    gds_ca_key_format f = GDS_CA_KEY_PFX;
+    const UA_String *password = NULL;
+    UA_StatusCode r = keypair_args(s, sessionContext, inputSize, input, &q, &f, &password);
+    DEFER_IF_DENIED(start_new_key_pair_request, r, q.appId);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    if(gds_guid_random(&q.id) != GDS_OK)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    gds_status st = gds_kp_add(s, &q.id, f, password);
+    if(st == GDS_ETOOBIG)
+        return UA_STATUSCODE_BADSERVERTOOBUSY;
+    if(st != GDS_OK)
+        return gds_status_to_ua(st);
+    r = submit_request(s, sessionContext, &q);
+    if(r != UA_STATUSCODE_GOOD) {
+        gds_kp_drop(s, &q.id);
+        return r;
     }
     UA_NodeId rid = UA_NODEID_GUID(s->ns, q.id);
     return UA_Variant_setScalarCopy(&output[0], &rid, &UA_TYPES[UA_TYPES_NODEID]);
@@ -177,12 +300,27 @@ static GDS_METHOD(start_signing_request) {
 
 /* ---- FinishRequest ---- */
 
-static UA_StatusCode finish_outputs(gds_server *s, const gds_request *q, UA_Variant *output) {
-    UA_ByteString cert = {q->cert.len, q->cert.data}, none = UA_BYTESTRING_NULL;
+/* Issued -> Delivered. A key pair request hands its key over exactly once;
+ * without it (a restart, a switchover) the request fails and the client
+ * starts again (§7.9.5). Under storeLock. */
+static gds_status deliver(gds_server *s, gds_request *q, gds_buf *key) {
+    if(q->csr.len == 0 && gds_kp_take_key(s, &q->id, key) != GDS_OK) {
+        q->state = GDS_REQ_FAILED;
+        q->error = UA_STATUSCODE_BADREQUESTNOTALLOWED;
+        return gds_store_req_set_state(s->store, &q->id, GDS_REQ_FAILED, NULL, q->error);
+    }
+    return gds_store_req_set_state(s->store, &q->id, GDS_REQ_DELIVERED, &q->cert,
+                                   UA_STATUSCODE_GOOD);
+}
+
+/* key: the generated private key of a key pair request, else empty. */
+static UA_StatusCode finish_outputs(gds_server *s, const gds_request *q, const gds_buf *key,
+                                    UA_Variant *output) {
+    UA_ByteString cert = {q->cert.len, q->cert.data}, pk = {key->len, key->data};
     UA_ByteString issuer = {s->caCert.len, s->caCert.data};
     UA_StatusCode r = UA_Variant_setScalarCopy(&output[0], &cert, &UA_TYPES[UA_TYPES_BYTESTRING]);
-    if(r == UA_STATUSCODE_GOOD) /* a CSR request has no private key to return */
-        r = UA_Variant_setScalarCopy(&output[1], &none, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Variant_setScalarCopy(&output[1], &pk, &UA_TYPES[UA_TYPES_BYTESTRING]);
     if(r == UA_STATUSCODE_GOOD)
         r = UA_Variant_setArrayCopy(&output[2], &issuer, 1, &UA_TYPES[UA_TYPES_BYTESTRING]);
     return r;
@@ -206,13 +344,13 @@ static GDS_METHOD(finish_request) {
         return r;
     gds_request q;
     memset(&q, 0, sizeof(q));
+    gds_buf key = {0};
     gds_lock(s);
     gds_status st = gds_store_req_get(s->store, &reqId, &q);
     if(st == GDS_OK && !UA_Guid_equal(&q.appId, &appId))
         st = GDS_ENOTFOUND; /* another application's request */
     if(st == GDS_OK && q.state == GDS_REQ_ISSUED)
-        st = gds_store_req_set_state(s->store, &reqId, GDS_REQ_DELIVERED, &q.cert,
-                                     UA_STATUSCODE_GOOD);
+        st = deliver(s, &q, &key);
     gds_unlock(s);
     if(st == GDS_ENOTFOUND)
         r = UA_STATUSCODE_BADINVALIDARGUMENT;
@@ -223,7 +361,8 @@ static GDS_METHOD(finish_request) {
     else if(q.state == GDS_REQ_FAILED)
         r = q.error ? q.error : UA_STATUSCODE_BADREQUESTNOTALLOWED;
     else
-        r = finish_outputs(s, &q, output);
+        r = finish_outputs(s, &q, &key, output);
+    gds_buf_free_secret(&key);
     gds_request_clear(&q);
     return r;
 }
@@ -477,6 +616,7 @@ static UA_StatusCode add_optional_nodes(gds_server *s) {
 UA_StatusCode gds_certmgr_install(gds_server *s) {
     static const gds_method_entry m[] = {
         {UA_GDSID_DIRECTORY_STARTSIGNINGREQUEST, start_signing_request},
+        {UA_GDSID_DIRECTORY_STARTNEWKEYPAIRREQUEST, start_new_key_pair_request},
         {UA_GDSID_DIRECTORY_FINISHREQUEST, finish_request},
         {UA_GDSID_DIRECTORY_GETCERTIFICATEGROUPS, get_certificate_groups},
         {UA_GDSID_DIRECTORY_GETTRUSTLIST, get_trust_list},
@@ -485,6 +625,8 @@ UA_StatusCode gds_certmgr_install(gds_server *s) {
         {UA_GDSID_DIRECTORY_CHECKREVOCATIONSTATUS, check_revocation_status},
     };
     UA_StatusCode r = add_optional_nodes(s);
+    if(r == UA_STATUSCODE_GOOD)
+        r = set_group_types(s);
     return r == UA_STATUSCODE_GOOD ? gds_install_methods(s, m, GDS_ARRAY_SIZE(m)) : r;
 }
 
@@ -492,6 +634,52 @@ UA_StatusCode gds_certmgr_install(gds_server *s) {
 
 static bool transient(gds_status r) {
     return r == GDS_EREMOTE || r == GDS_EIO || r == GDS_ENOMEM || r == GDS_ENOTLEADER;
+}
+
+/* The CA call: sign the CSR, or (no CSR) generate a key pair with the
+ * format and password that StartNewKeyPairRequest left in memory. */
+static gds_status issue(gds_server *s, const gds_request *q, const gds_ca_subject *subj,
+                        gds_ca_issued *issued, gds_buf *key) {
+    if(q->csr.len > 0)
+        return gds_ca_sign_csr(s->ca, subj, &q->csr, issued);
+    gds_ca_keyreq kr = {GDS_CA_KEY_PFX, NULL};
+    gds_buf pw = {0};
+    gds_status r = gds_kp_password(s, &q->id, &kr.format, &pw);
+    kr.password = &pw;
+    if(r == GDS_OK)
+        r = gds_ca_new_key_pair(s->ca, subj, &kr, issued, key);
+    gds_buf_free_secret(&pw);
+    return r;
+}
+
+/* Store an issued certificate; a generated key goes to memory first, so
+ * FinishRequest never sees Issued without it. Under storeLock. */
+static gds_status store_issued(gds_server *s, const gds_request *q, const gds_ca_issued *issued,
+                               gds_buf *key) {
+    bool keyPair = q->csr.len == 0;
+    gds_status w = keyPair ? gds_kp_set_key(s, &q->id, key) : GDS_OK;
+    if(w == GDS_OK)
+        w = gds_store_cert_add(s->store, &q->appId, q->groupId, q->certType, &issued->serial,
+                               &issued->der, issued->notBefore, issued->notAfter);
+    if(w == GDS_OK)
+        w = gds_store_req_set_state(s->store, &q->id, GDS_REQ_ISSUED, &issued->der,
+                                    UA_STATUSCODE_GOOD);
+    if(w != GDS_OK) {
+        fprintf(stderr, "opengds: storing an issued certificate failed: %s\n",
+                gds_status_name(w));
+        if(keyPair)
+            gds_kp_drop(s, &q->id);
+    }
+    return w;
+}
+
+/* Record a refusal. A key pair request whose secrets are gone (a restart,
+ * a switchover) fails with Bad_RequestNotAllowed and the client starts
+ * again (§7.9.5). Under storeLock. */
+static gds_status store_failed(gds_server *s, const gds_request *q, UA_StatusCode code) {
+    if(q->csr.len == 0)
+        gds_kp_drop(s, &q->id);
+    return gds_store_req_set_state(s->store, &q->id, GDS_REQ_FAILED, NULL, code);
 }
 
 /* Sign the oldest Received request. Returns true if there may be more. */
@@ -512,33 +700,24 @@ static bool process_one(gds_server *s) {
     gds_ca_subject subj = {&q.id, &rec, q.groupId, q.certType};
     gds_ca_issued issued;
     memset(&issued, 0, sizeof(issued));
+    gds_buf key = {0};
     bool held = gds_issuance_held(s, &q.appId); /* A13: held after it was stored */
-    r = held ? GDS_EDENIED : gds_ca_sign_csr(s->ca, &subj, &q.csr, &issued);
+    r = held ? GDS_EDENIED : issue(s, &q, &subj, &issued, &key);
+    UA_StatusCode code = gds_status_to_ua(r);
+    if(held || (r == GDS_ENOTFOUND && q.csr.len == 0))
+        code = UA_STATUSCODE_BADREQUESTNOTALLOWED;
     bool more = true;
     gds_lock(s);
-    if(held) {
-        if(gds_store_req_set_state(s->store, &q.id, GDS_REQ_FAILED, NULL,
-                                   UA_STATUSCODE_BADREQUESTNOTALLOWED) != GDS_OK)
-            more = false;
-    } else if(r == GDS_OK) {
-        gds_status w = gds_store_cert_add(s->store, &q.appId, q.groupId, q.certType,
-                                          &issued.serial, &issued.der, issued.notBefore,
-                                          issued.notAfter);
-        if(w == GDS_OK)
-            w = gds_store_req_set_state(s->store, &q.id, GDS_REQ_ISSUED, &issued.der,
-                                        UA_STATUSCODE_GOOD);
-        if(w != GDS_OK)
-            fprintf(stderr, "opengds: storing an issued certificate failed: %s\n",
-                    gds_status_name(w));
-        more = w == GDS_OK;
-    } else if(transient(r)) {
+    if(r == GDS_OK) {
+        more = store_issued(s, &q, &issued, &key) == GDS_OK;
+    } else if(!held && transient(r)) {
         fprintf(stderr, "opengds: CA unavailable (%s), retrying later\n", gds_status_name(r));
         more = false; /* keep the request Received */
-    } else if(gds_store_req_set_state(s->store, &q.id, GDS_REQ_FAILED, NULL, gds_status_to_ua(r)) !=
-              GDS_OK) {
+    } else if(store_failed(s, &q, code) != GDS_OK) {
         more = false;
     }
     gds_unlock(s);
+    gds_buf_free_secret(&key);
     gds_ca_issued_clear(&issued);
     UA_ApplicationRecordDataType_clear(&rec);
     gds_request_clear(&q);
