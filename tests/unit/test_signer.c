@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: MPL-2.0 */
 #include <open62541/nodeids.h>
 #include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/pkcs12.h>
 #include <openssl/rand.h>
 #include <openssl/x509v3.h>
 
@@ -18,6 +20,7 @@
 #include "check.h"
 #include "common/buf.h"
 #include "common/ids.h"
+#include "common/limits.h"
 #include "proto.h"
 #include "signer.h"
 #include "store.h"
@@ -92,6 +95,28 @@ typedef struct {
     gds_status result;
 } serve_arg;
 
+/* A Received request of the stored application; withCsr false makes it a
+ * StartNewKeyPairRequest. */
+static void add_request(gds_store *w, const UA_Guid *appId, bool withCsr, UA_Guid *reqId) {
+    gds_request q;
+    memset(&q, 0, sizeof(q));
+    CHECK(gds_guid_random(reqId) == GDS_OK);
+    q.id = *reqId;
+    q.appId = *appId;
+    q.groupId = 615;
+    q.certType = UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE;
+    q.state = GDS_REQ_RECEIVED;
+    if(withCsr)
+        CHECK(make_csr(&q.csr) == GDS_OK);
+    CHECK(gds_store_req_insert(w, &q) == GDS_OK);
+    gds_buf_free(&q.csr);
+}
+
+static X509 *der_cert(const gds_buf *der) {
+    const unsigned char *p = der->data;
+    return d2i_X509(NULL, &p, (long)der->len);
+}
+
 static void *serve_thread(void *p) {
     serve_arg *a = p;
     a->result = gds_signer_serve(a->s, a->fd);
@@ -123,6 +148,146 @@ static void test_ipc_sign(gds_ca *ipc, gds_store *w, const UA_Guid *reqId,
     CHECK(gds_guid_random(&unknown) == GDS_OK);
     subj.requestId = &unknown;
     CHECK(gds_ca_sign_csr(ipc, &subj, &junkCsr, &out) == GDS_ENOTFOUND);
+}
+
+#define KP_PASSWORD "kp-unit-password"
+
+/* The PFX opens with the password only, holds the key of the certificate
+ * and the CA certificate (§7.9.5: certificate and private key). */
+static void check_pfx(const gds_buf *pfx, const gds_buf *certDer) {
+    const unsigned char *p = pfx->data;
+    PKCS12 *p12 = d2i_PKCS12(NULL, &p, (long)pfx->len);
+    EVP_PKEY *k = NULL;
+    X509 *c = NULL, *issued = der_cert(certDer);
+    STACK_OF(X509) *chain = NULL;
+    CHECK(p12 && PKCS12_verify_mac(p12, "wrong", -1) == 0);
+    CHECK(p12 && PKCS12_parse(p12, KP_PASSWORD, &k, &c, &chain) == 1);
+    CHECK(k && c && issued && X509_cmp(c, issued) == 0 && X509_check_private_key(issued, k) == 1);
+    CHECK(chain && sk_X509_num(chain) == 1);
+    OSSL_STACK_OF_X509_free(chain);
+    X509_free(c);
+    X509_free(issued);
+    EVP_PKEY_free(k);
+    PKCS12_free(p12);
+}
+
+/* PKCS #8 PEM, encrypted exactly when a password is given. */
+static void check_pem(const gds_buf *pem, const gds_buf *certDer, const char *pw) {
+    const char *tag = pw ? "-----BEGIN ENCRYPTED PRIVATE KEY-----"
+                         : "-----BEGIN PRIVATE KEY-----";
+    CHECK(pem->len > strlen(tag) && memcmp(pem->data, tag, strlen(tag)) == 0);
+    BIO *b = BIO_new_mem_buf(pem->data, (int)pem->len);
+    char pwc[] = KP_PASSWORD;
+    EVP_PKEY *k = b ? PEM_read_bio_PrivateKey(b, NULL, NULL, pw ? pwc : NULL) : NULL;
+    X509 *issued = der_cert(certDer);
+    CHECK(k && issued && X509_check_private_key(issued, k) == 1);
+    X509_free(issued);
+    EVP_PKEY_free(k);
+    BIO_free(b);
+    if(pw) { /* and not with another password */
+        char wrong[] = "wrong-password";
+        b = BIO_new_mem_buf(pem->data, (int)pem->len);
+        k = b ? PEM_read_bio_PrivateKey(b, NULL, NULL, wrong) : NULL;
+        CHECK(k == NULL);
+        EVP_PKEY_free(k);
+        BIO_free(b);
+    }
+}
+
+/* StartNewKeyPairRequest through the signer: the key is generated there,
+ * for the stored record, and only for a request without a CSR. */
+static void test_ipc_key_pair(gds_ca *ipc, gds_store *w, const UA_Guid *appId) {
+    UA_ApplicationRecordDataType lie;
+    UA_ApplicationRecordDataType_init(&lie);
+    lie.applicationUri = UA_STRING("urn:evil:daemon");
+    uint8_t pwb[] = KP_PASSWORD;
+    gds_buf pw = {pwb, sizeof(pwb) - 1}, none = {0};
+    const struct {
+        gds_ca_key_format f;
+        const gds_buf *pw;
+    } cases[] = {{GDS_CA_KEY_PFX, &pw}, {GDS_CA_KEY_PEM, &pw}, {GDS_CA_KEY_PEM, &none}};
+    for(size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        UA_Guid id;
+        add_request(w, appId, false, &id);
+        gds_ca_subject subj = {&id, &lie, 1, 1};
+        gds_ca_keyreq kr = {cases[i].f, cases[i].pw};
+        gds_ca_issued out;
+        gds_buf key = {0};
+        CHECK(gds_ca_new_key_pair(ipc, &subj, &kr, &out, &key) == GDS_OK);
+        CHECK(cert_has_uri(&out.der, STORED_URI) && !cert_has_uri(&out.der, "urn:evil:daemon"));
+        if(cases[i].f == GDS_CA_KEY_PFX)
+            check_pfx(&key, &out.der);
+        else
+            check_pem(&key, &out.der, cases[i].pw->len ? KP_PASSWORD : NULL);
+        CHECK(gds_store_req_set_state(w, &id, GDS_REQ_ISSUED, &out.der, UA_STATUSCODE_GOOD) ==
+              GDS_OK);
+        gds_ca_issued_clear(&out);
+        gds_buf_free_secret(&key);
+        CHECK(gds_ca_new_key_pair(ipc, &subj, &kr, &out, &key) == GDS_ESTATE && !key.data);
+    }
+    /* a signing request never gets a generated key; a key pair request is never signed */
+    UA_Guid csrReq, kpReq;
+    add_request(w, appId, true, &csrReq);
+    add_request(w, appId, false, &kpReq);
+    gds_ca_subject subj = {&csrReq, &lie, 1, 1};
+    gds_ca_keyreq kr = {GDS_CA_KEY_PFX, &pw};
+    gds_ca_issued out;
+    gds_buf key = {0};
+    CHECK(gds_ca_new_key_pair(ipc, &subj, &kr, &out, &key) == GDS_EDENIED && !key.data);
+    subj.requestId = &kpReq;
+    CHECK(gds_ca_sign_csr(ipc, &subj, &none, &out) != GDS_OK);
+    gds_ca_keyreq bad = {(gds_ca_key_format)7, &pw}; // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange)
+    CHECK(gds_ca_new_key_pair(ipc, &subj, &bad, &out, &key) == GDS_EINVAL);
+}
+
+/* NEW_KEY_PAIR messages: round trip, and every truncation refused. */
+static void test_key_pair_proto(void) {
+    UA_Guid id;
+    CHECK(gds_guid_random(&id) == GDS_OK);
+    uint8_t pwb[] = KP_PASSWORD;
+    gds_buf pw = {pwb, sizeof(pwb) - 1}, msg = {0};
+    uint8_t longPw[GDS_MAX_KEY_PASSWORD + 1];
+    memset(longPw, 'x', sizeof(longPw));
+    gds_buf tooLong = {longPw, sizeof(longPw)};
+    CHECK(gds_sigp_encode_new_key_pair(&id, GDS_CA_KEY_PFX, &tooLong, &msg) == GDS_EINVAL &&
+          !msg.data);
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    CHECK(gds_sigp_encode_new_key_pair(&id, (gds_ca_key_format)0, &pw, &msg) == GDS_EINVAL);
+    CHECK(gds_sigp_encode_new_key_pair(&id, GDS_CA_KEY_PEM, &pw, &msg) == GDS_OK);
+    gds_sigp_request m;
+    CHECK(gds_sigp_decode(msg.data, msg.len, &m) == GDS_OK);
+    CHECK(m.op == GDS_SIGP_NEW_KEY_PAIR && m.format == GDS_CA_KEY_PEM &&
+          UA_Guid_equal(&m.requestId, &id) && m.password.len == pw.len &&
+          memcmp(m.password.data, pwb, pw.len) == 0);
+    gds_sigp_request_clear(&m);
+    for(size_t n = 0; n < msg.len; n++) {
+        gds_status d = gds_sigp_decode(msg.data, n, &m);
+        CHECK(d != GDS_OK);
+        if(d == GDS_OK)
+            gds_sigp_request_clear(&m);
+    }
+    gds_buf_free_secret(&msg);
+    /* the reply carries the key; an OK reply without one is refused */
+    uint8_t der[] = {0x30, 0x00}, ser[] = {1}, k[] = {9, 9, 9};
+    gds_ca_issued is;
+    memset(&is, 0, sizeof(is));
+    is.serial = (gds_buf){ser, 1};
+    is.der = (gds_buf){der, 2};
+    is.notBefore = 1;
+    is.notAfter = 2;
+    gds_buf key = {k, 3}, got = {0}, reply = {0};
+    CHECK(gds_sigp_encode_key_reply(GDS_OK, &is, &key, &reply) == GDS_OK);
+    gds_status st = GDS_EIO;
+    gds_ca_issued gi;
+    CHECK(gds_sigp_decode_key_reply(reply.data, reply.len, &st, &gi, &got) == GDS_OK);
+    CHECK(st == GDS_OK && got.len == 3 && memcmp(got.data, k, 3) == 0 && gi.der.len == 2);
+    gds_ca_issued_clear(&gi);
+    gds_buf_free_secret(&got);
+    CHECK(gds_sigp_decode_key_reply(reply.data, reply.len - 1, &st, &gi, &got) != GDS_OK &&
+          !got.data);
+    gds_buf_free(&reply);
+    gds_buf empty = {0};
+    CHECK(gds_sigp_encode_key_reply(GDS_OK, &is, &empty, &reply) == GDS_EINVAL);
 }
 
 /* What test_ipc_sign left in the journal: the issuance, then the two
@@ -315,6 +480,7 @@ int main(int argc, char **argv) {
         if(issued.der.data)
             test_ipc_revoke(ipc, w, &appId, &issued);
         gds_ca_issued_clear(&issued);
+        test_ipc_key_pair(ipc, w, &appId);
     }
     gds_ca_close(ipc); /* closes sv[0]: the signer sees EOF */
     CHECK(pthread_join(th, NULL) == 0);
@@ -324,6 +490,7 @@ int main(int argc, char **argv) {
     test_journal(jpath, &reqId);
     test_malformed(&s, &reqId);
     test_revoke_proto();
+    test_key_pair_proto();
     gds_journal_close(s.journal);
     gds_ca_close(s.ca);
     gds_store_close(s.store);
