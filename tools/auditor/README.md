@@ -33,7 +33,13 @@ schema in `engine.h`) and `--report DIR`: `report.html`, `junit.xml`,
 and `report.tap` (TAP version 13 with a YAML block per test).
 SIGINT or SIGTERM aborts a run: later tests are Not tested and the server
 profile still restores the target. SIGUSR1 pauses before the next test (the
-test in progress finishes) and SIGUSR2 resumes. The HTML report has a table
+test in progress finishes) and SIGUSR2 resumes.
+`--prompts FILE` gives the run an operator: a test that needs a manual step
+(such as restarting the device) prints it and waits for one line
+`<n> done|skip|fail [note]` in FILE (`/dev/stdin` for a person at the
+terminal). Skip leaves the test Not tested, fail fails it with the note.
+Without `--prompts`, every manual step is skipped. Prompts and answers are
+events (`prompt`, `prompt_answered`) and notes of the test. The HTML report has a table
 per ConformanceUnit, taken from `docs/auditor/catalogue.csv`.
 
 Desktop UI: `gdsaudit-gui` (built when GTK 4.12+ is found;
@@ -47,8 +53,11 @@ confirmation naming the endpoint and the pinned certificate's thumbprint, and
 a banner stays while changes are allowed. Abort finishes the current test and
 restores the target; closing the window during a run does the same. Each run
 is kept in `~/.local/share/gdsaudit/runs/<time>-<profile>/` (`events.jsonl`,
-`output.log`, `report/`); Export writes `report.html`, `junit.xml` and
-`events.jsonl` to a folder. Pause waits before the next test. History lists
+`output.log`, `report/`); Export writes `report.html`, `junit.xml`,
+`report.json`, `report.tap` and `events.jsonl` to a folder. Pause waits
+before the next test. When a test needs a manual step, an Operator step
+window shows it and the run waits: Done, Skip this step, or Report failure
+(which needs a note); Pause and Abort still work meanwhile. History lists
 the kept runs, opens one (or any folder with an `events.jsonl` from a headless
 `--events` run) and compares two runs test by test. The form is kept between
 sessions in `~/.config/gdsaudit/last-plan.ini` (no passwords: only the paths
