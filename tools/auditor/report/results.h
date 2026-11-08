@@ -71,8 +71,36 @@ bool ga_results_load(const char *path, ga_results *r, char *err, size_t errLen);
 /* Reports. Every report says "self-test, not OPC Foundation certification". */
 bool ga_report_html(FILE *f, const ga_results *r);
 bool ga_report_junit(FILE *f, const ga_results *r);
-/* Write DIR/report.html and DIR/junit.xml (DIR is created if missing). */
+/* JSON for machines: one document, schema "gdsaudit-report" version 1
+ * (docs/auditor/report-json.md). UASM can import it as compliance evidence. */
+bool ga_report_json(FILE *f, const ga_results *r);
+/* TAP version 13 for the shell, with a YAML block per test. Fail and a test
+ * without a verdict are "not ok"; Not supported and Not tested are SKIP. */
+bool ga_report_tap(FILE *f, const ga_results *r);
+/* Write DIR/report.html, DIR/junit.xml, DIR/report.json and DIR/report.tap
+ * (DIR is created if missing). */
 bool ga_report_write_dir(const char *dir, const ga_results *r, char *err, size_t errLen);
+
+/* Results per ConformanceUnit, from the test catalogue (cu.h), in order of
+ * first appearance. unit is the catalogue's name, GA_CU_TBD (not named yet)
+ * or NULL (not in the catalogue). Past GA_MAX_UNITS - 1 named units the
+ * rest count in the NULL row. */
+#define GA_MAX_UNITS 32
+typedef struct {
+    const char *unit;
+    size_t counts[GA_VERDICT_COUNT];
+    size_t noVerdict;
+} ga_unit_row;
+size_t ga_results_units(const ga_results *r, ga_unit_row rows[GA_MAX_UNITS]);
+/* The run's rule per unit: any Fail fails it ("Failed"), any Not tested or
+ * missing verdict leaves it "Incomplete", else "Passed". */
+const char *ga_unit_outcome(const ga_unit_row *u);
+
+/* JSON helpers shared by the writers: s as a JSON string (NULL as ""),
+ * always valid UTF-8; and a check that [s, s+len) is one JSON value with
+ * nothing after it (depth-limited). */
+void ga_json_put_string(FILE *f, const char *s);
+bool ga_json_valid(const char *s, size_t len);
 
 /* The run's verdict summary for people: "Passed", "Failed", "Incomplete"
  * (no Fail but some Not tested), "Aborted", "Did not finish". */

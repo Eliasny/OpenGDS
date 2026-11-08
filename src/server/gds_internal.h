@@ -24,7 +24,10 @@
 
 typedef struct gds_binding gds_binding;
 typedef struct gds_job gds_job;
+typedef struct gds_cond_vis gds_cond_vis;
+typedef struct gds_dialog gds_dialog;
 typedef struct gds_node_perms gds_node_perms;
+typedef struct gds_role_bool gds_role_bool;
 #define GDS_ALARM_QUEUE 64
 /* A queued gds_server_set_alarm (gds_alarms.c). */
 typedef struct {
@@ -33,6 +36,8 @@ typedef struct {
     UA_UInt16 severity;
     char *message;
 } gds_alarm_op;
+
+typedef struct gds_ptl gds_ptl;
 
 struct gds_server {
     UA_Server *ua;
@@ -59,6 +64,8 @@ struct gds_server {
     bool workPending, workStop;
     bool plugStop; /* plugin workers stop (plugLock); here for packing */
     bool started;  /* gds_server_run was called (__atomic); here for packing */
+    bool ptlBound;            /* ptlLock; here for packing */
+    bool alarmDrainScheduled; /* alarmLock; here for packing */
     /* plugin privilege providers, fixed before the server runs */
     gds_privilege_provider privProviders[GDS_MAX_PRIVILEGE_PROVIDERS];
     size_t nPrivProviders;
@@ -71,6 +78,13 @@ struct gds_server {
     size_t nBindings;
     gds_node_perms *perms;
     size_t nPerms, capPerms;
+    gds_role_bool *roleBools; /* A17, also under bindLock */
+    size_t nRoleBools, capRoleBools;
+    /* plugin trust lists (gds_plugin_tl.c, A18): ptlLock, a leaf lock,
+     * guards the list and each file store; handles are server thread only */
+    pthread_mutex_t ptlLock;
+    gds_ptl *ptls[GDS_MAX_PLUGIN_TRUST_LISTS];
+    size_t nPtls;
     pthread_mutex_t plugLock;
     pthread_cond_t plugCond;
     pthread_t plugThreads[GDS_PLUGIN_WORKERS];
@@ -85,7 +99,15 @@ struct gds_server {
     size_t nAlarms;
     gds_alarm_op alarmOps[GDS_ALARM_QUEUE];
     size_t alarmOpHead, nAlarmOps;
-    bool alarmDrainScheduled;
+    /* conditions whose events only some Roles receive (A19); visLock is a
+     * leaf lock, taken under open62541's service mutex */
+    pthread_mutex_t visLock;
+    gds_cond_vis *vis;
+    size_t nVis, capVis;
+    /* plugin dialogs (gds_dialogs.c, A19); dialogLock is a leaf lock */
+    pthread_mutex_t dialogLock;
+    gds_dialog **dialogs;
+    size_t nDialogs, capDialogs, dialogsReserved;
     /* issuance holds (gds_registrar.c, UASM ask A13), not replicated */
     pthread_mutex_t holdLock;
     UA_Guid *holds;
@@ -98,6 +120,9 @@ struct gds_server {
     /* CertificateManager rights hook (UASM ask A14); fixed before run */
     gds_may_manage_fn mayManage;
     void *mayManageCtx;
+    /* DefaultApplicationGroup TrustList LastUpdateTime (gds_trustlist.c);
+     * server thread only */
+    UA_DateTime tlLastUpdate;
 };
 
 /* ---- caller views (gds_caller.c, issue #17) ---- */
@@ -144,6 +169,24 @@ GDS_MUST_CHECK UA_StatusCode gds_embed_defer_rights(gds_server *s, UA_MethodCall
                                                     const UA_NodeId *objectId, const UA_Guid *app,
                                                     size_t inputSize, const UA_Variant *input,
                                                     size_t outputSize, UA_Variant *output);
+/* A core method that runs part of its work on a plugin worker (A19):
+ * run(ctx, caller, inputs) on a worker, then done(s, ctx, run's status) on
+ * the server thread, whose status completes the call (also when the call
+ * was cancelled; done then frees ctx). Good_CompletesAsynchronously, or an
+ * error and ctx stays the caller's. ctxFree frees ctx if the server stops
+ * before done ran. */
+typedef UA_StatusCode (*gds_defer_run_fn)(void *ctx, const gds_caller *caller, size_t nIn,
+                                          const UA_Variant *in);
+typedef UA_StatusCode (*gds_defer_done_fn)(gds_server *s, void *ctx, UA_StatusCode status);
+typedef void (*gds_defer_free_fn)(void *ctx);
+/* Starts the plugin workers if they are not running yet. */
+GDS_MUST_CHECK gds_status gds_embed_pool_start(gds_server *s);
+GDS_MUST_CHECK UA_StatusCode gds_embed_defer(gds_server *s, const UA_NodeId *sessionId,
+                                             void *sessionContext, const UA_NodeId *objectId,
+                                             size_t inputSize, const UA_Variant *input,
+                                             UA_Variant *output, gds_defer_run_fn run,
+                                             gds_defer_done_fn done, gds_defer_free_fn ctxFree,
+                                             void *ctx);
 /* Is a plugin callback bound to this method node? */
 bool gds_embed_bound(gds_server *s, const UA_NodeId *methodId);
 /* Drop the bindings whose method node no longer exists. */
@@ -209,8 +252,9 @@ GDS_MUST_CHECK UA_StatusCode gds_load_app(gds_server *s, const UA_Guid *id,
 GDS_MUST_CHECK UA_StatusCode gds_directory_install(gds_server *s);
 GDS_MUST_CHECK UA_StatusCode gds_certmgr_install(gds_server *s);
 GDS_MUST_CHECK UA_StatusCode gds_trustlist_install(gds_server *s);
-/* The DefaultApplicationGroup trust list (the CA certificate and its CRL),
- * the lists in masks only; *out is a deep copy. Any thread. */
+/* The DefaultApplicationGroup trust list: the CA certificate and its CRL
+ * and the entries an administrator wrote (OPC 10000-12 §7.8.2), the lists
+ * in masks only; *out is a deep copy. Any thread; takes storeLock. */
 GDS_MUST_CHECK UA_StatusCode gds_trustlist_data(gds_server *s, UA_UInt32 masks,
                                                 UA_TrustListDataType *out);
 /* Issuance holds (gds_registrar.c, UASM ask A13): is this application's
@@ -247,9 +291,39 @@ GDS_MUST_CHECK UA_StatusCode gds_alarm_last_event_id(const gds_alarm *a, UA_Byte
 /* Condition fields, scalar values only (OPC 10000-9 §5.5.2). */
 GDS_MUST_CHECK UA_StatusCode gds_cond_set_field(UA_Server *ua, UA_NodeId c, const char *field,
                                                 const void *v, const UA_DataType *t);
+/* Removes open62541's write hook from a condition field (field/sub), so
+ * that writing it fires no event of its own. */
+GDS_MUST_CHECK UA_StatusCode gds_cond_detach_hook(UA_Server *ua, UA_NodeId c, const char *field,
+                                                  const char *sub);
+/* An array field (UA_Server_setConditionField refuses arrays). */
+GDS_MUST_CHECK UA_StatusCode gds_cond_set_array(UA_Server *ua, UA_NodeId c, const char *field,
+                                                const void *v, size_t n, const UA_DataType *t);
+/* Only sessions holding one of roles receive the events of cond, and the
+ * events whose SourceNode is cond (A19). n == 0: everyone. */
+GDS_MUST_CHECK gds_status gds_cond_restrict(gds_server *s, const UA_NodeId *cond,
+                                            const UA_NodeId *roles, size_t n);
+void gds_cond_unrestrict(gds_server *s, const UA_NodeId *cond);
+void gds_cond_vis_free(gds_server *s);
+/* Plugin dialogs (gds_dialogs.c, A19). Respond / Respond2 on one: server thread, from the
+ * DialogConditionType method callbacks (gds_approvals.c). */
+UA_StatusCode gds_dialog_respond(gds_server *s, const UA_NodeId *sessionId, void *sessionContext,
+                                 const UA_NodeId *objectId, UA_Int32 response,
+                                 const UA_LocalizedText *comment, bool respond2,
+                                 UA_Variant *output);
+/* After UA_Server_delete. */
+void gds_dialogs_free(gds_server *s);
 /* A TwoStateVariable field: its text and its Id. */
 GDS_MUST_CHECK UA_StatusCode gds_cond_set_two_state(UA_Server *ua, UA_NodeId c, const char *field,
                                                     UA_Boolean id, const char *text);
+
+/* Plugin trust lists (gds_plugin_tl.c). Is this one of the FileType /
+ * TrustListType methods they bind? */
+/* The group's file store, a deep copy; *found false when no plugin list
+ * has this group. Thread safe. */
+GDS_MUST_CHECK gds_status gds_ptl_get(gds_server *s, const UA_NodeId *groupId,
+                                      UA_TrustListDataType *out, bool *found);
+/* After UA_Server_delete. */
+void gds_ptl_free(gds_server *s);
 /* Policy (gds_policy.c): Received (approved) or Pending for a request made
  * by sessionContext. Takes storeLock. */
 GDS_MUST_CHECK gds_status gds_policy_initial_state(gds_server *s, const void *sessionContext,

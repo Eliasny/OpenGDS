@@ -38,23 +38,6 @@
 
 /* ---- condition fields (gds_cond_* in gds_alarms.c) ---- */
 
-/* UA_Server_setConditionField refuses arrays in v1.5.10: write the
- * variable directly (spike workaround 2). */
-static UA_StatusCode set_field_array(UA_Server *ua, UA_NodeId c, const char *field,
-                                     const void *v, size_t n, const UA_DataType *t) {
-    UA_Variant var;
-    UA_Variant_setArray(&var, (void *)(uintptr_t)v, n, t);
-    UA_QualifiedName qn = UA_QUALIFIEDNAME(0, (char *)(uintptr_t)field);
-    UA_BrowsePathResult bpr = UA_Server_browseSimplifiedBrowsePath(ua, c, 1, &qn);
-    UA_StatusCode r = bpr.statusCode;
-    if(r == UA_STATUSCODE_GOOD && bpr.targetsSize == 1)
-        r = UA_Server_writeValue(ua, bpr.targets[0].targetId.nodeId, var);
-    else if(r == UA_STATUSCODE_GOOD)
-        r = UA_STATUSCODE_BADNOTFOUND;
-    UA_BrowsePathResult_clear(&bpr);
-    return r;
-}
-
 static UA_NodeId source_id(void) {
     return UA_NODEID_STRING(APP_NS, "Approvals");
 }
@@ -86,7 +69,7 @@ static UA_StatusCode dialog_fields(UA_Server *ua, UA_NodeId c, const gds_request
     if(r == UA_STATUSCODE_GOOD)
         r = gds_cond_set_field(ua, c, "Prompt", &prompt, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
     if(r == UA_STATUSCODE_GOOD)
-        r = set_field_array(ua, c, "ResponseOptionSet", options, 2,
+        r = gds_cond_set_array(ua, c, "ResponseOptionSet", options, 2,
                             &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
     if(r == UA_STATUSCODE_GOOD)
         r = gds_cond_set_field(ua, c, "DefaultResponse", &def, &UA_TYPES[UA_TYPES_INT32]);
@@ -250,8 +233,7 @@ static UA_StatusCode respond(gds_server *s, const UA_NodeId *objectId, const voi
 }
 
 static GDS_METHOD(respond2_cb) {
-    (void)server, (void)sessionId, (void)methodId, (void)objectContext, (void)output,
-        (void)outputSize;
+    (void)server, (void)methodId, (void)objectContext, (void)outputSize;
     if(inputSize < 2)
         return UA_STATUSCODE_BADARGUMENTSMISSING;
     if(inputSize > 2)
@@ -259,19 +241,24 @@ static GDS_METHOD(respond2_cb) {
     if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_INT32]) ||
        !UA_Variant_hasScalarType(&input[1], &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(gds_dialog_is(gds_ctx(methodContext), objectId)) /* a plugin's (A19) */
+        return gds_dialog_respond(gds_ctx(methodContext), sessionId, sessionContext, objectId,
+                                  *(const UA_Int32 *)input[0].data, input[1].data, true, output);
     return respond(gds_ctx(methodContext), objectId, sessionContext,
                    *(const UA_Int32 *)input[0].data, input[1].data, true);
 }
 
 static GDS_METHOD(respond_cb) {
-    (void)server, (void)sessionId, (void)methodId, (void)objectContext, (void)output,
-        (void)outputSize;
+    (void)server, (void)methodId, (void)objectContext, (void)outputSize;
     if(inputSize < 1)
         return UA_STATUSCODE_BADARGUMENTSMISSING;
     if(inputSize > 1)
         return UA_STATUSCODE_BADTOOMANYARGUMENTS;
     if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_INT32]))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(gds_dialog_is(gds_ctx(methodContext), objectId)) /* a plugin's (A19) */
+        return gds_dialog_respond(gds_ctx(methodContext), sessionId, sessionContext, objectId,
+                                  *(const UA_Int32 *)input[0].data, NULL, false, output);
     return respond(gds_ctx(methodContext), objectId, sessionContext,
                    *(const UA_Int32 *)input[0].data, NULL, false);
 }

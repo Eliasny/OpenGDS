@@ -75,6 +75,111 @@ UA_StatusCode gds_cond_set_two_state(UA_Server *ua, UA_NodeId c, const char *fie
     return r;
 }
 
+/* UA_Server_setConditionField refuses arrays in v1.5.10: write the
+ * variable directly (spike workaround 2). */
+UA_StatusCode gds_cond_set_array(UA_Server *ua, UA_NodeId c, const char *field, const void *v,
+                                 size_t n, const UA_DataType *t) {
+    UA_Variant var;
+    UA_Variant_setArray(&var, (void *)(uintptr_t)v, n, t);
+    UA_QualifiedName qn = UA_QUALIFIEDNAME(0, (char *)(uintptr_t)field);
+    UA_BrowsePathResult bpr = UA_Server_browseSimplifiedBrowsePath(ua, c, 1, &qn);
+    UA_StatusCode r = bpr.statusCode;
+    if(r == UA_STATUSCODE_GOOD && bpr.targetsSize == 1)
+        r = UA_Server_writeValue(ua, bpr.targets[0].targetId.nodeId, var);
+    else if(r == UA_STATUSCODE_GOOD)
+        r = UA_STATUSCODE_BADNOTFOUND;
+    UA_BrowsePathResult_clear(&bpr);
+    return r;
+}
+
+/* ---- who receives a condition's events (A19) ----
+ * Conditions with visibleTo Roles are in s->vis; open62541 asks
+ * gds_cond_may_receive (through the access control's allowReceiveEvent,
+ * patch 0006) for each MonitoredItem an event would reach, live and in
+ * ConditionRefresh. visLock is a leaf lock, taken under open62541's
+ * service mutex. */
+
+struct gds_cond_vis {
+    UA_NodeId cond;
+    unsigned bits;
+    bool anon, auth;
+};
+
+gds_status gds_cond_restrict(gds_server *s, const UA_NodeId *cond, const UA_NodeId *roles,
+                             size_t n) {
+    if(n == 0)
+        return GDS_OK;
+    gds_cond_vis v;
+    memset(&v, 0, sizeof(v));
+    gds_status st = gds_role_bits(s, roles, n, &v.bits, &v.anon, &v.auth);
+    if(st != GDS_OK)
+        return st;
+    if(UA_NodeId_copy(cond, &v.cond) != UA_STATUSCODE_GOOD)
+        return GDS_ENOMEM;
+    pthread_mutex_lock(&s->visLock);
+    if(s->nVis == s->capVis) {
+        size_t cap = s->capVis ? 2 * s->capVis : 16;
+        gds_cond_vis *nv = realloc(s->vis, cap * sizeof(*nv));
+        if(nv) {
+            s->vis = nv;
+            s->capVis = cap;
+        }
+    }
+    if(s->nVis < s->capVis)
+        s->vis[s->nVis++] = v;
+    else
+        st = GDS_ENOMEM;
+    pthread_mutex_unlock(&s->visLock);
+    if(st != GDS_OK)
+        UA_NodeId_clear(&v.cond);
+    return st;
+}
+
+void gds_cond_unrestrict(gds_server *s, const UA_NodeId *cond) {
+    pthread_mutex_lock(&s->visLock);
+    for(size_t i = 0; i < s->nVis; i++) {
+        if(UA_NodeId_equal(&s->vis[i].cond, cond)) {
+            UA_NodeId_clear(&s->vis[i].cond);
+            s->vis[i] = s->vis[--s->nVis];
+            break;
+        }
+    }
+    pthread_mutex_unlock(&s->visLock);
+}
+
+static const gds_cond_vis *vis_of(const gds_server *s, const UA_NodeId *id) {
+    for(size_t i = 0; id && i < s->nVis; i++)
+        if(UA_NodeId_equal(&s->vis[i].cond, id))
+            return &s->vis[i];
+    return NULL;
+}
+
+bool gds_cond_may_receive(gds_server *s, const void *sessionContext, const UA_NodeId *source,
+                          const UA_NodeId *instance) {
+    if(!s)
+        return true;
+    const gds_session *ss = gds_session_get(sessionContext);
+    bool anon = !ss || gds_session_anonymous(ss);
+    unsigned roles = ss ? gds_session_roles(ss) : 0;
+    pthread_mutex_lock(&s->visLock);
+    bool ok = true;
+    /* the condition's own events, and events about it (its audit events) */
+    const gds_cond_vis *v[2] = {vis_of(s, instance), vis_of(s, source)};
+    for(size_t i = 0; i < 2 && ok; i++)
+        if(v[i])
+            ok = ss && (v[i]->anon || (v[i]->auth && !anon) || (roles & v[i]->bits) != 0);
+    pthread_mutex_unlock(&s->visLock);
+    return ok;
+}
+
+void gds_cond_vis_free(gds_server *s) {
+    for(size_t i = 0; i < s->nVis; i++)
+        UA_NodeId_clear(&s->vis[i].cond);
+    free(s->vis);
+    s->vis = NULL;
+    s->nVis = s->capVis = 0;
+}
+
 /* ---- lookup ---- */
 
 static gds_alarm *find_locked(gds_server *s, const UA_NodeId *id) {
@@ -173,12 +278,19 @@ static void drain_cb(UA_Server *ua, void *data) {
 
 /* ---- the plugin API ---- */
 
+/* visibleTo came with A19: older plugins pass a shorter struct. */
+static bool has_visible_to(const gds_alarm_def *d) {
+    return d->struct_size >= offsetof(gds_alarm_def, visibleToSize) + sizeof(size_t) &&
+           d->visibleToSize > 0;
+}
+
 static bool def_ok(const gds_alarm_def *d) {
     return d && d->abi_major == GDS_PLUGIN_ABI_MAJOR &&
            d->struct_size >= offsetof(gds_alarm_def, ackRolesSize) + sizeof(size_t) && d->name &&
            d->name[0] && strnlen(d->name, GDS_MAX_STRING + 1) <= GDS_MAX_STRING &&
            d->ackRolesSize <= GDS_MAX_CALLER_ROLES && (d->ackRolesSize == 0 || d->ackRoles) &&
-           !UA_NodeId_isNull(&d->sourceNode);
+           !UA_NodeId_isNull(&d->sourceNode) &&
+           (!has_visible_to(d) || d->visibleToSize <= GDS_MAX_CALLER_ROLES);
 }
 
 static gds_status set_ack_roles(gds_server *s, const gds_alarm_def *def, gds_alarm *a) {
@@ -212,27 +324,30 @@ static void alarm_free(gds_alarm *a) {
  * ActiveState and AckedState and on Severity: a write fires events and
  * rewrites Message and other fields (and is undone while Retain is
  * false). OpenGDS drives these alarms itself, so the hooks go. */
+UA_StatusCode gds_cond_detach_hook(UA_Server *ua, UA_NodeId c, const char *field,
+                                   const char *sub) {
+    UA_QualifiedName path[2] = {UA_QUALIFIEDNAME(0, (char *)(uintptr_t)field),
+                                UA_QUALIFIEDNAME(0, (char *)(uintptr_t)(sub ? sub : ""))};
+    UA_BrowsePathResult bp = UA_Server_browseSimplifiedBrowsePath(ua, c, sub ? 2 : 1, path);
+    UA_StatusCode r = bp.statusCode;
+    if(r == UA_STATUSCODE_GOOD && bp.targetsSize != 1)
+        r = UA_STATUSCODE_BADNOTFOUND;
+    if(r == UA_STATUSCODE_GOOD) {
+        UA_ValueCallback none = {NULL, NULL};
+        r = UA_Server_setVariableNode_valueCallback(ua, bp.targets[0].targetId.nodeId, none);
+    }
+    UA_BrowsePathResult_clear(&bp);
+    return r;
+}
+
 static UA_StatusCode detach_hooks(UA_Server *ua, UA_NodeId c) {
     static const char *const fields[][2] = {{"EnabledState", "Id"},
                                             {"ActiveState", "Id"},
                                             {"AckedState", "Id"},
                                             {"Severity", NULL}};
     UA_StatusCode r = UA_STATUSCODE_GOOD;
-    for(size_t i = 0; i < 4 && r == UA_STATUSCODE_GOOD; i++) {
-        UA_QualifiedName path[2] = {
-            UA_QUALIFIEDNAME(0, (char *)(uintptr_t)fields[i][0]),
-            UA_QUALIFIEDNAME(0, (char *)(uintptr_t)(fields[i][1] ? fields[i][1] : ""))};
-        UA_BrowsePathResult bp =
-            UA_Server_browseSimplifiedBrowsePath(ua, c, fields[i][1] ? 2 : 1, path);
-        r = bp.statusCode;
-        if(r == UA_STATUSCODE_GOOD && bp.targetsSize != 1)
-            r = UA_STATUSCODE_BADNOTFOUND;
-        if(r == UA_STATUSCODE_GOOD) {
-            UA_ValueCallback none = {NULL, NULL};
-            r = UA_Server_setVariableNode_valueCallback(ua, bp.targets[0].targetId.nodeId, none);
-        }
-        UA_BrowsePathResult_clear(&bp);
-    }
+    for(size_t i = 0; i < 4 && r == UA_STATUSCODE_GOOD; i++)
+        r = gds_cond_detach_hook(ua, c, fields[i][0], fields[i][1]);
     return r;
 }
 
@@ -312,6 +427,11 @@ gds_status gds_server_add_alarm(gds_server *s, const gds_alarm_def *def, gds_ala
     }
     if(st == GDS_OK)
         st = create(s, def, a);
+    if(st == GDS_OK && has_visible_to(def)) {
+        st = gds_cond_restrict(s, &a->id, def->visibleTo, def->visibleToSize);
+        if(st != GDS_OK)
+            (void)UA_Server_deleteCondition(s->ua, a->id, a->source);
+    }
     pthread_mutex_lock(&s->alarmLock);
     s->nAlarms--;
     if(st == GDS_OK)

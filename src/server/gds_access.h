@@ -129,10 +129,13 @@ const gds_user *gds_users_check_cert(const gds_users *u, const UA_ByteString *ce
 
 /* Per-session state, the open62541 session context. */
 #define GDS_SESSION_TL_HANDLES GDS_MAX_TL_HANDLES
-typedef struct {
+typedef struct gds_tl_handle {
     UA_UInt32 handle; /* 0 = free */
+    bool write;       /* opened Write+EraseExisting: file is what was written */
     UA_ByteString file;
     size_t pos;
+    UA_DateTime active;         /* last call with this handle (ActivityTimeout) */
+    struct gds_tl_handle *next; /* the open handles of every session (gds_trustlist.c) */
 } gds_tl_handle;
 
 typedef struct {
@@ -162,6 +165,11 @@ typedef struct {
 GDS_MUST_CHECK gds_status gds_access_install(UA_ServerConfig *config, const gds_users *users,
                                              const gds_buf *caCertDer, bool x509Users);
 void gds_access_uninstall(void);
+/* Called with every session context just before it is freed (session
+ * close, re-activation with another identity); the trust list drops the
+ * session's open file handles there. Server thread. */
+typedef void (*gds_session_free_fn)(gds_session *s);
+void gds_access_on_session_free(gds_session_free_fn fn);
 
 static inline const gds_session *gds_session_get(const void *sessionContext) {
     return (const gds_session *)sessionContext;
@@ -194,10 +202,27 @@ struct gds_server;
 bool gds_node_call_allowed(struct gds_server *s, const void *sessionContext,
                            const UA_NodeId *nodeId);
 
+/* A19: may this session receive an event of source / instance (plugin
+ * conditions with visibleTo Roles)? Is objectId a plugin dialog, and may
+ * this session call methodId on it? Any thread. */
+bool gds_cond_may_receive(struct gds_server *s, const void *sessionContext,
+                          const UA_NodeId *source, const UA_NodeId *instance);
+bool gds_dialog_is(struct gds_server *s, const UA_NodeId *objectId);
+bool gds_dialog_may_call(struct gds_server *s, const void *sessionContext,
+                         const UA_NodeId *objectId, const UA_NodeId *methodId);
 /* May this session Acknowledge this plugin alarm (gds_alarms.c)? One of
  * its ackRoles over SignAndEncrypt. Thread safe. */
 bool gds_alarm_may_ack(struct gds_server *s, const void *sessionContext,
                        const UA_NodeId *conditionId);
+
+/* Is this session activated and open? Thread safe. */
+bool gds_access_session_live(const UA_NodeId *sessionId);
+/* A plugin trust list (gds_plugin_tl.c, A18): is objectId one (and, for a
+ * methodId, one of its FileType or TrustListType methods), and may this
+ * session call its methods? Thread safe. */
+bool gds_ptl_is_list(struct gds_server *s, const UA_NodeId *objectId, const UA_NodeId *methodId);
+bool gds_ptl_may_call(struct gds_server *s, const void *sessionContext,
+                      const UA_NodeId *objectId);
 
 /* The activated sessions with any of these Roles (or every session when
  * anonymous, every non-anonymous one when authenticated): their ids are
