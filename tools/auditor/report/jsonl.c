@@ -51,7 +51,7 @@ static size_t utf8_len(const unsigned char *s, size_t n) {
     return len;
 }
 
-static void put_string(FILE *f, const char *s) {
+void ga_json_put_string(FILE *f, const char *s) {
     fputc('"', f);
     const unsigned char *p = (const unsigned char *)(s ? s : "");
     size_t n = strlen((const char *)p);
@@ -86,7 +86,7 @@ static void put_string(FILE *f, const char *s) {
 
 static void put_key_str(FILE *f, const char *key, const char *val) {
     fprintf(f, ",\"%s\":", key);
-    put_string(f, val);
+    ga_json_put_string(f, val);
 }
 
 bool ga_jsonl_write(FILE *f, const ga_event *ev) {
@@ -351,6 +351,17 @@ static bool skip_value(cursor *c, int depth) {
     case 'n': return lit(c, "null");
     default: return num(c, NULL);
     }
+}
+
+bool ga_json_valid(const char *s, size_t len) {
+    if(!s)
+        return false;
+    cursor c = {s, s + len};
+    ws(&c);
+    if(!skip_value(&c, 0))
+        return false;
+    ws(&c);
+    return c.p == c.end;
 }
 
 void ga_jsonl_strings_free(ga_jsonl_strings *strs) {

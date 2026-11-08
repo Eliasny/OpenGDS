@@ -104,6 +104,16 @@ gdsadm apps unregister urn:example:device CONNECTION
 
 CONNECTION is the same as for `gdsadm push now`: `--gds URL --cert DER --key DER --trust DER [--crl DER] --user NAME --password-file FILE`.
 
+## The application trust list
+
+Every application that pulls its trust list from the GDS (GetTrustList, OPC 10000-12 §7.9.9) gets the trust list of the DefaultApplicationGroup. It always holds the GDS CA certificate and its current CRL. A user with CertificateAuthorityAdmin can add more entries with the standard TrustList methods (§7.8.2), for example a self-signed device certificate or another CA with its CRL:
+
+- `AddCertificate` adds one trusted, non-CA certificate. Its issuer must already be in the list.
+- `RemoveCertificate` takes the SHA-1 thumbprint. Removing a CA removes its CRLs, and is refused while another entry still needs it.
+- `Open` with Write+EraseExisting (0x06), `Write`, then `CloseAndUpdate` replaces the lists named in SpecifiedLists. `Close` without `CloseAndUpdate` discards what was written.
+
+Every change is validated first (structure, signatures, validity period, revocation) and refused as a whole if one entry fails. Copies of the GDS CA certificate and its CRL in a written list are ignored, and the CA certificate cannot be removed. The entries are kept in the store, so they survive a restart and replicate with it. Each change moves `LastUpdateTime` and raises a TrustListUpdatedAuditEventType. Only one client can have the list open for writing, and a file handle unused for 60 seconds (`ActivityTimeout`) is closed. A store backend without trust list support (before store ABI minor 5) answers Bad_NotSupported.
+
 ## Importing applications
 
 `gdsadm apps import` registers many applications at once, as a user with DiscoveryAdmin. Each record is one standard RegisterApplication call (OPC 10000-12 §6.5.5), so the GDS checks it exactly as it checks any other registration.

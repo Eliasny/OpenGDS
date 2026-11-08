@@ -36,25 +36,28 @@ RUN if [ -n "$DEBIAN_SNAPSHOT" ]; then \
     printf 'Acquire::Retries "10";\nAcquire::http::Timeout "60";\n' > /etc/apt/apt.conf.d/80-retries && \
     apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build git curl ca-certificates perl python3 \
-        libsqlite3-dev && \
+        libsqlite3-dev libseccomp-dev pkgconf && \
     rm -rf /var/lib/apt/lists/*
 ARG SOURCE_DATE_EPOCH
 WORKDIR /usr/src/opengds
 COPY . .
 RUN scripts/build_openssl.sh /opt/openssl /tmp/openssl-src && \
     OPENSSL_ROOT=/opt/openssl scripts/build_open62541.sh /opt/open62541 && \
-    cmake -S . -B /tmp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DOPENGDS_BUILD_AUDITOR=OFF \
+    cmake -S . -B /tmp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DOPENGDS_BUILD_AUDITOR=OFF -DOPENGDS_SECCOMP=ON \
         -DCMAKE_C_FLAGS="-ffile-prefix-map=/tmp/build=/usr/src/opengds/build" \
         -DOPEN62541_PREFIX=/opt/open62541 -DOPENSSL_ROOT_DIR=/opt/openssl && \
     cmake --build /tmp/build && \
     ctest --test-dir /tmp/build --output-on-failure && \
     DESTDIR=/out cmake --install /tmp/build --prefix /usr --component opengds --strip
-# The runtime base has glibc but not SQLite: take the library from the same
-# snapshot, with its copyright file.
+# The runtime base has glibc but not SQLite or libseccomp: take the libraries
+# from the build stage's packages, with their copyright files.
 RUN multiarch=$(gcc -print-multiarch) && \
-    install -d /out/usr/lib/$multiarch /out/usr/share/doc/libsqlite3-0 && \
-    cp -L /usr/lib/$multiarch/libsqlite3.so.0 /out/usr/lib/$multiarch/ && \
-    cp /usr/share/doc/libsqlite3-0/copyright /out/usr/share/doc/libsqlite3-0/ && \
+    install -d /out/usr/lib/$multiarch && \
+    for lib in libsqlite3.so.0:libsqlite3-0 libseccomp.so.2:libseccomp2; do \
+        install -d /out/usr/share/doc/${lib#*:} && \
+        cp -L /usr/lib/$multiarch/${lib%:*} /out/usr/lib/$multiarch/ && \
+        cp /usr/share/doc/${lib#*:}/copyright /out/usr/share/doc/${lib#*:}/ || exit 1; \
+    done && \
     rm -rf /out/usr/lib/systemd /out/usr/lib/sysusers.d && \
     install -d -m 0750 /state/var/lib/opengds && \
     install -d -m 0700 /state/var/lib/opengds-signer && \

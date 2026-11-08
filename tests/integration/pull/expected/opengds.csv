@@ -40,10 +40,9 @@ gds.tl.write_anonymous,pass
 #   gds.cm.keypair_*         StartNewKeyPairRequest returns BadInternalError (Mandatory, §7.9.4);
 #                            the thin path should answer BadNotImplemented
 #   gds.cm.sign_bad_type     an HttpsCertificateType request is accepted in DefaultApplicationGroup (§7.9.3)
-#   gds.tl.*write*, add_*    TrustList Write/CloseAndUpdate/AddCertificate/RemoveCertificate not implemented
-#   gds.tl.open_bad_mode     Open with an unsupported mode is not answered BadNotSupported (§7.8.2.2)
 #   gds.model.certificate_group  DefaultApplicationGroup.CertificateTypes is empty
-#   gds.ev.*                 no audit event reaches a test session and Server.Auditing is FALSE
+#   gds.ev.*                 Server.Auditing is FALSE; of the audit events only TrustListUpdated
+#                            (§7.8.2.1) reaches a test session
 gds.qry.uri_pattern,pass
 gds.qry.type_mask,pass
 gds.qry.product_uri,pass
@@ -69,17 +68,17 @@ gds.cm.sign_bad_group,pass
 gds.cm.sign_bad_type,fail
 gds.cm.sign_unknown_app,pass
 gds.cm.sign_null_group,pass
-gds.tl.open_bad_mode,warn
+gds.tl.open_bad_mode,pass
 gds.tl.open_with_masks,pass
 gds.tl.read_chunked,pass
 gds.tl.handle_other_session,pass
-gds.tl.close_discards,fail
-gds.tl.write_update,fail
-gds.tl.add_remove,fail
-gds.tl.add_untrusted_flag,warn
-gds.tl.add_no_issuer,warn
-gds.tl.add_while_open,not_tested
-gds.tl.remove_unknown,warn
+gds.tl.close_discards,pass
+gds.tl.write_update,pass
+gds.tl.add_remove,pass
+gds.tl.add_untrusted_flag,pass
+gds.tl.add_no_issuer,pass
+gds.tl.add_while_open,pass
+gds.tl.remove_unknown,pass
 gds.kc.service,not_supported
 gds.kc.start_unknown_uri,not_supported
 gds.kc.request_flow,not_supported
@@ -98,7 +97,7 @@ gds.az.sign_only,not_supported
 gds.ev.registration_changed,not_supported
 gds.ev.certificate_requested_delivered,not_supported
 gds.ev.certificate_revoked,not_supported
-gds.ev.trustlist_updated,not_tested
+gds.ev.trustlist_updated,pass
 gds.ev.auditing_flag,not_supported
 gds.ev.group_alarms,not_supported
 gds.acc.unregister_other,pass
@@ -106,7 +105,7 @@ gds.acc.update_other,pass
 gds.acc.sign_other,pass
 gds.acc.get_certificates_other,pass
 gds.acc.revoke_needs_ca_admin,pass
-gds.acc.tl_add_needs_ca_admin,warn
+gds.acc.tl_add_needs_ca_admin,pass
 gds.acc.sign_sign_only,pass
 gds.acc.keypair_sign_only,pass
 gds.model.directory,pass

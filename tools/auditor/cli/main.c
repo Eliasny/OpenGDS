@@ -15,7 +15,8 @@
  *
  * Every subcommand also takes, before any "--":
  *   --events FILE  the engine's event stream as JSON Lines (engine.h)
- *   --report DIR   DIR/report.html and DIR/junit.xml at the end of the run
+ *   --report DIR   DIR/report.html, junit.xml, report.json and report.tap at
+ *                  the end of the run
  * SIGINT and SIGTERM abort the run: later tests are Not tested and the
  * server profile still restores the target; a second signal kills.
  * SIGUSR1 pauses before the next test, SIGUSR2 resumes.
@@ -518,7 +519,7 @@ static int finish_front_end(front_end *fe, int rc) {
     if(fe->report && fe->results.profile) {
         char err[512];
         if(ga_report_write_dir(fe->report, &fe->results, err, sizeof(err)))
-            printf("# report: %s/report.html, %s/junit.xml\n", fe->report, fe->report);
+            printf("# report: %s/{report.html,junit.xml,report.json,report.tap}\n", fe->report);
         else {
             fprintf(stderr, "report: %s\n", err);
             rc = 2;

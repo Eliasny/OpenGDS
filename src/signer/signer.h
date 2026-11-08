@@ -18,6 +18,10 @@ typedef struct {
     gds_store *store; /* read-only */
     gds_ca *ca;
     gds_journal *journal; /* NULL: no journal (tests); opengds-signer always has one */
+    /* A store call answered GDS_EIO (e.g. an embedder's store lost its
+     * service, A21): gds_signer_serve sends that reply, then ends with
+     * GDS_EIO so the signer exits and is restarted. */
+    bool storeFailed;
 } gds_signer;
 
 /* Every SIGN_CSR answer is journalled before it is returned. When the

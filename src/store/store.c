@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "common/limits.h"
 #include "store_backend.h"
 #include "common/banned.h"
 
@@ -148,6 +149,31 @@ gds_status gds_store_cert_scan(gds_store *s, gds_cert_scan_cb cb, void *ctx) {
     if(!s->be.cert_scan)
         return GDS_EUNSUPPORTED;
     return s->be.cert_scan(s->ctx, cb, ctx);
+}
+
+gds_status gds_store_tl_get(gds_store *s, uint32_t groupId, gds_buf *data, int64_t *lastUpdate) {
+    data->data = NULL;
+    data->len = 0;
+    *lastUpdate = 0;
+    if(!s->be.tl_get)
+        return GDS_EUNSUPPORTED; /* a backend before minor 5 */
+    gds_status r = s->be.tl_get(s->ctx, groupId, data, lastUpdate);
+    if(r == GDS_OK && data->len > GDS_MAX_TRUSTLIST_SIZE) {
+        gds_buf_free(data);
+        r = GDS_ETOOBIG;
+    }
+    return r;
+}
+
+gds_status gds_store_tl_put(gds_store *s, uint32_t groupId, const gds_buf *data,
+                            int64_t lastUpdate) {
+    if(!s->be.tl_put)
+        return GDS_EUNSUPPORTED;
+    if(!data || !data->data || data->len == 0)
+        return GDS_EINVAL;
+    if(data->len > GDS_MAX_TRUSTLIST_SIZE)
+        return GDS_ETOOBIG;
+    return s->be.tl_put(s->ctx, groupId, data, lastUpdate);
 }
 
 gds_status gds_store_audit_scan(gds_store *s, int64_t fromSeq, gds_audit_scan_cb cb, void *ctx) {
