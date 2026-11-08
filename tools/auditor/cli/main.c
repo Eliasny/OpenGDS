@@ -39,6 +39,7 @@
 #include "common/limits.h"
 #include "common/safeint.h"
 #include "client_profile.h"
+#include "discover.h"
 #include "gds_target.h"
 #include "results.h"
 #include "spec_tests.h"
@@ -62,8 +63,9 @@ static int usage(const char *argv0) {
             "       [--expect FILE.csv] [--list] [--init-only] [--slow] [--stop-after ID]\n"
             "       [--settle-timeout S]\n"
             "       %s client --help\n"
+            "       %s discover --url URL [--network] [--certs DIR]\n"
             "Every subcommand also takes --events FILE (JSON Lines) and --report DIR.\n",
-            argv0, argv0, argv0);
+            argv0, argv0, argv0, argv0);
     return 2;
 }
 
@@ -522,6 +524,8 @@ int main(int argc, char **argv) {
     if(argc < 2)
         return usage(argv[0]);
     const char *profile = argv[1];
+    if(strcmp(profile, "discover") == 0)
+        return discover_main(argc - 1, argv + 1);
     if(strcmp(profile, "client") != 0 && strcmp(profile, "gds") != 0 &&
        strcmp(profile, "server") != 0)
         return usage(argv[0]);

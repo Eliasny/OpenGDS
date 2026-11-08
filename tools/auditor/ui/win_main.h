@@ -5,6 +5,7 @@
 
 #include <gtk/gtk.h>
 
+#include "avm_plan.h"
 #include "results.h"
 
 GtkWindow *win_main_new(GtkApplication *app);
@@ -18,6 +19,16 @@ const ga_results *win_main_results(GtkWindow *win);
 /* History (ui/page_history.c): past runs, open one, compare one with the
  * run shown in the main window. */
 void page_history_present(GtkWindow *main);
+
+/* The form as a plan (read from the widgets first), for the Targets
+ * window to change; NULL while a run is going. After a change, call
+ * win_main_plan_changed to show it in the form. */
+AvmPlan *win_main_plan(GtkWindow *win);
+void win_main_plan_changed(GtkWindow *win);
+
+/* Targets (ui/page_targets.c): discovery, use an endpoint in the form,
+ * saved targets. */
+void page_targets_present(GtkWindow *main);
 
 /* For the smoke test: TRUE if every part of the window was built. */
 gboolean win_main_check(GtkWindow *win);

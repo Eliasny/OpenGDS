@@ -53,6 +53,17 @@ the kept runs, opens one (or any folder with an `events.jsonl` from a headless
 `--events` run) and compares two runs test by test. The form is kept between
 sessions in `~/.config/gdsaudit/last-plan.ini` (no passwords: only the paths
 of password files).
+Targets finds a device's endpoints (`gdsaudit discover`, below), shows each
+endpoint's policy, mode, security level, user tokens and certificate
+thumbprint, and puts the chosen one in the form with its certificate pinned.
+The form can also be kept as a named saved target
+(`~/.config/gdsaudit/targets.ini`, paths only).
+
+`gdsaudit discover --url URL [--network] [--certs DIR]` runs FindServers,
+GetEndpoints on the URL and each opc.tcp DiscoveryUrl, and with `--network`
+FindServersOnNetwork (Part 4 §5.5.2 to §5.5.4). It prints one tab-separated
+record per server, endpoint or error (format in `cli/discover.h`), and with
+`--certs` writes each server certificate as `<SHA-1 thumbprint>.der`.
 
 Server profile against a push-managed Server (the Auditor's own certificate,
 `<work>/own/cert.der`, must be trusted by the target and mapped to SecurityAdmin):
