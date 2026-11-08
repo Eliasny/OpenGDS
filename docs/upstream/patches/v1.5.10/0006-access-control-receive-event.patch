@@ -1,0 +1,66 @@
+From 21fdf8e266a2dbe48f7d1aacc7b743522ca8c42b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Elias=20Nyk=C3=A4nen?=
+ <61413159+Eliasny@users.noreply.github.com>
+Date: Sat, 7 Nov 2026 03:09:52 +0000
+Subject: [PATCH] feat(server): ask access control before delivering an event
+
+Part 3, 8.55 gives each node a ReceiveEvents permission: a session sees
+the events of a node only when one of its Roles holds it. v1.5.10 sends
+every event to every MonitoredItem that selects it, so a server cannot
+keep the events of a Condition (live, and replayed by ConditionRefresh)
+to the sessions allowed to see it.
+
+Add UA_AccessControl.allowReceiveEvent, asked for each MonitoredItem
+before the event is added to it, with the session, the SourceNode and
+the event instance (the Condition for condition events). NULL keeps the
+old behaviour.
+---
+ include/open62541/plugin/accesscontrol.h | 12 ++++++++++++
+ src/server/ua_subscription_event.c       |  8 ++++++++
+ 2 files changed, 20 insertions(+)
+
+diff --git a/include/open62541/plugin/accesscontrol.h b/include/open62541/plugin/accesscontrol.h
+index 240f2bd..9d0cafd 100644
+--- a/include/open62541/plugin/accesscontrol.h
++++ b/include/open62541/plugin/accesscontrol.h
+@@ -143,6 +143,18 @@ struct UA_AccessControl {
+                                                       UA_DateTime endTimestamp,
+                                                       bool isDeleteModified);
+ #endif
++
++#ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
++    /* Allow the session to receive an event (the ReceiveEvents permission,
++     * Part 3, 8.55). Asked once for every MonitoredItem of the session that
++     * would report the event, also for the events of ConditionRefresh.
++     * eventInstance is the node the fields are read from (a Condition, for
++     * condition events) or NULL. NULL (the default) allows every event. */
++    UA_Boolean (*allowReceiveEvent)(UA_Server *server, UA_AccessControl *ac,
++                                    const UA_NodeId *sessionId, void *sessionContext,
++                                    const UA_NodeId *sourceNode,
++                                    const UA_NodeId *eventInstance);
++#endif
+ };
+ 
+ _UA_END_DECLS
+diff --git a/src/server/ua_subscription_event.c b/src/server/ua_subscription_event.c
+index 463de2b..9505a71 100644
+--- a/src/server/ua_subscription_event.c
++++ b/src/server/ua_subscription_event.c
+@@ -1715,6 +1715,14 @@ createEvent(UA_Server *server, const UA_EventDescription *ed,
+                 continue;
+             ctx.session = sub->session;
+ 
++            /* May this session receive the event? */
++            UA_AccessControl *ac = &server->config.accessControl;
++            if(ac->allowReceiveEvent &&
++               !ac->allowReceiveEvent(server, ac, &sub->session->sessionId,
++                                      sub->session->context, &ed->sourceNode,
++                                      ed->eventInstance))
++                continue;
++
+             /* Evaluate the where-clause and create a notification */
+             res = UA_MonitoredItem_addEvent(mon, &ctx);
+             UA_FilterEvalContext_reset(&ctx);
+-- 
+2.43.0
+

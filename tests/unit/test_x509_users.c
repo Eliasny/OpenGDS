@@ -12,10 +12,13 @@
 #include <open62541/plugin/log_stdout.h>
 #include <openssl/evp.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -270,6 +273,26 @@ static bool trust(const char *pki, fixture *f) {
     return true;
 }
 
+/* The server thread opens its socket a little after it starts: wait for
+ * it (up to 10 s), or the first connect can be refused on a slow host. */
+static bool wait_listening(UA_UInt16 port) {
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_port = htons(port);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    for(int i = 0; i < 200; i++) {
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        bool up = fd >= 0 && connect(fd, (struct sockaddr *)&a, sizeof(a)) == 0;
+        if(fd >= 0)
+            (void)close(fd);
+        if(up)
+            return true;
+        (void)usleep(50000);
+    }
+    return false;
+}
+
 static void serve(fixture *f, gds_server *s, UA_UInt16 port, bool x509) {
     setup(s);
     running = true;
@@ -278,6 +301,7 @@ static void serve(fixture *f, gds_server *s, UA_UInt16 port, bool x509) {
         return;
     char url[64];
     (void)snprintf(url, sizeof(url), "opc.tcp://127.0.0.1:%u", (unsigned)port);
+    CHECK(wait_listening(port));
     UA_ByteString *sc = &f->own.cert;
     if(x509) {
         /* the admin's certificate gives the admin's Roles */

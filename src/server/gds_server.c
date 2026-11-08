@@ -354,6 +354,8 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
     pthread_mutex_init(&s->plugLock, NULL);
     pthread_mutex_init(&s->bindLock, NULL);
     pthread_mutex_init(&s->alarmLock, NULL);
+    pthread_mutex_init(&s->visLock, NULL);
+    pthread_mutex_init(&s->dialogLock, NULL);
     pthread_mutex_init(&s->holdLock, NULL);
     pthread_mutex_init(&s->peerLock, NULL);
     pthread_cond_init(&s->plugCond, NULL);
@@ -465,12 +467,17 @@ void gds_server_delete(gds_server *s) {
         UA_Server_delete(s->ua); /* closes every session, cancels plugin calls */
     gds_embed_free(s);
     gds_alarms_free(s);
+    gds_ptl_free(s);
     gds_access_uninstall();
     gds_buf_free(&s->caCert);
     pthread_cond_destroy(&s->plugCond);
     pthread_mutex_destroy(&s->plugLock);
     pthread_mutex_destroy(&s->bindLock);
     pthread_mutex_destroy(&s->alarmLock);
+    gds_dialogs_free(s);
+    pthread_mutex_destroy(&s->dialogLock);
+    gds_cond_vis_free(s);
+    pthread_mutex_destroy(&s->visLock);
     gds_holds_free(s);
     pthread_mutex_destroy(&s->holdLock);
     UA_Array_delete(s->peers, s->nPeers, &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]);

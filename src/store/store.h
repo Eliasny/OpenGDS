@@ -144,6 +144,17 @@ GDS_MUST_CHECK gds_status gds_store_cert_revoke_app(gds_store *s, const UA_Guid 
 GDS_MUST_CHECK gds_status gds_store_cert_is_revoked(gds_store *s, const gds_buf *serial,
                                                     bool *revoked);
 
+/* ---- CertificateGroup trust lists (OPC 10000-12 §7.8.2, schema 4) ----
+ * Per group: the entries an administrator wrote, as an opaque blob (the
+ * server stores the binary TrustListDataType), and the list's
+ * LastUpdateTime (UA_DateTime). GDS_ENOTFOUND if the group's list was never
+ * written; GDS_ETOOBIG above GDS_MAX_TRUSTLIST_SIZE. GDS_EUNSUPPORTED for a
+ * backend before minor 5. Put replaces the row in one transaction. */
+GDS_MUST_CHECK gds_status gds_store_tl_get(gds_store *s, uint32_t groupId, gds_buf *data,
+                                           int64_t *lastUpdate);
+GDS_MUST_CHECK gds_status gds_store_tl_put(gds_store *s, uint32_t groupId, const gds_buf *data,
+                                           int64_t lastUpdate);
+
 /* ---- the audit log (issue #18) ----
  * Append-only and hash-chained: row n's hash is
  *   SHA-256(prev_hash || seq (8 bytes, big-endian) || time (8 bytes,
@@ -187,8 +198,8 @@ GDS_MUST_CHECK gds_status gds_store_audit_verify(gds_store *s, int64_t *rows, in
  * transaction: it commits fully or changes nothing. The core calls a
  * backend from one thread at a time (see "Single-writer" above). */
 #define GDS_STORE_ABI_MAJOR 1u
-#define GDS_STORE_ABI_MINOR 4u /* 1: the audit log; 2: req_scan; 3: cert_revoke, cert_revoke_app,
-                                  cert_is_revoked; 4: cert_scan */
+#define GDS_STORE_ABI_MINOR 5u /* 1: the audit log; 2: req_scan; 3: cert_revoke, cert_revoke_app,
+                                  cert_is_revoked; 4: cert_scan; 5: tl_get, tl_put */
 
 typedef struct {
     uint32_t abi_major;
@@ -226,6 +237,9 @@ typedef struct {
     gds_status (*cert_is_revoked)(void *ctx, const gds_buf *serial, bool *revoked);
     /* minor 4 */
     gds_status (*cert_scan)(void *ctx, gds_cert_scan_cb cb, void *cbCtx);
+    /* minor 5 */
+    gds_status (*tl_get)(void *ctx, uint32_t groupId, gds_buf *data, int64_t *lastUpdate);
+    gds_status (*tl_put)(void *ctx, uint32_t groupId, const gds_buf *data, int64_t lastUpdate);
 } gds_store_backend;
 
 /* A store on a plugin backend. The vtable is copied; ctx is taken, and
@@ -237,7 +251,9 @@ typedef struct {
  * starts only with approval policy GDS_APPROVE_ALL. Before minor 3 the
  * cert_revoke calls return GDS_EUNSUPPORTED, so RevokeCertificate and
  * UnregisterApplication answer Bad_NotSupported. Before minor 4 (or with
- * cert_scan NULL) gds_store_cert_scan returns GDS_EUNSUPPORTED. */
+ * cert_scan NULL) gds_store_cert_scan returns GDS_EUNSUPPORTED. Before minor 5
+ * the trust list calls return GDS_EUNSUPPORTED, so the group trust lists
+ * can be read but not written (Bad_NotSupported). */
 GDS_MUST_CHECK gds_status gds_store_open_backend(const gds_store_backend *be, void *ctx,
                                                  gds_store **out);
 

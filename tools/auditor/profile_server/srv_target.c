@@ -1023,6 +1023,11 @@ static UA_StatusCode run_restart_cmd(const char *cmd) {
     if(pid < 0)
         return UA_STATUSCODE_BADINTERNALERROR;
     if(pid == 0) {
+        /* Only stdin, stdout and stderr: a server the command starts must not
+         * keep the Auditor's other descriptors open, such as the desktop
+         * UI's --events pipe, whose reader waits for end of file */
+        for(int fd = 3; fd < 1024; fd++)
+            close(fd);
         execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
         _exit(127);
     }
