@@ -272,7 +272,7 @@ static bool fail(cursor *c, const char *fmt, ...) {
     char why[200];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(why, sizeof(why), fmt, ap);
+    vsnprintf(why, sizeof(why), fmt, ap); /* NOLINT(clang-analyzer-valist.Uninitialized): va_start above */
     va_end(ap);
     snprintf(c->err, c->errLen, "%s:%u: %s", c->name, c->line, why);
     return false;
