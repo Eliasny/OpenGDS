@@ -8,6 +8,8 @@ add_library(gdsaudit_report STATIC
     report/results.c
     report/jsonl.c
     report/report.c
+    report/report_json.c
+    report/report_tap.c
     report/cu.c
     "${GA_CU_TABLE_C}")
 target_include_directories(gdsaudit_report PUBLIC
@@ -58,6 +60,12 @@ add_test(NAME auditor_pause_resume
          COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/cli/test_pause.sh"
                  "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/pause-run")
 set_tests_properties(auditor_pause_resume PROPERTIES TIMEOUT 600 ENVIRONMENT "PUSH_PORT=4991")
+
+# The report folder: HTML, JUnit, JSON and TAP agree with the engine's run
+add_test(NAME auditor_report_formats
+         COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/cli/test_reports.sh"
+                 "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/reports-run")
+set_tests_properties(auditor_report_formats PROPERTIES TIMEOUT 600 ENVIRONMENT "PUSH_PORT=4993")
 
 # Desktop UI (GTK4): view-model in avm/, window in ui/. Built when GTK 4.12+
 # is found (AUTO), always (ON) or never (OFF); the headless gdsaudit never

@@ -1,5 +1,7 @@
 /* OpenGDS Auditor - HTML and JUnit XML reports from one result list
- * (Auditor plan report/report_html.c, report_junit.c).
+ * (Auditor plan report/report_html.c, report_junit.c), the results per
+ * ConformanceUnit, and the report folder. JSON and TAP: report_json.c,
+ * report_tap.c.
  * Every report says "self-test, not OPC Foundation certification" and never
  * "compliant" or "certified".
  * SPDX-License-Identifier: MPL-2.0 */
@@ -99,21 +101,11 @@ static void html_summary(FILE *f, const ga_results *r) {
     fputs("</dd>\n</dl>\n", f);
 }
 
-/* One row of the ConformanceUnit table. unit is the catalogue's name,
- * GA_CU_TBD or NULL (not in the catalogue). */
-typedef struct {
-    const char *unit;
-    size_t counts[GA_VERDICT_COUNT];
-    size_t noVerdict;
-} unit_row;
-
-#define MAX_UNITS 32
-
 static bool same_unit(const char *a, const char *b) {
     return a == b || (a && b && strcmp(a, b) == 0);
 }
 
-static size_t find_unit(const unit_row *rows, size_t n, const char *unit) {
+static size_t find_unit(const ga_unit_row *rows, size_t n, const char *unit) {
     size_t k = 0;
     while(k < n && !same_unit(rows[k].unit, unit))
         k++;
@@ -121,14 +113,14 @@ static size_t find_unit(const unit_row *rows, size_t n, const char *unit) {
 }
 
 /* Units in order of first appearance. The last row is kept for tests not in
- * the catalogue, so past MAX_UNITS - 1 named units the rest count there. */
-static size_t collect_units(const ga_results *r, unit_row *rows) {
+ * the catalogue, so past GA_MAX_UNITS - 1 named units the rest count there. */
+size_t ga_results_units(const ga_results *r, ga_unit_row rows[GA_MAX_UNITS]) {
     size_t n = 0;
     for(size_t i = 0; i < r->n; i++) {
         const ga_result *x = &r->items[i];
         const char *unit = ga_conformance_unit(x->id);
         size_t k = find_unit(rows, n, unit);
-        if(k == n && n >= MAX_UNITS - 1) {
+        if(k == n && n >= GA_MAX_UNITS - 1) {
             unit = NULL;
             k = find_unit(rows, n, NULL);
         }
@@ -144,7 +136,7 @@ static size_t collect_units(const ga_results *r, unit_row *rows) {
     return n;
 }
 
-static const char *unit_outcome(const unit_row *u) {
+const char *ga_unit_outcome(const ga_unit_row *u) {
     if(u->counts[GA_FAIL])
         return "Failed";
     if(u->counts[GA_NOT_TESTED] || u->noVerdict)
@@ -156,8 +148,8 @@ static const char *unit_outcome(const unit_row *u) {
  * the run outcome: any Fail fails the unit, any Not tested leaves it
  * Incomplete. */
 static void html_units(FILE *f, const ga_results *r) {
-    unit_row rows[MAX_UNITS];
-    size_t n = collect_units(r, rows);
+    ga_unit_row rows[GA_MAX_UNITS];
+    size_t n = ga_results_units(r, rows);
     if(n == 0)
         return;
     fputs("<h2>ConformanceUnits</h2>\n<p class=\"note\">Grouped by the ConformanceUnit each "
@@ -168,7 +160,7 @@ static void html_units(FILE *f, const ga_results *r) {
         fprintf(f, "<th>%s</th>", ga_verdict_label((ga_verdict)v));
     fputs("<th>Result</th></tr></thead>\n<tbody>\n", f);
     for(size_t k = 0; k < n; k++) {
-        const unit_row *u = &rows[k];
+        const ga_unit_row *u = &rows[k];
         fputs("<tr><td>", f);
         if(!u->unit)
             fputs("<em>Not in the test catalogue</em>", f);
@@ -179,7 +171,7 @@ static void html_units(FILE *f, const ga_results *r) {
         fputs("</td>", f);
         for(size_t v = 0; v < GA_VERDICT_COUNT; v++)
             fprintf(f, "<td>%zu</td>", u->counts[v]);
-        const char *o = unit_outcome(u);
+        const char *o = ga_unit_outcome(u);
         fprintf(f, "<td class=\"v %s\">%s</td></tr>\n",
                 o[0] == 'F' ? "fail" : o[0] == 'P' ? "pass" : "nt", o);
     }
@@ -322,5 +314,7 @@ bool ga_report_write_dir(const char *dir, const ga_results *r, char *err, size_t
         return false;
     }
     return write_one(dir, "report.html", ga_report_html, r, err, errLen) &&
-           write_one(dir, "junit.xml", ga_report_junit, r, err, errLen);
+           write_one(dir, "junit.xml", ga_report_junit, r, err, errLen) &&
+           write_one(dir, "report.json", ga_report_json, r, err, errLen) &&
+           write_one(dir, "report.tap", ga_report_tap, r, err, errLen);
 }
