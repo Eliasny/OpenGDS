@@ -17,6 +17,19 @@ target_include_directories(test_avm_history PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(test_avm_history PRIVATE gdsaudit_avm gds_hardening)
 add_test(NAME avm_history COMMAND test_avm_history)
 
+# The real engine through avm_run: events, output, pause, resume and abort,
+# with no target (Linux here; Windows in the installer job, where avm_run
+# uses named pipes and the engine's --control events).
+add_executable(test_avm_engine test_avm_engine.c)
+target_include_directories(test_avm_engine PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(test_avm_engine PRIVATE gdsaudit_avm gds_hardening)
+
+# The rest drives sh scripts and the self-test targets: full Linux builds only
+if(GDSAUDIT_SELFTESTS)
+add_test(NAME avm_engine
+         COMMAND test_avm_engine "$<TARGET_FILE:gdsaudit>" "${CMAKE_CURRENT_BINARY_DIR}/engine-run")
+set_tests_properties(avm_engine PROPERTIES TIMEOUT 300)
+
 # Saved targets and discovery parsing, then discovery through the engine
 # against push_test_server.
 add_executable(test_avm_target test_avm_target.c)
@@ -57,3 +70,4 @@ add_test(NAME avm_prompt
          COMMAND test_avm_prompt "${CMAKE_CURRENT_SOURCE_DIR}/fake_prompt_engine.sh"
                  "${CMAKE_CURRENT_BINARY_DIR}/prompt-run")
 set_tests_properties(avm_prompt PROPERTIES TIMEOUT 30)
+endif()

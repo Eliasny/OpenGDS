@@ -18,7 +18,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <direct.h>
+#include <errno.h>
 #include <io.h>
+#include <string.h>
 #include <windows.h>
 
 /* No symlinks to refuse (O_NOFOLLOW) and handles are not inherited unless
@@ -48,6 +50,24 @@ static inline int gds_rename_replace(const char *from, const char *to) {
 #define GDS_NULL_DEVICE "NUL"
 /* read() and write() take an unsigned int count */
 #define GDS_IO_CHUNK(n) ((unsigned)((n) > 0x40000000u ? 0x40000000u : (n)))
+/* The desktop UI hands the engine named pipes (\\.\pipe\NAME) for its
+ * event stream and the operator's answers. A pipe client opens the pipe
+ * that is there (OPEN_EXISTING), which fopen's "w" does not, so these are
+ * opened here: a file descriptor, or -1 and errno. -2: not a pipe path. */
+static inline int gds_open_pipe(const char *path, bool write) {
+    if(strncmp(path, "\\\\.\\pipe\\", 9) != 0)
+        return -2;
+    HANDLE h = CreateFileA(path, write ? GENERIC_WRITE : GENERIC_READ, 0, NULL, OPEN_EXISTING, 0,
+                           NULL); /* not inheritable: triggers do not get it */
+    if(h == INVALID_HANDLE_VALUE) {
+        errno = ENOENT;
+        return -1;
+    }
+    int fd = _open_osfhandle((intptr_t)h, write ? 0 : _O_RDONLY);
+    if(fd < 0)
+        CloseHandle(h);
+    return fd;
+}
 static inline bool gds_path_is_absolute(const char *p) {
     return p[0] == '/' || p[0] == '\\' ||
            (((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z')) && p[1] == ':');

@@ -24,7 +24,10 @@
  *   --prompts FILE operator answers, one line per prompt (prompts.h)
  * SIGINT and SIGTERM abort the run: later tests are Not tested and the
  * server profile still restores the target; a second signal kills.
- * SIGUSR1 pauses before the next test, SIGUSR2 resumes.
+ * SIGUSR1 pauses before the next test, SIGUSR2 resumes. Windows has no
+ * such signals: there the desktop UI passes --control NAME, three named
+ * events NAME-pause, NAME-resume and NAME-abort, and gives --events and
+ * --prompts as named pipes (\\.\pipe\...).
  *
  * gds runs the GDS profile (the T0 spec tests) against a GDS; server runs
  * the server profile (docs/auditor/server-profile.md) against a push-managed
@@ -447,7 +450,7 @@ cleanup:
 /* Front-end options every subcommand takes (engine.h): taken out of argv
  * before the subcommand parses the rest. */
 typedef struct {
-    const char *events, *report, *target, *prompts;
+    const char *events, *report, *target, *prompts, *control;
     FILE *eventsFile;
     ga_results results;
 } front_end;
@@ -464,13 +467,18 @@ static bool take_front_end_options(int *argc, char **argv, front_end *fe) {
         }
         bool ev = !strcmp(a, "--events"), rep = !strcmp(a, "--report");
         bool pr = !strcmp(a, "--prompts");
-        if(ev || rep || pr) {
+#ifdef _WIN32
+        bool ctl = !strcmp(a, "--control");
+#else
+        bool ctl = false;
+#endif
+        if(ev || rep || pr || ctl) {
             if(i + 1 >= *argc) {
                 fprintf(stderr, "%s needs a value\n", a);
                 ok = false;
                 break;
             }
-            *(ev ? &fe->events : rep ? &fe->report : &fe->prompts) = argv[++i];
+            *(ev ? &fe->events : rep ? &fe->report : pr ? &fe->prompts : &fe->control) = argv[++i];
             continue;
         }
         if((!strcmp(a, "--url") || !strcmp(a, "--listen")) && i + 1 < *argc)
@@ -506,6 +514,46 @@ static void install_abort_handler(void) {
     signal(SIGTERM, on_signal);
     signal(SIGBREAK, on_signal);
 }
+
+/* --control NAME: the desktop UI sets NAME-pause, NAME-resume or NAME-abort
+ * (auto-reset events it created) where Linux would send SIGUSR1, SIGUSR2
+ * or SIGINT. The UI also closes the answer pipe on abort, so a prompt
+ * waiting in read() ends. */
+static HANDLE controlEvents[3];
+
+static DWORD WINAPI control_thread(LPVOID arg) {
+    (void)arg;
+    for(;;) {
+        DWORD w = WaitForMultipleObjects(3, controlEvents, FALSE, INFINITE);
+        if(w == WAIT_OBJECT_0)
+            ga_request_pause(true);
+        else if(w == WAIT_OBJECT_0 + 1)
+            ga_request_pause(false);
+        else if(w == WAIT_OBJECT_0 + 2)
+            ga_request_abort();
+        else
+            return 0;
+    }
+}
+
+static bool start_control(const char *name) {
+    static const char *const suffix[3] = {"-pause", "-resume", "-abort"};
+    for(int i = 0; i < 3; i++) {
+        char n[256];
+        if(snprintf(n, sizeof(n), "%s%s", name, suffix[i]) >= (int)sizeof(n) ||
+           !(controlEvents[i] = OpenEventA(SYNCHRONIZE, FALSE, n))) {
+            fprintf(stderr, "--control: cannot open the event %s\n", n);
+            return false;
+        }
+    }
+    HANDLE t = CreateThread(NULL, 0, control_thread, NULL, 0, NULL);
+    if(!t) {
+        fprintf(stderr, "--control: cannot start its thread\n");
+        return false;
+    }
+    CloseHandle(t); /* it runs until the process exits */
+    return true;
+}
 #else
 static void install_abort_handler(void) {
     struct sigaction sa;
@@ -540,7 +588,13 @@ static bool start_front_end(front_end *fe, const char *profile) {
             if(gds_mkdirs(dir, 0755) != GDS_OK)
                 fprintf(stderr, "cannot create %s\n", dir); /* fopen reports it */
         }
-        fe->eventsFile = fopen(fe->events, GDS_FOPEN_WRITE_CLOEXEC); /* not inherited by triggers */
+#ifdef _WIN32
+        int pipeFd = gds_open_pipe(fe->events, true);
+        if(pipeFd != -2)
+            fe->eventsFile = pipeFd >= 0 ? _fdopen(pipeFd, "wb") : NULL;
+        else
+#endif
+            fe->eventsFile = fopen(fe->events, GDS_FOPEN_WRITE_CLOEXEC); /* not inherited by triggers */
         if(!fe->eventsFile) {
             perror(fe->events);
             return false;
@@ -551,6 +605,10 @@ static bool start_front_end(front_end *fe, const char *profile) {
         (void)ga_add_event_sink(ga_results_sink, &fe->results);
     if(fe->prompts && !prompts_open(fe->prompts))
         return false;
+#ifdef _WIN32
+    if(fe->control && !start_control(fe->control))
+        return false;
+#endif
     install_abort_handler();
     return true;
 }

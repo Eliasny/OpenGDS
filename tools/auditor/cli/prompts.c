@@ -76,8 +76,9 @@ static bool next_line(char *out, size_t outLen) {
         if(r <= 0)
             continue; /* look at the abort flag again */
 #endif
-        /* Windows: a plain file (no named pipes from the UI there), whose
-         * read never blocks */
+        /* Windows: a plain file, whose read never blocks, or the desktop
+         * UI's named pipe, whose read waits for the answer; the UI closes
+         * the pipe on abort, so read ends there */
         ssize_t got = read(fd, buf + have, GDS_IO_CHUNK(GA_PROMPT_LINE - have));
         if(got < 0 && errno == EINTR)
             continue;
@@ -104,7 +105,11 @@ static bool ask(size_t seq, const char *text, ga_answer *answer, char *note, siz
 }
 
 bool prompts_open(const char *path) {
-    fd = open(path, O_RDONLY | GDS_O_CLOEXEC);
+#ifdef _WIN32
+    fd = gds_open_pipe(path, false);
+    if(fd == -2)
+#endif
+        fd = open(path, O_RDONLY | GDS_O_CLOEXEC);
     if(fd < 0) {
         perror(path);
         return false;

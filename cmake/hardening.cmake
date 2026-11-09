@@ -55,7 +55,12 @@ if(NOT WIN32 AND NOT OPENGDS_SANITIZE AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(gds_hardening INTERFACE -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3)
 endif()
 
-if(WIN32)
+if(WIN32 AND OPENGDS_AUDITOR_GUI_ONLY)
+    # The desktop UI links GTK's DLLs (the installer ships them): only the
+    # compiler's own runtime is static
+    target_link_options(gds_hardening INTERFACE
+        -Wl,--dynamicbase -Wl,--high-entropy-va -Wl,--nxcompat -static-libgcc)
+elseif(WIN32)
     # PE: ASLR (64-bit), DEP; static so the .exe needs no MinGW DLLs
     target_link_options(gds_hardening INTERFACE
         -Wl,--dynamicbase -Wl,--high-entropy-va -Wl,--nxcompat -static)

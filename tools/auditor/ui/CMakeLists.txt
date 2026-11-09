@@ -5,6 +5,9 @@ target_include_directories(gdsaudit-gui PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(gdsaudit-gui PRIVATE gdsaudit_avm PkgConfig::GDSAUDIT_GTK4 gds_hardening)
 # next to gdsaudit, where the UI looks for its engine
 set_target_properties(gdsaudit-gui PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/..")
+if(WIN32)
+    set_target_properties(gdsaudit-gui PROPERTIES WIN32_EXECUTABLE TRUE) # no console window
+endif()
 
 # One smoke run of the real window (Auditor plan, "Shared rules"), on a
 # virtual display when xvfb-run is there.

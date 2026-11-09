@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- OpenGDS Auditor: Windows installer (WiX 5). Packs the stage of
+     build_gui.sh: the desktop UI, the engine, GTK's runtime and licences.
+     wix build gdsaudit.wxs -d Version=X.Y.Z -d Stage=DIR -arch x64 -o gdsaudit.msi
+     SPDX-License-Identifier: MPL-2.0 -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="OpenGDS Auditor" Manufacturer="OpenGDS" Version="$(var.Version)"
+           UpgradeCode="acb87cf4-9324-44f9-b5a7-b1dd4601c7a2" Scope="perMachine" Compressed="yes">
+    <SummaryInformation Description="OpenGDS Auditor: OPC 10000-12 self-test tool" />
+    <MajorUpgrade DowngradeErrorMessage="A newer OpenGDS Auditor is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="OpenGDS Auditor" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="69a1109f-98a4-4d00-ae44-0bae1603c4db">
+        <Shortcut Id="AuditorShortcut" Name="OpenGDS Auditor"
+                  Description="OPC 10000-12 (GDS) self-test tool"
+                  Target="[INSTALLFOLDER]bin\gdsaudit-gui.exe" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKLM" Key="Software\OpenGDS\Auditor" Name="StartMenuShortcut"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Auditor" Title="OpenGDS Auditor">
+      <Files Directory="INSTALLFOLDER" Include="$(var.Stage)\**" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>

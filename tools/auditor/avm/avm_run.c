@@ -2,13 +2,21 @@
  * SPDX-License-Identifier: MPL-2.0 */
 #include "avm_run.h"
 
-#include <gio/gunixinputstream.h>
 #include <errno.h>
 #include <glib/gstdio.h>
+#include <string.h>
+#ifdef G_OS_WIN32
+/* No fds 3 and 4 to hand a child, and no signals: named pipes carry the
+ * events and the answers, and named events pause, resume and abort the
+ * engine (its --control option). */
+#include <gio/gwin32inputstream.h>
+#include <windows.h>
+#else
+#include <gio/gunixinputstream.h>
 #include <glib-unix.h>
 #include <signal.h>
-#include <string.h>
 #include <unistd.h>
+#endif
 
 #include "common/banned.h"
 
@@ -27,6 +35,11 @@ struct AvmRun {
     guint replaySource; /* avm_run_open: the pending replay */
     int exitCode;
     char *error;
+#ifdef G_OS_WIN32
+    HANDLE answerPipe;  /* the engine's --prompts pipe (answerFd is unused) */
+    HANDLE control[3];  /* pause, resume, abort (the engine's --control) */
+    struct pipe_connect *connecting; /* pipes the engine has not opened yet */
+#endif
 };
 
 static void maybe_finished(AvmRun *r) {
@@ -141,11 +154,21 @@ static void read_output(AvmRun *r) {
 }
 
 static void close_answers(AvmRun *r) {
+#ifdef G_OS_WIN32
+    if(r->answerPipe)
+        CloseHandle(r->answerPipe); /* the engine reads end of file: no more answers */
+    r->answerPipe = NULL;
+#else
     if(r->answerFd >= 0)
         close(r->answerFd); /* the engine reads end of file: no more answers */
+#endif
     r->answerFd = -1;
     r->pendingSeq = 0;
 }
+
+#ifdef G_OS_WIN32
+static void cancel_connect(AvmRun *r);
+#endif
 
 static void on_exit(GObject *src, GAsyncResult *res, gpointer data) {
     GError *e = NULL;
@@ -159,6 +182,9 @@ static void on_exit(GObject *src, GAsyncResult *res, gpointer data) {
         set_error(r, e ? e->message : "lost the engine process");
     g_clear_error(&e);
     r->exited = TRUE;
+#ifdef G_OS_WIN32
+    cancel_connect(r); /* an engine that never opened its pipes */
+#endif
     close_answers(r);
     r->exitCode = g_subprocess_get_if_exited(r->proc) ? g_subprocess_get_exit_status(r->proc) : -1;
     maybe_finished(r);
@@ -177,21 +203,234 @@ static FILE *open_in(const char *dir, const char *name) {
     return f;
 }
 
-/* argv with "--prompts AVM_PROMPTS_FD" after the profile name (before any
- * "--" and the client profile's trigger command). */
-static char **with_prompts(char **argv) {
+/* argv with "--prompts PROMPTS" (and on Windows "--control CONTROL") after
+ * the profile name, before any "--" and the client profile's trigger
+ * command. events, if not NULL, replaces the AVM_EVENTS_FD after
+ * "--events". Only the array is new: g_free it, not its strings. */
+static char **engine_argv(char **argv, char *prompts, char *control,
+                          char *events) {
     GPtrArray *a = g_ptr_array_new();
+    gboolean rest = FALSE;
     for(guint i = 0; argv[i]; i++) {
-        g_ptr_array_add(a, (gpointer)argv[i]);
+        rest = rest || !strcmp(argv[i], "--");
+        if(events && !rest && i > 0 && !strcmp(argv[i - 1], "--events") &&
+           !strcmp(argv[i], AVM_EVENTS_FD))
+            g_ptr_array_add(a, (gpointer)events);
+        else
+            g_ptr_array_add(a, (gpointer)argv[i]);
         if(i == 1) {
             g_ptr_array_add(a, (gpointer) "--prompts");
-            g_ptr_array_add(a, (gpointer)AVM_PROMPTS_FD);
+            g_ptr_array_add(a, (gpointer)prompts);
+            if(control) {
+                g_ptr_array_add(a, (gpointer) "--control");
+                g_ptr_array_add(a, (gpointer)control);
+            }
         }
     }
     g_ptr_array_add(a, NULL);
     return (char **)g_ptr_array_free(a, FALSE);
 }
 
+static AvmRun *new_run(GSubprocess *proc, const char *runDir, const AvmRunCallbacks *cb,
+                       void *user) {
+    AvmRun *r = g_new0(AvmRun, 1);
+    r->proc = proc;
+    r->answerFd = -1;
+    r->cancel = g_cancellable_new();
+    r->dir = g_strdup(runDir);
+    r->cb = *cb;
+    r->user = user;
+    r->eventsCopy = open_in(runDir, "events.jsonl");
+    r->outputCopy = open_in(runDir, "output.log");
+    r->output = line_reader(g_subprocess_get_stdout_pipe(proc));
+    return r;
+}
+
+static gboolean check_args(char **argv, const char *runDir, GError **error) {
+    if(!argv || !argv[0] || !argv[1]) {
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "no engine command line");
+        return FALSE;
+    }
+    if(g_mkdir_with_parents(runDir, 0700) != 0) {
+        g_set_error(error, G_FILE_ERROR, (gint)g_file_error_from_errno(errno), "cannot create %s",
+                    runDir);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static GSubprocessLauncher *new_launcher(void) {
+    /* GSubprocessFlags is a flags enum: OR-ing its values is how GIO is used */
+    GSubprocessFlags flags = G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_MERGE | // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange)
+                             G_SUBPROCESS_FLAGS_STDIN_INHERIT;
+    return g_subprocess_launcher_new(flags);
+}
+
+#ifdef G_OS_WIN32
+/* The engine opens both pipes as it starts; until it has, a thread waits
+ * for the two overlapped ConnectNamedPipe calls. on_exit and avm_run_free
+ * cancel them (CancelIoEx) if the engine never comes. */
+struct pipe_connect {
+    HANDLE events, answers;
+    OVERLAPPED ovEvents, ovAnswers;
+    gboolean answersOk;
+};
+
+static void pipe_connect_free(gpointer data) {
+    struct pipe_connect *c = data;
+    if(c->events)
+        CloseHandle(c->events);
+    if(c->answers)
+        CloseHandle(c->answers);
+    CloseHandle(c->ovEvents.hEvent);
+    CloseHandle(c->ovAnswers.hEvent);
+    g_free(c);
+}
+
+/* TRUE if the client is (or was) there */
+static gboolean start_connect(HANDLE pipe, OVERLAPPED *ov) {
+    if(ConnectNamedPipe(pipe, ov))
+        return TRUE;
+    DWORD e = GetLastError();
+    if(e == ERROR_PIPE_CONNECTED || e == ERROR_NO_DATA)
+        SetEvent(ov->hEvent);
+    return e == ERROR_IO_PENDING || e == ERROR_PIPE_CONNECTED || e == ERROR_NO_DATA;
+}
+
+static gboolean wait_connect(HANDLE pipe, OVERLAPPED *ov) {
+    DWORD n = 0;
+    if(WaitForSingleObject(ov->hEvent, INFINITE) != WAIT_OBJECT_0)
+        return FALSE;
+    if(GetOverlappedResult(pipe, ov, &n, FALSE))
+        return TRUE;
+    DWORD e = GetLastError();
+    /* ERROR_IO_INCOMPLETE: the event was set because it was already connected */
+    return e == ERROR_PIPE_CONNECTED || e == ERROR_NO_DATA || e == ERROR_IO_INCOMPLETE;
+}
+
+static void connect_thread(GTask *task, gpointer src, gpointer data, GCancellable *cancel) {
+    (void)src;
+    (void)cancel;
+    struct pipe_connect *c = data;
+    gboolean ev = wait_connect(c->events, &c->ovEvents);
+    c->answersOk = wait_connect(c->answers, &c->ovAnswers);
+    g_task_return_boolean(task, ev);
+}
+
+static void on_connected(GObject *src, GAsyncResult *res, gpointer data) {
+    (void)src;
+    GTask *task = G_TASK(res);
+    if(g_cancellable_is_cancelled(g_task_get_cancellable(task)))
+        return; /* freed: data is gone */
+    AvmRun *r = data;
+    struct pipe_connect *c = g_task_get_task_data(task);
+    r->connecting = NULL;
+    if(!g_task_propagate_boolean(task, NULL)) {
+        /* the engine exited before it opened its pipes: its output says why */
+        r->eventsDone = TRUE;
+        maybe_finished(r);
+        return;
+    }
+    GInputStream *evIn = g_win32_input_stream_new(c->events, TRUE);
+    c->events = NULL;
+    r->events = line_reader(evIn);
+    g_object_unref(evIn);
+    if(!r->exited && c->answersOk) {
+        r->answerPipe = c->answers;
+        c->answers = NULL;
+    }
+    read_events(r);
+}
+
+static void cancel_connect(AvmRun *r) {
+    if(r->connecting) {
+        CancelIoEx(r->connecting->events, &r->connecting->ovEvents);
+        CancelIoEx(r->connecting->answers, &r->connecting->ovAnswers);
+    }
+}
+
+static HANDLE new_pipe(const char *name, DWORD direction) {
+    /* one instance, ours (FIRST_PIPE_INSTANCE), local clients only */
+    return CreateNamedPipeA(name, direction | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
+                                PIPE_REJECT_REMOTE_CLIENTS,
+                            1, 65536, 65536, 0, NULL);
+}
+
+AvmRun *avm_run_start(char **argv, const char *runDir, const AvmRunCallbacks *cb, void *user,
+                      GError **error) {
+    if(!check_args(argv, runDir, error))
+        return NULL;
+    static unsigned counter;
+    char *base = g_strdup_printf("gdsaudit-%lu-%u-%08x", (unsigned long)GetCurrentProcessId(),
+                                 ++counter, g_random_int());
+    char *evName = g_strdup_printf("\\\\.\\pipe\\%s-events", base);
+    char *ansName = g_strdup_printf("\\\\.\\pipe\\%s-prompts", base);
+    char *ctlName = g_strdup_printf("Local\\%s", base);
+    struct pipe_connect *c = g_new0(struct pipe_connect, 1);
+    c->ovEvents.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    c->ovAnswers.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    c->events = new_pipe(evName, PIPE_ACCESS_INBOUND);
+    c->answers = new_pipe(ansName, PIPE_ACCESS_OUTBOUND);
+    HANDLE control[3] = {NULL, NULL, NULL};
+    static const char *const suffix[3] = {"-pause", "-resume", "-abort"};
+    gboolean ok = c->ovEvents.hEvent && c->ovAnswers.hEvent &&
+                  c->events != INVALID_HANDLE_VALUE && c->answers != INVALID_HANDLE_VALUE;
+    for(int i = 0; ok && i < 3; i++) {
+        char *n = g_strconcat(ctlName, suffix[i], NULL);
+        control[i] = CreateEventA(NULL, FALSE, FALSE, n); /* auto-reset */
+        ok = control[i] && GetLastError() != ERROR_ALREADY_EXISTS;
+        g_free(n);
+    }
+    if(c->events == INVALID_HANDLE_VALUE)
+        c->events = NULL;
+    if(c->answers == INVALID_HANDLE_VALUE)
+        c->answers = NULL;
+    ok = ok && start_connect(c->events, &c->ovEvents) && start_connect(c->answers, &c->ovAnswers);
+    GSubprocess *proc = NULL;
+    if(!ok) {
+        char *m = g_win32_error_message((gint)GetLastError());
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "cannot create the engine's pipes: %s", m);
+        g_free(m);
+    } else {
+        GSubprocessLauncher *l = new_launcher();
+        char **full = engine_argv(argv, ansName, ctlName, evName);
+        proc = g_subprocess_launcher_spawnv(l, (const char *const *)full, error);
+        g_free((gpointer)full); /* only the array: the strings are argv's or ours */
+        g_object_unref(l);
+    }
+    g_free(evName);
+    g_free(ansName);
+    g_free(ctlName);
+    g_free(base);
+    if(!proc) {
+        if(c->events)
+            CancelIoEx(c->events, &c->ovEvents);
+        if(c->answers)
+            CancelIoEx(c->answers, &c->ovAnswers);
+        for(int i = 0; i < 3; i++)
+            if(control[i])
+                CloseHandle(control[i]);
+        /* the cancelled connects complete before the handles close */
+        if(c->events)
+            (void)WaitForSingleObject(c->ovEvents.hEvent, 1000);
+        if(c->answers)
+            (void)WaitForSingleObject(c->ovAnswers.hEvent, 1000);
+        pipe_connect_free(c);
+        return NULL;
+    }
+    AvmRun *r = new_run(proc, runDir, cb, user);
+    memcpy(r->control, control, sizeof(control));
+    r->connecting = c;
+    GTask *task = g_task_new(NULL, r->cancel, on_connected, r);
+    g_task_set_task_data(task, c, pipe_connect_free);
+    g_task_run_in_thread(task, connect_thread);
+    g_object_unref(task);
+    read_output(r);
+    g_subprocess_wait_async(proc, r->cancel, on_exit, r);
+    return r;
+}
+#else
 /* A write to the answer pipe after the engine died must fail with EPIPE,
  * not kill the UI. */
 static void ignore_sigpipe(void) {
@@ -212,15 +451,8 @@ static void close_pair(int fds[2]) {
 
 AvmRun *avm_run_start(char **argv, const char *runDir, const AvmRunCallbacks *cb, void *user,
                       GError **error) {
-    if(!argv || !argv[0] || !argv[1]) {
-        g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "no engine command line");
+    if(!check_args(argv, runDir, error))
         return NULL;
-    }
-    if(g_mkdir_with_parents(runDir, 0700) != 0) {
-        g_set_error(error, G_FILE_ERROR, (gint)g_file_error_from_errno(errno), "cannot create %s",
-                    runDir);
-        return NULL;
-    }
     int fds[2], ans[2];
     if(!g_unix_open_pipe(fds, FD_CLOEXEC, error))
         return NULL;
@@ -229,13 +461,10 @@ AvmRun *avm_run_start(char **argv, const char *runDir, const AvmRunCallbacks *cb
         return NULL;
     }
     ignore_sigpipe();
-    /* GSubprocessFlags is a flags enum: OR-ing its values is how GIO is used */
-    GSubprocessFlags flags = G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_MERGE | // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange)
-                             G_SUBPROCESS_FLAGS_STDIN_INHERIT;
-    GSubprocessLauncher *l = g_subprocess_launcher_new(flags);
+    GSubprocessLauncher *l = new_launcher();
     g_subprocess_launcher_take_fd(l, fds[1], 3); /* the child's --events /dev/fd/3 */
     g_subprocess_launcher_take_fd(l, ans[0], 4); /* the child's --prompts /dev/fd/4 */
-    char **full = with_prompts(argv);
+    char **full = engine_argv(argv, (char *)AVM_PROMPTS_FD, NULL, NULL);
     GSubprocess *proc = g_subprocess_launcher_spawnv(l, (const char *const *)full, error);
     g_free((gpointer)full); /* only the array: the strings are argv's */
     g_object_unref(l); /* closes our copies of the child's ends */
@@ -244,24 +473,17 @@ AvmRun *avm_run_start(char **argv, const char *runDir, const AvmRunCallbacks *cb
         close(ans[1]);
         return NULL;
     }
-    AvmRun *r = g_new0(AvmRun, 1);
-    r->proc = proc;
+    AvmRun *r = new_run(proc, runDir, cb, user);
     r->answerFd = ans[1];
-    r->cancel = g_cancellable_new();
-    r->dir = g_strdup(runDir);
-    r->cb = *cb;
-    r->user = user;
-    r->eventsCopy = open_in(runDir, "events.jsonl");
-    r->outputCopy = open_in(runDir, "output.log");
     GInputStream *evIn = g_unix_input_stream_new(fds[0], TRUE);
     r->events = line_reader(evIn);
     g_object_unref(evIn);
-    r->output = line_reader(g_subprocess_get_stdout_pipe(proc));
     read_events(r);
     read_output(r);
     g_subprocess_wait_async(proc, r->cancel, on_exit, r);
     return r;
 }
+#endif
 
 /* Replay of a stored run: one idle callback feeds every event. */
 typedef struct {
@@ -352,14 +574,66 @@ AvmRun *avm_run_open(const char *runDir, const AvmRunCallbacks *cb, void *user, 
 }
 
 void avm_run_abort(AvmRun *run) {
-    if(run && !run->exited && run->proc)
-        g_subprocess_send_signal(run->proc, SIGINT);
+    if(!run || run->exited || !run->proc)
+        return;
+#ifdef G_OS_WIN32
+    if(run->control[2])
+        SetEvent(run->control[2]);
+    close_answers(run); /* a prompt the engine waits on ends */
+#else
+    g_subprocess_send_signal(run->proc, SIGINT);
+#endif
 }
 
 void avm_run_pause(AvmRun *run, gboolean paused) {
-    if(run && !run->exited && run->proc)
-        g_subprocess_send_signal(run->proc, paused ? SIGUSR1 : SIGUSR2);
+    if(!run || run->exited || !run->proc)
+        return;
+#ifdef G_OS_WIN32
+    HANDLE h = run->control[paused ? 0 : 1];
+    if(h)
+        SetEvent(h);
+#else
+    g_subprocess_send_signal(run->proc, paused ? SIGUSR1 : SIGUSR2);
+#endif
 }
+
+#ifdef G_OS_WIN32
+static gboolean write_answer(AvmRun *run, const char *line, size_t len, GError **error) {
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof(ov));
+    ov.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    DWORD n = 0;
+    BOOL ok = ov.hEvent && WriteFile(run->answerPipe, line, (DWORD)len, &n, &ov);
+    if(!ok && ov.hEvent && GetLastError() == ERROR_IO_PENDING)
+        ok = GetOverlappedResult(run->answerPipe, &ov, &n, TRUE);
+    DWORD e = GetLastError();
+    if(ov.hEvent)
+        CloseHandle(ov.hEvent);
+    if(ok && n == len)
+        return TRUE;
+    char *m = g_win32_error_message((gint)e);
+    g_set_error(error, G_IO_ERROR, G_IO_ERROR_BROKEN_PIPE, "cannot send the answer to the engine: %s",
+                m);
+    g_free(m);
+    return FALSE;
+}
+#else
+static gboolean write_answer(AvmRun *run, const char *line, size_t len, GError **error) {
+    size_t off = 0;
+    while(off < len) {
+        ssize_t w = write(run->answerFd, line + off, len - off);
+        if(w < 0 && errno == EINTR)
+            continue;
+        if(w <= 0) {
+            g_set_error(error, G_IO_ERROR, (gint)g_io_error_from_errno(errno),
+                        "cannot send the answer to the engine: %s", g_strerror(errno));
+            return FALSE;
+        }
+        off += (size_t)w;
+    }
+    return TRUE;
+}
+#endif
 
 size_t avm_run_pending_prompt(const AvmRun *run) {
     return run ? run->pendingSeq : 0;
@@ -384,7 +658,12 @@ static char *clean_note(const char *note) {
 
 gboolean avm_run_answer(AvmRun *run, size_t seq, ga_answer answer, const char *note,
                         GError **error) {
-    if(!run || run->answerFd < 0 || run->exited) {
+#ifdef G_OS_WIN32
+    gboolean connected = run && run->answerPipe;
+#else
+    gboolean connected = run && run->answerFd >= 0;
+#endif
+    if(!connected || run->exited) {
         g_set_error(error, G_IO_ERROR, G_IO_ERROR_CLOSED, "the engine is not running");
         return FALSE;
     }
@@ -396,21 +675,9 @@ gboolean avm_run_answer(AvmRun *run, size_t seq, ga_answer answer, const char *n
     char *n = clean_note(note);
     char *line = g_strdup_printf("%zu %s%s%s\n", seq, ga_answer_name(answer), *n ? " " : "", n);
     g_free(n);
-    size_t len = strlen(line), off = 0;
-    while(off < len) {
-        ssize_t w = write(run->answerFd, line + off, len - off);
-        if(w < 0 && errno == EINTR)
-            continue;
-        if(w <= 0) {
-            g_set_error(error, G_IO_ERROR, (gint)g_io_error_from_errno(errno),
-                        "cannot send the answer to the engine: %s", g_strerror(errno));
-            g_free(line);
-            return FALSE;
-        }
-        off += (size_t)w;
-    }
+    gboolean ok = write_answer(run, line, strlen(line), error);
     g_free(line);
-    return TRUE;
+    return ok;
 }
 
 gboolean avm_run_is_running(const AvmRun *run) {
@@ -431,6 +698,12 @@ void avm_run_free(AvmRun *run) {
     g_cancellable_cancel(run->cancel);
     if(run->replaySource)
         g_source_remove(run->replaySource);
+#ifdef G_OS_WIN32
+    cancel_connect(run); /* the thread ends; the task frees the pipes */
+    for(int i = 0; i < 3; i++)
+        if(run->control[i])
+            CloseHandle(run->control[i]);
+#endif
     close_answers(run);
     if(!run->exited && run->proc)
         g_subprocess_force_exit(run->proc);
@@ -452,9 +725,17 @@ char *avm_engine_path(void) {
     const char *env = g_getenv("GDSAUDIT_ENGINE");
     if(env && *env)
         return g_strdup(env);
+#ifdef G_OS_WIN32
+    wchar_t w[MAX_PATH];
+    DWORD wl = GetModuleFileNameW(NULL, w, MAX_PATH);
+    char *self = wl > 0 && wl < MAX_PATH ? g_utf16_to_utf8((const gunichar2 *)w, (glong)wl, NULL, NULL, NULL) : NULL;
+    const char *engine = "gdsaudit.exe";
+#else
     char *self = g_file_read_link("/proc/self/exe", NULL);
+    const char *engine = "gdsaudit";
+#endif
     char *dir = self ? g_path_get_dirname(self) : g_strdup(".");
-    char *path = g_build_filename(dir, "gdsaudit", NULL);
+    char *path = g_build_filename(dir, engine, NULL);
     g_free(dir);
     g_free(self);
     return path;
