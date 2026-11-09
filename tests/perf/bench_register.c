@@ -115,8 +115,11 @@ int main(int argc, char **argv) {
     perf_gds_load(&g);
     worker *w = calloc(threads, sizeof(*w));
     pthread_t *tid = calloc(threads, sizeof(*tid));
-    if(!w || !tid)
+    if(!w || !tid) {
+        free(w);
+        free(tid);
         return 1;
+    }
     perf_samples lat;
     perf_errors err;
     perf_samples_init(&lat);

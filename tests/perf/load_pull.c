@@ -151,8 +151,11 @@ int main(int argc, char **argv) {
     pthread_barrier_init(&go, NULL, (unsigned)agents + 1);
     agent *a = calloc(agents, sizeof(*a));
     pthread_t *tid = calloc(agents, sizeof(*tid));
-    if(!a || !tid)
+    if(!a || !tid) {
+        free(a);
+        free(tid);
         return 1;
+    }
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 1u << 20);

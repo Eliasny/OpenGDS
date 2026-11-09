@@ -150,7 +150,7 @@ bool perf_gds_opt(perf_gds *g, const char *opt, const char *v) {
     };
     for(size_t i = 0; i < sizeof(opts) / sizeof(opts[0]); i++) {
         if(strcmp(opt, opts[i].name) == 0) {
-            memcpy((char *)g + opts[i].off, &v, sizeof(v));
+            memcpy((char *)g + opts[i].off, (const void *)&v, sizeof(v));
             return true;
         }
     }

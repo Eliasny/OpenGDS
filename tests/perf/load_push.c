@@ -217,13 +217,20 @@ int main(int argc, char **argv) {
     shared *sh = calloc(1, sizeof(*sh));
     device *dev = calloc(MAX_DEVICES, sizeof(*dev));
     pthread_t *tid = calloc(parallel, sizeof(*tid));
-    if(!sh || !dev || !tid)
+    if(!sh || !dev || !tid) {
+        free(sh);
+        free(dev);
+        free(tid);
         return 1;
+    }
     sh->g = &g;
     sh->dev = dev;
     sh->devN = load_devices(devFile, dev);
     if(sh->devN == 0) {
         fprintf(stderr, "load_push: no devices in %s\n", devFile);
+        free(sh);
+        free(dev);
+        free(tid);
         return 2;
     }
     sh->jobs = jobs ? jobs : sh->devN;
@@ -233,7 +240,7 @@ int main(int argc, char **argv) {
     uint64_t t0 = perf_now_ns();
     for(unsigned long i = 0; i < parallel; i++)
         if(pthread_create(&tid[i], NULL, worker, sh) != 0)
-            return 1;
+            exit(1); /* workers already run on sh */
     for(unsigned long i = 0; i < parallel; i++)
         pthread_join(tid[i], NULL);
     double secs = (double)(perf_now_ns() - t0) / 1e9;
