@@ -44,6 +44,15 @@
  *   push_backoff_min = 60       first retry after a failure, seconds; doubles
  *   push_backoff_max = 21600    up to this (1..2592000, >= push_backoff_min)
  *   push_rejected_interval = 3600  GetRejectedList period, seconds; 0 = never
+ *   mdns             = false                        (default) true: announce the GDS on
+ *                      the MulticastSubnet with capability GDS and answer
+ *                      FindServersOnNetwork (OPC 10000-12 Annex C; src/disc/).
+ *                      Not with loopback_only. Part 12 §5.2: mDNS is insecure,
+ *                      leave it off where hosts can be impersonated
+ *   mdns_server_name = OpenGDS                      (default: application_name) the mDNS
+ *                      service instance name, at most 63 bytes, no '.'
+ *   mdns_interface   = 192.0.2.10                   (default: all) IPv4 address of the
+ *                      interface to announce on
  *
  * With `signer` or `signer_socket` the CA key never enters opengdsd
  * (decision G1). With `signer` the passphrase file path (not its content)
@@ -98,6 +107,9 @@ typedef struct {
     char authorizationServiceUri[GDSD_MAX_VALUE];
     uint32_t accessTokenLifetime;  /* seconds */
     uint32_t refreshTokenLifetime; /* seconds; 0: none */
+    bool mdns;
+    char mdnsServerName[GDSD_MAX_VALUE];
+    char mdnsInterface[GDSD_MAX_VALUE];
 } gdsd_config;
 
 /* The values of gds_approval_policy (gds_server.h). */

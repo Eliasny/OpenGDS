@@ -243,6 +243,18 @@ static UA_StatusCode configure(UA_ServerConfig *c, const gds_server_config *cfg,
         r = set_description(c, cfg);
     if(r == UA_STATUSCODE_GOOD)
         r = set_listen_url(c, cfg);
+    if(r == UA_STATUSCODE_GOOD && cfg->mdns.enabled) {
+        gds_status st = cfg->loopbackOnly
+                            ? GDS_EINVAL
+                            : gds_disc_mdns_configure(c, &cfg->mdns, cfg->applicationName);
+        if(st != GDS_OK) {
+            fprintf(stderr, "opengds: mDNS announce: %s%s\n", gds_status_name(st),
+                    st == GDS_EUNSUPPORTED ? " (built without OPENGDS_WITH_MDNS)"
+                    : cfg->loopbackOnly    ? " (not with loopback_only)"
+                                           : "");
+            r = UA_STATUSCODE_BADCONFIGURATIONERROR;
+        }
+    }
     return r;
 }
 

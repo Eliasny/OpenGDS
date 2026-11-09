@@ -63,6 +63,18 @@ Give clients the CA certificate `ca_dir/ca.der` and the CRL `ca_dir/ca.crl` so t
 
 Sessions run only over SignAndEncrypt. SecurityPolicy None is open only for FindServers and GetEndpoints.
 
+## Announcing the GDS on the network (mDNS)
+
+With `mdns = true` opengdsd is its own LDS-ME (OPC 10000-12 §4.3.4, §5): it announces each endpoint URL on the local subnet as an mDNS service `_opcua-tcp._tcp` with `caps=GDS` (Annex C, Annex D), and answers FindServersOnNetwork with the servers it hears there, itself included. Clients that do not know where the GDS runs find it with any LDS-ME client, for example:
+
+```sh
+gdsaudit discover --url opc.tcp://gds.example.com:58810 --network
+```
+
+The service instance name is `mdns_server_name` (default: `application_name`, which must then be a valid DNS label: at most 63 bytes, no `.`); open62541 appends the host name to it. `mdns_interface` limits the announce to the interface with that IPv4 address. `mdns` cannot be combined with `loopback_only`. The announce needs UDP port 5353 and multicast group 224.0.0.251 open on the host firewall.
+
+mDNS is off by default. Part 12 §5.2: multicast DNS is insecure by nature and should be disabled where an attacker could impersonate another host. A client still checks the GDS certificate against its trust list (the CA certificate, see Clients), so a forged announce can redirect a client but not make it trust a forged GDS. The announce is built in with `OPENGDS_WITH_MDNS` (CMake, on by default), which needs open62541 built with multicast discovery (`scripts/build_open62541.sh`, `MDNS=MDNSD`, the default).
+
 ## Approving certificate requests
 
 `approval` in the configuration decides which requests are approved on arrival:
@@ -212,6 +224,21 @@ gdsadm certs status --store /var/lib/opengds/opengds.db
 ```
 
 `gdsadm` opens the store read-only and can be used while `opengdsd` runs.
+
+### Watching events live
+
+```sh
+gdsadm watch --url opc.tcp://gds.example.com:58810 --user admin \
+    --password-file admin.pw --trust ca.der --crl ca.crl [--json] [--count N] [--seconds N]
+```
+
+`gdsadm watch` subscribes to every event of the Server object over SignAndEncrypt and prints one line per event: audit events (AuditEventType and its subtypes), alarms, and the DialogConditions of certificate requests that wait for approval. Right after it subscribes it calls ConditionRefresh (OPC 10000-9 §5.5.7), so Conditions that were active before the watch started are shown too, marked `(refresh)`. The user's Roles decide which events the GDS sends: approval dialogs reach RegistrationAuthorityAdmin, for example.
+
+Each text line holds the UTC time, the severity, the EventType, the source and the message, then the Condition state (`[condition NAME enabled active acked retained]`) and, for audit events, `user=` and `status=`. Control characters are printed as `\xNN`. With `--json` each event is one JSON object on its own line (JSON Lines) with the fields `time`, `eventType`, `eventTypeId`, `severity`, `sourceName`, `sourceNode`, `message`, `eventId` (hex), `conditionId`, `conditionName`, `retain`, `enabled`, `active`, `acked`, `clientUserId`, `status` and `refresh`; a field the event does not have is left out.
+
+`gdsadm watch` runs until SIGINT or SIGTERM, `--count` events or `--seconds` seconds, then exits 0; it exits 1 if it cannot connect or loses the connection.
+
+On open62541 v1.5.10, ConditionRefresh fails with Bad_InternalError until the GDS has created its first Condition (an alarm or a waiting request); `gdsadm watch` then says so on stderr and shows new events only.
 
 ## Redundancy
 

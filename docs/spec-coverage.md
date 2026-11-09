@@ -63,6 +63,8 @@ the service Object, which is itself Optional.
 | GetServiceDescription | Method | M if service | §9.6.9 | `gds.az.description` (pass) |
 | AccessTokenRequestedAuditEventType | Event | M if service | §9.6.10 | `gds.az.audit_requested` (pass) |
 | AccessTokenIssuedAuditEventType | Event | M if service | §9.6.11 | `gds.az.audit_issued` (pass) |
+| mDNS announce, FindServersOnNetwork (LDS-ME) | SRV and TXT records, capability `GDS` | O | §4.3.4, §5, Annex C, Annex D | `unit_disc_mdns`, `integration_mdns_watch` step 3 (pass; not Auditor tests: the GDS profile does not cover discovery) |
+| MulticastDnsEnabled (the GDS's own ServerConfiguration) | Property | M | §7.10.3 | `unit_disc_mdns` (reads TRUE with `mdns = true`); writing it is refused, see Known gaps |
 
 Security of the channel and sessions: `gds.sec.endpoints` (pass; Part 4
 §5.4.4, Part 7), `gds.sec.none_session` (pass), `gds.sec.anonymous_register`
@@ -128,6 +130,11 @@ These items have no test yet, and each needs work before it can have one:
   unit test `unit_authz` covers the other two policies and the lockout.
 - RequestAccessToken (§9.6.5), which the spec deprecates; opengdsd does not
   offer it.
+- Writing MulticastDnsEnabled on the GDS's own ServerConfiguration
+  (§7.10.3: "It can be changed by writing to the Variable"). opengdsd
+  reads it from `mdns` in its configuration and refuses the write (every
+  Variable is read-only to sessions): open62541 v1.5.10 has no public call
+  to start or stop the announce at run time.
 - GetRejectedList (§7.8.3.1, Optional) on GDS certificate groups. The push
   side covers it as SRV-REJ, and the push engine calls it on devices
   (`tests/integration/test_push_engine.c`, `docs/push.md`).
