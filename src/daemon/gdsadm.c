@@ -17,6 +17,9 @@
  *   gdsadm push keycred URI --service NAME  push a KeyCredential to a device (§8.6)
  *   gdsadm push keycred-delete URI ...      delete it there and Revoke it on the GDS
  *   gdsadm watch --url URL ... [--json]     live audit events and alarms (gdsadm_watch.h)
+ *   gdsadm roles list ...                   Role mapping rules (OPC 10000-18 §4.4)
+ *   gdsadm roles add-identity|remove-identity ROLE TYPE CRITERIA ...
+ *   gdsadm roles add-app|remove-app ROLE URI ...   (SecurityAdmin, SignAndEncrypt)
  *
  * Passwords are read from stdin or a file, never argv. The store is opened read-only
  * and may be read while opengdsd runs. approve and reject answer the request's
@@ -68,6 +71,9 @@ static int usage(void) {
                     "       gdsadm push keycred-delete URI --service NAME [device options] CONNECTION\n"
                     "       gdsadm watch --url URL --user NAME --password-file F --trust CA.der\n"
                     "                    [--crl CA.crl] [--json] [--count N] [--seconds N]\n"
+                    "       gdsadm roles list CONNECTION\n"
+                    "       gdsadm roles add-identity|remove-identity ROLE TYPE CRITERIA CONNECTION\n"
+                    "       gdsadm roles add-app|remove-app ROLE APPLICATION_URI CONNECTION\n"
                     "  CONNECTION: --gds URL --cert DER --key DER --trust DER... [--crl DER]...\n"
                     "              --user NAME --password-file FILE\n");
     return 2;
@@ -347,6 +353,7 @@ static const struct {
     {"apps", "unregister", gdsadm_apps_unregister},
     {"certs", "status", certs_status},
     {"certs", "revoke", gdsadm_certs_revoke},
+    {"roles", NULL, gdsadm_roles},
     {"push", "now", gdsadm_push_now},
     {"push", "setup", gdsadm_push_setup},
     {"push", "keycred", gdsadm_push_keycred},
