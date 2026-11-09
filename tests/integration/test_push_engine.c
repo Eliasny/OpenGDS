@@ -522,8 +522,16 @@ static void case_standby(void) {
     if(!result("standby-role", gds_server_set_role(F.server, GDS_NODE_STANDBY, 100, 0) == GDS_OK,
                NULL))
         return;
-    nap_ms(500); /* a job that started before may still finish */
+    /* a job that started before may still finish: wait until the counts
+     * have held for 1 s (slow under TSan: a connect can take seconds) */
     unsigned long long dead = status_of(DEAD_URI).jobs, dev = status_of(SERVER_URI).jobs;
+    for(int held = 0, i = 0; held < 10 && i < 10 * WAIT_S; i++) {
+        nap_ms(100);
+        unsigned long long d2 = status_of(DEAD_URI).jobs, v2 = status_of(SERVER_URI).jobs;
+        held = d2 == dead && v2 == dev ? held + 1 : 0;
+        dead = d2;
+        dev = v2;
+    }
     for(int i = 0; i < 40; i++) { /* 4 s: the dead target would have been retried */
         push_engine_kick(F.engine);
         nap_ms(100);
