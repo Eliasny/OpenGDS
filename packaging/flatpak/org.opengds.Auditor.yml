@@ -87,8 +87,8 @@ modules:
         dest: opengds-patches
       - type: file
         path: ../../docs/upstream/patches/v1.5.10/0007-load-short-der-crl.patch
-          dest: opengds-patches
-        - type: file
+        dest: opengds-patches
+      - type: file
         path: ../../docs/upstream/patches/v1.5.10/0008-condition-refresh-before-first-condition.patch
         dest: opengds-patches
 

@@ -4,10 +4,17 @@
 # Run as root.
 # SPDX-License-Identifier: MPL-2.0
 #
+#   install-build-deps.sh            the packages (build-release.sh)
+#   install-build-deps.sh static     Debian only: the static Linux gdsaudit
+#                                    (packaging/static/build.sh, musl)
+#   install-build-deps.sh windows    Debian only: gdsaudit.exe
+#                                    (packaging/windows/build.sh, MinGW-w64)
+#
 #   DEBIAN_SNAPSHOT=20261101T000000Z  Debian only: install from that
 #                                     snapshot.debian.org date (reproducible
 #                                     rebuilds later)
 set -eu
+WHAT=${1:-packages}
 eval "$(. /etc/os-release; printf 'ID=%s ID_LIKE="%s" VERSION_CODENAME=%s\n' "${ID:-}" "${ID_LIKE:-}" "${VERSION_CODENAME:-}")"
 case "$ID:$ID_LIKE" in
     debian:*|ubuntu:*|*:*debian*)
@@ -19,11 +26,31 @@ case "$ID:$ID_LIKE" in
         fi
         printf 'Acquire::Retries "10";\nAcquire::http::Timeout "60";\n' > /etc/apt/apt.conf.d/80-retries
         apt-get update
-        apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build git curl ca-certificates perl python3 \
-            libsqlite3-dev libseccomp-dev pkgconf dpkg-dev file openssl
+        case "$WHAT" in
+            packages)
+                # GTK 4 for gdsaudit-gui; Xvfb for its smoke test
+                apt-get install -y --no-install-recommends \
+                    build-essential cmake ninja-build git curl ca-certificates perl python3 \
+                    libsqlite3-dev libseccomp-dev pkgconf dpkg-dev file openssl \
+                    libgtk-4-dev xvfb xauth ;;
+            static)
+                apt-get install -y --no-install-recommends \
+                    build-essential musl-tools linux-libc-dev cmake ninja-build git curl \
+                    ca-certificates perl python3 dpkg-dev ;;
+            windows)
+                apt-get install -y --no-install-recommends \
+                    build-essential mingw-w64 cmake ninja-build git curl ca-certificates \
+                    perl python3 zip dpkg-dev
+                # open62541's multithreading needs winpthreads: the POSIX
+                # thread model, not Debian's default win32 one
+                for t in gcc g++; do
+                    update-alternatives --set "x86_64-w64-mingw32-$t" "/usr/bin/x86_64-w64-mingw32-$t-posix"
+                done ;;
+            *) echo "install-build-deps.sh: unknown target $WHAT" >&2; exit 1 ;;
+        esac
         ;;
     *:*rhel*|*:*fedora*|fedora:*|rhel:*)
+        [ "$WHAT" = packages ] || { echo "install-build-deps.sh: $WHAT builds on Debian" >&2; exit 1; }
         # EL 9's GCC 11 lacks part of the hardening set (docs/architecture.md,
         # "Build hardening"): build with GCC 13 from gcc-toolset-13, which
         # links against the system's own glibc and libgcc. build-release.sh
@@ -39,15 +66,18 @@ case "$ID:$ID_LIKE" in
             done
             return 1
         }
-        toolset=
+        extra=
         case "$ID" in
-            fedora) ;;
+            # GTK 4 for gdsaudit-gui; Xvfb, GLES and Mesa's software
+            # renderer for its smoke test. Not on EL 9: its GLib (2.68) is
+            # older than the 2.76 the UI needs; EL users take the Flatpak.
+            fedora) extra="gtk4-devel xorg-x11-server-Xvfb xorg-x11-xauth libglvnd-gles mesa-dri-drivers" ;;
             *) dnf_retry install -y dnf-plugins-core && dnf config-manager --set-enabled crb
-               toolset="gcc-toolset-13-gcc gcc-toolset-13-binutils" ;;
+               extra="gcc-toolset-13-gcc gcc-toolset-13-binutils" ;;
         esac
         # OpenSSL's Configure needs these perl modules; EL ships them split.
         # --allowerasing: the base images carry curl-minimal.
-        dnf_retry install -y --allowerasing --setopt=install_weak_deps=False $toolset \
+        dnf_retry install -y --allowerasing --setopt=install_weak_deps=False $extra \
             gcc make cmake ninja-build git curl ca-certificates python3 \
             perl-interpreter perl-FindBin perl-IPC-Cmd perl-File-Compare perl-File-Copy \
             perl-Time-Piece perl-lib \

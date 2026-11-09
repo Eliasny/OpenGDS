@@ -1,7 +1,10 @@
 # OpenGDS releases (docs/packaging.md): packages for every distribution and
 # architecture, built twice on separate runners and compared byte for byte,
-# a systemd install test, the container image, Sigstore keyless signatures,
-# and a draft GitHub release.
+# a systemd install test, the container images, Sigstore keyless signatures,
+# and a draft GitHub release. The Auditor ships in the same release: its
+# .deb/.rpm (gdsaudit, gdsaudit-gui) come from the package builds; the static
+# Linux tarball, the Windows zip (both compared like the packages), the
+# Flatpak bundle and the gdsaudit image have their own jobs.
 #
 #   tag v*            full release; signs and publishes (environment `release`)
 #   pull request      dry run when packaging files change: build, compare,
@@ -10,7 +13,8 @@
 #
 # Decisions (Elias): P1 sign with Sigstore keyless only (2026-11-09; no
 # OpenPGP key); P2 RPMs for EL 9 and Fedora; P3 image on ghcr.io/eliasny/opengds;
-# P4 Debian 13, Ubuntu 24.04, EL 9 (and Fedora) on amd64 and arm64.
+# P4 Debian 13, Ubuntu 24.04, EL 9 (and Fedora) on amd64 and arm64; P5 the
+# Auditor image on ghcr.io/eliasny/gdsaudit (2026-11-09).
 # SPDX-License-Identifier: MPL-2.0
 name: release
 
@@ -41,7 +45,9 @@ env:
   # release later, not for every run. Each build records its exact build
   # environment in <target>-<arch>.buildenv.txt, which says what to install.
   DEBIAN_SNAPSHOT: ""
-  IMAGE: ghcr.io/eliasny/opengds
+  # Images: $REGISTRY/opengds (the server, P3) and $REGISTRY/gdsaudit (the
+  # static Auditor on distroless/static)
+  REGISTRY: ghcr.io/eliasny
   PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
 
 jobs:
@@ -93,9 +99,73 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  auditor:
+    name: auditor ${{ matrix.kind }} ${{ matrix.arch }} (${{ matrix.pass }})
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # static: gdsaudit linked with musl (packaging/static/build.sh)
+        # windows: gdsaudit.exe cross-built with MinGW-w64 (packaging/windows/build.sh)
+        kind: [static, windows]
+        arch: [amd64, arm64]
+        pass: [a, b]
+        exclude:
+          - kind: windows
+            arch: arm64
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build in Debian 13
+        env:
+          KIND: ${{ matrix.kind }}
+          BUILD_IMAGE: debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src -e DEBIAN_SNAPSHOT -e KIND \
+            "$BUILD_IMAGE" sh -ec '
+              scripts/release/install-build-deps.sh "$KIND" > /tmp/deps.log 2>&1 || { tail -40 /tmp/deps.log; exit 1; }
+              git config --global --add safe.directory /src
+              WORK=/work scripts/release/build-auditor.sh "$KIND" /src/dist'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pkg-auditor-${{ matrix.kind }}-${{ matrix.arch }}-${{ matrix.pass }}
+          path: dist/
+          if-no-files-found: error
+
+  flatpak:
+    name: flatpak ${{ matrix.arch }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build the bundle
+        run: |
+          set -eu
+          sudo apt-get update
+          # elfutils: flatpak-builder strips the binaries with eu-strip.
+          # librsvg2-common: its appstreamcli compose runs on the host and
+          # renders the SVG icon through gdk-pixbuf's SVG loader
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder ninja-build elfutils \
+            librsvg2-common
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          WORK=$RUNNER_TEMP/flatpak scripts/release/build-flatpak.sh dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flatpak-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
   compare:
     name: reproducible
-    needs: build
+    needs: [build, auditor]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -166,7 +236,7 @@ jobs:
         run: scripts/release/smoke-test-systemd.sh dist/opengds_*_${{ matrix.arch }}.deb
 
   image:
-    name: image ${{ matrix.arch }}
+    name: image ${{ matrix.name }} ${{ matrix.arch }}
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     permissions:
       contents: read
@@ -174,7 +244,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        name: [opengds, gdsaudit]
         arch: [amd64, arm64]
+        include:
+          - name: opengds
+            dockerfile: packaging/docker/Dockerfile
+          - name: gdsaudit
+            dockerfile: packaging/static/Dockerfile
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -189,27 +265,30 @@ jobs:
           password: ${{ github.token }}
       - name: Build (and on a tag, push by digest)
         id: build
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ matrix.name }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
         run: |
           set -eu
           epoch=$(git log -1 --format=%ct)
           out="type=image,name=$IMAGE,rewrite-timestamp=true"
           [ "$PUBLISH" = true ] && out="$out,push-by-digest=true,name-canonical=true,push=true"
-          docker buildx build -f packaging/docker/Dockerfile --platform "linux/${{ matrix.arch }}" \
+          docker buildx build -f "$DOCKERFILE" --platform "linux/${{ matrix.arch }}" \
             --build-arg SOURCE_DATE_EPOCH="$epoch" --build-arg DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" \
             --provenance=false --metadata-file meta.json --output "$out" .
           digest=$(jq -r '."containerimage.digest"' meta.json)
           echo "image digest $digest"
-          mkdir -p digests && touch "digests/${digest#sha256:}"
+          mkdir -p digests/${{ matrix.name }} && touch "digests/${{ matrix.name }}/${digest#sha256:}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: digest-${{ matrix.arch }}
+          name: digest-${{ matrix.name }}-${{ matrix.arch }}
           path: digests/
           if-no-files-found: error
 
   publish:
     name: sign and publish
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [compare, smoke, image]
+    needs: [compare, smoke, image, flatpak]
     runs-on: ubuntu-24.04
     # Publishing is limited to v* tags through this environment.
     environment: release
@@ -225,6 +304,11 @@ jobs:
           path: release
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          pattern: flatpak-*
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
           pattern: digest-*
           path: digests
           merge-multiple: true
@@ -234,20 +318,28 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Image index for both architectures, signed
+      - name: Image indexes for both architectures, signed
         id: index
         run: |
           set -eu
           version=${GITHUB_REF_NAME#v}
-          docker buildx imagetools create -t "$IMAGE:$version" -t "$IMAGE:latest" \
-            $(for d in digests/*; do printf '%s@sha256:%s ' "$IMAGE" "$(basename "$d")"; done)
-          digest=$(docker buildx imagetools inspect "$IMAGE:$version" --format '{{json .Manifest}}' | jq -r .digest)
-          cosign sign --yes "$IMAGE@$digest"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          for name in opengds gdsaudit; do
+            image=$REGISTRY/$name
+            docker buildx imagetools create -t "$image:$version" -t "$image:latest" \
+              $(for d in digests/$name/*; do printf '%s@sha256:%s ' "$image" "$(basename "$d")"; done)
+            digest=$(docker buildx imagetools inspect "$image:$version" --format '{{json .Manifest}}' | jq -r .digest)
+            cosign sign --yes "$image@$digest"
+            echo "$name=$digest" >> "$GITHUB_OUTPUT"
+          done
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ${{ env.IMAGE }}
-          subject-digest: ${{ steps.index.outputs.digest }}
+          subject-name: ${{ env.REGISTRY }}/opengds
+          subject-digest: ${{ steps.index.outputs.opengds }}
+          push-to-registry: true
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/gdsaudit
+          subject-digest: ${{ steps.index.outputs.gdsaudit }}
           push-to-registry: true
       - name: Checksums
         run: |
@@ -270,5 +362,5 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
             --title "OpenGDS ${GITHUB_REF_NAME#v}" \
-            --notes "Container image: \`$IMAGE:${GITHUB_REF_NAME#v}\` (${{ steps.index.outputs.digest }}). Verify every file as in docs/packaging.md, \"Verifying a release\"." \
+            --notes "Container images: \`$REGISTRY/opengds:${GITHUB_REF_NAME#v}\` (${{ steps.index.outputs.opengds }}), Auditor \`$REGISTRY/gdsaudit:${GITHUB_REF_NAME#v}\` (${{ steps.index.outputs.gdsaudit }}). Verify every file as in docs/packaging.md, \"Verifying a release\"." \
             release/*

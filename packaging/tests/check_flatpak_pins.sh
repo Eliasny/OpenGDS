@@ -25,5 +25,11 @@ if [ "$want" != "$have" ]; then
     echo "want:"; echo "$want"; echo "have:"; echo "$have"
     fail=1
 fi
+# A text check passes on a manifest flatpak-builder can't parse: parse it
+# too where PyYAML is there
+if python3 -c 'import yaml' 2>/dev/null; then
+    python3 -I -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$M" ||
+        { echo "manifest is not valid YAML"; fail=1; }
+fi
 [ "$fail" = 0 ] && echo "Flatpak pins match the build scripts"
 exit "$fail"
