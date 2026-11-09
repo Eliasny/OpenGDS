@@ -111,7 +111,7 @@ Requests follow `approval` exactly as certificate requests do: `auto` approves e
 
 On an approved request FinishRequest generates the credential: the CredentialId `opengds-` followed by 32 hex digits, and a secret of 32 random bytes in base64url (43 characters). The secret is returned once and never stored: the store keeps only a salted hash in the format of `mosquitto_passwd` (`$7$`, PBKDF2-SHA512), so a broker can check it. A new credential for the same application and service replaces the earlier one. An application that embeds OpenGDS (UASM) can supply the credentials itself instead, through `gds_server_set_keycred_source` in `gds_plugin.h`: its source makes the CredentialId and secret on a plugin worker and is asked first on Revoke, and the store then keeps only the CredentialId. Revoke (§8.5.7) deletes a credential; KeyCredentialAdmin or the application itself may call it. Unregistering an application deletes its credentials and requests.
 
-The requests and credentials are in the store (schema 5), so they survive a restart and replicate with it. A store backend without them (before store ABI minor 7) cannot start with a `keycred_service` line.
+The requests and credentials are in the store (schema 5), so they survive a restart and replicate with it. A store backend without them (before store ABI minor 8) cannot start with a `keycred_service` line.
 
 ## AccessTokens (AuthorizationService)
 
