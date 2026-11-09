@@ -30,6 +30,8 @@ extern const ga_test spec_events_tests[];
 extern const size_t spec_events_count;
 extern const ga_test spec_roles_tests[];
 extern const size_t spec_roles_count;
+extern const ga_test spec_part18_tests[];
+extern const size_t spec_part18_count;
 extern const ga_test spec_model_tests[];
 extern const size_t spec_model_count;
 

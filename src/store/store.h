@@ -295,6 +295,51 @@ typedef bool (*gds_store_kc_cred_cb)(void *ctx, const gds_kc_cred *c);
 GDS_MUST_CHECK gds_status gds_store_kc_cred_scan(gds_store *s, gds_store_kc_cred_cb cb,
                                                  void *ctx);
 
+/* ---- OPC 10000-18 role mapping rules and managed users (schema 6) ----
+ * Rules: one per row, unique over every field. role is the Role's name
+ * (gds_role_table names and embedder Role names). GDS_EEXISTS when an
+ * equal rule is there, GDS_ENOTFOUND when removing one that is not.
+ * Users: name unique; put with create inserts (GDS_EEXISTS if taken),
+ * without create replaces (GDS_ENOTFOUND if unknown). GDS_EUNSUPPORTED on a
+ * backend before minor 9, which leaves the Part 18 methods Bad_NotSupported. */
+#define GDS_MAX_RULE_TEXT 1024
+#define GDS_MAX_RULE_URI 256
+#define GDS_MAX_STORE_USER_NAME 64
+#define GDS_MAX_USER_CREDENTIAL 255
+#define GDS_MAX_USER_DESCRIPTION 1024
+
+typedef enum {
+    GDS_RULE_IDENTITY = 1,
+    GDS_RULE_APPLICATION = 2,
+    GDS_RULE_ENDPOINT = 3
+} gds_rule_kind;
+
+typedef struct {
+    char role[65];
+    uint8_t kind;          /* gds_rule_kind */
+    int32_t criteriaType;  /* IdentityCriteriaType; 0 for other kinds */
+    char criteria[GDS_MAX_RULE_TEXT + 1]; /* criteria, ApplicationUri or EndpointUrl */
+    int32_t securityMode;  /* endpoint rules: MessageSecurityMode, 0 = any */
+    char securityPolicyUri[GDS_MAX_RULE_URI + 1];
+    char transportProfileUri[GDS_MAX_RULE_URI + 1];
+} gds_role_rule;
+
+typedef struct {
+    char name[GDS_MAX_STORE_USER_NAME + 1];
+    char credential[GDS_MAX_USER_CREDENTIAL + 1];
+    uint32_t config; /* UserConfigurationMask */
+    char description[GDS_MAX_USER_DESCRIPTION + 1];
+} gds_store_user;
+
+typedef bool (*gds_rule_scan_cb)(void *ctx, const gds_role_rule *r);
+typedef bool (*gds_user_scan_cb)(void *ctx, const gds_store_user *u);
+GDS_MUST_CHECK gds_status gds_store_rule_add(gds_store *s, const gds_role_rule *r);
+GDS_MUST_CHECK gds_status gds_store_rule_remove(gds_store *s, const gds_role_rule *r);
+GDS_MUST_CHECK gds_status gds_store_rule_scan(gds_store *s, gds_rule_scan_cb cb, void *ctx);
+GDS_MUST_CHECK gds_status gds_store_user_put(gds_store *s, const gds_store_user *u, bool create);
+GDS_MUST_CHECK gds_status gds_store_user_delete(gds_store *s, const char *name);
+GDS_MUST_CHECK gds_status gds_store_user_scan(gds_store *s, gds_user_scan_cb cb, void *ctx);
+
 /* ---- backends (issue #15) ----
  * A backend implements every operation above with the same contract, on
  * its own context. Every function pointer is required. Each write is one
@@ -304,7 +349,8 @@ GDS_MUST_CHECK gds_status gds_store_kc_cred_scan(gds_store *s, gds_store_kc_cred
 #define GDS_STORE_ABI_MINOR 8u /* 1: the audit log; 2: req_scan; 3: cert_revoke, cert_revoke_app,
                                   cert_is_revoked; 4: cert_scan; 5: tl_get, tl_put;
                                   6: push_target_put, push_target_delete,
-                                  push_target_scan; 7: cert_issue; 8: kc_* */
+                                  push_target_scan; 7: cert_issue; 8: kc_*;
+                                  9: rule_*, user_* (OPC 10000-18) */
 
 typedef struct {
     uint32_t abi_major;
@@ -364,6 +410,13 @@ typedef struct {
     gds_status (*kc_cred_get)(void *ctx, const char *id, gds_kc_cred *out);
     gds_status (*kc_cred_delete)(void *ctx, const char *id);
     gds_status (*kc_cred_scan)(void *ctx, gds_store_kc_cred_cb cb, void *cbCtx);
+    /* minor 9 */
+    gds_status (*rule_add)(void *ctx, const gds_role_rule *r);
+    gds_status (*rule_remove)(void *ctx, const gds_role_rule *r);
+    gds_status (*rule_scan)(void *ctx, gds_rule_scan_cb cb, void *cbCtx);
+    gds_status (*user_put)(void *ctx, const gds_store_user *u, bool create);
+    gds_status (*user_delete)(void *ctx, const char *name);
+    gds_status (*user_scan)(void *ctx, gds_user_scan_cb cb, void *cbCtx);
 } gds_store_backend;
 
 /* A store on a plugin backend. The vtable is copied; ctx is taken, and
@@ -381,7 +434,9 @@ typedef struct {
  * target calls return GDS_EUNSUPPORTED and the push engine has no targets.
  * Before minor 7 gds_store_cert_issue makes two transactions. Before minor
  * 8 (or with any kc_* NULL) the KeyCredential calls return GDS_EUNSUPPORTED
- * and the server offers no KeyCredentialService. */
+ * and the server offers no KeyCredentialService. Before minor 9 the rule and
+ * user calls return GDS_EUNSUPPORTED (OPC 10000-18 methods answer
+ * Bad_NotSupported; the users file still works). */
 GDS_MUST_CHECK gds_status gds_store_open_backend(const gds_store_backend *be, void *ctx,
                                                  gds_store **out);
 

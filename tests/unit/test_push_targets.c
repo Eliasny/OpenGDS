@@ -74,7 +74,7 @@ static void test_store_refused(gds_store *st, const UA_Guid *dev1) {
 }
 
 static void test_store(gds_store *st, UA_Guid *dev1, UA_Guid *dev2) {
-    CHECK_EQ_INT(gds_store_schema_version(st), 5); /* the latest; the table is in schema 1 */
+    CHECK_EQ_INT(gds_store_schema_version(st), 6); /* the latest; the table is in schema 1 */
     *dev1 = add_app(st, DEV1, UA_APPLICATIONTYPE_SERVER);
     *dev2 = add_app(st, DEV2, UA_APPLICATIONTYPE_SERVER);
     rows r = {0};

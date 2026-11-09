@@ -11,5 +11,7 @@ int gdsadm_push_keycred_delete(int argc, char **argv);
 int gdsadm_apps_unregister(int argc, char **argv);
 int gdsadm_certs_revoke(int argc, char **argv);
 int gdsadm_apps_import(int argc, char **argv);
+/* gdsadm roles list|add-identity|remove-identity|add-app|remove-app */
+int gdsadm_roles(int argc, char **argv);
 
 #endif

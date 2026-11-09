@@ -58,6 +58,8 @@ static const field fields[] = {
     F("mdns", mdns, T_BOOL, false),
     F("mdns_server_name", mdnsServerName, T_STR, false),
     F("mdns_interface", mdnsInterface, T_STR, false),
+    U("password_min_length", passwordMinLength, GDSD_PASSWORD_MIN_FLOOR, GDSD_PASSWORD_MIN_CEIL),
+    F("single_admin", singleAdmin, T_BOOL, false),
 };
 #define NFIELDS (sizeof(fields) / sizeof(fields[0]))
 
@@ -166,6 +168,7 @@ static void defaults(gdsd_config *c) {
     c->pushRejectedS = 3600;
     c->accessTokenLifetime = 3600;   /* Elias 2026-11-09 */
     c->refreshTokenLifetime = 86400; /* Elias 2026-11-09 */
+    c->passwordMinLength = GDSD_PASSWORD_MIN_DEFAULT;
 }
 
 static bool is_name_char(char c) {
