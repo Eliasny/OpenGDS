@@ -50,7 +50,7 @@ The defaults are Elias's decision G6: CA RSA 3072 with SHA-256 for 10 years, app
 
 The ECC SecurityPolicy profiles fix the curve of the issuing CA, not only the leaf's. For example, CertificateKeyAlgorithm_ECC-nistP256 in SecurityPolicy [ECC-B] ECC-nistP256 (OPC 10000-7, profile `http://opcfoundation.org/UA/SecurityPolicy#ECC_nistP256`) says: "An end entity Certificate shall use P-256. A CA that issues end entity Certificates shall use P-256." The signature algorithm is ECDSA with SHA-256, or SHA-384 above 256 bits. The ECC-brainpoolP256r1 profile has the same rule for its curve. So the RSA CA above cannot sign an ECC application certificate: each ECC CertificateType needs an issuing CA on its own curve.
 
-OpenGDS 1.0 issues RSA, P-256 and P-384 (Elias, 2026-11-09). The signer part is in place; opengdsd still lists only RsaSha256 in DefaultApplicationGroup.CertificateTypes until its part lands.
+OpenGDS 1.0 issues RSA, P-256 and P-384 (Elias, 2026-11-09). Both the signer and opengdsd do.
 
 - **Signer:** one CA per key algorithm. RSA stays in `ca_dir` as today. P-256 and P-384 each have a subdirectory with the same layout, `ca_dir/nistP256/` and `ca_dir/nistP384/`, created on first start:
   - `ca.key.pem`: encrypted PKCS#8 under the same passphrase (G6).
@@ -59,7 +59,7 @@ OpenGDS 1.0 issues RSA, P-256 and P-384 (Elias, 2026-11-09). The signer part is 
   - A key file of the wrong kind or curve is refused (`GDS_ESTATE`).
 - **Dispatch:** SIGN_CSR and NEW_KEY_PAIR choose the CA by the request's CertificateType, which the signer reads from the store. GET_CHAIN, ISSUE_CRL and REVOKE carry an optional issuer byte; without it they mean RSA, as before. A REVOKE still needs a serial that the store marks revoked. CA backends of ABI 4 offer `get_issuer_cert`, `get_issuer_crl` and `revoke_issuer`; older backends have the RSA issuer only.
 - **Leaves:** the same fields as the RSA table, with these differences: keyUsage is digitalSignature only (Part 6 §6.2.2, Table 50: "For ECC keys, the keyUsage shall include digitalSignature"), and the signature is ecdsa-with-SHA256 (P-256) or ecdsa-with-SHA384 (P-384). The CSR key must be on the type's curve: §7.8.4.11 says "They shall have an ECC nistP256 Public Key".
-- **opengdsd:** DefaultApplicationGroup.CertificateTypes lists RsaSha256 plus the enabled ECC types. Its trust list carries every issuing CA's certificate and CRL. FinishRequest returns the issuer that matches the request's type, and CheckRevocationStatus checks against that issuer and its CRL.
+- **opengdsd:** DefaultApplicationGroup.CertificateTypes lists RsaSha256, then EccNistP256 and EccNistP384 when the CA slot has their issuers (a third-party CA backend before ABI 4 offers RSA only). StartSigningRequest and StartNewKeyPairRequest accept exactly those types, others get Bad_InvalidArgument. The trust list starts with every issuing CA's certificate and CRL, in the order RSA, P-256, P-384; Write and AddCertificate drop copies of them and RemoveCertificate refuses them. FinishRequest (and `gds_server_sign_request`) returns the issuer that matches the request's type. CheckRevocationStatus finds the issuer by name and checks the signature and CRL of that issuer. RevokeCertificate puts the serial on the CRL of the certificate's issuer, and UnregisterApplication on the CRL of each certificate's type.
 
 ## Plugin hooks (UASM asks)
 

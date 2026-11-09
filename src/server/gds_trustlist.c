@@ -170,7 +170,7 @@ static UA_StatusCode save_entries(gds_server *s, UA_TrustListDataType *t) {
     UA_StatusCode r = UA_encodeBinary(t, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], &enc, NULL);
     if(r != UA_STATUSCODE_GOOD)
         return r;
-    if(enc.length > GDS_MAX_TRUSTLIST_SIZE / 2) { /* room for the CA's CRL */
+    if(enc.length > GDS_MAX_TRUSTLIST_SIZE / 2) { /* room for the CAs' certificates and CRLs */
         UA_ByteString_clear(&enc);
         return UA_STATUSCODE_BADREQUESTTOOLARGE;
     }
@@ -209,21 +209,31 @@ static UA_StatusCode prepend(UA_ByteString **a, size_t *n, const UA_ByteString *
     return UA_STATUSCODE_GOOD;
 }
 
+/* Every issuing CA's certificate and current CRL, first in the trusted
+ * lists, in issuer order (RSA, P-256, P-384). */
+static UA_StatusCode prepend_issuers(gds_server *s, UA_TrustListDataType *out) {
+    UA_StatusCode r = UA_STATUSCODE_GOOD;
+    for(size_t i = GDS_CA_ISSUERS; r == UA_STATUSCODE_GOOD && i-- > 0;) {
+        if(s->issuerCert[i].len == 0)
+            continue;
+        gds_buf crl = {0};
+        gds_status st = gds_ca_get_issuer_crl(s->ca, (gds_ca_issuer)i, &crl); // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange): i < GDS_CA_ISSUERS
+        if(st != GDS_OK)
+            return gds_status_to_ua(st);
+        UA_ByteString c = {s->issuerCert[i].len, s->issuerCert[i].data}, l = {crl.len, crl.data};
+        r = prepend(&out->trustedCertificates, &out->trustedCertificatesSize, &c);
+        if(r == UA_STATUSCODE_GOOD)
+            r = prepend(&out->trustedCrls, &out->trustedCrlsSize, &l);
+        gds_buf_free(&crl);
+    }
+    return r;
+}
+
 UA_StatusCode gds_trustlist_data(gds_server *s, UA_UInt32 masks, UA_TrustListDataType *out) {
     UA_StatusCode r = load_entries(s, out);
     if(r != UA_STATUSCODE_GOOD)
         return r;
-    gds_buf crl = {0};
-    gds_status st = gds_ca_get_crl(s->ca, &crl);
-    if(st != GDS_OK) {
-        UA_TrustListDataType_clear(out);
-        return gds_status_to_ua(st);
-    }
-    UA_ByteString c = {s->caCert.len, s->caCert.data}, l = {crl.len, crl.data};
-    r = prepend(&out->trustedCertificates, &out->trustedCertificatesSize, &c);
-    if(r == UA_STATUSCODE_GOOD)
-        r = prepend(&out->trustedCrls, &out->trustedCrlsSize, &l);
-    gds_buf_free(&crl);
+    r = prepend_issuers(s, out);
     out->specifiedLists = masks & (UA_UInt32)UA_TRUSTLISTMASKS_ALL;
     for(size_t i = 0; r == UA_STATUSCODE_GOOD && i < 4; i++) {
         if(out->specifiedLists & listMask[i])
@@ -331,36 +341,64 @@ static void audit(gds_server *s, const void *sessionContext, UA_UInt32 method,
 
 /* ---- changing the list ---- */
 
-static bool is_gds_crl(const UA_ByteString *der, X509 *gdsCa) {
+/* The GDS's issuing CAs, parsed (RSA always, P-256 and P-384 when the CA
+ * slot has them). */
+typedef struct {
+    X509 *x[GDS_CA_ISSUERS];
+    size_t n;
+} gds_cas;
+
+static bool cas_load(const gds_server *s, gds_cas *c) {
+    gds_issuers_parse(s, c->x, &c->n);
+    return c->n > 0;
+}
+
+static void cas_free(gds_cas *c) {
+    for(size_t i = 0; i < c->n; i++)
+        X509_free(c->x[i]);
+    c->n = 0;
+}
+
+static bool is_gds_crl(const UA_ByteString *der, const gds_cas *cas) {
     X509_CRL *c = gds_tl_parse_crl(der);
-    bool r = c && X509_NAME_cmp(X509_CRL_get_issuer(c), X509_get_subject_name(gdsCa)) == 0;
+    bool r = false;
+    for(size_t i = 0; c && !r && i < cas->n; i++)
+        r = X509_NAME_cmp(X509_CRL_get_issuer(c), X509_get_subject_name(cas->x[i])) == 0;
     X509_CRL_free(c);
     return r;
 }
 
-/* Drop the GDS CA certificate and the CRLs it issued: the server adds the
- * current ones itself. */
-static void strip_gds_entries(gds_server *s, UA_TrustListDataType *t, X509 *gdsCa) {
-    UA_ByteString ca = {s->caCert.len, s->caCert.data};
+static bool is_gds_cert(const gds_server *s, const UA_ByteString *der) {
+    for(size_t i = 0; i < GDS_CA_ISSUERS; i++) {
+        UA_ByteString ca = {s->issuerCert[i].len, s->issuerCert[i].data};
+        if(ca.length && UA_ByteString_equal(der, &ca))
+            return true;
+    }
+    return false;
+}
+
+/* Drop the GDS CA certificates and the CRLs they issued: the server adds
+ * the current ones itself. */
+static void strip_gds_entries(gds_server *s, UA_TrustListDataType *t, const gds_cas *cas) {
     for(size_t list = 0; list < 4; list++) {
         bool crl = list == 1 || list == 3;
         size_t *n = NULL;
         list_of(t, list, &n);
         for(size_t i = *n; i-- > 0;) {
             const UA_ByteString *e = &list_of(t, list, &n)[i];
-            if(crl ? is_gds_crl(e, gdsCa) : UA_ByteString_equal(e, &ca))
+            if(crl ? is_gds_crl(e, cas) : is_gds_cert(s, e))
                 remove_at(t, list, i);
         }
     }
 }
 
-static UA_StatusCode check_and_save(gds_server *s, UA_TrustListDataType *t, X509 *gdsCa) {
-    strip_gds_entries(s, t, gdsCa);
+static UA_StatusCode check_and_save(gds_server *s, UA_TrustListDataType *t, const gds_cas *cas) {
+    strip_gds_entries(s, t, cas);
     if(t->trustedCertificatesSize + t->trustedCrlsSize + t->issuerCertificatesSize +
            t->issuerCrlsSize >
        GDS_MAX_TRUSTLIST_ENTRIES)
         return UA_STATUSCODE_BADREQUESTTOOLARGE;
-    UA_StatusCode r = gds_tl_validate(t, gdsCa);
+    UA_StatusCode r = gds_tl_validate(t, cas->x, cas->n);
     if(r == UA_STATUSCODE_GOOD)
         r = save_entries(s, t);
     return r;
@@ -369,10 +407,11 @@ static UA_StatusCode check_and_save(gds_server *s, UA_TrustListDataType *t, X509
 /* The stored entries with the lists in `in`'s SpecifiedLists replaced
  * (§7.8.2.5: a partial update keeps the other lists). */
 static UA_StatusCode update_from(gds_server *s, const UA_TrustListDataType *in) {
-    X509 *gdsCa = gds_tl_parse_cert(&(UA_ByteString){s->caCert.len, s->caCert.data});
+    gds_cas cas;
+    bool haveCas = cas_load(s, &cas);
     UA_TrustListDataType cur;
-    UA_StatusCode r = gdsCa ? load_entries(s, &cur) : UA_STATUSCODE_BADINTERNALERROR;
-    if(!gdsCa)
+    UA_StatusCode r = haveCas ? load_entries(s, &cur) : UA_STATUSCODE_BADINTERNALERROR;
+    if(!haveCas)
         UA_TrustListDataType_init(&cur);
     UA_TrustListDataType src = *in; /* shallow, for list_of */
     for(size_t i = 0; r == UA_STATUSCODE_GOOD && i < 4; i++) {
@@ -389,9 +428,9 @@ static UA_StatusCode update_from(gds_server *s, const UA_TrustListDataType *in) 
             *nc = *ns;
     }
     if(r == UA_STATUSCODE_GOOD)
-        r = check_and_save(s, &cur, gdsCa);
+        r = check_and_save(s, &cur, &cas);
     UA_TrustListDataType_clear(&cur);
-    X509_free(gdsCa);
+    cas_free(&cas);
     return r;
 }
 
@@ -460,8 +499,8 @@ static UA_StatusCode add_certificate(gds_server *s, const UA_ByteString *cert) {
     X509_free(x);
     if(!x || ca) /* CA certificates go in with Write (§7.8.2.6) */
         return UA_STATUSCODE_BADCERTIFICATEINVALID;
-    X509 *gdsCa = gds_tl_parse_cert(&(UA_ByteString){s->caCert.len, s->caCert.data});
-    if(!gdsCa)
+    gds_cas cas;
+    if(!cas_load(s, &cas))
         return UA_STATUSCODE_BADINTERNALERROR;
     UA_TrustListDataType cur;
     UA_StatusCode r = load_entries(s, &cur);
@@ -472,20 +511,27 @@ static UA_StatusCode add_certificate(gds_server *s, const UA_ByteString *cert) {
         r = UA_Array_appendCopy((void **)&cur.trustedCertificates, &cur.trustedCertificatesSize,
                                 cert, &UA_TYPES[UA_TYPES_BYTESTRING]);
     if(r == UA_STATUSCODE_GOOD)
-        r = check_and_save(s, &cur, gdsCa);
+        r = check_and_save(s, &cur, &cas);
     UA_TrustListDataType_clear(&cur);
-    X509_free(gdsCa);
+    cas_free(&cas);
     return r;
 }
 
-static UA_StatusCode remove_certificate(gds_server *s, const uint8_t tp[SHA1_LEN], bool trusted) {
-    uint8_t caTp[SHA1_LEN];
-    UA_ByteString caDer = {s->caCert.len, s->caCert.data};
-    X509 *gdsCa = gds_tl_parse_cert(&caDer);
-    if(!gdsCa || sha1_of(&caDer, caTp) != UA_STATUSCODE_GOOD) {
-        X509_free(gdsCa);
-        return UA_STATUSCODE_BADINTERNALERROR;
+/* The thumbprint of one of the GDS's issuing CAs? */
+static bool is_gds_thumb(const gds_server *s, const uint8_t tp[SHA1_LEN]) {
+    for(size_t i = 0; i < GDS_CA_ISSUERS; i++) {
+        uint8_t d[SHA1_LEN];
+        UA_ByteString ca = {s->issuerCert[i].len, s->issuerCert[i].data};
+        if(ca.length && sha1_of(&ca, d) == UA_STATUSCODE_GOOD && memcmp(d, tp, SHA1_LEN) == 0)
+            return true;
     }
+    return false;
+}
+
+static UA_StatusCode remove_certificate(gds_server *s, const uint8_t tp[SHA1_LEN], bool trusted) {
+    gds_cas cas;
+    if(!cas_load(s, &cas))
+        return UA_STATUSCODE_BADINTERNALERROR;
     UA_TrustListDataType cur;
     UA_StatusCode r = load_entries(s, &cur);
     size_t list = trusted ? 0 : 2, *n = NULL;
@@ -493,8 +539,8 @@ static UA_StatusCode remove_certificate(gds_server *s, const uint8_t tp[SHA1_LEN
     size_t at = r == UA_STATUSCODE_GOOD ? find_thumb(&cur, list, tp) : 0;
     if(r != UA_STATUSCODE_GOOD) {
         /* nothing */
-    } else if(memcmp(tp, caTp, SHA1_LEN) == 0) {
-        /* the GDS CA issues every certificate of the group: it stays */
+    } else if(is_gds_thumb(s, tp)) {
+        /* the GDS CAs issue every certificate of the group: they stay */
         r = UA_STATUSCODE_BADCERTIFICATECHAININCOMPLETE;
     } else if(at == *n) {
         r = UA_STATUSCODE_BADINVALIDARGUMENT; /* in neither list */
@@ -505,10 +551,10 @@ static UA_StatusCode remove_certificate(gds_server *s, const uint8_t tp[SHA1_LEN
             remove_crls_of(&cur, x);
         X509_free(x);
         /* a CA another entry still needs: Bad_CertificateChainIncomplete */
-        r = check_and_save(s, &cur, gdsCa);
+        r = check_and_save(s, &cur, &cas);
     }
     UA_TrustListDataType_clear(&cur);
-    X509_free(gdsCa);
+    cas_free(&cas);
     return r;
 }
 

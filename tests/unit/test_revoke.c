@@ -10,6 +10,8 @@
  * GetCertificates (§7.9.8) returns the valid certificate and no revoked
  * one; CheckRevocationStatus (§7.9.11) tells Good, revoked, a broken
  * signature, garbage and a certificate of another issuer apart.
+ * ECC certificates (P-256, P-384) come from, are checked against and are
+ * revoked on the CRL of their own curve's issuing CA.
  * SPDX-License-Identifier: MPL-2.0 */
 #include <open62541/plugin/create_certificate.h>
 #include <open62541/plugin/log_stdout.h>
@@ -63,8 +65,15 @@ static UA_StatusCode call_status(gds_server *s, gds_session *as, UA_UInt32 metho
     return r;
 }
 
-static gds_status make_csr(gds_buf *out) {
-    EVP_PKEY *key = EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)2048);
+/* A CSR for certType: RSA 2048, or an EC key on the type's curve. */
+static gds_status make_csr_of(UA_UInt32 certType, gds_buf *out) {
+    EVP_PKEY *key = NULL;
+    if(certType == UA_NS0ID_ECCNISTP256APPLICATIONCERTIFICATETYPE)
+        key = EVP_PKEY_Q_keygen(NULL, NULL, "EC", "P-256");
+    else if(certType == UA_NS0ID_ECCNISTP384APPLICATIONCERTIFICATETYPE)
+        key = EVP_PKEY_Q_keygen(NULL, NULL, "EC", "P-384");
+    else
+        key = EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)2048);
     X509_REQ *req = X509_REQ_new();
     gds_status r = GDS_ECRYPTO;
     if(key && req && X509_REQ_set_pubkey(req, key) == 1 &&
@@ -102,14 +111,24 @@ static bool register_app(gds_server *s, const char *uri, UA_NodeId *appId) {
     return ok;
 }
 
-/* StartSigningRequest, then FinishRequest until the worker has signed:
- * the issued certificate in *cert. */
-static bool issue(gds_server *s, const UA_NodeId *appId, UA_ByteString *cert) {
+/* The issuer FinishRequest returned is the one for certType. */
+static void check_issuers(gds_server *s, UA_UInt32 certType, const UA_Variant *v) {
+    const gds_buf *want = gds_issuer_cert(s, certType);
+    const UA_ByteString *got = v->data;
+    if(CHECK(want != NULL) && CHECK(v->arrayLength == 1) &&
+       CHECK(UA_Variant_hasArrayType(v, &UA_TYPES[UA_TYPES_BYTESTRING])))
+        CHECK(got[0].length == want->len && memcmp(got[0].data, want->data, want->len) == 0);
+}
+
+/* StartSigningRequest for certType, then FinishRequest until the worker
+ * has signed: the issued certificate in *cert. */
+static bool issue_type(gds_server *s, const UA_NodeId *appId, UA_UInt32 certType,
+                       UA_ByteString *cert) {
     gds_buf csr = {0};
-    if(!CHECK(make_csr(&csr) == GDS_OK))
+    if(!CHECK(make_csr_of(certType, &csr) == GDS_OK))
         return false;
     UA_NodeId group = UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
-    UA_NodeId type = UA_NS0ID(RSASHA256APPLICATIONCERTIFICATETYPE);
+    UA_NodeId type = UA_NODEID_NUMERIC(0, certType);
     UA_ByteString csrBs = {csr.len, csr.data};
     UA_Variant in[4];
     UA_Variant_setScalar(&in[0], (void *)(uintptr_t)appId, &UA_TYPES[UA_TYPES_NODEID]);
@@ -130,15 +149,21 @@ static bool issue(gds_server *s, const UA_NodeId *appId, UA_ByteString *cert) {
         UA_Variant_setScalar(&fin[1], &reqId, &UA_TYPES[UA_TYPES_NODEID]);
         res = call_as(s, &admin, UA_GDSID_DIRECTORY_FINISHREQUEST, fin, 2);
         r = res.statusCode;
-        if(r == UA_STATUSCODE_GOOD && res.outputArgumentsSize >= 1 &&
-           UA_Variant_hasScalarType(&res.outputArguments[0], &UA_TYPES[UA_TYPES_BYTESTRING]))
+        if(r == UA_STATUSCODE_GOOD && res.outputArgumentsSize == 3 &&
+           UA_Variant_hasScalarType(&res.outputArguments[0], &UA_TYPES[UA_TYPES_BYTESTRING])) {
+            check_issuers(s, certType, &res.outputArguments[2]);
             r = UA_ByteString_copy(res.outputArguments[0].data, cert);
+        }
         UA_CallMethodResult_clear(&res);
         if(r == UA_STATUSCODE_BADNOTHINGTODO)
             usleep(20000);
     }
     UA_NodeId_clear(&reqId);
     return ok && CHECK_EQ_INT(r, UA_STATUSCODE_GOOD) && cert->length > 0;
+}
+
+static bool issue(gds_server *s, const UA_NodeId *appId, UA_ByteString *cert) {
+    return issue_type(s, appId, UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE, cert);
 }
 
 static UA_StatusCode revoke_cert(gds_server *s, gds_session *as, const UA_NodeId *appId,
@@ -149,10 +174,11 @@ static UA_StatusCode revoke_cert(gds_server *s, gds_session *as, const UA_NodeId
     return call_status(s, as, UA_GDSID_DIRECTORY_REVOKECERTIFICATE, in, 2);
 }
 
-/* Is cert on the CA's current CRL? *entries: the CRL's entry count. */
-static bool on_crl(gds_ca *ca, const UA_ByteString *cert, int *entries) {
+/* Is cert on the issuer's current CRL? *entries: the CRL's entry count. */
+static bool on_issuer_crl(gds_ca *ca, gds_ca_issuer issuer, const UA_ByteString *cert,
+                          int *entries) {
     gds_buf der = {0};
-    CHECK(gds_ca_get_crl(ca, &der) == GDS_OK);
+    CHECK(gds_ca_get_issuer_crl(ca, issuer, &der) == GDS_OK);
     const unsigned char *p = der.data;
     X509_CRL *crl = der.data ? d2i_X509_CRL(NULL, &p, (long)der.len) : NULL;
     p = cert->data;
@@ -165,6 +191,10 @@ static bool on_crl(gds_ca *ca, const UA_ByteString *cert, int *entries) {
     X509_CRL_free(crl);
     gds_buf_free(&der);
     return found;
+}
+
+static bool on_crl(gds_ca *ca, const UA_ByteString *cert, int *entries) {
+    return on_issuer_crl(ca, GDS_CA_ISSUER_RSA, cert, entries);
 }
 
 static bool update_required(gds_server *s, const UA_NodeId *appId) {
@@ -291,6 +321,40 @@ static void test_get_and_check(gds_server *s, const UA_NodeId *app, const UA_Byt
     UA_ByteString_clear(&cert);
 }
 
+/* One certificate per curve: each from its own CA, checked and revoked
+ * against that CA's CRL only; unregistering revokes on every curve. */
+static void test_ecc(gds_server *s, gds_ca *ca, const UA_NodeId *app) {
+    UA_ByteString p256 = UA_BYTESTRING_NULL, p384 = UA_BYTESTRING_NULL;
+    if(!issue_type(s, app, UA_NS0ID_ECCNISTP256APPLICATIONCERTIFICATETYPE, &p256) ||
+       !issue_type(s, app, UA_NS0ID_ECCNISTP384APPLICATIONCERTIFICATETYPE, &p384)) {
+        UA_ByteString_clear(&p256);
+        return;
+    }
+    UA_DateTime v = 0;
+    CHECK_EQ_INT(check(s, &p256, &v), UA_STATUSCODE_GOOD);
+    CHECK_EQ_INT(check(s, &p384, &v), UA_STATUSCODE_GOOD);
+    /* the CA directory outlives a run: count entries, not absolutes */
+    int rsaBefore = 0, rsaAfter = 0, n256 = 0, n384 = 0, n = 0;
+    CHECK(!on_crl(ca, &p256, &rsaBefore));
+    CHECK(!on_issuer_crl(ca, GDS_CA_ISSUER_P256, &p256, &n256));
+    CHECK(!on_issuer_crl(ca, GDS_CA_ISSUER_P384, &p384, &n384));
+    CHECK_EQ_INT(revoke_cert(s, &admin, app, &p256), UA_STATUSCODE_GOOD);
+    CHECK(on_issuer_crl(ca, GDS_CA_ISSUER_P256, &p256, &n) && n == n256 + 1);
+    CHECK(!on_crl(ca, &p256, &rsaAfter) && rsaAfter == rsaBefore);
+    CHECK(!on_issuer_crl(ca, GDS_CA_ISSUER_P384, &p256, NULL));
+    CHECK_EQ_INT(check(s, &p256, &v), UA_STATUSCODE_BADCERTIFICATEREVOKED);
+    CHECK_EQ_INT(check(s, &p384, &v), UA_STATUSCODE_GOOD);
+    UA_Variant in;
+    UA_Variant_setScalar(&in, (void *)(uintptr_t)app, &UA_TYPES[UA_TYPES_NODEID]);
+    CHECK_EQ_INT(call_status(s, &admin, UA_GDSID_DIRECTORY_UNREGISTERAPPLICATION, &in, 1),
+                 UA_STATUSCODE_GOOD);
+    CHECK(on_issuer_crl(ca, GDS_CA_ISSUER_P384, &p384, &n) && n == n384 + 1);
+    CHECK(on_issuer_crl(ca, GDS_CA_ISSUER_P256, &p256, &n) && n == n256 + 1); /* not twice */
+    CHECK(!on_crl(ca, &p384, &rsaAfter) && rsaAfter == rsaBefore);
+    UA_ByteString_clear(&p256);
+    UA_ByteString_clear(&p384);
+}
+
 static void test_unregister(gds_server *s, gds_ca *ca, const UA_NodeId *b) {
     UA_ByteString c1 = UA_BYTESTRING_NULL, c2 = UA_BYTESTRING_NULL;
     if(!issue(s, b, &c1) || !issue(s, b, &c2)) {
@@ -362,13 +426,16 @@ int main(int argc, char **argv) {
     gds_server *s = NULL;
     if(CHECK(gds_server_new(&cfg, &s) == GDS_OK) && s) {
         UA_Server_setAdminSessionContext(gds_server_ua(s), &admin);
-        UA_NodeId a = UA_NODEID_NULL, b = UA_NODEID_NULL, c = UA_NODEID_NULL;
+        UA_NodeId a = UA_NODEID_NULL, b = UA_NODEID_NULL, c = UA_NODEID_NULL,
+                  d = UA_NODEID_NULL;
         if(register_app(s, TEST_URI ":a", &a) && register_app(s, TEST_URI ":b", &b) &&
-           register_app(s, TEST_URI ":c", &c)) {
+           register_app(s, TEST_URI ":c", &c) && register_app(s, TEST_URI ":d", &d)) {
             test_revoke(s, ca, &a, &b);
             test_get_and_check(s, &c, &cert);
             test_unregister(s, ca, &b);
+            test_ecc(s, ca, &d);
         }
+        UA_NodeId_clear(&d);
         UA_NodeId_clear(&c);
         UA_NodeId_clear(&a);
         UA_NodeId_clear(&b);

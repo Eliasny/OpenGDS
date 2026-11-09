@@ -15,8 +15,8 @@ X509_CRL *gds_tl_parse_crl(const UA_ByteString *b);
 /* basicConstraints cA TRUE */
 bool gds_tl_is_ca(X509 *x);
 /* Good, or the first OPC 10000-4 validation error of any entry of tl (all
- * four lists, whatever specifiedLists says). gdsCa, the GDS CA, counts as
- * a trusted CA of the list. */
-UA_StatusCode gds_tl_validate(const UA_TrustListDataType *tl, X509 *gdsCa);
+ * four lists, whatever specifiedLists says). gdsCas, the GDS's issuing
+ * CAs (at least one), count as trusted CAs of the list. */
+UA_StatusCode gds_tl_validate(const UA_TrustListDataType *tl, X509 *const *gdsCas, size_t nGdsCas);
 
 #endif

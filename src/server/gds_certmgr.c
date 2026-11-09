@@ -71,11 +71,40 @@ static UA_StatusCode group_arg(gds_server *s, size_t inputSize, const UA_Variant
 }
 
 /* DefaultApplicationGroup.CertificateTypes (12 §7.8.3.1): the types the CA
- * issues for the group. RsaMin is deprecated with its SecurityPolicies and
- * the ECC types are not issued yet; the first entry is the default. */
-static const UA_UInt32 groupCertTypes[] = {UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE};
+ * issues for the group, those whose issuer the CA slot has. RsaMin is
+ * deprecated with its SecurityPolicies; Elias chose RSA, P-256 and P-384
+ * for 1.0 (2026-11-09). The first entry is the default. */
+static const UA_UInt32 groupCertTypes[] = {UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE,
+                                           UA_NS0ID_ECCNISTP256APPLICATIONCERTIFICATETYPE,
+                                           UA_NS0ID_ECCNISTP384APPLICATIONCERTIFICATETYPE};
 
-bool gds_group_type(const UA_NodeId *t, UA_UInt32 *type) {
+const gds_buf *gds_issuer_cert(const gds_server *s, UA_UInt32 certType) {
+    gds_ca_issuer i;
+    if(!gds_ca_issuer_of(certType, &i) || s->issuerCert[i].len == 0)
+        return NULL;
+    return &s->issuerCert[i];
+}
+
+void gds_issuers_parse(const gds_server *s, X509 *out[GDS_CA_ISSUERS], size_t *n) {
+    *n = 0;
+    for(size_t i = 0; i < GDS_CA_ISSUERS; i++) {
+        const unsigned char *p = s->issuerCert[i].data;
+        X509 *x = s->issuerCert[i].len ? d2i_X509(NULL, &p, (long)s->issuerCert[i].len) : NULL;
+        if(x)
+            out[(*n)++] = x;
+    }
+}
+
+static bool offered(const gds_server *s, UA_UInt32 type) {
+    return gds_issuer_cert(s, type) != NULL;
+}
+
+const gds_buf *gds_issuer_for(const gds_server *s, UA_UInt32 certType) {
+    const gds_buf *b = gds_issuer_cert(s, certType);
+    return b ? b : &s->caCert; /* requests stored before ECC are all RSA */
+}
+
+bool gds_group_type(const gds_server *s, const UA_NodeId *t, UA_UInt32 *type) {
     if(!t || UA_NodeId_isNull(t)) {
         *type = groupCertTypes[0];
         return true;
@@ -83,7 +112,7 @@ bool gds_group_type(const UA_NodeId *t, UA_UInt32 *type) {
     if(t->namespaceIndex != 0 || t->identifierType != UA_NODEIDTYPE_NUMERIC)
         return false;
     for(size_t i = 0; i < GDS_ARRAY_SIZE(groupCertTypes); i++)
-        if(t->identifier.numeric == groupCertTypes[i]) {
+        if(t->identifier.numeric == groupCertTypes[i] && offered(s, groupCertTypes[i])) {
             *type = groupCertTypes[i];
             return true;
         }
@@ -91,20 +120,23 @@ bool gds_group_type(const UA_NodeId *t, UA_UInt32 *type) {
 }
 
 /* Null means the group's default type. */
-static UA_StatusCode type_arg(size_t inputSize, const UA_Variant *input, size_t i, UA_UInt32 *type) {
+static UA_StatusCode type_arg(const gds_server *s, size_t inputSize, const UA_Variant *input,
+                              size_t i, UA_UInt32 *type) {
     const UA_NodeId *t = NULL;
     UA_StatusCode r = gds_in_nodeid(inputSize, input, i, &t);
     if(r != UA_STATUSCODE_GOOD)
         return r;
-    return gds_group_type(t, type) ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADINVALIDARGUMENT;
+    return gds_group_type(s, t, type) ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADINVALIDARGUMENT;
 }
 
 static UA_StatusCode set_group_types(gds_server *s) {
     UA_NodeId ids[GDS_ARRAY_SIZE(groupCertTypes)];
+    size_t n = 0;
     for(size_t i = 0; i < GDS_ARRAY_SIZE(groupCertTypes); i++)
-        ids[i] = UA_NODEID_NUMERIC(0, groupCertTypes[i]);
+        if(offered(s, groupCertTypes[i]))
+            ids[n++] = UA_NODEID_NUMERIC(0, groupCertTypes[i]);
     UA_Variant v;
-    UA_Variant_setArray(&v, ids, GDS_ARRAY_SIZE(ids), &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setArray(&v, ids, n, &UA_TYPES[UA_TYPES_NODEID]);
     return UA_Server_writeValue(
         s->ua,
         UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_CERTIFICATETYPES),
@@ -135,7 +167,7 @@ static UA_StatusCode signing_args(gds_server *s, void *sessionContext, size_t in
     if(r == UA_STATUSCODE_GOOD)
         r = group_arg(s, inputSize, input, 1, group);
     if(r == UA_STATUSCODE_GOOD)
-        r = type_arg(inputSize, input, 2, type);
+        r = type_arg(s, inputSize, input, 2, type);
     if(r == UA_STATUSCODE_GOOD && inputSize < 4)
         r = UA_STATUSCODE_BADARGUMENTSMISSING;
     if(r == UA_STATUSCODE_GOOD && gds_arg_bytes(&input[3], GDS_MAX_CSR_SIZE, csr) != UA_STATUSCODE_GOOD)
@@ -323,7 +355,7 @@ static UA_StatusCode keypair_args(gds_server *s, void *sessionContext, size_t in
     if(r == UA_STATUSCODE_GOOD)
         r = group_arg(s, inputSize, input, 1, &q->groupId);
     if(r == UA_STATUSCODE_GOOD)
-        r = type_arg(inputSize, input, 2, &q->certType);
+        r = type_arg(s, inputSize, input, 2, &q->certType);
     if(r == UA_STATUSCODE_GOOD && inputSize < 7)
         r = UA_STATUSCODE_BADARGUMENTSMISSING;
     if(r == UA_STATUSCODE_GOOD)
@@ -387,7 +419,8 @@ static gds_status deliver(gds_server *s, gds_request *q, gds_buf *key) {
 static UA_StatusCode finish_outputs(gds_server *s, const gds_request *q, const gds_buf *key,
                                     UA_Variant *output) {
     UA_ByteString cert = {q->cert.len, q->cert.data}, pk = {key->len, key->data};
-    UA_ByteString issuer = {s->caCert.len, s->caCert.data};
+    const gds_buf *ib = gds_issuer_for(s, q->certType);
+    UA_ByteString issuer = {ib->len, ib->data};
     UA_StatusCode r = UA_Variant_setScalarCopy(&output[0], &cert, &UA_TYPES[UA_TYPES_BYTESTRING]);
     if(r == UA_STATUSCODE_GOOD)
         r = UA_Variant_setScalarCopy(&output[1], &pk, &UA_TYPES[UA_TYPES_BYTESTRING]);
@@ -486,7 +519,7 @@ static GDS_METHOD(get_certificate_status) {
     if(r == UA_STATUSCODE_GOOD)
         r = group_arg(s, inputSize, input, 1, &group);
     if(r == UA_STATUSCODE_GOOD)
-        r = type_arg(inputSize, input, 2, &type);
+        r = type_arg(s, inputSize, input, 2, &type);
     if(r != UA_STATUSCODE_GOOD)
         return r;
     gds_buf der = {0};
@@ -598,7 +631,8 @@ static X509 *parse_der(const gds_buf *b) {
 
 /* Revoked in the store or on the CA's current CRL; *validity is the CRL's
  * nextUpdate (when to ask again), 0 if unknown. */
-static UA_StatusCode revocation(gds_server *s, X509 *cert, UA_DateTime *validity) {
+static UA_StatusCode revocation(gds_server *s, gds_ca_issuer issuer, X509 *cert,
+                                UA_DateTime *validity) {
     gds_buf serial = {0}, crlDer = {0};
     bool revoked = false;
     gds_status st = serial_of(cert, &serial);
@@ -609,7 +643,7 @@ static UA_StatusCode revocation(gds_server *s, X509 *cert, UA_DateTime *validity
     }
     gds_buf_free(&serial);
     if(st == GDS_OK)
-        st = gds_ca_get_crl(s->ca, &crlDer); /* outside storeLock */
+        st = gds_ca_get_issuer_crl(s->ca, issuer, &crlDer); /* outside storeLock */
     if(st != GDS_OK) {
         gds_buf_free(&crlDer);
         return UA_STATUSCODE_BADCERTIFICATEREVOCATIONUNKNOWN;
@@ -645,18 +679,25 @@ static GDS_METHOD(check_revocation_status) {
     if(gds_arg_bytes(&input[0], GDS_MAX_CERT_SIZE, &in) != UA_STATUSCODE_GOOD)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     gds_buf der = {in->data, in->length};
-    X509 *cert = parse_der(&der), *ca = parse_der(&s->caCert);
+    X509 *cert = parse_der(&der), *ca = NULL;
+    gds_ca_issuer issuer = GDS_CA_ISSUER_RSA;
+    for(unsigned i = 0; cert && !ca && i < GDS_CA_ISSUERS; i++) { /* the issuer by name */
+        ca = parse_der(&s->issuerCert[i]);
+        issuer = (gds_ca_issuer)i; // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange): i < GDS_CA_ISSUERS
+        if(ca && X509_NAME_cmp(X509_get_issuer_name(cert), X509_get_subject_name(ca)) != 0) {
+            X509_free(ca);
+            ca = NULL;
+        }
+    }
     EVP_PKEY *caKey = ca ? X509_get0_pubkey(ca) : NULL;
     UA_StatusCode status;
     UA_DateTime validity = 0; /* DateTime.MinValue: unknown */
-    bool ours = cert && caKey &&
-                X509_NAME_cmp(X509_get_issuer_name(cert), X509_get_subject_name(ca)) == 0;
-    if(cert && !ours)
+    if(cert && !caKey)
         status = UA_STATUSCODE_BADCERTIFICATEREVOCATIONUNKNOWN; /* not issued by this CA */
     else if(!cert || X509_verify(cert, caKey) != 1)
         status = UA_STATUSCODE_BADCERTIFICATEINVALID;
     else
-        status = revocation(s, cert, &validity);
+        status = revocation(s, issuer, cert, &validity);
     X509_free(cert);
     X509_free(ca);
     UA_StatusCode r = UA_Variant_setScalarCopy(&output[0], &status, &UA_TYPES[UA_TYPES_STATUSCODE]);

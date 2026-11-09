@@ -5,7 +5,8 @@
  * CertificateAuthorityAdmin over an authenticated channel. One writer and
  * no reader at a time. Close discards what was written; CloseAndUpdate
  * validates and applies it (partial updates keep the other lists) and moves
- * LastUpdateTime. The GDS CA certificate and its CRL always stay.
+ * LastUpdateTime. The certificate and CRL of every GDS issuing CA (RSA,
+ * P-256, P-384) always stay.
  * AddCertificate takes trusted, non-CA certificates whose issuer is in the
  * list; RemoveCertificate refuses unknown thumbprints and CAs still needed.
  * SPDX-License-Identifier: MPL-2.0 */
@@ -267,8 +268,11 @@ static void test_open_rules(gds_server *s) {
 }
 
 /* The list's sizes: Trusted certificates, Trusted CRLs, Issuer
- * certificates, Issuer CRLs */
+ * certificates, Issuer CRLs. tc and tl count one entry for the GDS: the
+ * other issuing CAs (P-256, P-384) and their CRLs are added here. */
 static bool sizes(gds_server *s, size_t tc, size_t tl, size_t ic, size_t il) {
+    tc += GDS_CA_ISSUERS - 1;
+    tl += GDS_CA_ISSUERS - 1;
     UA_TrustListDataType now;
     if(gds_trustlist_data(s, UA_TRUSTLISTMASKS_ALL, &now) != UA_STATUSCODE_GOOD)
         return false;
@@ -334,7 +338,7 @@ static void test_write_apply(gds_server *s, const tcert *app) {
     CHECK(last_update(s) > lu1);
     CHECK(gds_trustlist_data(s, UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES, &tl) ==
           UA_STATUSCODE_GOOD);
-    CHECK(tl.trustedCertificatesSize == 2 && tl.trustedCrlsSize == 0 &&
+    CHECK(tl.trustedCertificatesSize == GDS_CA_ISSUERS + 1 && tl.trustedCrlsSize == 0 &&
           tl.specifiedLists == UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES);
     UA_TrustListDataType_clear(&tl);
 }
@@ -413,6 +417,14 @@ static void test_remove(gds_server *s, const tcert *app) {
     CHECK(remove_tp(s, "not hex", true) == UA_STATUSCODE_BADINVALIDARGUMENT);
     CHECK(remove_tp(s, tp, false) == UA_STATUSCODE_BADINVALIDARGUMENT); /* wrong list */
     CHECK(remove_tp(s, tpGds, true) == UA_STATUSCODE_BADCERTIFICATECHAININCOMPLETE);
+    for(size_t i = 1; i < GDS_CA_ISSUERS; i++) { /* the ECC CAs stay as well */
+        char tpEcc[41];
+        UA_ByteString ecc = {s->issuerCert[i].len, s->issuerCert[i].data};
+        if(!CHECK(ecc.length > 0))
+            continue;
+        thumbprint(&ecc, tpEcc);
+        CHECK(remove_tp(s, tpEcc, true) == UA_STATUSCODE_BADCERTIFICATECHAININCOMPLETE);
+    }
     UA_DateTime lu = last_update(s);
     for(char *c = tp; *c; c++) /* lower case works too */
         if(*c >= 'A' && *c <= 'F')

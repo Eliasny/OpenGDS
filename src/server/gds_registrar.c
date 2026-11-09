@@ -208,9 +208,6 @@ static bool group_ok(const gds_server *s, const UA_NodeId *g) {
     return !g || UA_NodeId_isNull(g) || UA_NodeId_equal(g, &def);
 }
 
-static bool type_ok(const UA_NodeId *t, UA_UInt32 *out) {
-    return gds_group_type(t, out);
-}
 
 static void sleep_ms(uint32_t ms) {
     struct timespec ts = {(time_t)(ms / 1000u), (long)(ms % 1000u) * 1000000L};
@@ -264,7 +261,7 @@ static gds_status sign_checks(gds_server *s, const char *actor, const UA_NodeId 
                               const UA_NodeId *groupId, const UA_NodeId *typeId,
                               const UA_ByteString *csr, sign_input *in) {
     if(!actor_ok(actor) || !app_guid(s, appId, &in->app) || !group_ok(s, groupId) ||
-       !type_ok(typeId, &in->type) || !csr_ok(csr))
+       !gds_group_type(s, typeId, &in->type) || !csr_ok(csr))
         return GDS_EINVAL;
     in->csr = csr;
     gds_status st = standby(s);
@@ -289,7 +286,10 @@ static gds_status deliver(gds_server *s, const gds_request *q, UA_ByteString *ce
     gds_unlock(s);
     if(st != GDS_OK)
         return st;
-    UA_ByteString c = {q->cert.len, q->cert.data}, ca = {s->caCert.len, s->caCert.data};
+    UA_ByteString c = {q->cert.len, q->cert.data}, ca = {0, NULL};
+    const gds_buf *ib = gds_issuer_for(s, q->certType);
+    ca.length = ib->len;
+    ca.data = ib->data;
     if(UA_ByteString_copy(&c, cert) != UA_STATUSCODE_GOOD ||
        UA_Array_copy(&ca, 1, (void **)issuers, &UA_TYPES[UA_TYPES_BYTESTRING]) !=
            UA_STATUSCODE_GOOD) {

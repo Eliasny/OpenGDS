@@ -7,6 +7,7 @@
 #include <open62541/server.h>
 #include <open62541/types_gds_generated.h>
 
+#include <openssl/x509.h>
 #include <pthread.h>
 #include <stdbool.h>
 
@@ -59,7 +60,10 @@ struct gds_server {
      * take this lock around store calls only, never across a CA call. */
     pthread_mutex_t storeLock;
     gds_ca *ca;
-    gds_buf caCert; /* issuer certificate for FinishRequest, read once at start */
+    gds_buf caCert; /* the RSA issuer's certificate, read once at start */
+    /* every issuer's certificate (gds_ca_issuer), empty when the CA slot
+     * lacks it (docs/ca.md "ECC: one issuing CA per curve") */
+    gds_buf issuerCert[GDS_CA_ISSUERS];
     gds_approval_policy approval;
     size_t pendingApprovals; /* live dialogs; server thread only */
     UA_DateTime counterReset; /* QueryApplications lastCounterResetTime */
@@ -300,7 +304,14 @@ bool gds_issuance_held(gds_server *s, const UA_Guid *appId);
 void gds_holds_free(gds_server *s);
 /* A CertificateTypeId of DefaultApplicationGroup (gds_certmgr.c): null
  * picks the default type; false if the group does not hold the type. */
-bool gds_group_type(const UA_NodeId *t, UA_UInt32 *type);
+bool gds_group_type(const gds_server *s, const UA_NodeId *t, UA_UInt32 *type);
+/* The issuer certificate of a CertificateType (borrowed), or NULL. */
+const gds_buf *gds_issuer_cert(const gds_server *s, UA_UInt32 certType);
+/* The issuer to return with a certificate of certType: its issuer, else
+ * the RSA one. */
+const gds_buf *gds_issuer_for(const gds_server *s, UA_UInt32 certType);
+/* The issuer certificates, parsed: out[0..*n) (X509_free each). */
+void gds_issuers_parse(const gds_server *s, X509 *out[GDS_CA_ISSUERS], size_t *n);
 /* StartNewKeyPairRequest secrets (gds_keypair.c). Any thread. add: copies
  * the password (GDS_ETOOBIG when the table is full). password: a copy for
  * the CA call, free it with gds_buf_free_secret. set_key: takes the key and
