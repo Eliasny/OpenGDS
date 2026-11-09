@@ -21,6 +21,10 @@ Windows differences from Linux:
   is no pause signal.
 - The client profile's trigger may be a .exe, or a .bat/.cmd (run through
   cmd.exe /c). A trigger that runs past its timeout is terminated.
+- --restart-cmd and --setup-cmd run through cmd.exe /c, so give a
+  Windows command (a .bat, or ssh to the device).
+- --prompts reads a plain file of operator answers; it is read once to its
+  end (no waiting for lines to be appended).
 
 Operator guide, test catalogues and plan file format:
 https://github.com/Eliasny/OpenGDS/tree/main/docs/auditor
