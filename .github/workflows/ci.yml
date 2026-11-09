@@ -94,6 +94,77 @@ jobs:
             echo "$b: PIE, full RELRO, NX, canary, FORTIFY"
           done
 
+  windows-wine:
+    # gdsaudit.exe (packaging/windows/build.sh) under Wine against the Linux
+    # pins: packaging/windows/check_under_wine.sh, about 25 minutes. Only on
+    # pull requests that touch the Auditor or its Windows packaging.
+    name: windows gdsaudit.exe under wine
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Does this pull request touch the Auditor?
+        id: scope
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git diff --name-only "$BASE" HEAD | grep -qE '^(tools/auditor|packaging/windows)/'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No change under tools/auditor or packaging/windows: skipped"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install build dependencies, MinGW-w64 and Wine
+        if: steps.scope.outputs.run == 'true'
+        run: >
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          ninja-build libsqlite3-dev libseccomp-dev python3 zip
+          gcc-mingw-w64-x86-64-win32 binutils-mingw-w64-x86-64 mingw-w64-x86-64-dev wine64
+      - name: Cache pinned OpenSSL 3.5
+        if: steps.scope.outputs.run == 'true'
+        id: ossl
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/openssl
+          key: openssl-3.5.9-${{ hashFiles('scripts/build_openssl.sh') }}
+      - name: Build OpenSSL 3.5.9 (pinned, checksum-verified)
+        if: steps.scope.outputs.run == 'true' && steps.ossl.outputs.cache-hit != 'true'
+        run: scripts/build_openssl.sh "${{ runner.temp }}/openssl"
+      - name: Cache pinned open62541
+        if: steps.scope.outputs.run == 'true'
+        id: cache
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/open62541
+          key: open62541-v1.5.10-gcc-release-${{ hashFiles('scripts/build_open62541.sh', 'docs/upstream/patches/v1.5.10/*.patch') }}
+      - name: Build open62541 v1.5.10
+        if: steps.scope.outputs.run == 'true' && steps.cache.outputs.cache-hit != 'true'
+        env:
+          OPENSSL_ROOT: ${{ runner.temp }}/openssl
+        run: scripts/build_open62541.sh "${{ runner.temp }}/open62541"
+      - name: Build the Linux self-test targets
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          cmake -S . -B build -G Ninja -DOPEN62541_PREFIX="${{ runner.temp }}/open62541" \
+              -DOPENSSL_ROOT_DIR="${{ runner.temp }}/openssl"
+          cmake --build build --target push_test_server mock_gds
+      - name: Cache the Windows OpenSSL and open62541
+        if: steps.scope.outputs.run == 'true'
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/win64
+          key: win64-deps-${{ hashFiles('scripts/build_openssl.sh', 'scripts/build_open62541.sh', 'docs/upstream/patches/v1.5.10/*.patch', 'packaging/windows/mingw64.cmake') }}
+      - name: Build gdsaudit.exe
+        if: steps.scope.outputs.run == 'true'
+        run: sh packaging/windows/build.sh "${{ runner.temp }}/winpkg" "${{ runner.temp }}/win64"
+      - name: gdsaudit.exe under Wine against the Linux pins
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          exe=$(find "${{ runner.temp }}/winpkg/build" -name gdsaudit.exe | head -1)
+          sh packaging/windows/check_under_wine.sh build/tools/auditor "$exe" "${{ runner.temp }}/wine-check"
+
   analysis:
     name: static analysis
     runs-on: ubuntu-24.04
