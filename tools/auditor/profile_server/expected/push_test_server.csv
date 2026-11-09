@@ -80,4 +80,20 @@ SRV-WIRE-05,pass
 SRV-WIRE-06,pass
 SRV-WIRE-07,pass
 SRV-WIRE-08,pass
+SRV-REJ-01,pass
+SRV-REJ-02,pass
+SRV-REJ-03,pass
+SRV-REJ-04,pass
+SRV-PER-01,pass
+SRV-PER-02,pass
+SRV-PER-03,pass
+SRV-PER-04,pass
+SRV-AUD-01,pass
+SRV-AUD-02,pass
+SRV-SET-01,not_tested   # only with --only SRV-SET; push_test_server_setup.csv covers it
+SRV-SET-02,not_tested   # only with --only SRV-SET; push_test_server_setup.csv covers it
+SRV-SET-03,not_tested   # only with --only SRV-SET; push_test_server_setup.csv covers it
+SRV-SET-04,not_tested   # only with --only SRV-SET; push_test_server_setup.csv covers it
+SRV-SET-05,not_tested   # only with --only SRV-SET; push_test_server_setup.csv covers it
+SRV-SET-06,not_tested   # only with --only SRV-SET; push_test_server_setup.csv covers it
 SRV-RESTORE,pass

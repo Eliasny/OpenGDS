@@ -17,7 +17,7 @@ Spec: OPC 10000-12 v1.05.07 (2026-04-15) unless the clause names another Part. H
 | `ch-none` | A None SecureChannel with a session, when the target offers one |
 | Test CA | `ca` (root, subject contains "OpenGDS Auditor TEST", at most 30 days valid), `ca-int` (intermediate under `ca`), `ca2` (unrelated root), CRLs for each |
 | Target certificates | `t-good` (from `ca` for the target's ApplicationUri and the key of the target's CSR), `t-wrongkey`, `t-wronguri`, `t-badsig`, `t-expired`, `t-otherca` (from `ca2`), `t-ecc` (an ECC certificate for an RSA slot), `t-withkey` (certificate plus a private key the Auditor generated) |
-| Peer certificates | `peer-good` (client certificate from `ca`), `peer-revoked` (from `ca`, listed in `ca`'s CRL), `peer-unknown` (self-signed, never trusted), `peer-int` (from `ca-int`), `peer-badsig` (from `ca`, signature broken) |
+| Peer certificates | `peer-good` (client certificate from `ca`), `peer-revoked` (from `ca`, listed in `ca`'s CRL), `peer-unknown` (self-signed, never trusted), `peer-int` (from `ca-int`), `peer-badsig` (self-signed, signature broken: a server can see the error without trusting any CA, so SRV-REJ-02 also works in a read-only run) |
 | Big list | A TrustListDataType one byte larger than MaxTrustListSize: the snapshot plus filler certificates from `ca` in TrustedCertificates (distinct, valid, sized with an nsComment padding so the encoding hits the size exactly). Built only for MaxTrustListSize below 4 MiB (`GDS_MAX_TRUSTLIST_SIZE`); above that SRV-CAP-07 is Not tested |
 | Settle timeout | `--settle-timeout`, default 300 s: how long the Auditor waits for asynchronous effects (channels re-keyed, sessions closed) before a Fail |
 
@@ -166,7 +166,7 @@ Not a conformance test: the last line of every run, with its own verdict (README
 
 ConformanceUnit: Push Model for Global Certificate and TrustList Management.
 
-Each test restarts the target with `--restart-cmd` or an operator prompt, and reports Not tested when neither is available.
+Each test restarts the target with `--restart-cmd` (run with `sh -c`; it must return once the restart is started) or an operator prompt when stdin is a terminal, and reports Not tested when neither is available. The Auditor then waits up to the settle timeout for GetEndpoints. SRV-PER-03 cancels its UpdateCertificate when the target has transactions, so the target keeps its key; without transactions the new key stays in use and the restore step warns.
 
 | ID | Clause | Flags | Check | Pass when | Fail / Warn / Not supported | Mutant |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -181,8 +181,8 @@ ConformanceUnit: Push Model for Global Certificate and TrustList Management.
 
 | ID | Clause | Flags | Check | Pass when | Fail / Warn / Not supported | Mutant |
 | --- | --- | --- | --- | --- | --- | --- |
-| SRV-REJ-01 | 12 §7.10.12 | — | Connect as `peer-unknown` (refused, SRV-WIRE-06), then GetRejectedList as `admin` | `peer-unknown` is in the list | Warn: missing. Adding rejected certificates is only recommended | `rejected-not-recorded` |
-| SRV-REJ-02 | 12 §7.8.3.2, §7.10.12 | — | Connect with a client certificate that has a bad signature (an unsuppressible error), then GetRejectedList | It is not in the list (only valid but untrusted certificates are added) | Fail: it is in the list | `rejected-records-invalid` |
+| SRV-REJ-01 | 12 §7.10.12 | — | Connect as a fresh self-signed `peer-unknown` (refused, as in SRV-WIRE-06), then GetRejectedList as `admin` | `peer-unknown` is in the list | Warn: missing. Adding rejected certificates is only recommended | `rejected-not-recorded` |
+| SRV-REJ-02 | 12 §7.8.3.2, §7.10.12 | — | Connect with `peer-badsig`, a self-signed client certificate with one signature bit flipped (an unsuppressible error, 4 §6.1.3), then GetRejectedList | It is not in the list (only valid but untrusted certificates are added) | Fail: it is in the list | `rejected-records-invalid` |
 | SRV-REJ-03 | 12 §7.10.12 | — | Decode every entry GetRejectedList returns | Every entry is a DER certificate | Fail: an entry does not decode | `rejected-garbage` |
 | SRV-REJ-04 | 12 §7.8.3.1, §7.8.3.2 | — | If a CertificateGroup has its own GetRejectedList, call it as `admin` | Good, and every entry decodes | Fail: Bad code or an entry that does not decode. Not supported: no group-level method | `group-rejected-broken` |
 
@@ -190,14 +190,14 @@ ConformanceUnit: Push Model for Global Certificate and TrustList Management.
 
 ConformanceUnit: Push Model for Global Certificate and TrustList Management.
 
-These tests need the target in its application setup state, so an operator (or `--setup-cmd`) has to reset it first. They run only when selected with `--only setup` and are not in any preset.
+These tests need the target in its application setup state, so an operator (or `--setup-cmd`) has to reset it first. They run only when selected with `--only SRV-SET` and are not in any preset. Before the first of them `gdsaudit` runs `--setup-cmd` (or, at a terminal, asks the operator to reset the target) and waits for GetEndpoints; without either it takes the target as already reset. The Auditor connects with its usual admin identity, which the target's setup credentials must map to SecurityAdmin (12 §7.5). SRV-SET-04 adds that same identity to the SecurityAdmin Role: a UserName rule with `--admin-user`, else an Application rule with the ApplicationUri of the admin certificate (OPC 10000-18 §4.4.3; Bad_AlreadyExists counts as added, §4.4.5). SRV-SET-06 needs `--allow-reset`; after the Shutdown it waits up to the settle timeout for the target to come back by itself, then uses `--restart-cmd` (or the operator). The self-test runs these against `push_test_server --setup`.
 
 | ID | Clause | Flags | Check | Pass when | Fail / Warn / Not supported | Mutant |
 | --- | --- | --- | --- | --- | --- | --- |
 | SRV-SET-01 | 12 Annex G.2 | O | With InApplicationSetup TRUE, read ServerStatus.State | NoConfiguration | Fail: another state. Not supported: InApplicationSetup absent | `setup-state-running` |
 | SRV-SET-02 | 12 Annex G.2 | O | In setup state, GetEndpoints | Every secure endpoint presents a certificate (the default certificate) | Fail: no certificate | `setup-no-cert` |
 | SRV-SET-03 | 12 Annex G.2 | W, O | Push a trust list and `t-good`, apply, but do not configure the SecurityAdmin Role | InApplicationSetup is still TRUE | Fail: the server left setup without a configured SecurityAdmin Role | `setup-exit-no-role` |
-| SRV-SET-04 | 12 Annex G.2; OPC 10000-18 (role management) | W, O | Add the Auditor's identity to the SecurityAdmin Role (Part 18 AddIdentity) after SRV-SET-03 | InApplicationSetup FALSE and State Running | Fail: still in setup | `setup-sticky` |
+| SRV-SET-04 | 12 Annex G.2; OPC 10000-18 §4.4.3, §4.4.5 | W, O | Add the Auditor's identity to the SecurityAdmin Role (Part 18 AddIdentity) after SRV-SET-03 | InApplicationSetup FALSE and State Running | Fail: still in setup | `setup-sticky` |
 | SRV-SET-05 | 12 §7.5 | W, O | After SRV-SET-04, connect with `peer-unknown` | Refused | Warn: accepted (the server should restrict access once it has a trust list) | `setup-open-after` |
 | SRV-SET-06 | 12 §7.10.13 | W, O | If ResetToServerDefaults exists and `--allow-reset` is given, call it and watch ServerStatus | State goes to Shutdown with a localized ShutdownReason; after the restart InApplicationSetup is TRUE | Fail: neither happens. Not supported: method absent. Not tested: no `--allow-reset` | `reset-no-shutdown` |
 
@@ -222,7 +222,9 @@ ConformanceUnit: Push Model for KeyCredential Service. Every test is Not support
 
 ConformanceUnit: Push Model for Global Certificate and TrustList Management. Every test is Not supported when Server.Auditing is FALSE. This group is new: the plan's file list has no `srv_audit.c` yet.
 
+A second admin session subscribes to the events of the Server Object, and each test makes the changes itself with the calls of the tests it names, counting the events per change. SRV-AUD-02 keeps reading events while ApplyChanges runs, then opens a new channel for that session (the server closes the old one, §7.10.9), so an event the server published before the close is counted. A server that closes its channels before it publishes the event can lose it: the open62541 client does not Republish.
+
 | ID | Clause | Flags | Check | Pass when | Fail / Warn / Not supported | Mutant |
 | --- | --- | --- | --- | --- | --- | --- |
-| SRV-AUD-01 | 12 §7.8.2.1, §7.8.2.13 | W | Subscribe to events on Server; run SRV-TL-02 and SRV-TL-09 | One TrustListUpdatedAuditEventType per completed update | Fail: missing or duplicated | `audit-no-trustlist-event` |
-| SRV-AUD-02 | 12 §7.10.27 | W | Subscribe to events; run SRV-TXN-03 and SRV-UPD-02 | One CertificateUpdatedAuditEventType per changed certificate, with SourceNode the ServerConfiguration Object; none for the failed call | Fail: missing, extra, or raised for the failed call | `audit-no-cert-event` |
+| SRV-AUD-01 | 12 §7.8.2.1, §7.8.2.13 | W | Subscribe to events on Server; write the applied trust list back (as SRV-TL-02), then AddCertificate and RemoveCertificate of a self-signed certificate (as SRV-TL-09) | One TrustListUpdatedAuditEventType per completed update | Fail: missing or duplicated | `audit-no-trustlist-event` |
+| SRV-AUD-02 | 12 §7.10.27 | W | Subscribe to events; UpdateCertificate with a certificate for a key the target does not hold (as SRV-UPD-02), then a new certificate for its CSR, applied (as SRV-TXN-03) | One CertificateUpdatedAuditEventType per changed certificate, with SourceNode the ServerConfiguration Object; none for the failed call | Fail: missing, extra, or raised for the failed call | `audit-no-cert-event` |

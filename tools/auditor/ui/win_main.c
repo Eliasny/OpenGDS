@@ -38,7 +38,9 @@ typedef struct {
     /* run */
     GtkWidget *pauseBtn;
     gboolean paused;
-    GtkWidget *runBtn, *abortBtn, *exportBtn, *openBtn, *historyBtn, *openFolderBtn;
+    GtkWindow *promptDlg; /* the operator step on screen (weak), or NULL */
+    size_t promptSeq;
+    GtkWidget *runBtn, *abortBtn, *exportBtn, *openBtn, *historyBtn, *openFolderBtn, *targetsBtn;
     GtkLabel *banner, *status;
     GtkProgressBar *progress;
     GtkListBox *list;
@@ -59,6 +61,10 @@ static void vrow_free(gpointer p) {
 
 static void win_free(gpointer p) {
     Win *w = p;
+    if(w->promptDlg) {
+        g_object_remove_weak_pointer(G_OBJECT(w->promptDlg), (gpointer *)&w->promptDlg);
+        gtk_window_destroy(w->promptDlg);
+    }
     avm_run_free(w->run);
     avm_plan_clear(&w->plan);
     g_ptr_array_unref(w->rows);
@@ -364,6 +370,7 @@ static void set_running(Win *w, gboolean running) {
     gtk_widget_set_sensitive(w->exportBtn, !running && w->run != NULL);
     gtk_widget_set_sensitive(GTK_WIDGET(w->profile), !running);
     gtk_widget_set_sensitive(w->historyBtn, !running);
+    gtk_widget_set_sensitive(w->targetsBtn, !running);
     gtk_widget_set_sensitive(w->openFolderBtn, !running);
 }
 
@@ -464,6 +471,43 @@ static void update_counts(Win *w) {
         gtk_progress_bar_set_fraction(w->progress, (double)done / (double)res->planned);
 }
 
+static void close_prompt(Win *w) {
+    if(w->promptDlg)
+        gtk_window_destroy(w->promptDlg); /* the weak pointer clears it */
+    w->promptSeq = 0;
+}
+
+static void on_prompt_answer(ga_answer a, const char *note, gpointer user) {
+    Win *w = user;
+    GError *e = NULL;
+    size_t seq = w->promptSeq;
+    w->promptSeq = 0;
+    if(!avm_run_answer(w->run, seq, a, note, &e)) {
+        char *m = g_strdup_printf("The answer was not sent: %s", e->message);
+        set_status(w, m);
+        g_free(m);
+    } else {
+        set_status(w, "Answer sent, the run goes on…");
+    }
+    g_clear_error(&e);
+}
+
+static void show_prompt(Win *w, const ga_event *ev) {
+    close_prompt(w);
+    const ga_results *res = avm_run_results(w->run);
+    const ga_result *x = ev->n >= 1 && ev->n <= res->n ? &res->items[ev->n - 1] : NULL;
+    vrow *r = row_for(w, ev->n);
+    if(r)
+        gtk_expander_set_expanded(r->expander, TRUE);
+    char *s = g_strdup_printf("Waiting for the operator: %s", ev->text ? ev->text : "");
+    set_status(w, s);
+    g_free(s);
+    w->promptSeq = ev->seq;
+    w->promptDlg = dlg_prompt_present(w->win, ev->seq, x ? x->id : NULL, x ? x->title : NULL,
+                                      ev->text, on_prompt_answer, w);
+    g_object_add_weak_pointer(G_OBJECT(w->promptDlg), (gpointer *)&w->promptDlg);
+}
+
 static void on_run_event(AvmRun *run, const ga_event *ev, void *user) {
     (void)run;
     Win *w = user;
@@ -493,6 +537,15 @@ static void on_run_event(AvmRun *run, const ga_event *ev, void *user) {
                       "it until you resume or abort.");
         break;
     case GA_EV_RESUMED:
+        update_counts(w);
+        break;
+    case GA_EV_PROMPT:
+        if(!w->replaying)
+            show_prompt(w, ev);
+        break;
+    case GA_EV_PROMPT_ANSWERED:
+        if(ev->seq == w->promptSeq || !w->promptSeq)
+            close_prompt(w);
         update_counts(w);
         break;
     case GA_EV_RUN_FINISHED:
@@ -537,6 +590,7 @@ static char *outcome_text(const Win *w, int exitCode, const char *error) {
 static void on_run_finished(AvmRun *run, int exitCode, const char *error, void *user) {
     (void)run;
     Win *w = user;
+    close_prompt(w);
     char *text = outcome_text(w, exitCode, error);
     set_status(w, text);
     g_free(text);
@@ -627,6 +681,25 @@ gboolean win_main_show_run(GtkWindow *win, const char *dir, GError **error) {
 const ga_results *win_main_results(GtkWindow *win) {
     Win *w = g_object_get_data(G_OBJECT(win), "gdsaudit-win");
     return w && w->run && !avm_run_is_running(w->run) ? avm_run_results(w->run) : NULL;
+}
+
+AvmPlan *win_main_plan(GtkWindow *win) {
+    Win *w = g_object_get_data(G_OBJECT(win), "gdsaudit-win");
+    if(!w || avm_run_is_running(w->run))
+        return NULL;
+    sync_plan(w);
+    return &w->plan;
+}
+
+void win_main_plan_changed(GtkWindow *win) {
+    Win *w = g_object_get_data(G_OBJECT(win), "gdsaudit-win");
+    if(w)
+        load_plan_into_form(w);
+}
+
+static void on_targets(GtkButton *b, gpointer data) {
+    (void)b;
+    page_targets_present(((Win *)data)->win);
 }
 
 static void on_history(GtkButton *b, gpointer data) {
@@ -732,7 +805,7 @@ static void on_export_folder(GObject *src, GAsyncResult *res, gpointer data) {
     char *dir = g_file_get_path(f);
     g_object_unref(f);
     if(dir && w->run && avm_run_export(w->run, dir, &e)) {
-        char *m = g_strdup_printf("Exported report.html, junit.xml and events.jsonl to %s", dir);
+        char *m = g_strdup_printf("Exported the report (HTML, JUnit, JSON, TAP) and events.jsonl to %s", dir);
         set_status(w, m);
         g_free(m);
     } else {
@@ -886,7 +959,7 @@ GtkWindow *win_main_new(GtkApplication *app) {
     w->abortBtn = button("A_bort", "Stop after the current test and restore the target",
                          G_CALLBACK(on_abort), w);
     w->openBtn = button("_Open report", "Open this run's HTML report", G_CALLBACK(on_open), w);
-    w->exportBtn = button("_Export…", "Write report.html, junit.xml and events.jsonl to a folder",
+    w->exportBtn = button("_Export…", "Write the report (HTML, JUnit, JSON, TAP) and events.jsonl to a folder",
                           G_CALLBACK(on_export), w);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), w->runBtn);
     w->pauseBtn = button("_Pause", "Wait before the next test; the test in progress finishes",
@@ -894,11 +967,14 @@ GtkWindow *win_main_new(GtkApplication *app) {
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), w->pauseBtn);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), w->abortBtn);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->exportBtn);
+    w->targetsBtn = button("Tar_gets…", "Find a device's endpoints; saved targets",
+                           G_CALLBACK(on_targets), w);
     w->historyBtn = button("_History…", "Past runs: open one or compare two",
                            G_CALLBACK(on_history), w);
     w->openFolderBtn = button("Open _folder…", "Show a results folder, also of a headless run",
                               G_CALLBACK(on_open_folder), w);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->historyBtn);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->targetsBtn);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->openFolderBtn);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), w->openBtn);
     gtk_window_set_titlebar(w->win, header);
@@ -919,7 +995,7 @@ GtkWindow *win_main_new(GtkApplication *app) {
 
 gboolean win_main_check(GtkWindow *win) {
     Win *w = g_object_get_data(G_OBJECT(win), "gdsaudit-win");
-    return w && w->runBtn && w->list && w->profile && w->preset && w->historyBtn &&
+    return w && w->runBtn && w->list && w->profile && w->preset && w->historyBtn && w->targetsBtn &&
            gtk_drop_down_get_selected(w->preset) == AVM_PRESET_QUICK &&
            !gtk_check_button_get_active(w->allowChanges);
 }

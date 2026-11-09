@@ -24,8 +24,10 @@
  *   push_test_server --port 4841 --pki ./pki-push \
  *       [--trust ca.der]... [--crl ca.crl]... \
  *       [--admin user:password]... [--user user:password]...
- *       [--admin-cert gds.der]... [--no-anonymous] [--accept-keys] [--break <mutant>]
- *       [--list-mutants]
+ *       [--admin-cert gds.der]... [--no-anonymous] [--accept-keys] [--setup]
+ *       [--break <mutant>] [--list-mutants]
+ * --setup: start in the application setup state until the SecurityAdmin
+ * Role has an identity (push_setup.h).
  */
 #include <open62541/plugin/accesscontrol_default.h>
 #include <open62541/plugin/create_certificate.h>
@@ -39,12 +41,14 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <openssl/crypto.h>
 
 #include "common/limits.h"
 #include "common/safeint.h"
 #include "push_mgmt.h"
+#include "push_setup.h"
 #include "x509util.h"
 #include "common/banned.h"
 
@@ -53,7 +57,8 @@
 #define MAX_CRED 64
 #define MAX_SEED 16
 
-static const char *brk = NULL; /* active --break mutant (push_mgmt.c), set while parsing */
+static const char *mutant = NULL; /* active --break mutant (push_mgmt.c), set while parsing */
+static bool setupMode;         /* --setup (push_setup.c) */
 
 /* ---------------- Admin policy (SecurityAdmin) ---------------- */
 
@@ -123,10 +128,12 @@ activateSession( // NOLINT(readability-function-cognitive-complexity)
 
     UA_Boolean admin = false;
     const char *why = "none";
+    const UA_String *userName = NULL;
     /* 1. Admin user name (password already verified by the default plugin) */
     if(token->encoding == UA_EXTENSIONOBJECT_DECODED &&
        token->content.decoded.type == &UA_TYPES[UA_TYPES_USERNAMEIDENTITYTOKEN]) {
         const UA_UserNameIdentityToken *t = token->content.decoded.data;
+        userName = &t->userName;
         if(pm_breaking("no-secadmin")) { /* any authenticated user */
             admin = true;
             why = "mutant no-secadmin";
@@ -151,6 +158,14 @@ activateSession( // NOLINT(readability-function-cognitive-complexity)
                 }
             }
         }
+    }
+
+    /* 3. The SecurityAdmin Role's identities (--setup, OPC 10000-18) */
+    bool anonymous = token->encoding != UA_EXTENSIONOBJECT_DECODED ||
+                     token->content.decoded.type == &UA_TYPES[UA_TYPES_ANONYMOUSIDENTITYTOKEN];
+    if(!admin && setupMode && ps_identity_admin(userName, anonymous, remoteCert)) {
+        admin = true;
+        why = "SecurityAdmin identity";
     }
 
     if(!admin && pm_breaking("anon-admin") &&
@@ -239,6 +254,7 @@ static void reevaluateSessions(void) {
 static UA_Boolean isProtectedObject(const UA_NodeId *objectId) {
     static const UA_UInt32 ids[] = {
         UA_NS0ID_SERVERCONFIGURATION,
+        UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP, /* GetRejectedList */
         UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST,
         UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP_TRUSTLIST,
         UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTHTTPSGROUP_TRUSTLIST,
@@ -310,7 +326,8 @@ getUserExecutableOnObject(UA_Server *server, UA_AccessControl *ac, const UA_Node
  * UpdateCertificate, also when the CSR kept the key (carried patch, see
  * docs/upstream/01-filestore-key-kept-csr.md). Load the newest pair, preferring
  * a CA-issued certificate over the initial self-signed one. */
-static gds_status loadOwnFromStore(const char *pki, gds_buf *certOut, gds_buf *keyOut) {
+static gds_status loadOwnFromStore(const char *pki, bool selfSignedFirst, gds_buf *certOut,
+                                   gds_buf *keyOut) {
     char dir[GDS_MAX_PATH];
     gds_status r;
     if((r = gds_path(dir, sizeof(dir), "%s/ApplCerts/own/certs", pki)) != GDS_OK)
@@ -339,7 +356,7 @@ static gds_status loadOwnFromStore(const char *pki, gds_buf *certOut, gds_buf *k
             gds_buf_free_secret(&k);
             continue;
         }
-        bool issued = !x509_is_self_signed(&c);
+        bool issued = !x509_is_self_signed(&c) != selfSignedFirst; /* forget-on-restart */
         if((!issued && bestIssued) || (issued == bestIssued && best.data && st.st_mtime < bestTime)) {
             gds_buf_free(&c);
             gds_buf_free_secret(&k);
@@ -428,7 +445,7 @@ static int usage(const char *argv0) {
     fprintf(stderr,
             "usage: %s [--port N] [--pki DIR] [--trust cert.der]... [--crl x.crl]...\n"
             "          [--admin user:password]... [--user user:password]...\n"
-            "          [--admin-cert gds.der]... [--no-anonymous] [--accept-keys]\n"
+            "          [--admin-cert gds.der]... [--no-anonymous] [--accept-keys] [--setup]\n"
             "          [--break MUTANT] [--list-mutants]\n",
             argv0);
     return 2;
@@ -454,6 +471,10 @@ int main(int argc, char **argv) {
             pm_accept_keys(true);
             continue;
         }
+        if(!strcmp(a, "--setup")) { /* application setup state (Annex G.2) */
+            setupMode = true;
+            continue;
+        }
         if(!strcmp(a, "--list-mutants")) {
             pm_mutant_list();
             return 0;
@@ -469,7 +490,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "unknown mutant '%s' (see --list-mutants)\n", v);
                 return 2;
             }
-            brk = v;
+            mutant = v;
         } else if(!strcmp(a, "--pki")) {
             pki = v;
         } else if(!strcmp(a, "--trust") && trustN < MAX_SEED) {
@@ -503,8 +524,8 @@ int main(int argc, char **argv) {
         }
     }
     printf("push_test_server: OpenGDS Auditor self-test target, not a product\n");
-    if(brk)
-        printf("push_test_server: MUTANT '%s' active, listening on 127.0.0.1 only\n", brk);
+    if(mutant)
+        printf("push_test_server: MUTANT '%s' active, listening on 127.0.0.1 only\n", mutant);
 
     /* Seed the trust store from the command line (initial out-of-band trust) */
     for(size_t i = 0; i < trustN; i++)
@@ -517,7 +538,8 @@ int main(int argc, char **argv) {
     /* Own certificate: from the store, or a fresh self-signed one */
     gds_buf ownCert = {0}, ownKey = {0};
     UA_ByteString cert = UA_BYTESTRING_NULL, key = UA_BYTESTRING_NULL;
-    if(loadOwnFromStore(pki, &ownCert, &ownKey) == GDS_OK) {
+    bool forget = mutant && !strcmp(mutant, "forget-on-restart");
+    if(loadOwnFromStore(pki, forget, &ownCert, &ownKey) == GDS_OK) {
         cert.data = ownCert.data;
         cert.length = ownCert.len;
         key.data = ownKey.data;
@@ -554,7 +576,10 @@ int main(int argc, char **argv) {
      * mutant keeps one in push_mgmt.c) */
     theServer = server;
     pm_on_list_installed(reevaluateSessions);
-    res |= pm_install(server, brk, &key, sessionMode);
+    pm_store(pki);
+    res |= pm_install(server, mutant, &key, sessionMode);
+    if(res == UA_STATUSCODE_GOOD && setupMode)
+        res = ps_install(server, pki, isAdminSession, sessionMode);
     if(res == UA_STATUSCODE_GOOD && pm_breaking("deprecated-policy")) {
         res = UA_ServerConfig_addSecurityPolicyBasic256(config, &cert, &key);
         if(res == UA_STATUSCODE_GOOD)
@@ -573,7 +598,7 @@ int main(int argc, char **argv) {
 
     /* A mutant never listens beyond loopback (docs/architecture.md, "The
      * Auditor under these rules") */
-    if(brk) {
+    if(mutant) {
         char u[64];
         if(gds_path(u, sizeof(u), "opc.tcp://127.0.0.1:%ld", port) != GDS_OK) {
             UA_Server_delete(server);
@@ -633,6 +658,8 @@ int main(int argc, char **argv) {
     res = UA_Server_runUntilInterrupt(server);
     UA_Server_delete(server);
     pm_clear();
+    bool again = setupMode && ps_reset_requested();
+    ps_clear();
     while(sessionFlags) {
         SessionFlag *n = sessionFlags->next;
         UA_NodeId_clear(&sessionFlags->sessionId);
@@ -641,5 +668,12 @@ int main(int argc, char **argv) {
     }
     for(size_t i = 0; i < adminUsersSize; i++)
         OPENSSL_cleanse(adminUsers[i].pass, sizeof(adminUsers[i].pass));
+    if(again) { /* ResetToServerDefaults: start again from the defaults */
+        printf("push_test_server: starting again after ResetToServerDefaults\n");
+        fflush(NULL);
+        execv("/proc/self/exe", argv);
+        perror("execv");
+        return 1;
+    }
     return res == UA_STATUSCODE_GOOD ? 0 : 1;
 }

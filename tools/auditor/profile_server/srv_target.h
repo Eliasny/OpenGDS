@@ -55,6 +55,15 @@ typedef struct {
     bool keyReplaced;          /* SRV-UPD-09 put a key of the Auditor's in use */
     bool slow;                 /* --slow: run the tests flagged slow */
     long settleSec;            /* --settle-timeout (catalogue Fixtures), default 300 */
+    const char *restartCmd;    /* --restart-cmd: restarts the target (SRV-PER-*) */
+    bool restarted;            /* SRV-PER-01 restarted the target */
+    bool lutKnown;             /* lutBefore/lutAfter read around that restart */
+    UA_DateTime lutBefore, lutAfter; /* TrustList LastUpdateTime */
+    const char *setupCmd;      /* --setup-cmd: resets the target to application setup (SRV-SET-*) */
+    bool allowReset;           /* --allow-reset: SRV-SET-06 may call ResetToServerDefaults */
+    bool setupPrepared;        /* st_setup_hook ran */
+    bool setupPushed;          /* SRV-SET-03 applied a trust list and t-good in setup */
+    bool setupEnded;           /* SRV-SET-04 ended setup with a SecurityAdmin identity */
     const char *only;          /* --only: tests that run only when selected by name check it */
     char adminPassword[256];
     char userPassword[256];
@@ -188,6 +197,23 @@ GDS_MUST_CHECK gds_status st_make_cert(const testca_t *issuer, EVP_PKEY *key, co
 GDS_MUST_CHECK gds_status st_make_leaf(const testca_t *issuer, EVP_PKEY *key, const char *cn,
                                        const char *uri, long fromSec, long toSec, bool isCa,
                                        size_t pad, gds_buf *out);
+/* An anonymous session over SignAndEncrypt (Aes256_Sha256_RsaPss) with the
+ * application identity cert/key, trusting the test CA and the pinned
+ * certificate. *out is NULL unless the session is activated. */
+GDS_MUST_CHECK UA_StatusCode st_peer_connect(const srv_target *t, const gds_buf *cert,
+                                             const gds_buf *key, UA_Client **out);
+/* A refusal that names the certificate or hides it (Part 4 §6.1.3, Part 6
+ * §6.7.5), or a closed connection. */
+bool st_cert_refusal(UA_StatusCode r);
+/* Restart the target: run --restart-cmd (sh -c), or ask the operator when
+ * stdin is a terminal; then wait for GetEndpoints within the settle
+ * timeout. The admin session is closed first. Bad_NotSupported: no way to
+ * restart. */
+GDS_MUST_CHECK UA_StatusCode st_restart(srv_target *t, ga_ctx *ctx);
+/* Once per run before the setup tests: run --setup-cmd, or ask the operator
+ * at a terminal to reset the target, then wait for GetEndpoints. Without
+ * either the operator reset it beforehand (Good). */
+GDS_MUST_CHECK UA_StatusCode st_setup_hook(srv_target *t, ga_ctx *ctx);
 /* The public key of t->tGood (the key the target uses), or NULL. */
 EVP_PKEY *st_tgood_key(const srv_target *t);
 /* t-withkey: a certificate for the target from the test CA, with a key the

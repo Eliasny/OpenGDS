@@ -33,6 +33,9 @@ typedef struct {
  * (avm_plan_argv with events = AVM_EVENTS_FD). runDir is created. Returns
  * NULL and sets *error if the engine cannot be started. */
 #define AVM_EVENTS_FD "/dev/fd/3"
+/* avm_run_start also gives the engine "--prompts /dev/fd/4": the pipe that
+ * carries the operator's answers (avm_run_answer). */
+#define AVM_PROMPTS_FD "/dev/fd/4"
 AvmRun *avm_run_start(char **argv, const char *runDir, const AvmRunCallbacks *cb, void *user,
                       GError **error);
 
@@ -47,6 +50,14 @@ AvmRun *avm_run_open(const char *runDir, const AvmRunCallbacks *cb, void *user, 
 void avm_run_abort(AvmRun *run);
 /* Pause before the next test (the one in progress finishes), or resume. */
 void avm_run_pause(AvmRun *run, gboolean paused);
+/* Operator prompts (engine.h): the prompt the engine waits on (its seq),
+ * or 0 if none. A "prompt" event sets it and "prompt_answered" clears it. */
+size_t avm_run_pending_prompt(const AvmRun *run);
+/* Answer prompt seq. note is the operator's note (may be NULL); control
+ * characters become spaces and it is cut to fit one answer line. FALSE and
+ * *error if seq is not the pending prompt or the engine is gone. */
+gboolean avm_run_answer(AvmRun *run, size_t seq, ga_answer answer, const char *note,
+                        GError **error);
 gboolean avm_run_is_running(const AvmRun *run);
 const ga_results *avm_run_results(const AvmRun *run);
 const char *avm_run_dir(const AvmRun *run);
@@ -58,7 +69,8 @@ char *avm_engine_path(void);
 /* A new run folder under the user data folder: .../gdsaudit/runs/<time>-<profile> */
 char *avm_new_run_dir(const char *profile);
 
-/* Export: report.html, junit.xml and events.jsonl into dir. */
+/* Export: the report folder (report.html, junit.xml, report.json,
+ * report.tap) and events.jsonl into dir. */
 gboolean avm_run_export(const AvmRun *run, const char *dir, GError **error);
 
 #endif

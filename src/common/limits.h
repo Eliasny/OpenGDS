@@ -12,6 +12,10 @@
 #define GDS_MAX_SERIAL_SIZE       ((size_t)64)
 #define GDS_MAX_CHAIN_LEN         ((size_t)8)
 #define GDS_MAX_KEY_SIZE          ((size_t)16 * 1024)
+/* StartNewKeyPairRequest PrivateKeyPassword (UTF-8 bytes) */
+#define GDS_MAX_KEY_PASSWORD      ((size_t)256)
+/* Key pair requests whose password or key waits in opengdsd memory */
+#define GDS_MAX_KEYPAIR_REQUESTS  ((size_t)64)
 #define GDS_MAX_CRL_SIZE          ((size_t)1024 * 1024)
 #define GDS_MAX_TRUSTLIST_SIZE    ((size_t)4 * 1024 * 1024)
 #define GDS_MAX_TRUSTLIST_ENTRIES ((size_t)1000)

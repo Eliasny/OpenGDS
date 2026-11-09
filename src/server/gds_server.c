@@ -358,6 +358,7 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
     pthread_mutex_init(&s->dialogLock, NULL);
     pthread_mutex_init(&s->holdLock, NULL);
     pthread_mutex_init(&s->peerLock, NULL);
+    pthread_mutex_init(&s->kpLock, NULL);
     pthread_cond_init(&s->plugCond, NULL);
     s->store = cfg->store;
     s->ca = cfg->ca;
@@ -482,6 +483,8 @@ void gds_server_delete(gds_server *s) {
     pthread_mutex_destroy(&s->holdLock);
     UA_Array_delete(s->peers, s->nPeers, &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]);
     pthread_mutex_destroy(&s->peerLock);
+    gds_kp_free(s);
+    pthread_mutex_destroy(&s->kpLock);
     pthread_cond_destroy(&s->workCond);
     pthread_mutex_destroy(&s->roleLock);
     pthread_mutex_destroy(&s->workLock);

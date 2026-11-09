@@ -22,7 +22,9 @@ SN=${SHARD#*/}
 FIRST=false
 [ "$SK" = 1 ] && FIRST=true
 SRV=""
-trap '[ -n "$SRV" ] && kill "$SRV" 2>/dev/null; true' EXIT INT TERM
+NAME=""
+# the server's pid is in $W/server.pid: --restart-cmd (SRV-PER-*) replaces it
+trap '[ -f "$W/server.pid" ] && kill "$(cat "$W/server.pid")" 2>/dev/null; true' EXIT INT TERM
 
 "$B/gdsaudit" server --work "$W/auditor" --init-only || exit 2
 cp "$W/auditor/own/cert.der" "$W/auditor-plain.der"
@@ -36,11 +38,29 @@ start_server() {
     name=$1
     shift
     PORT=$((PORT + 1))
+    NAME=$name
+    # restart-<name>.sh stops the server and starts it again on the same PKI
+    {
+        echo '#!/bin/sh'
+        echo "pid=\$(cat '$W/server.pid')"
+        echo 'kill "$pid"; while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done'
+        # fresh: back to the factory state, keeping the self-signed certificate
+        echo "if [ \"\${1:-}\" = fresh ]; then"
+        echo "  cd '$W/pki-$name' && rm -rf push ApplCerts/trusted ApplCerts/issuer ApplCerts/rejected"
+        echo "  find ApplCerts/own -type f ! -name 'selfsigned\\[*' -exec rm -f {} +; cd /"
+        echo "fi"
+        printf "'%s' " "$B/push_test_server" --port "$PORT" --pki "$W/pki-$name" \
+            --trust "$W/auditor-plain.der" --trust "$W/auditor-admin.der" \
+            --admin-cert "$W/auditor-admin.der" --user operator:operator "$@"
+        echo ">> '$W/server-$name.log' 2>&1 &"
+        echo "echo \$! > '$W/server.pid'"
+    } > "$W/restart-$name.sh"
     "$B/push_test_server" --port "$PORT" --pki "$W/pki-$name" \
         --trust "$W/auditor-plain.der" --trust "$W/auditor-admin.der" \
         --admin-cert "$W/auditor-admin.der" --user operator:operator "$@" \
         > "$W/server-$name.log" 2>&1 &
     SRV=$!
+    echo "$SRV" > "$W/server.pid"
     i=0
     until grep -q "Creating listen socket" "$W/server-$name.log" 2>/dev/null; do
         i=$((i + 1))
@@ -48,17 +68,36 @@ start_server() {
         sleep 0.1
     done
 }
-stop_server() { kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null; SRV=""; }
+stop_server() {
+    pid=$(cat "$W/server.pid")
+    kill "$pid" 2>/dev/null
+    wait "$SRV" 2>/dev/null
+    while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done
+    rm -f "$W/server.pid"
+    SRV=""
+}
 audit() { # audit <name> [args]: run the profile, TAP into $W/<name>.tap
     name=$1
     shift
-    "$B/gdsaudit" server --url "opc.tcp://127.0.0.1:$PORT" --tofu --work "$W/auditor" \
-        --user operator --user-password-file "$W/user.pw" --allow-changes --settle-timeout 40 "$@" \
+    # the target's certificate: from its first GetEndpoints, or (PIN=pki:
+    # the setup tests, whose setup-no-cert mutant presents none) the
+    # self-signed one in its PKI
+    if [ "$PIN" = pki ]; then
+        set -- --server-cert "$(ls "$W/pki-$NAME"/ApplCerts/own/certs/selfsigned*.der | head -1)" "$@"
+    else
+        set -- --tofu "$@"
+    fi
+    "$B/gdsaudit" server --url "opc.tcp://127.0.0.1:$PORT" --work "$W/auditor" \
+        --user operator --user-password-file "$W/user.pw" --allow-changes --settle-timeout 40 \
+        --restart-cmd "sh '$W/restart-$NAME.sh'" "$@" \
         > "$W/$name.tap" 2>&1
 }
 
 RC=0
 SLOW_TESTS="SRV-TL-18"
+# the setup tests: push_test_server --setup, selected with --only SRV-SET
+SETUP_ARGS="--only SRV-SET --allow-reset"
+PIN=tofu
 if { [ -z "$ONLY" ] && $FIRST; } || [ "$ONLY" = good ]; then
     echo "=== good push_test_server"
     start_server good
@@ -92,25 +131,51 @@ if { [ -z "$ONLY" ] && $FIRST; } || [ "$ONLY" = good ]; then
     done
 fi
 
+# Push setup (SRV-SET-*): the target starts in application setup
+if { [ -z "$ONLY" ] && $FIRST; } || [ "$ONLY" = good ]; then
+    echo "=== good push_test_server --setup, SRV-SET"
+    start_server setup --setup
+    PIN=pki
+    audit setup $SETUP_ARGS --setup-cmd "sh '$W/restart-setup.sh' fresh" \
+        --expect "$E/push_test_server_setup.csv"
+    G=$?
+    PIN=tofu
+    stop_server
+    cat "$W/setup.tap"
+    if [ $G -ne 0 ]; then
+        echo "FAILED: SRV-SET against push_test_server --setup differs from push_test_server_setup.csv"
+        tail -40 "$W/server-setup.log"
+        RC=1
+    fi
+fi
+
 IDX=0
 while IFS=, read -r mutant test want; do
     case "$mutant" in ''|\#*) continue ;; esac
     IDX=$((IDX + 1))
     [ -n "$ONLY" ] && [ "$ONLY" != "$mutant" ] && continue
     [ -z "$ONLY" ] && [ $(( (IDX - 1) % SN + 1 )) -ne "$SK" ] && continue
-    case " $KEY_TESTS " in
-    *" $test "*)
-        start_server "$mutant" --break "$mutant" --accept-keys
-        audit "$mutant" --only "$test"
+    case "$test" in
+    SRV-SET-*)
+        start_server "$mutant" --setup --break "$mutant"
+        PIN=pki
+        audit "$mutant" $SETUP_ARGS --setup-cmd "sh '$W/restart-$mutant.sh' fresh" \
+            --stop-after "$test"
+        PIN=tofu
         ;;
     *)
-        start_server "$mutant" --break "$mutant"
-        # tests flagged slow in the catalogue run only for their own mutant;
-        # the tests after the one that must catch the mutant are not run
-        case " $SLOW_TESTS " in
-        *" $test "*) audit "$mutant" --slow --stop-after "$test" ;;
-        *) audit "$mutant" --stop-after "$test" ;;
-        esac
+        if case " $KEY_TESTS " in *" $test "*) true ;; *) false ;; esac; then
+            start_server "$mutant" --break "$mutant" --accept-keys
+            audit "$mutant" --only "$test"
+        else
+            start_server "$mutant" --break "$mutant"
+            # tests flagged slow in the catalogue run only for their own mutant;
+            # the tests after the one that must catch the mutant are not run
+            case " $SLOW_TESTS " in
+            *" $test "*) audit "$mutant" --slow --stop-after "$test" ;;
+            *) audit "$mutant" --stop-after "$test" ;;
+            esac
+        fi
         ;;
     esac
     stop_server

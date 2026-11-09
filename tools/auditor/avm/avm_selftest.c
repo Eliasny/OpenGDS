@@ -8,8 +8,10 @@
  *
  * --events /dev/fd/3 is added after PROFILE. Exit 0 if every verdict
  * matches EXPECT.csv (id,verdict lines), the reports exist and the engine
- * exited with 0; 1 otherwise.
+ * exited with 0, or with 3 (some tests Not tested) when EXPECT.csv pins
+ * those verdicts; 1 otherwise.
  * SPDX-License-Identifier: MPL-2.0 */
+#include <stdbool.h>
 #include <string.h>
 
 #include "avm_run.h"
@@ -114,7 +116,10 @@ int main(int argc, char **argv) {
         g_printerr("missing report.html, junit.xml or events.jsonl\n");
         rc = 1;
     }
-    if(s.broken || s.exitCode != 0 || !r->finishedSeen) {
+    /* 3: some tests Not tested, such as the push setup tests outside
+     * --only SRV-SET; compare() has checked them against EXPECT.csv */
+    bool exitOk = s.exitCode == 0 || (s.exitCode == 3 && rc == 0);
+    if(s.broken || !exitOk || !r->finishedSeen) {
         g_printerr("engine exit %d, stream %s\n", s.exitCode,
                    r->finishedSeen ? "complete" : "without run_finished");
         rc = 1;

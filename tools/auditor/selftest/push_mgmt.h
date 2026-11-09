@@ -28,6 +28,9 @@ typedef UA_MessageSecurityMode (*pm_mode_fn)(const UA_NodeId *sessionId);
  * signs with it and UpdateCertificate checks certificates against it. */
 UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteString *ownKey,
                          pm_mode_fn modeOf);
+/* Where push_mgmt keeps what a restart must not lose (<pki>/push).
+ * Call before pm_install. */
+void pm_store(const char *pki);
 /* --accept-keys: advertise SupportedPrivateKeyFormats ["PEM"] and take a
  * pushed private key (12 §7.10.5). Call before pm_install. */
 void pm_accept_keys(bool on);
@@ -38,6 +41,9 @@ void pm_session_closed(const UA_NodeId *sessionId);
 /* Called after a trust list is put in use (ApplyChanges, AddCertificate,
  * RemoveCertificate), with the server lock held. */
 void pm_on_list_installed(void (*fn)(void));
+/* Called after an ApplyChanges that applied a transaction, with the server
+ * lock held. */
+void pm_on_applied(void (*fn)(void));
 void pm_clear(void);
 
 bool pm_mutant_known(const char *name);

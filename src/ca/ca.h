@@ -21,7 +21,9 @@
 #include "common/buf.h"
 #include "common/compiler.h"
 
-#define GDS_CA_ABI_VERSION 2u /* 2: revoke */
+#define GDS_CA_ABI_VERSION 3u /* 2: revoke; 3: new_key_pair */
+/* Backends of an older version are accepted; the fields they lack are NULL. */
+#define GDS_CA_ABI_MIN_VERSION 2u
 
 typedef enum {
     GDS_CA_OP_SIGN_CSR = 1,
@@ -52,8 +54,21 @@ void gds_ca_issued_clear(gds_ca_issued *c);
 
 typedef struct gds_ca gds_ca;
 
-/* A CA backend. Every function pointer except pre_sign and revoke is
- * required. */
+/* StartNewKeyPairRequest (OPC 10000-12 §7.9.4): the private key encoding */
+typedef enum {
+    GDS_CA_KEY_PFX = 1, /* PKCS #12 with the certificate and the CA certificate */
+    GDS_CA_KEY_PEM = 2  /* PKCS #8, Base64 DER (RFC 5958) */
+} gds_ca_key_format;
+
+typedef struct {
+    gds_ca_key_format format;
+    /* PrivateKeyPassword; empty: the key is not encrypted. Borrowed; the
+     * caller wipes it. */
+    const gds_buf *password;
+} gds_ca_keyreq;
+
+/* A CA backend. Every function pointer except pre_sign, revoke and
+ * new_key_pair is required. */
 typedef struct {
     uint32_t abiVersion; /* GDS_CA_ABI_VERSION */
     /* Optional (NULL = allow). Called immediately before every signature.
@@ -71,6 +86,13 @@ typedef struct {
      * on the CRL and issue a new CRL; revoking a serial again changes
      * nothing and succeeds. */
     gds_status (*revoke)(void *ctx, const gds_buf *serial);
+    /* ABI 3, optional. Generate a key pair and issue its certificate; *key
+     * is the private key in kr->format (gds_buf_free_secret). NULL: the
+     * core generates the key next to the backend and issues it through
+     * sign_csr (gds_ca_new_key_pair). ca_ipc sets it to forward the call
+     * to the signer, so keys are never generated in opengdsd. */
+    gds_status (*new_key_pair)(void *ctx, const gds_ca_subject *subj, const gds_ca_keyreq *kr,
+                               gds_ca_issued *out, gds_buf *key);
 } gds_ca_backend;
 
 /* Settings for the built-in OpenSSL backend (ca_openssl.c). Defaults are set
@@ -103,6 +125,14 @@ void gds_ca_close(gds_ca *ca);
 /* Calls pre_sign, then sign_csr. */
 GDS_MUST_CHECK gds_status gds_ca_sign_csr(gds_ca *ca, const gds_ca_subject *subj,
                                           const gds_buf *csrDer, gds_ca_issued *out);
+/* StartNewKeyPairRequest: a new key for the CertificateType (RSA 2048 for
+ * the RSA types), its certificate issued from the record like any other
+ * (pre_sign sees GDS_CA_OP_NEW_KEY_PAIR), and the private key encoded in
+ * kr->format, encrypted with AES-256 under a non-empty password. *key is
+ * owned by the caller (gds_buf_free_secret). */
+GDS_MUST_CHECK gds_status gds_ca_new_key_pair(gds_ca *ca, const gds_ca_subject *subj,
+                                              const gds_ca_keyreq *kr, gds_ca_issued *out,
+                                              gds_buf *key);
 GDS_MUST_CHECK gds_status gds_ca_get_ca_cert(gds_ca *ca, gds_buf *out);
 GDS_MUST_CHECK gds_status gds_ca_get_crl(gds_ca *ca, gds_buf *out);
 /* Revoke the certificate with this serial (OPC 10000-12 §7.9.6). The caller

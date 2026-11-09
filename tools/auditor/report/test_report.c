@@ -39,6 +39,28 @@ static char *to_line(const ga_event *ev) {
     return buf;
 }
 
+static char *render(bool (*fn)(FILE *, const ga_results *), const ga_results *r) {
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *f = open_memstream(&buf, &len);
+    if(!f)
+        return NULL;
+    bool ok = fn(f, r);
+    fclose(f);
+    if(!ok) {
+        free(buf);
+        return NULL;
+    }
+    return buf;
+}
+
+static bool has(const char *doc, const char *needle) {
+    bool ok = doc && strstr(doc, needle);
+    if(!ok)
+        fprintf(stderr, "missing: %s\n", needle);
+    return ok;
+}
+
 static bool parse_apply(ga_results *r, const char *line) {
     ga_event ev;
     ga_jsonl_strings s;
@@ -123,6 +145,52 @@ static void roundtrip(void) {
     CHECK(xml && strstr(xml, "<skipped message=\"Not tested: run aborted\"/>"));
     free(html);
     free(xml);
+
+    /* JSON: one valid document, the run, counts, units and tests */
+    char *json = render(ga_report_json, &viaText);
+    CHECK(json && ga_json_valid(json, strlen(json)));
+    CHECK(has(json, "{\"schema\":\"gdsaudit-report\",\"version\":1,"));
+    CHECK(has(json, "\"note\":\"Self-test, not OPC Foundation certification.\""));
+    CHECK(has(json, "\"profile\":\"server\",\"target\":\"opc.tcp://h:4840\""));
+    CHECK(has(json, "\"started\":\"2026-11-06T05:00:00Z\",\"finished\":\"2026-11-06T05:00:02Z\""));
+    CHECK(has(json, "\"allow_changes\":true,\"planned\":2,\"outcome\":\"Aborted\","
+                    "\"exit\":1,\"aborted\":true"));
+    CHECK(has(json, "\"counts\":{\"pass\":0,\"fail\":1,\"warn\":0,\"not_supported\":0,"
+                    "\"not_tested\":1,\"no_verdict\":0}"));
+    CHECK(has(json, "\"conformance_units\":[{\"unit\":\"Push Model for Global Certificate and "
+                    "TrustList Management\",\"state\":\"named\",\"counts\":{\"pass\":0,"
+                    "\"fail\":1,\"warn\":0,\"not_supported\":0,\"not_tested\":1,"
+                    "\"no_verdict\":0},\"outcome\":\"Failed\"}]"));
+    CHECK(has(json, "{\"n\":1,\"id\":\"SRV-TL-02\",\"clause\":\"12 \xc2\xa7" "7.8.2.1\","
+                    "\"title\":\"quote \\\" backslash \\\\ <tag> & tab\\u0009\","
+                    "\"conformance_unit\":\"Push Model for Global Certificate and TrustList "
+                    "Management\",\"conformance_unit_state\":\"named\",\"changes\":true,"
+                    "\"operator\":false,\"verdict\":\"fail\",\"ms\":41,"
+                    "\"evidence\":\"list differs\",\"notes\":[\"Open -> Good\","
+                    "\"bad utf8 \xef\xbf\xbd\xef\xbf\xbd end\"]}"));
+    CHECK(has(json, "\"id\":\"SRV-UPD-01\"") && has(json, "\"operator\":true,"
+                    "\"verdict\":\"not_tested\",\"ms\":0,\"evidence\":\"run aborted\","
+                    "\"notes\":[]}"));
+    CHECK(json && !strstr(json, "compliant") && !strstr(json, "certified"));
+    free(json);
+
+    /* TAP 13: Fail is not ok, Not tested is a SKIP, YAML block per test */
+    char *tap = render(ga_report_tap, &viaText);
+    static const char tapHead[] = "TAP version 13\n1..2\n# OpenGDS Auditor: self-test, not OPC "
+                                  "Foundation certification\n";
+    CHECK(tap && !strncmp(tap, tapHead, sizeof(tapHead) - 1));
+    CHECK(has(tap, "\nnot ok 1 - SRV-TL-02 quote \" backslash \\\\ <tag> & tab\n"
+                   "  ---\n  verdict: fail\n  clause: \"12 \xc2\xa7" "7.8.2.1\"\n"
+                   "  conformance_unit: \"Push Model for Global Certificate and TrustList "
+                   "Management\"\n  changes: true\n  ms: 41\n  evidence: \"list differs\"\n"
+                   "  notes:\n    - \"Open -> Good\"\n    - \"bad utf8 \xef\xbf\xbd\xef\xbf\xbd end\"\n"
+                   "  ...\n"));
+    CHECK(has(tap, "\nok 2 - SRV-UPD-01 t2 # SKIP Not tested: run aborted\n  ---\n"
+                   "  verdict: not_tested\n"));
+    CHECK(has(tap, "\n# target opc.tcp://h:4840, profile server, changes allowed\n"));
+    CHECK(has(tap, "\n# pass 0, fail 1, warn 0, not supported 0, not tested 1\n# outcome: Aborted\n"));
+    free(tap);
+
     ga_results_free(&direct);
     ga_results_free(&viaText);
 }
@@ -148,6 +216,10 @@ static void refusals(void) {
         "{\"v\":1,\"ev\":\"note\",\"n\":1,\"text\":\"x\",}",
         "{\"v\":1,\"ev\":\"note\",\"n\":1,\"x\":[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]}",
         "{\"v\":1,\"ev\":\"note\",\"n\":99999999,\"text\":\"x\"}",
+        "{\"v\":1,\"ev\":\"prompt\",\"n\":1,\"text\":\"x\"}", /* no prompt number */
+        "{\"v\":1,\"ev\":\"prompt\",\"n\":1,\"seq\":0,\"text\":\"x\"}",
+        "{\"v\":1,\"ev\":\"prompt_answered\",\"n\":1,\"seq\":1,\"answer\":\"maybe\"}",
+        "{\"v\":1,\"ev\":\"prompt_answered\",\"n\":1,\"seq\":true,\"answer\":\"done\"}",
     };
     for(size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         ga_event ev;
@@ -169,9 +241,48 @@ static void refusals(void) {
     CHECK(ga_jsonl_parse(ok, strlen(ok), &ev, &s) == 1);
     CHECK(ev.kind == GA_EV_NOTE && ev.text && !strcmp(ev.text, "t\xc3\xa4\xf0\x9f\x98\x80"));
     ga_jsonl_strings_free(&s);
-    const char *unknown = "{\"v\":1,\"ev\":\"prompt\",\"n\":1}";
+    const char *unknown = "{\"v\":1,\"ev\":\"hint\",\"n\":1}";
     CHECK(ga_jsonl_parse(unknown, strlen(unknown), &ev, &s) == 0);
     ga_jsonl_strings_free(&s);
+}
+
+/* Operator prompts: both events round trip and leave no result of their
+ * own (the prompt and the answer are also notes of the test). */
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): flat checks
+static void prompts(void) {
+    const ga_event evs[] = {
+        {.kind = GA_EV_PROMPT, .n = 3, .seq = 2, .text = "Restart the device, then \"Done\""},
+        {.kind = GA_EV_PROMPT_ANSWERED, .n = 3, .seq = 2, .answer = GA_ANSWER_FAIL,
+         .text = "it did not come back"},
+    };
+    const char *want[] = {
+        "{\"v\":1,\"ev\":\"prompt\",\"n\":3,\"seq\":2,"
+        "\"text\":\"Restart the device, then \\\"Done\\\"\"}",
+        "{\"v\":1,\"ev\":\"prompt_answered\",\"n\":3,\"seq\":2,\"answer\":\"fail\","
+        "\"text\":\"it did not come back\"}",
+    };
+    for(size_t i = 0; i < 2; i++) {
+        char *line = to_line(&evs[i]);
+        CHECK(line && !strcmp(line, want[i]));
+        if(!line)
+            continue;
+        ga_event ev;
+        ga_jsonl_strings s;
+        CHECK(ga_jsonl_parse(line, strlen(line), &ev, &s) == 1);
+        CHECK(ev.kind == evs[i].kind && ev.n == 3 && ev.seq == 2);
+        CHECK(ev.text && !strcmp(ev.text, evs[i].text));
+        CHECK(ev.answer == evs[i].answer);
+        ga_results r = {0};
+        CHECK(ga_results_apply(&r, &ev) && r.n == 0);
+        ga_results_free(&r);
+        ga_jsonl_strings_free(&s);
+        free(line);
+    }
+    ga_answer a = GA_ANSWER_DONE;
+    CHECK(ga_answer_parse("skip", &a) && a == GA_ANSWER_SKIP);
+    CHECK(!ga_answer_parse("Skip", &a) && !ga_answer_parse("", &a));
+    CHECK(!strcmp(ga_answer_name(GA_ANSWER_DONE), "done"));
+    CHECK(!strcmp(ga_answer_name((ga_answer)7), "invalid")); // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange): on purpose
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity): flat checks
@@ -192,7 +303,7 @@ static void units(void) {
         {.kind = GA_EV_RUN_STARTED, .profile = "client", .target = "x", .planned = 2},
         {.kind = GA_EV_TEST_STARTED, .n = 1, .id = "CLI-TRU-02", .clause = "c", .title = "t"},
         {.kind = GA_EV_VERDICT, .n = 1, .id = "CLI-TRU-02", .verdict = GA_PASS},
-        {.kind = GA_EV_TEST_STARTED, .n = 2, .id = "gds.x", .clause = "c", .title = "t"},
+        {.kind = GA_EV_TEST_STARTED, .n = 2, .id = "gds.x", .clause = "c", .title = "a # b\nc"},
     };
     for(size_t i = 0; i < sizeof(evs) / sizeof(evs[0]); i++)
         CHECK(ga_results_apply(&r, &evs[i]));
@@ -207,13 +318,51 @@ static void units(void) {
     CHECK(html && strstr(html, "<em>Not in the test catalogue</em></td><td>0</td><td>0</td>"
                                "<td>0</td><td>0</td><td>0</td><td class=\"v nt\">Incomplete"));
     free(html);
+
+    /* JSON: unit states, a missing verdict is null, an unfinished run */
+    char *json = render(ga_report_json, &r);
+    CHECK(json && ga_json_valid(json, strlen(json)));
+    CHECK(has(json, "\"finished\":null,"));
+    CHECK(has(json, "\"outcome\":\"Did not finish\",\"exit\":null,\"aborted\":false"));
+    CHECK(has(json, "{\"unit\":null,\"state\":\"not_named\",\"counts\":{\"pass\":1,"));
+    CHECK(has(json, "{\"unit\":null,\"state\":\"not_in_catalogue\",\"counts\":{\"pass\":0,"
+                    "\"fail\":0,\"warn\":0,\"not_supported\":0,\"not_tested\":0,"
+                    "\"no_verdict\":1},\"outcome\":\"Incomplete\"}"));
+    CHECK(has(json, "\"id\":\"CLI-TRU-02\",\"clause\":\"c\",\"title\":\"t\","
+                    "\"conformance_unit\":null,\"conformance_unit_state\":\"not_named\""));
+    CHECK(has(json, "\"conformance_unit\":null,\"conformance_unit_state\":\"not_in_catalogue\","
+                    "\"changes\":false,\"operator\":false,\"verdict\":null,\"ms\":null,"
+                    "\"evidence\":null,\"notes\":[]}"));
+    free(json);
+
+    /* TAP: a description stays on one line and "#" cannot start a
+     * directive; a test without a verdict is not ok */
+    char *tap = render(ga_report_tap, &r);
+    CHECK(has(tap, "\nok 1 - CLI-TRU-02 t\n"));
+    CHECK(has(tap, "\nnot ok 2 - gds.x a \\# b c # no verdict\n"));
+    CHECK(has(tap, "\n# outcome: Did not finish\n"));
+    CHECK(tap && !strstr(tap, "\n  conformance_unit: null"));
+    free(tap);
     ga_results_free(&r);
+}
+
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): flat checks
+static void json_check(void) {
+    const char *good[] = {"{}", " [1, -2.5e3, true, false, null, \"x\", {\"a\": []}] ", "\"\\u00e4\""};
+    const char *bad[] = {"", "{", "{} {}", "[1,]", "{\"a\"}", "'x'", "[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]"};
+    for(size_t i = 0; i < sizeof(good) / sizeof(good[0]); i++)
+        CHECK(ga_json_valid(good[i], strlen(good[i])));
+    for(size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
+        CHECK(!ga_json_valid(bad[i], strlen(bad[i])));
+    CHECK(!ga_json_valid(NULL, 0));
 }
 
 int main(void) {
     roundtrip();
     refusals();
+    prompts();
     units();
+    json_check();
     if(failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

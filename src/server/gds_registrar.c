@@ -209,14 +209,7 @@ static bool group_ok(const gds_server *s, const UA_NodeId *g) {
 }
 
 static bool type_ok(const UA_NodeId *t, UA_UInt32 *out) {
-    if(!t || UA_NodeId_isNull(t)) {
-        *out = UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE;
-        return true;
-    }
-    if(t->namespaceIndex != 0 || t->identifierType != UA_NODEIDTYPE_NUMERIC)
-        return false;
-    *out = t->identifier.numeric;
-    return true;
+    return gds_group_type(t, out);
 }
 
 static void sleep_ms(uint32_t ms) {

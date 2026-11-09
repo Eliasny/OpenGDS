@@ -2,6 +2,8 @@
  * SPDX-License-Identifier: MPL-2.0 */
 #include "proto.h"
 
+#include <openssl/crypto.h>
+
 #include <string.h>
 
 #include "common/limits.h"
@@ -141,7 +143,7 @@ static gds_status read_header(rd *r, gds_sigp_op *op) {
     if(magic != GDS_SIGP_MAGIC || version != GDS_SIGP_VERSION || body != r->len - GDS_SIGP_HEADER)
         return GDS_EINVAL;
     if(o != GDS_SIGP_SIGN_CSR && o != GDS_SIGP_GET_CHAIN && o != GDS_SIGP_ISSUE_CRL &&
-       o != GDS_SIGP_REVOKE)
+       o != GDS_SIGP_REVOKE && o != GDS_SIGP_NEW_KEY_PAIR)
         return GDS_EUNSUPPORTED;
     *op = (gds_sigp_op)o;
     return GDS_OK;
@@ -150,9 +152,10 @@ static gds_status read_header(rd *r, gds_sigp_op *op) {
 /* ---- requests ---- */
 
 gds_status gds_sigp_encode_request(gds_sigp_op op, const UA_Guid *requestId, gds_buf *out) {
-    if((op == GDS_SIGP_SIGN_CSR && !requestId) || op == GDS_SIGP_REVOKE) {
+    if((op == GDS_SIGP_SIGN_CSR && !requestId) || op == GDS_SIGP_REVOKE ||
+       op == GDS_SIGP_NEW_KEY_PAIR) {
         memset(out, 0, sizeof(*out));
-        return GDS_EINVAL; /* REVOKE: gds_sigp_encode_revoke */
+        return GDS_EINVAL; /* gds_sigp_encode_revoke, gds_sigp_encode_new_key_pair */
     }
     gds_status r = begin(out, op);
     if(r == GDS_OK && op == GDS_SIGP_SIGN_CSR)
@@ -173,30 +176,92 @@ gds_status gds_sigp_encode_revoke(const gds_buf *serial, gds_buf *out) {
     return finish(out, r);
 }
 
-gds_status gds_sigp_decode_request_ex(const uint8_t *msg, size_t len, gds_sigp_op *op,
-                                      UA_Guid *requestId, gds_buf *serial) {
+gds_status gds_sigp_encode_new_key_pair(const UA_Guid *requestId, gds_ca_key_format format,
+                                       const gds_buf *password, gds_buf *out) {
+    size_t pwLen = password ? password->len : 0;
+    if(!requestId || (format != GDS_CA_KEY_PFX && format != GDS_CA_KEY_PEM) ||
+       pwLen > GDS_MAX_KEY_PASSWORD || (pwLen && !password->data)) {
+        memset(out, 0, sizeof(*out));
+        return GDS_EINVAL;
+    }
+    uint8_t f = (uint8_t)format;
+    gds_status r = begin(out, GDS_SIGP_NEW_KEY_PAIR);
+    if(r == GDS_OK)
+        r = put_guid(out, requestId);
+    if(r == GDS_OK)
+        r = put(out, &f, 1);
+    if(r == GDS_OK)
+        r = put_u16(out, (uint16_t)pwLen);
+    if(r == GDS_OK && pwLen)
+        r = put(out, password->data, pwLen);
+    if(r != GDS_OK && out->data)
+        OPENSSL_cleanse(out->data, out->len);
+    return finish(out, r);
+}
+
+void gds_sigp_request_clear(gds_sigp_request *r) {
+    gds_buf_free(&r->serial);
+    gds_buf_free_secret(&r->password);
+}
+
+static gds_status decode_key_pair(rd *r, gds_sigp_request *out) {
+    uint8_t f = 0;
+    uint16_t n = 0;
+    if(!get_guid(r, &out->requestId) || !get(r, &f, 1) || !get_u16(r, &n))
+        return GDS_EINVAL;
+    if((f != GDS_CA_KEY_PFX && f != GDS_CA_KEY_PEM) || n > GDS_MAX_KEY_PASSWORD ||
+       n != r->len - r->pos)
+        return GDS_EINVAL;
+    out->format = (gds_ca_key_format)f;
+    if(n == 0)
+        return GDS_OK;
+    gds_status s = gds_buf_dup(r->p + r->pos, n, &out->password);
+    if(s == GDS_OK)
+        r->pos += n;
+    return s;
+}
+
+gds_status gds_sigp_decode(const uint8_t *msg, size_t len, gds_sigp_request *out) {
     rd r = {msg, len, 0};
-    if(serial)
-        memset(serial, 0, sizeof(*serial));
-    UA_Guid_init(requestId);
-    gds_status s = read_header(&r, op);
+    memset(out, 0, sizeof(*out));
+    gds_status s = read_header(&r, &out->op);
     if(s != GDS_OK)
         return s;
-    if(*op == GDS_SIGP_SIGN_CSR && !get_guid(&r, requestId))
-        return GDS_EINVAL;
-    if(*op == GDS_SIGP_REVOKE) {
-        gds_buf tmp = {0};
-        s = get_blob(&r, 2, GDS_SIGP_MAX_SERIAL, &tmp);
-        if(s != GDS_OK)
-            return GDS_EINVAL;
-        if(r.pos != r.len || !serial) {
-            gds_buf_free(&tmp);
-            return r.pos == r.len ? GDS_OK : GDS_EINVAL;
-        }
-        *serial = tmp;
-        return GDS_OK;
+    switch(out->op) {
+    case GDS_SIGP_SIGN_CSR:
+        s = get_guid(&r, &out->requestId) ? GDS_OK : GDS_EINVAL;
+        break;
+    case GDS_SIGP_REVOKE:
+        s = get_blob(&r, 2, GDS_SIGP_MAX_SERIAL, &out->serial);
+        break;
+    case GDS_SIGP_NEW_KEY_PAIR:
+        s = decode_key_pair(&r, out);
+        break;
+    case GDS_SIGP_GET_CHAIN:
+    case GDS_SIGP_ISSUE_CRL:
+        break;
     }
-    return r.pos == r.len ? GDS_OK : GDS_EINVAL;
+    if(s == GDS_OK && r.pos != r.len)
+        s = GDS_EINVAL;
+    if(s != GDS_OK)
+        gds_sigp_request_clear(out);
+    return s;
+}
+
+gds_status gds_sigp_decode_request_ex(const uint8_t *msg, size_t len, gds_sigp_op *op,
+                                      UA_Guid *requestId, gds_buf *serial) {
+    if(serial)
+        memset(serial, 0, sizeof(*serial));
+    gds_sigp_request q;
+    gds_status s = gds_sigp_decode(msg, len, &q);
+    *op = q.op;
+    *requestId = q.requestId;
+    if(s == GDS_OK && serial) {
+        *serial = q.serial;
+        q.serial = (gds_buf){0};
+    }
+    gds_sigp_request_clear(&q);
+    return s;
 }
 
 gds_status gds_sigp_decode_request(const uint8_t *msg, size_t len, gds_sigp_op *op,
@@ -210,43 +275,92 @@ static bool status_valid(uint32_t s) {
     return s <= (uint32_t)GDS_EUNSUPPORTED;
 }
 
-gds_status gds_sigp_encode_reply(gds_sigp_op op, gds_status status, const gds_ca_issued *issued,
-                                 const gds_buf *der, gds_buf *out) {
+static bool issues_cert(gds_sigp_op op) {
+    return op == GDS_SIGP_SIGN_CSR || op == GDS_SIGP_NEW_KEY_PAIR;
+}
+
+static gds_status put_issued(gds_buf *out, const gds_ca_issued *issued) {
+    if(!issued || issued->serial.len == 0 || issued->serial.len > GDS_SIGP_MAX_SERIAL ||
+       issued->der.len == 0 || issued->der.len > GDS_MAX_CERT_SIZE)
+        return GDS_EINVAL;
+    gds_status r = put_i64(out, issued->notBefore);
+    if(r == GDS_OK)
+        r = put_i64(out, issued->notAfter);
+    if(r == GDS_OK)
+        r = put_u16(out, (uint16_t)issued->serial.len);
+    if(r == GDS_OK)
+        r = put(out, issued->serial.data, issued->serial.len);
+    return r;
+}
+
+static gds_status put_blob32(gds_buf *out, const gds_buf *b) {
+    if(!b || !b->data || b->len == 0 || b->len > UINT32_MAX)
+        return GDS_EINVAL;
+    gds_status r = put_u32(out, (uint32_t)b->len);
+    return r == GDS_OK ? put(out, b->data, b->len) : r;
+}
+
+/* The body after the status, on GDS_OK */
+static gds_status put_result(gds_buf *out, gds_sigp_op op, const gds_ca_issued *issued,
+                             const gds_buf *der, const gds_buf *key) {
+    if(!issues_cert(op))
+        return put_blob32(out, der);
+    gds_status r = put_issued(out, issued);
+    if(r == GDS_OK)
+        r = put_blob32(out, &issued->der);
+    if(r == GDS_OK && op == GDS_SIGP_NEW_KEY_PAIR)
+        r = key && key->len <= GDS_MAX_KEY_SIZE ? put_blob32(out, key) : GDS_EINVAL;
+    return r;
+}
+
+static gds_status encode_any(gds_sigp_op op, gds_status status, const gds_ca_issued *issued,
+                             const gds_buf *der, const gds_buf *key, gds_buf *out) {
     gds_status r = begin(out, op);
     if(r == GDS_OK)
         r = put_u32(out, (uint32_t)status);
-    if(r != GDS_OK || status != GDS_OK)
-        return finish(out, r);
-    if(op == GDS_SIGP_SIGN_CSR) {
-        if(!issued || issued->serial.len == 0 || issued->serial.len > GDS_SIGP_MAX_SERIAL ||
-           issued->der.len == 0)
-            return finish(out, GDS_EINVAL);
-        r = put_i64(out, issued->notBefore);
-        if(r == GDS_OK)
-            r = put_i64(out, issued->notAfter);
-        if(r == GDS_OK)
-            r = put_u16(out, (uint16_t)issued->serial.len);
-        if(r == GDS_OK)
-            r = put(out, issued->serial.data, issued->serial.len);
-        der = &issued->der;
-    } else if(!der || der->len == 0) {
-        return finish(out, GDS_EINVAL);
-    }
-    if(r == GDS_OK && der->len > UINT32_MAX)
-        r = GDS_ETOOBIG;
-    if(r == GDS_OK)
-        r = put_u32(out, (uint32_t)der->len);
-    if(r == GDS_OK)
-        r = put(out, der->data, der->len);
+    if(r == GDS_OK && status == GDS_OK)
+        r = put_result(out, op, issued, der, key);
+    if(r != GDS_OK && out->data)
+        OPENSSL_cleanse(out->data, out->len);
     return finish(out, r);
 }
 
-gds_status gds_sigp_decode_reply(gds_sigp_op op, const uint8_t *msg, size_t len,
-                                 gds_status *status, gds_ca_issued *issued, gds_buf *der) {
+gds_status gds_sigp_encode_reply(gds_sigp_op op, gds_status status, const gds_ca_issued *issued,
+                                 const gds_buf *der, gds_buf *out) {
+    if(op == GDS_SIGP_NEW_KEY_PAIR && status == GDS_OK) {
+        memset(out, 0, sizeof(*out));
+        return GDS_EINVAL; /* gds_sigp_encode_key_reply */
+    }
+    return encode_any(op, status, issued, der, NULL, out);
+}
+
+gds_status gds_sigp_encode_key_reply(gds_status status, const gds_ca_issued *issued,
+                                     const gds_buf *key, gds_buf *out) {
+    return encode_any(GDS_SIGP_NEW_KEY_PAIR, status, issued, NULL, key, out);
+}
+
+static gds_status get_result(rd *r, gds_sigp_op op, gds_ca_issued *issued, gds_buf *der,
+                             gds_buf *key) {
+    if(!issues_cert(op))
+        return der ? get_blob(r, 4, GDS_SIGP_MAX_MSG, der) : GDS_EINVAL;
+    if(!issued || !get_i64(r, &issued->notBefore) || !get_i64(r, &issued->notAfter))
+        return GDS_EINVAL;
+    gds_status s = get_blob(r, 2, GDS_SIGP_MAX_SERIAL, &issued->serial);
+    if(s == GDS_OK)
+        s = get_blob(r, 4, GDS_MAX_CERT_SIZE, &issued->der);
+    if(s == GDS_OK && op == GDS_SIGP_NEW_KEY_PAIR)
+        s = key ? get_blob(r, 4, GDS_MAX_KEY_SIZE, key) : GDS_EINVAL;
+    return s;
+}
+
+static gds_status decode_any(gds_sigp_op op, const uint8_t *msg, size_t len, gds_status *status,
+                             gds_ca_issued *issued, gds_buf *der, gds_buf *key) {
     if(issued)
         memset(issued, 0, sizeof(*issued));
     if(der)
         memset(der, 0, sizeof(*der));
+    if(key)
+        memset(key, 0, sizeof(*key));
     rd r = {msg, len, 0};
     gds_sigp_op got;
     uint32_t st = 0;
@@ -255,16 +369,7 @@ gds_status gds_sigp_decode_reply(gds_sigp_op op, const uint8_t *msg, size_t len,
     *status = (gds_status)st;
     if(st != GDS_OK)
         return r.pos == r.len ? GDS_OK : GDS_EREMOTE;
-    gds_status s = GDS_OK;
-    if(op == GDS_SIGP_SIGN_CSR) {
-        if(!issued || !get_i64(&r, &issued->notBefore) || !get_i64(&r, &issued->notAfter))
-            return GDS_EREMOTE;
-        s = get_blob(&r, 2, GDS_SIGP_MAX_SERIAL, &issued->serial);
-        if(s == GDS_OK)
-            s = get_blob(&r, 4, GDS_MAX_CERT_SIZE, &issued->der);
-    } else {
-        s = der ? get_blob(&r, 4, GDS_SIGP_MAX_MSG, der) : GDS_EINVAL;
-    }
+    gds_status s = get_result(&r, op, issued, der, key);
     if(s == GDS_OK && r.pos != r.len)
         s = GDS_EINVAL;
     if(s != GDS_OK) {
@@ -272,7 +377,19 @@ gds_status gds_sigp_decode_reply(gds_sigp_op op, const uint8_t *msg, size_t len,
             gds_ca_issued_clear(issued);
         if(der)
             gds_buf_free(der);
+        if(key)
+            gds_buf_free_secret(key);
         return GDS_EREMOTE;
     }
     return GDS_OK;
+}
+
+gds_status gds_sigp_decode_reply(gds_sigp_op op, const uint8_t *msg, size_t len,
+                                 gds_status *status, gds_ca_issued *issued, gds_buf *der) {
+    return decode_any(op, msg, len, status, issued, der, NULL);
+}
+
+gds_status gds_sigp_decode_key_reply(const uint8_t *msg, size_t len, gds_status *status,
+                                     gds_ca_issued *issued, gds_buf *key) {
+    return decode_any(GDS_SIGP_NEW_KEY_PAIR, msg, len, status, issued, NULL, key);
 }

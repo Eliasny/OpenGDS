@@ -36,6 +36,22 @@ bool ga_verdict_parse(const char *s, ga_verdict *out) {
     return false;
 }
 
+static const char *const answerNames[GA_ANSWER_COUNT] = {"done", "skip", "fail"};
+
+const char *ga_answer_name(ga_answer a) {
+    return (size_t)a < GA_ANSWER_COUNT ? answerNames[a] : "invalid";
+}
+
+bool ga_answer_parse(const char *s, ga_answer *out) {
+    for(size_t i = 0; i < GA_ANSWER_COUNT; i++) {
+        if(strcmp(s, answerNames[i]) == 0) {
+            *out = (ga_answer)i;
+            return true;
+        }
+    }
+    return false;
+}
+
 /* strdup that keeps NULL and reports out of memory */
 static bool dup_into(char **dst, const char *src) {
     char *c = NULL;
@@ -151,7 +167,9 @@ bool ga_results_apply(ga_results *r, const ga_event *ev) {
         return dup_into(&x->evidence, ev->text);
     case GA_EV_PAUSED:
     case GA_EV_RESUMED:
-        return true; /* no result of their own */
+    case GA_EV_PROMPT:
+    case GA_EV_PROMPT_ANSWERED:
+        return true; /* no result of their own (prompts are notes too) */
     case GA_EV_RUN_FINISHED:
         r->finishedSeen = true;
         r->aborted = ev->aborted;
