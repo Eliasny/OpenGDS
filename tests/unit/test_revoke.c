@@ -333,10 +333,13 @@ static void test_ecc(gds_server *s, gds_ca *ca, const UA_NodeId *app) {
     UA_DateTime v = 0;
     CHECK_EQ_INT(check(s, &p256, &v), UA_STATUSCODE_GOOD);
     CHECK_EQ_INT(check(s, &p384, &v), UA_STATUSCODE_GOOD);
-    int rsaBefore = 0, rsaAfter = 0, n = 0;
+    /* the CA directory outlives a run: count entries, not absolutes */
+    int rsaBefore = 0, rsaAfter = 0, n256 = 0, n384 = 0, n = 0;
     CHECK(!on_crl(ca, &p256, &rsaBefore));
+    CHECK(!on_issuer_crl(ca, GDS_CA_ISSUER_P256, &p256, &n256));
+    CHECK(!on_issuer_crl(ca, GDS_CA_ISSUER_P384, &p384, &n384));
     CHECK_EQ_INT(revoke_cert(s, &admin, app, &p256), UA_STATUSCODE_GOOD);
-    CHECK(on_issuer_crl(ca, GDS_CA_ISSUER_P256, &p256, &n) && n == 1);
+    CHECK(on_issuer_crl(ca, GDS_CA_ISSUER_P256, &p256, &n) && n == n256 + 1);
     CHECK(!on_crl(ca, &p256, &rsaAfter) && rsaAfter == rsaBefore);
     CHECK(!on_issuer_crl(ca, GDS_CA_ISSUER_P384, &p256, NULL));
     CHECK_EQ_INT(check(s, &p256, &v), UA_STATUSCODE_BADCERTIFICATEREVOKED);
@@ -345,8 +348,8 @@ static void test_ecc(gds_server *s, gds_ca *ca, const UA_NodeId *app) {
     UA_Variant_setScalar(&in, (void *)(uintptr_t)app, &UA_TYPES[UA_TYPES_NODEID]);
     CHECK_EQ_INT(call_status(s, &admin, UA_GDSID_DIRECTORY_UNREGISTERAPPLICATION, &in, 1),
                  UA_STATUSCODE_GOOD);
-    CHECK(on_issuer_crl(ca, GDS_CA_ISSUER_P384, &p384, &n) && n == 1);
-    CHECK(on_issuer_crl(ca, GDS_CA_ISSUER_P256, &p256, &n) && n == 1); /* not twice */
+    CHECK(on_issuer_crl(ca, GDS_CA_ISSUER_P384, &p384, &n) && n == n384 + 1);
+    CHECK(on_issuer_crl(ca, GDS_CA_ISSUER_P256, &p256, &n) && n == n256 + 1); /* not twice */
     CHECK(!on_crl(ca, &p384, &rsaAfter) && rsaAfter == rsaBefore);
     UA_ByteString_clear(&p256);
     UA_ByteString_clear(&p384);
