@@ -113,30 +113,34 @@ static gds_status persist(void *ctx, const gdsc_pull_state *st) {
     return s;
 }
 
+/* The application's own self-signed certificate, on the first run */
+static gds_status self_signed(const args *a, gdsc_pull_state *st) {
+    char san[GDS_MAX_APPLICATION_URI + 8], cn[96];
+    UA_ByteString key = UA_BYTESTRING_NULL, cert = UA_BYTESTRING_NULL;
+    if(gds_path(san, sizeof(san), "URI:%s", a->appUri) != GDS_OK ||
+       gds_path(cn, sizeof(cn), "CN=%.64s", a->name) != GDS_OK)
+        return GDS_EINVAL;
+    UA_String subject[1] = {UA_STRING(cn)}, sans[1] = {UA_STRING(san)};
+    if(UA_CreateCertificate(UA_Log_Stdout, subject, 1, sans, 1, UA_CERTIFICATEFORMAT_DER,
+                            NULL, &key, &cert) != UA_STATUSCODE_GOOD)
+        return GDS_ECRYPTO;
+    gds_buf_free_secret(&st->key);
+    gds_status s = gds_buf_dup(cert.data, cert.length, &st->cert);
+    if(s == GDS_OK)
+        s = gds_buf_dup(key.data, key.length, &st->key);
+    UA_ByteString_clear(&cert);
+    UA_ByteString_clear(&key);
+    printf("created a self-signed certificate for %s\n", a->appUri);
+    return s;
+}
+
 static gds_status load(const args *a, gdsc_pull_state *st) {
     memset(st, 0, sizeof(*st));
     gds_status s = read_opt(a->dir, "cert.der", GDS_MAX_CERT_SIZE, &st->cert);
     if(s == GDS_OK)
         s = read_opt(a->dir, "key.der", GDS_MAX_KEY_SIZE, &st->key);
-    if(s == GDS_OK && st->cert.len == 0) {
-        /* first run: the application's own self-signed certificate */
-        char san[GDS_MAX_APPLICATION_URI + 8], cn[96];
-        UA_ByteString key = UA_BYTESTRING_NULL, cert = UA_BYTESTRING_NULL;
-        if(gds_path(san, sizeof(san), "URI:%s", a->appUri) != GDS_OK ||
-           gds_path(cn, sizeof(cn), "CN=%.64s", a->name) != GDS_OK)
-            return GDS_EINVAL;
-        UA_String subject[1] = {UA_STRING(cn)}, sans[1] = {UA_STRING(san)};
-        if(UA_CreateCertificate(UA_Log_Stdout, subject, 1, sans, 1, UA_CERTIFICATEFORMAT_DER,
-                                NULL, &key, &cert) != UA_STATUSCODE_GOOD)
-            return GDS_ECRYPTO;
-        gds_buf_free_secret(&st->key);
-        s = gds_buf_dup(cert.data, cert.length, &st->cert);
-        if(s == GDS_OK)
-            s = gds_buf_dup(key.data, key.length, &st->key);
-        UA_ByteString_clear(&cert);
-        UA_ByteString_clear(&key);
-        printf("created a self-signed certificate for %s\n", a->appUri);
-    }
+    if(s == GDS_OK && st->cert.len == 0)
+        s = self_signed(a, st); /* first run */
     for(size_t i = 0; s == GDS_OK && i < GDS_MAX_CHAIN_LEN; i++) {
         char n[32];
         snprintf(n, sizeof(n), "issuer%zu.der", i);

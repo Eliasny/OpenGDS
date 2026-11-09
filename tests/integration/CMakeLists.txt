@@ -32,3 +32,6 @@ add_subdirectory(pull)
 
 # T2 push tracer: gdsadm push now through opengdsd to push_test_server
 add_subdirectory(push)
+
+# W5: mDNS announce and gdsadm watch against opengdsd
+add_subdirectory(disc)

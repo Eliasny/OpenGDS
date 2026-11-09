@@ -4,6 +4,7 @@
 
 #include <string.h>
 
+#include "disc_mdns.h"
 #include "common/buf.h"
 #include "common/safeint.h"
 #include "common/banned.h"
@@ -55,6 +56,11 @@ static const field fields[] = {
     F("authorization_service_uri", authorizationServiceUri, T_STR, false),
     U("access_token_lifetime", accessTokenLifetime, 60, DAY),
     U("refresh_token_lifetime", refreshTokenLifetime, 0, 30 * DAY),
+    F("mdns", mdns, T_BOOL, false),
+    F("mdns_server_name", mdnsServerName, T_STR, false),
+    F("mdns_interface", mdnsInterface, T_STR, false),
+    U("password_min_length", passwordMinLength, GDSD_PASSWORD_MIN_FLOOR, GDSD_PASSWORD_MIN_CEIL),
+    F("single_admin", singleAdmin, T_BOOL, false),
 };
 #define NFIELDS (sizeof(fields) / sizeof(fields[0]))
 
@@ -164,6 +170,7 @@ static void defaults(gdsd_config *c) {
     c->pushRejectedS = 3600;
     c->accessTokenLifetime = 3600;   /* Elias 2026-11-09 */
     c->refreshTokenLifetime = 86400; /* Elias 2026-11-09 */
+    c->passwordMinLength = GDSD_PASSWORD_MIN_DEFAULT;
 }
 
 static bool is_name_char(char c) {
@@ -273,7 +280,12 @@ gds_status gdsd_config_parse(const char *text, size_t len, gdsd_config *out, uns
         return GDS_EINVAL; /* one way to reach the signer */
     if(out->pushBackoffMaxS < out->pushBackoffMinS)
         return GDS_EINVAL;
-    return GDS_OK;
+    if(out->mdns && out->loopbackOnly)
+        return GDS_EINVAL; /* the subnet cannot reach 127.0.0.1 */
+    /* name and address syntax; whether this build has mDNS is checked at start */
+    gds_mdns_config m = {false, out->mdnsServerName[0] ? out->mdnsServerName : NULL,
+                         out->mdnsInterface[0] ? out->mdnsInterface : NULL};
+    return gds_disc_mdns_check(&m);
 }
 
 gds_status gdsd_config_load(const char *path, gdsd_config *out, unsigned *errLine) {

@@ -148,10 +148,35 @@ typedef struct gds_tl_handle {
     struct gds_tl_handle *next; /* the open handles of every session (gds_trustlist.c) */
 } gds_tl_handle;
 
+/* The user token a session was activated with (OPC 10000-4 §7.40). */
+typedef enum {
+    GDS_TOKEN_ANONYMOUS = 0,
+    GDS_TOKEN_USERNAME = 1,
+    GDS_TOKEN_X509 = 2
+} gds_token_kind;
+
+#define GDS_MAX_SUBJECT_CRITERIA 1024 /* OPC 10000-18 §4.4.3 X509Subject form */
+#define GDS_MAX_ENDPOINT_URL 1024
+
 typedef struct {
     bool anonymous;
     char user[GDS_MAX_USER_NAME + 1];
+    /* The Roles in force: fileRoles plus those the OPC 10000-18 mapping
+     * rules grant (gds_roles.c), re-evaluated when a rule changes. */
     unsigned roles;
+    unsigned fileRoles; /* granted by the users file */
+    uint8_t token;      /* gds_token_kind */
+    bool managedUser;   /* a Part 18 managed user (gds_users.c) */
+    bool ruleOnly;      /* an X.509 user that only mapping rules know */
+    /* X.509 user: SHA-1 and SHA-256 of the certificate and the OPC 10000-18
+     * §4.4.3 X509Subject criteria of its subject and of its issuer */
+    uint8_t certSha1[20];
+    uint8_t certSha256[GDS_X509_THUMBPRINT];
+    char subjectCriteria[GDS_MAX_SUBJECT_CRITERIA + 1];
+    char issuerCriteria[GDS_MAX_SUBJECT_CRITERIA + 1];
+    /* the Endpoint the session uses (OPC 10000-18 §4.4.2 EndpointType) */
+    char endpointUrl[GDS_MAX_ENDPOINT_URL + 1];
+    char transportProfileUri[GDS_MAX_ENDPOINT_URL + 1];
     /* For an X.509 user: the certificate's notAfter. Once it passes, the
      * session keeps only the Anonymous Role (OPC 10000-4 §7.40.5). */
     UA_DateTime notAfter;
@@ -196,9 +221,11 @@ static inline bool gds_session_expired(const gds_session *s) {
 static inline bool gds_session_anonymous(const gds_session *s) {
     return !s || s->anonymous || gds_session_expired(s);
 }
-/* The granted Roles that are in force now. */
+/* The granted Roles that are in force now. An anonymous session can hold
+ * Roles too: OPC 10000-18 §4.4.3 Application and TrustedApplication rules
+ * grant them for the client application's certificate alone. */
 static inline unsigned gds_session_roles(const gds_session *s) {
-    return gds_session_anonymous(s) ? 0u : s->roles;
+    return !s || gds_session_expired(s) ? 0u : s->roles;
 }
 static inline bool gds_session_has(const void *sessionContext, unsigned roles) {
     return (gds_session_roles(sessionContext) & roles) != 0;
@@ -228,6 +255,19 @@ bool gds_dialog_may_call(struct gds_server *s, const void *sessionContext,
  * its ackRoles over SignAndEncrypt. Thread safe. */
 bool gds_alarm_may_ack(struct gds_server *s, const void *sessionContext,
                        const UA_NodeId *conditionId);
+
+/* OPC 10000-18 §4.4.1: a Role's configuration changed, so every live
+ * session's Roles are evaluated again (users file + gds_roles_grant).
+ * Server thread. */
+void gds_access_reevaluate(void);
+/* Close every session of this managed user (OPC 10000-18 §5.2.6, §5.2.7),
+ * except the session `keep`. Server thread. */
+void gds_access_close_user_sessions(UA_Server *ua, const char *user, const UA_NodeId *keep);
+/* The bit of a grantable Role by its users-file name; 0 if none. */
+unsigned gds_role_bit_by_name(const char *name);
+/* PBKDF2 check of a password against a users-file credential string
+ * (pbkdf2-sha256:...). Constant time in the password. */
+bool gds_password_verify(const char *credential, const UA_ByteString *pw);
 
 /* Is this session activated and open? Thread safe. */
 bool gds_access_session_live(const UA_NodeId *sessionId);

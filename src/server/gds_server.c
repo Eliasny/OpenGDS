@@ -51,8 +51,10 @@ gds_status gds_server_set_role(gds_server *s, gds_node_role role, UA_Byte level,
     s->serviceLevel = level;
     s->estimatedReturnTime = estimatedReturnTime;
     pthread_mutex_unlock(&s->roleLock);
-    if(changed) /* a STANDBY shows no approvals; a new PRIMARY shows the store's */
+    if(changed) { /* a STANDBY shows no approvals; a new PRIMARY shows the store's */
         gds_approvals_role_changed(s);
+        gds_roles_reload(s); /* the rules and users a new PRIMARY's store holds */
+    }
     return GDS_OK;
 }
 
@@ -184,6 +186,21 @@ typedef UA_StatusCode (*add_policy_fn)(UA_ServerConfig *, const UA_ByteString *,
 static UA_StatusCode find_servers_peers(UA_Server *server, void *context,
                                         UA_ApplicationDescription **out, size_t *n);
 
+/* The mDNS announce (disc_mdns.h); not with loopbackOnly: nothing on the
+ * subnet could reach 127.0.0.1. */
+static UA_StatusCode configure_mdns(UA_ServerConfig *c, const gds_server_config *cfg) {
+    gds_status st = cfg->loopbackOnly
+                        ? GDS_EINVAL
+                        : gds_disc_mdns_configure(c, &cfg->mdns, cfg->applicationName);
+    if(st == GDS_OK)
+        return UA_STATUSCODE_GOOD;
+    fprintf(stderr, "opengds: mDNS announce: %s%s\n", gds_status_name(st),
+            st == GDS_EUNSUPPORTED ? " (built without OPENGDS_WITH_MDNS)"
+            : cfg->loopbackOnly    ? " (not with loopback_only)"
+                                   : "");
+    return UA_STATUSCODE_BADCONFIGURATIONERROR;
+}
+
 static UA_StatusCode configure(UA_ServerConfig *c, const gds_server_config *cfg,
                                const gds_buf *caCert, gds_server *s) {
     UA_StatusCode r = UA_ServerConfig_setBasics_withPort(c, cfg->port);
@@ -246,6 +263,8 @@ static UA_StatusCode configure(UA_ServerConfig *c, const gds_server_config *cfg,
         r = set_description(c, cfg);
     if(r == UA_STATUSCODE_GOOD)
         r = set_listen_url(c, cfg);
+    if(r == UA_STATUSCODE_GOOD && cfg->mdns.enabled)
+        r = configure_mdns(c, cfg);
     return r;
 }
 
@@ -348,7 +367,7 @@ static UA_StatusCode install_auditing(gds_server *s) {
 }
 
 static gds_status install(gds_server *s, const gds_authz_config *authz,
-                          const gds_buf *ownCert) {
+                          const gds_buf *ownCert, const gds_users *users) {
     size_t ns = 0;
     UA_String uri = UA_STRING(GDS_NS_URI);
     if(UA_Server_getNamespaceByName(s->ua, uri, &ns) != UA_STATUSCODE_GOOD || ns > UA_UINT16_MAX) {
@@ -375,6 +394,8 @@ static gds_status install(gds_server *s, const gds_authz_config *authz,
         r = install_auditing(s);
     if(r == UA_STATUSCODE_GOOD)
         r = gds_authz_install(s, authz, ownCert);
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_roles_install(s, users);
     if(r != UA_STATUSCODE_GOOD) {
         fprintf(stderr, "opengds: installing the GDS methods failed: %s\n", UA_StatusCode_name(r));
         return GDS_ENOTFOUND;
@@ -405,6 +426,8 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
     s->store = cfg->store;
     s->ca = cfg->ca;
     s->approval = cfg->approval;
+    s->passwordMinLength = cfg->passwordMinLength;
+    s->singleAdmin = cfg->singleAdmin;
     s->counterReset = UA_DateTime_now();
     s->role = GDS_NODE_STANDALONE;
     s->serviceLevel = 255;
@@ -441,7 +464,7 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
         gds_server_delete(s);
         return GDS_EINVAL;
     }
-    st = install(s, cfg->authz, &cfg->ownCert);
+    st = install(s, cfg->authz, &cfg->ownCert, cfg->users);
     if(st != GDS_OK) {
         gds_server_delete(s);
         return st;
@@ -489,6 +512,8 @@ gds_status gds_server_add_role(gds_server *s, const char *name, const UA_NodeId 
     if(st != GDS_OK)
         return st;
     UA_StatusCode r = role_node(s, name, roleId);
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_roles_add_role_node(s, roleId, gds_role_bit(s->ns, roleId));
     if(r != UA_STATUSCODE_GOOD) {
         fprintf(stderr, "opengds: Role %s: %s\n", name, UA_StatusCode_name(r));
         gds_access_drop_last_role();

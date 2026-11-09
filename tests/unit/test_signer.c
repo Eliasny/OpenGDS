@@ -530,6 +530,24 @@ static bool verifies(X509 *x, const char *in, const gds_buf *sig) {
     return ok;
 }
 
+static void test_ipc_token_refused(gds_ca *ipc, gds_signer *s) {
+    gds_buf sig = {0};
+    /* the signer refuses anything but a JWS signing input, even when
+     * opengdsd's own check is bypassed */
+    static const char csrLike[] = "\x30\x82\x01\x0a not a token";
+    gds_buf bad = {(uint8_t *)(uintptr_t)csrLike, sizeof(csrLike) - 1}, msg = {0}, reply = {0};
+    CHECK(gds_sigp_encode_token(GDS_SIGP_TOKEN_SIGN, &bad, &msg) == GDS_OK);
+    CHECK(gds_signer_handle(s, msg.data, msg.len, &reply) == GDS_OK);
+    gds_status st = GDS_OK;
+    CHECK(gds_sigp_decode_reply(GDS_SIGP_TOKEN_SIGN, reply.data, reply.len, &st, NULL, &sig) ==
+              GDS_OK &&
+          st == GDS_EINVAL && !sig.data);
+    gds_buf_free(&msg);
+    gds_buf_free(&reply);
+    CHECK(gds_ca_token_sign(ipc, &bad, &sig) == GDS_EINVAL);
+    gds_buf_free(&sig);
+}
+
 static void test_ipc_token(gds_ca *ipc, gds_ca *direct, gds_signer *s, const char *caDir) {
     gds_buf in = {(uint8_t *)(uintptr_t)JWS_OK, strlen(JWS_OK)}, sig = {0}, chain = {0};
     /* no certificate yet: nothing is signed */
@@ -564,19 +582,7 @@ static void test_ipc_token(gds_ca *ipc, gds_ca *direct, gds_signer *s, const cha
           EVP_PKEY_eq(X509_get0_pubkey(leaf2), X509_get0_pubkey(leaf)) == 1 &&
           X509_cmp(leaf2, leaf) != 0);
     gds_buf_free(&again);
-    /* the signer refuses anything but a JWS signing input, even when
-     * opengdsd's own check is bypassed */
-    static const char csrLike[] = "\x30\x82\x01\x0a not a token";
-    gds_buf bad = {(uint8_t *)(uintptr_t)csrLike, sizeof(csrLike) - 1}, msg = {0}, reply = {0};
-    CHECK(gds_sigp_encode_token(GDS_SIGP_TOKEN_SIGN, &bad, &msg) == GDS_OK);
-    CHECK(gds_signer_handle(s, msg.data, msg.len, &reply) == GDS_OK);
-    gds_status st = GDS_OK;
-    CHECK(gds_sigp_decode_reply(GDS_SIGP_TOKEN_SIGN, reply.data, reply.len, &st, NULL, &sig) ==
-              GDS_OK &&
-          st == GDS_EINVAL && !sig.data);
-    gds_buf_free(&msg);
-    gds_buf_free(&reply);
-    CHECK(gds_ca_token_sign(ipc, &bad, &sig) == GDS_EINVAL);
+    test_ipc_token_refused(ipc, s);
     /* a restarted signer signs with the key and certificate from disk */
     gds_ca *reopened = open_direct_ca(caDir);
     CHECK(reopened && gds_ca_token_sign(reopened, &in, &sig) == GDS_OK && leaf2 &&
