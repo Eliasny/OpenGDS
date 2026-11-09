@@ -87,7 +87,7 @@ gds_status gds_keycred_copy(gds_server *s, const gds_keycred_service *svc, size_
     if(!svc || n > GDS_MAX_KC_SERVICES)
         return GDS_EINVAL;
     if(!gds_store_kc_supported(s->store))
-        return GDS_EUNSUPPORTED; /* a store backend before minor 7 */
+        return GDS_EUNSUPPORTED; /* a store backend before minor 8 */
     for(size_t i = 0; i < n; i++) {
         const gds_keycred_service *d = &svc[i];
         if(!name_ok(d->name) || !uri_ok(d->resourceUri) || d->profileUrisSize == 0 ||

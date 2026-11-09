@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: MPL-2.0 */
 #include <sqlite3.h>
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -11,6 +12,7 @@
 #include "common/buf.h"
 #include "common/ids.h"
 #include "store.h"
+#include "store_backend.h"
 #include "common/banned.h"
 
 static UA_Guid rnd_guid(void) {
@@ -85,6 +87,65 @@ static void test_requests(gds_store *s, const UA_Guid *appId) {
     gds_request_clear(&next);
     UA_Guid unknown = rnd_guid();
     CHECK(gds_store_req_set_state(s, &unknown, GDS_REQ_ISSUED, NULL, 0) == GDS_ENOTFOUND);
+}
+
+/* A24: the certificate and Received -> Issued together, once. */
+static void issue_checks(gds_store *s, const UA_Guid *appId, const char *what, uint8_t tag) {
+    gds_request q;
+    memset(&q, 0, sizeof(q));
+    q.id = rnd_guid();
+    q.appId = *appId;
+    q.groupId = 615;
+    q.certType = 12557;
+    q.state = GDS_REQ_RECEIVED;
+    uint8_t csr[] = {0x30, 0x03, 0x02, 0x01, 0x07};
+    q.csr = (gds_buf){csr, sizeof(csr)};
+    CHECK(gds_store_req_insert(s, &q) == GDS_OK);
+    uint8_t ser[] = {0x4a, tag}, ser2[] = {0x4b, tag};
+    uint8_t der[] = {0x30, 0x03, 0x02, 0x01, tag};
+    gds_buf sb = {ser, sizeof(ser)}, sb2 = {ser2, sizeof(ser2)}, db = {der, sizeof(der)};
+    CHECK(gds_store_cert_issue(s, &q.id, appId, 615, 12557, &sb, &db, 10, 20) == GDS_OK);
+    gds_request got;
+    CHECK(gds_store_req_get(s, &q.id, &got) == GDS_OK);
+    CHECK_EQ_INT(got.state, GDS_REQ_ISSUED);
+    CHECK(got.cert.len == sizeof(der) && memcmp(got.cert.data, der, sizeof(der)) == 0);
+    gds_request_clear(&got);
+    bool revoked = true;
+    CHECK(gds_store_cert_is_revoked(s, &sb, &revoked) == GDS_OK && !revoked);
+    /* Issued already: a second signing of the same request stores nothing */
+    CHECK(gds_store_cert_issue(s, &q.id, appId, 615, 12557, &sb2, &db, 10, 20) == GDS_ESTATE);
+    revoked = true;
+    CHECK(gds_store_cert_is_revoked(s, &sb2, &revoked) == GDS_OK && !revoked); /* no row */
+    UA_Guid unknown = rnd_guid();
+    CHECK(gds_store_cert_issue(s, &unknown, appId, 615, 12557, &sb2, &db, 10, 20) ==
+          GDS_ENOTFOUND);
+    /* a taken serial: nothing written, the request stays Received */
+    gds_request q2 = q;
+    q2.id = rnd_guid();
+    CHECK(gds_store_req_insert(s, &q2) == GDS_OK);
+    CHECK(gds_store_cert_issue(s, &q2.id, appId, 615, 12557, &sb, &db, 10, 20) == GDS_EEXISTS);
+    CHECK(gds_store_req_get(s, &q2.id, &got) == GDS_OK);
+    CHECK_EQ_INT(got.state, GDS_REQ_RECEIVED);
+    gds_request_clear(&got);
+    CHECK(gds_store_req_set_state(s, &q2.id, GDS_REQ_FAILED, NULL, 0) == GDS_OK);
+    CHECK(gds_store_cert_issue(s, &q2.id, appId, 615, 12557, &sb2, &db, 10, 20) == GDS_ESTATE);
+    CHECK(gds_store_cert_issue(s, NULL, appId, 615, 12557, &sb2, &db, 10, 20) == GDS_EINVAL);
+    fprintf(stderr, "cert_issue (%s) checked\n", what);
+}
+
+static void test_issue(gds_store *s, const UA_Guid *appId, const char *path) {
+    issue_checks(s, appId, "minor 7", 7);
+    /* A backend before minor 7: the same answers, from two transactions. */
+    gds_store_backend old = gds_store_sqlite_backend;
+    old.abi_minor = 6;
+    old.struct_size = offsetof(gds_store_backend, cert_issue);
+    void *ctx = NULL;
+    gds_store *o = NULL;
+    if(CHECK(gds_store_sqlite_open(path, false, &ctx) == GDS_OK) &&
+       CHECK(gds_store_open_backend(&old, ctx, &o) == GDS_OK) && o) {
+        issue_checks(o, appId, "minor 6", 6);
+        gds_store_close(o);
+    }
 }
 
 static bool count_req_cb(void *ctx, const gds_request *r) {
@@ -397,6 +458,7 @@ int main(int argc, char **argv) {
     test_update_delete(s);
     test_audit(s, path);
     test_trust_lists(s);
+    test_issue(s, &id, path);
     {
         char wal[1040];
         CHECK(gds_path(wal, sizeof(wal), "%s-wal", path) == GDS_OK);

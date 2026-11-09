@@ -15,6 +15,7 @@
  * gds_server_revoke_serial (UASM ask A23) puts a serial the store marks
  * revoked on the issuer's CRL by certificate, by type, or on all of them.
  * SPDX-License-Identifier: MPL-2.0 */
+#include <open62541/plugin/certificategroup.h>
 #include <open62541/plugin/create_certificate.h>
 #include <open62541/plugin/log_stdout.h>
 #include <openssl/evp.h>
@@ -325,7 +326,25 @@ static void test_get_and_check(gds_server *s, const UA_NodeId *app, const UA_Byt
 
 /* One certificate per curve: each from its own CA, checked and revoked
  * against that CA's CRL only; unregistering revokes on every curve. */
+/* open62541 loads the ECC CRLs, which are below 256 bytes when empty
+ * (docs/upstream/09-short-der-crl.md, patch 0007). */
+static void check_crls_load(gds_ca *ca) {
+    for(unsigned i = GDS_CA_ISSUER_P256; i < GDS_CA_ISSUERS; i++) {
+        gds_buf der = {0};
+        if(!CHECK(gds_ca_get_issuer_crl(ca, (gds_ca_issuer)i, &der) == GDS_OK)) // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange): i < GDS_CA_ISSUERS
+            continue;
+        CHECK(der.len < 256); /* empty: the short DER form 0x30 0x81 */
+        UA_ByteString b = {der.len, der.data};
+        UA_String name = UA_STRING_NULL;
+        CHECK_EQ_INT(UA_CertificateUtils_getSubjectName(&b, &name), UA_STATUSCODE_GOOD);
+        CHECK(name.length > 0);
+        UA_String_clear(&name);
+        gds_buf_free(&der);
+    }
+}
+
 static void test_ecc(gds_server *s, gds_ca *ca, const UA_NodeId *app) {
+    check_crls_load(ca);
     UA_ByteString p256 = UA_BYTESTRING_NULL, p384 = UA_BYTESTRING_NULL;
     if(!issue_type(s, app, UA_NS0ID_ECCNISTP256APPLICATIONCERTIFICATETYPE, &p256) ||
        !issue_type(s, app, UA_NS0ID_ECCNISTP384APPLICATIONCERTIFICATETYPE, &p384)) {
@@ -508,6 +527,20 @@ static void test_unregister(gds_server *s, gds_ca *ca, const UA_NodeId *b) {
     UA_ByteString_clear(&c2);
 }
 
+/* Remove the CA of an earlier run: each issuer's directory holds these. */
+static void fresh_ca(const char *caDir) {
+    static const char *const sub[] = {"", "/nistP256", "/nistP384"};
+    static const char *const file[] = {"ca.der", "ca.crl", "ca.key.pem"};
+    for(size_t i = GDS_ARRAY_SIZE(sub); i-- > 0;) {
+        char path[1100];
+        for(size_t j = 0; j < GDS_ARRAY_SIZE(file); j++)
+            if(gds_path(path, sizeof(path), "%s%s/%s", caDir, sub[i], file[j]) == GDS_OK)
+                (void)unlink(path);
+        if(i > 0 && gds_path(path, sizeof(path), "%s%s", caDir, sub[i]) == GDS_OK)
+            (void)rmdir(path);
+    }
+}
+
 int main(int argc, char **argv) {
     if(argc != 2) {
         fprintf(stderr, "usage: %s <dir>\n", argv[0]);
@@ -518,6 +551,7 @@ int main(int argc, char **argv) {
     CHECK(gds_path(db, sizeof(db), "%s/store.db", argv[1]) == GDS_OK);
     CHECK(gds_path(caDir, sizeof(caDir), "%s/ca", argv[1]) == GDS_OK);
     (void)unlink(db);
+    fresh_ca(caDir); /* empty CRLs for check_crls_load */
 
     static uint8_t pw[] = "revoke-test-passphrase";
     static gds_buf pass = {pw, sizeof(pw) - 1};
