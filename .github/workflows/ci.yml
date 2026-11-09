@@ -97,7 +97,8 @@ jobs:
   windows-wine:
     # gdsaudit.exe (packaging/windows/build.sh) under Wine against the Linux
     # pins: packaging/windows/check_under_wine.sh, about 25 minutes. Only on
-    # pull requests that touch the Auditor or its Windows packaging.
+    # pull requests that touch the Auditor or its Windows packaging (or this
+    # file, so a change to the job is tested by the job).
     name: windows gdsaudit.exe under wine
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
@@ -110,7 +111,7 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          if git diff --name-only "$BASE" HEAD | grep -qE '^(tools/auditor|packaging/windows)/'; then
+          if git diff --name-only "$BASE" HEAD | grep -qE '^(tools/auditor/|packaging/windows/|\.github/workflows/ci\.yml$)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "No change under tools/auditor or packaging/windows: skipped"
