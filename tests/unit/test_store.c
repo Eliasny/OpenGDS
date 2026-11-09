@@ -433,6 +433,79 @@ static void test_trust_lists(gds_store *s) {
     gds_buf_free(&got);
 }
 
+/* OPC 10000-18 role mapping rules and managed users (schema 5) */
+static bool count_rule(void *ctx, const gds_role_rule *r) {
+    (void)r;
+    ++*(int *)ctx;
+    return true;
+}
+
+static bool count_user(void *ctx, const gds_store_user *u) {
+    (void)u;
+    ++*(int *)ctx;
+    return true;
+}
+
+static bool find_user(void *ctx, const gds_store_user *u) {
+    gds_store_user *want = ctx;
+    if(strcmp(u->name, want->name) != 0)
+        return true;
+    *want = *u;
+    return false;
+}
+
+static void test_rules_users(gds_store *s) {
+    gds_role_rule r;
+    memset(&r, 0, sizeof(r));
+    snprintf(r.role, sizeof(r.role), "SecurityAdmin");
+    r.kind = GDS_RULE_IDENTITY;
+    r.criteriaType = 1; /* UserName */
+    snprintf(r.criteria, sizeof(r.criteria), "alice");
+    CHECK(gds_store_rule_add(s, &r) == GDS_OK);
+    CHECK(gds_store_rule_add(s, &r) == GDS_EEXISTS);
+    gds_role_rule app = r;
+    app.kind = GDS_RULE_APPLICATION;
+    app.criteriaType = 0;
+    snprintf(app.criteria, sizeof(app.criteria), "urn:opengds:test:app");
+    CHECK(gds_store_rule_add(s, &app) == GDS_OK);
+    gds_role_rule bad = r;
+    bad.kind = 9;
+    CHECK(gds_store_rule_add(s, &bad) == GDS_EINVAL);
+    int n = 0;
+    CHECK(gds_store_rule_scan(s, count_rule, &n) == GDS_OK);
+    CHECK_EQ_INT(n, 2);
+    CHECK(gds_store_rule_remove(s, &r) == GDS_OK);
+    CHECK(gds_store_rule_remove(s, &r) == GDS_ENOTFOUND);
+    n = 0;
+    CHECK(gds_store_rule_scan(s, count_rule, &n) == GDS_OK);
+    CHECK_EQ_INT(n, 1);
+
+    gds_store_user u;
+    memset(&u, 0, sizeof(u));
+    snprintf(u.name, sizeof(u.name), "bob");
+    snprintf(u.credential, sizeof(u.credential), "pbkdf2-sha256$600000$c2FsdA$aGFzaA");
+    u.config = 2;
+    snprintf(u.description, sizeof(u.description), "operator");
+    CHECK(gds_store_user_put(s, &u, true) == GDS_OK);
+    CHECK(gds_store_user_put(s, &u, true) == GDS_EEXISTS);
+    gds_store_user other = u;
+    snprintf(other.name, sizeof(other.name), "carol");
+    CHECK(gds_store_user_put(s, &other, false) == GDS_ENOTFOUND); /* update needs the row */
+    u.config = 0;
+    CHECK(gds_store_user_put(s, &u, false) == GDS_OK);
+    gds_store_user got;
+    memset(&got, 0, sizeof(got));
+    snprintf(got.name, sizeof(got.name), "bob");
+    CHECK(gds_store_user_scan(s, find_user, &got) == GDS_OK);
+    CHECK(got.config == 0 && strcmp(got.description, "operator") == 0);
+    CHECK(gds_store_user_delete(s, "bob") == GDS_OK);
+    CHECK(gds_store_user_delete(s, "bob") == GDS_ENOTFOUND);
+    n = 0;
+    CHECK(gds_store_user_scan(s, count_user, &n) == GDS_OK);
+    CHECK_EQ_INT(n, 0);
+    CHECK(gds_store_user_put(s, &u, true) == GDS_OK); /* kept for the reopen check */
+}
+
 int main(int argc, char **argv) {
     if(argc < 2) {
         fprintf(stderr, "usage: %s <dir>\n", argv[0]);
@@ -460,6 +533,7 @@ int main(int argc, char **argv) {
     test_audit(s, path);
     test_trust_lists(s);
     test_issue(s, &id, path);
+    test_rules_users(s);
     {
         char wal[1040];
         CHECK(gds_path(wal, sizeof(wal), "%s-wal", path) == GDS_OK);
@@ -481,6 +555,12 @@ int main(int argc, char **argv) {
         int64_t lu = 0;
         CHECK(gds_store_tl_get(s, 615, &tl, &lu) == GDS_OK && tl.len == 2 && lu == 300);
         gds_buf_free(&tl);
+        int n = 0;
+        CHECK(gds_store_rule_scan(s, count_rule, &n) == GDS_OK);
+        CHECK_EQ_INT(n, 1);
+        n = 0;
+        CHECK(gds_store_user_scan(s, count_user, &n) == GDS_OK);
+        CHECK_EQ_INT(n, 1);
         gds_store_close(s);
     }
     test_migrate_from_2(argv[1]);
