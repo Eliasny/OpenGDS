@@ -105,57 +105,57 @@ SRV-KC-09,server,KeyCredential push,srv_keycred.c,12 §8.6.8,OPC 10000-12 v1.05.
 SRV-KC-10,server,KeyCredential push,srv_keycred.c,12 §8.6.5,OPC 10000-12 v1.05.07,ref,Push Model for KeyCredential Service,yes,no,yes,kc-status-stale,selftest/push_test_server
 SRV-AUD-01,server,Audit events,srv_audit.c,"12 §7.8.2.1, §7.8.2.13",OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,audit-no-trustlist-event,selftest/push_test_server
 SRV-AUD-02,server,Audit events,srv_audit.c,12 §7.10.27,OPC 10000-12 v1.05.07,ref,Push Model for Global Certificate and TrustList Management,yes,no,no,audit-no-cert-event,selftest/push_test_server
-CLI-TRU-01,client,Trust in the GDS,cli_trust.c,12 Annex G.1,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,send-password-untrusted,selftest/pull_test_client
-CLI-TRU-02,client,Trust in the GDS,cli_trust.c,12 Annex G.1; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,trust-any-gds,selftest/pull_test_client
-CLI-TRU-03,client,Trust in the GDS,cli_trust.c,4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,ignore-gds-crl,selftest/pull_test_client
-CLI-TRU-04,client,Trust in the GDS,cli_trust.c,4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,accept-expired-gds,selftest/pull_test_client
-CLI-TRU-05,client,Trust in the GDS,cli_trust.c,4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,no-gds-uri-check,selftest/pull_test_client
-CLI-TRU-06,client,Trust in the GDS,cli_trust.c,"12 §7.6, §7.9.3, §7.9.4, §7.9.5",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,use-sign-only,selftest/pull_test_client
-CLI-TRU-07,client,Trust in the GDS,cli_trust.c,OPC 10000-7 (security policy facets),OPC 10000-12 v1.05.07,todo,TBD,no,yes,no,prefer-deprecated,selftest/pull_test_client
-CLI-REG-01,client,Registration,cli_register.c,"12 §6.5.5, §6.5.6; 6 §6.2.2",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,register-wrong-uri,selftest/pull_test_client
-CLI-REG-02,client,Registration,cli_register.c,12 §6.5.5,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,register-wrong-type,selftest/pull_test_client
-CLI-REG-03,client,Registration,cli_register.c,12 §6.5.5,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,register-bad-url,selftest/pull_test_client
-CLI-REG-04,client,Registration,cli_register.c,"12 §6.5.5, §6.5.6",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,register-every-run,selftest/pull_test_client
-CLI-REG-05,client,Registration,cli_register.c,12 Annex G.1,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,persist-prompted-creds,selftest/pull_test_client
-CLI-CSR-01,client,Signing request,cli_csr.c,12 §7.9.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,csr-bad-signature,selftest/pull_test_client
-CLI-CSR-02,client,Signing request,cli_csr.c,12 §7.9.3; 6 §6.2.2,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,csr-wrong-uri,selftest/pull_test_client
-CLI-CSR-03,client,Signing request,cli_csr.c,"12 §7.9.3, §7.8.4.9",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,csr-weak-key,selftest/pull_test_client
-CLI-CSR-04,client,Signing request,cli_csr.c,"12 §7.9.3, §7.9.7, §7.8.3.1",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,csr-unlisted-type,selftest/pull_test_client
-CLI-CSR-05,client,Signing request,cli_csr.c,12 §7.9.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,csr-no-dns,selftest/pull_test_client
-CLI-CSR-06,client,Signing request,cli_csr.c,12 §7.6,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,csr-reuse-key,selftest/pull_test_client
-CLI-CSR-07,client,Signing request,cli_csr.c,12 §7.9.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,leak-private-key,selftest/pull_test_client
-CLI-CSR-08,client,Signing request,cli_csr.c,12 §7.9.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,csr-retry-storm,selftest/pull_test_client
-CLI-CSR-09,client,Signing request,cli_csr.c,"12 §7.6, §7.9.4",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,use-newkeypair,selftest/pull_test_client
-CLI-PEN-01,client,Pending approval,cli_pending.c,"12 §7.9.5, §7.6",OPC 10000-12 v1.05.07,ref,TBD,no,yes,yes,pending-give-up,selftest/pull_test_client
-CLI-PEN-02,client,Pending approval,cli_pending.c,"12 §7.6, §7.9.5",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,poll-no-backoff,selftest/pull_test_client
-CLI-PEN-03,client,Pending approval,cli_pending.c,12 §7.6,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,pending-new-csr,selftest/pull_test_client
-CLI-PEN-04,client,Pending approval,cli_pending.c,12 §7.6,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,pending-forget,selftest/pull_test_client
-CLI-PEN-05,client,Pending approval,cli_pending.c,"12 §7.9.5, §7.6",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,poll-after-reject,selftest/pull_test_client
-CLI-PEN-06,client,Pending approval,cli_pending.c,12 §7.9.5,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,pending-stuck-invalid,selftest/pull_test_client
-CLI-PEN-07,client,Pending approval,cli_pending.c,12 §6.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,keep-session-open,selftest/pull_test_client
-CLI-PEN-08,client,Pending approval,cli_pending.c,12 §6.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,yes,no-cycle-jitter,selftest/pull_test_client
-CLI-INS-01,client,Installation,cli_install.c,"12 Annex G.1, §7.6",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,install-ignored,selftest/pull_test_client
-CLI-INS-02,client,Installation,cli_install.c,12 §7.9.5; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,install-no-chain,selftest/pull_test_client
-CLI-INS-03,client,Installation,cli_install.c,12 §7.6,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,install-in-ram,selftest/pull_test_client
-CLI-TL-01,client,Trust list,cli_trustlist.c,"12 §7.9.9, §7.8.2.4",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,read-one-chunk,selftest/pull_test_client
-CLI-TL-02,client,Trust list,cli_trustlist.c,12 §7.8.2.4,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,no-close,selftest/pull_test_client
-CLI-TL-03,client,Trust list,cli_trustlist.c,12 §7.9.9; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,trustlist-not-installed,selftest/pull_test_client
-CLI-TL-04,client,Trust list,cli_trustlist.c,12 §7.9.9; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,ignore-crls,selftest/pull_test_client
-CLI-TL-05,client,Trust list,cli_trustlist.c,12 §7.8.2.8; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,trustlist-merge,selftest/pull_test_client
-CLI-TL-06,client,Trust list,cli_trustlist.c,12 §7.8.2.8; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,issuers-trusted,selftest/pull_test_client
-CLI-TL-07,client,Trust list,cli_trustlist.c,12 §7.6,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,always-download,selftest/pull_test_client
-CLI-TL-08,client,Trust list,cli_trustlist.c,"12 §7.6, §7.8.2.1",OPC 10000-12 v1.05.07,ref,TBD,no,yes,yes,ignore-update-frequency,selftest/pull_test_client
-CLI-REN-01,client,Renewal,cli_renew.c,"12 §7.9.10, §7.6",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,ignore-update-required,selftest/pull_test_client
-CLI-REN-02,client,Renewal,cli_renew.c,"12 §7.9.10, §7.6",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,renew-always,selftest/pull_test_client
-CLI-REN-03,client,Renewal,cli_renew.c,12 §7.6,OPC 10000-12 v1.05.07,ref,TBD,no,yes,yes,no-expiry-renewal,selftest/pull_test_client
-CLI-REN-04,client,Renewal,cli_renew.c,12 §7.6,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,renew-keep-old,selftest/pull_test_client
-CLI-REN-05,client,Renewal,cli_renew.c,"12 Annex G.1, §7.6",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,renew-with-password,selftest/pull_test_client
-CLI-FLT-01,client,Faults,cli_faults.c,"12 §7.6, §7.8.2.4",OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,install-partial-trustlist,selftest/pull_test_client
-CLI-FLT-02,client,Faults,cli_faults.c,12 §7.8.2.8,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,parse-garbage,selftest/pull_test_client
-CLI-FLT-03,client,Faults,cli_faults.c,12 §7.9.5; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,install-unverified,selftest/pull_test_client
-CLI-FLT-04,client,Faults,cli_faults.c,12 §7.9.5,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,install-wrong-key,selftest/pull_test_client
-CLI-FLT-05,client,Faults,cli_faults.c,12 §7.9.5; 6 §6.2.2,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,install-wrong-uri,selftest/pull_test_client
-CLI-FLT-06,client,Faults,cli_faults.c,12 §7.9.5; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,install-expired,selftest/pull_test_client
-CLI-FLT-07,client,Faults,cli_faults.c,12 §7.6,OPC 10000-12 v1.05.07,ref,TBD,no,yes,yes,no-call-timeout,selftest/pull_test_client
-CLI-FLT-08,client,Faults,cli_faults.c,12 §7.8.2.4; OPC 10000-20 (FileType Read),OPC 10000-12 v1.05.07,todo,TBD,no,yes,no,no-length-check,selftest/pull_test_client
-CLI-FLT-09,client,Faults,cli_faults.c,12 §6.3,OPC 10000-12 v1.05.07,ref,TBD,no,yes,no,reconnect-storm,selftest/pull_test_client
+CLI-TRU-01,client,Trust in the GDS,cli_trust.c,12 Annex G.1,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,send-password-untrusted,selftest/pull_test_client
+CLI-TRU-02,client,Trust in the GDS,cli_trust.c,12 Annex G.1; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,trust-any-gds,selftest/pull_test_client
+CLI-TRU-03,client,Trust in the GDS,cli_trust.c,4 §6.1.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,ignore-gds-crl,selftest/pull_test_client
+CLI-TRU-04,client,Trust in the GDS,cli_trust.c,4 §6.1.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,accept-expired-gds,selftest/pull_test_client
+CLI-TRU-05,client,Trust in the GDS,cli_trust.c,4 §6.1.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,no-gds-uri-check,selftest/pull_test_client
+CLI-TRU-06,client,Trust in the GDS,cli_trust.c,"12 §7.6, §7.9.3, §7.9.4, §7.9.5",OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,use-sign-only,selftest/pull_test_client
+CLI-TRU-07,client,Trust in the GDS,cli_trust.c,OPC 10000-7 (security policy facets),OPC 10000-12 v1.05.07,todo,Pull Model for Global Certificate and TrustList Management,no,yes,no,prefer-deprecated,selftest/pull_test_client
+CLI-REG-01,client,Registration,cli_register.c,"12 §6.5.5, §6.5.6; 6 §6.2.2",OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,register-wrong-uri,selftest/pull_test_client
+CLI-REG-02,client,Registration,cli_register.c,12 §6.5.5,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,register-wrong-type,selftest/pull_test_client
+CLI-REG-03,client,Registration,cli_register.c,12 §6.5.5,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,register-bad-url,selftest/pull_test_client
+CLI-REG-04,client,Registration,cli_register.c,"12 §6.5.5, §6.5.6",OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,register-every-run,selftest/pull_test_client
+CLI-REG-05,client,Registration,cli_register.c,12 Annex G.1,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,persist-prompted-creds,selftest/pull_test_client
+CLI-CSR-01,client,Signing request,cli_csr.c,12 §7.9.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,csr-bad-signature,selftest/pull_test_client
+CLI-CSR-02,client,Signing request,cli_csr.c,12 §7.9.3; 6 §6.2.2,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,csr-wrong-uri,selftest/pull_test_client
+CLI-CSR-03,client,Signing request,cli_csr.c,"12 §7.9.3, §7.8.4.9",OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,csr-weak-key,selftest/pull_test_client
+CLI-CSR-04,client,Signing request,cli_csr.c,"12 §7.9.3, §7.9.7, §7.8.3.1",OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,csr-unlisted-type,selftest/pull_test_client
+CLI-CSR-05,client,Signing request,cli_csr.c,12 §7.9.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,csr-no-dns,selftest/pull_test_client
+CLI-CSR-06,client,Signing request,cli_csr.c,12 §7.6,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,csr-reuse-key,selftest/pull_test_client
+CLI-CSR-07,client,Signing request,cli_csr.c,12 §7.9.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,leak-private-key,selftest/pull_test_client
+CLI-CSR-08,client,Signing request,cli_csr.c,12 §7.9.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,csr-retry-storm,selftest/pull_test_client
+CLI-CSR-09,client,Signing request,cli_csr.c,"12 §7.6, §7.9.4",OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,use-newkeypair,selftest/pull_test_client
+CLI-PEN-01,client,Pending approval,cli_pending.c,"12 §7.9.5, §7.6",OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,yes,pending-give-up,selftest/pull_test_client
+CLI-PEN-02,client,Pending approval,cli_pending.c,"12 §7.6, §7.9.5",OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,poll-no-backoff,selftest/pull_test_client
+CLI-PEN-03,client,Pending approval,cli_pending.c,12 §7.6,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,pending-new-csr,selftest/pull_test_client
+CLI-PEN-04,client,Pending approval,cli_pending.c,12 §7.6,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,pending-forget,selftest/pull_test_client
+CLI-PEN-05,client,Pending approval,cli_pending.c,"12 §7.9.5, §7.6",OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,poll-after-reject,selftest/pull_test_client
+CLI-PEN-06,client,Pending approval,cli_pending.c,12 §7.9.5,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,pending-stuck-invalid,selftest/pull_test_client
+CLI-PEN-07,client,Pending approval,cli_pending.c,12 §6.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,keep-session-open,selftest/pull_test_client
+CLI-PEN-08,client,Pending approval,cli_pending.c,12 §6.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,yes,no-cycle-jitter,selftest/pull_test_client
+CLI-INS-01,client,Installation,cli_install.c,"12 Annex G.1, §7.6",OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,install-ignored,selftest/pull_test_client
+CLI-INS-02,client,Installation,cli_install.c,12 §7.9.5; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,install-no-chain,selftest/pull_test_client
+CLI-INS-03,client,Installation,cli_install.c,12 §7.6,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,install-in-ram,selftest/pull_test_client
+CLI-TL-01,client,Trust list,cli_trustlist.c,"12 §7.9.9, §7.8.2.4",OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,read-one-chunk,selftest/pull_test_client
+CLI-TL-02,client,Trust list,cli_trustlist.c,12 §7.8.2.4,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,no-close,selftest/pull_test_client
+CLI-TL-03,client,Trust list,cli_trustlist.c,12 §7.9.9; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,trustlist-not-installed,selftest/pull_test_client
+CLI-TL-04,client,Trust list,cli_trustlist.c,12 §7.9.9; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,ignore-crls,selftest/pull_test_client
+CLI-TL-05,client,Trust list,cli_trustlist.c,12 §7.8.2.8; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,trustlist-merge,selftest/pull_test_client
+CLI-TL-06,client,Trust list,cli_trustlist.c,12 §7.8.2.8; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,issuers-trusted,selftest/pull_test_client
+CLI-TL-07,client,Trust list,cli_trustlist.c,12 §7.6,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,always-download,selftest/pull_test_client
+CLI-TL-08,client,Trust list,cli_trustlist.c,"12 §7.6, §7.8.2.1",OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,yes,ignore-update-frequency,selftest/pull_test_client
+CLI-REN-01,client,Renewal,cli_renew.c,"12 §7.9.10, §7.6",OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,ignore-update-required,selftest/pull_test_client
+CLI-REN-02,client,Renewal,cli_renew.c,"12 §7.9.10, §7.6",OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,renew-always,selftest/pull_test_client
+CLI-REN-03,client,Renewal,cli_renew.c,12 §7.6,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,yes,no-expiry-renewal,selftest/pull_test_client
+CLI-REN-04,client,Renewal,cli_renew.c,12 §7.6,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,renew-keep-old,selftest/pull_test_client
+CLI-REN-05,client,Renewal,cli_renew.c,"12 Annex G.1, §7.6",OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,renew-with-password,selftest/pull_test_client
+CLI-FLT-01,client,Faults,cli_faults.c,"12 §7.6, §7.8.2.4",OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,install-partial-trustlist,selftest/pull_test_client
+CLI-FLT-02,client,Faults,cli_faults.c,12 §7.8.2.8,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,parse-garbage,selftest/pull_test_client
+CLI-FLT-03,client,Faults,cli_faults.c,12 §7.9.5; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,install-unverified,selftest/pull_test_client
+CLI-FLT-04,client,Faults,cli_faults.c,12 §7.9.5,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,install-wrong-key,selftest/pull_test_client
+CLI-FLT-05,client,Faults,cli_faults.c,12 §7.9.5; 6 §6.2.2,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,install-wrong-uri,selftest/pull_test_client
+CLI-FLT-06,client,Faults,cli_faults.c,12 §7.9.5; 4 §6.1.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,install-expired,selftest/pull_test_client
+CLI-FLT-07,client,Faults,cli_faults.c,12 §7.6,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,yes,no-call-timeout,selftest/pull_test_client
+CLI-FLT-08,client,Faults,cli_faults.c,12 §7.8.2.4; OPC 10000-20 (FileType Read),OPC 10000-12 v1.05.07,todo,Pull Model for Global Certificate and TrustList Management,no,yes,no,no-length-check,selftest/pull_test_client
+CLI-FLT-09,client,Faults,cli_faults.c,12 §6.3,OPC 10000-12 v1.05.07,ref,Pull Model for Global Certificate and TrustList Management,no,yes,no,reconnect-storm,selftest/pull_test_client
