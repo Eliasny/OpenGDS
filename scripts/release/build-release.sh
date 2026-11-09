@@ -7,8 +7,8 @@
 # Produces in <out-dir>:
 #   opengds-<ver>.tar.gz                    source (git archive of HEAD)    [WITH_SOURCE=1]
 #   opengds-<ver>-<dist>-<arch>.tar.gz      binaries under usr/             [WITH_TGZ=1]
-#   opengds_<ver>-<rel>_<arch>.deb, gdsaudit_...deb      on Debian and Ubuntu
-#   opengds-<ver>-<rel>.<arch>.rpm, gdsaudit-...rpm      on EL and Fedora
+#   opengds_<ver>-<rel>_<arch>.deb, gdsaudit_..., gdsaudit-gui_...deb  on Debian and Ubuntu
+#   opengds-<ver>-<rel>.<arch>.rpm, gdsaudit-..., gdsaudit-gui-...rpm  on EL and Fedora
 #   <artifact>.spdx.json                    SPDX 2.3 SBOM for each binary artifact
 #
 # Reproducible: the same commit, built in the same build environment (the
@@ -110,7 +110,7 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
     -DCMAKE_C_FLAGS="$MAP" \
     -DCMAKE_EXE_LINKER_FLAGS="-Wl,--build-id=sha1" \
     -DOPEN62541_PREFIX="$OPEN62541_PREFIX" -DOPENSSL_ROOT_DIR="$OPENSSL_PREFIX" \
-    -DOPENGDS_PACKAGE_RELEASE="$PKGREL" -DOPENGDS_SECCOMP=ON \
+    -DOPENGDS_PACKAGE_RELEASE="$PKGREL" -DOPENGDS_SECCOMP=ON -DOPENGDS_BUILD_AUDITOR_GUI=ON \
     -DCMAKE_C_STANDARD_LIBRARIES="-lpthread -lm" $SQLITE_ARGS \
     -DCPACK_PACKAGE_FILE_NAME="opengds-$VERSION-$DIST-$ARCH"
 cmake --build "$BUILD"

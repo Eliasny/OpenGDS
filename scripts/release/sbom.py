@@ -8,8 +8,11 @@
 #   - statically linked: OpenSSL (pinned in scripts/build_openssl.sh) and
 #     open62541 (pinned in scripts/build_open62541.sh) with the patches carried
 #     in docs/upstream/patches/ and its git submodules
-#   - dynamically linked: glibc, SQLite and libseccomp, at the versions of
-#     the build system
+#   - dynamically linked: glibc, SQLite, libseccomp and (gdsaudit-gui) GTK 4,
+#     at the versions of the build system
+#   - --format STATIC (packaging/static, packaging/windows): nothing dynamic;
+#     the C runtime (musl or MinGW-w64) is linked in
+#   - --format FLATPAK: the GNOME runtime the bundle runs on (GTK 4, glibc)
 # Deterministic: the same inputs give the same bytes (time = SOURCE_DATE_EPOCH,
 # document namespace derived from the artifact's SHA-256).
 import argparse
@@ -68,7 +71,10 @@ def main():
     ap.add_argument("--source", required=True)
     ap.add_argument("--commit", required=True)
     ap.add_argument("--version", required=True)
-    ap.add_argument("--format", choices=["DEB", "RPM"], required=True)
+    ap.add_argument("--format", choices=["DEB", "RPM", "STATIC", "FLATPAK"], required=True)
+    ap.add_argument("--flatpak-manifest", help="FLATPAK: the manifest (names the runtime)")
+    ap.add_argument("--runtime", choices=["musl", "mingw-w64"],
+                    help="STATIC: the C runtime linked in (version from the Debian build system)")
     ap.add_argument("--openssl-prefix", required=True)
     ap.add_argument("--open62541-prefix", required=True)
     ap.add_argument("--sqlite-prefix", help="SQLite linked statically (scripts/build_sqlite.sh)")
@@ -82,12 +88,20 @@ def main():
     name = "gdsaudit" if art.startswith("gdsaudit") else "opengds"
     # The artifact's own run-time requirements decide which system libraries
     # are listed (a .tar.gz carries every component, so it lists them all).
-    if art.endswith(".deb"):
+    if a.format == "STATIC":
+        if not a.runtime:
+            sys.exit("sbom.py: --format STATIC needs --runtime")
+        requires = ""
+    elif a.format == "FLATPAK":
+        if not a.flatpak_manifest:
+            sys.exit("sbom.py: --format FLATPAK needs --flatpak-manifest")
+        requires = ""
+    elif art.endswith(".deb"):
         requires = run(["dpkg-deb", "-f", a.artifact, "Depends"]) or ""
     elif art.endswith(".rpm"):
         requires = run(["rpm", "-qpR", a.artifact]) or ""
     else:
-        requires = "sqlite seccomp"
+        requires = "sqlite seccomp libgtk-4"
 
     ossl_ver, ossl_sha = pinned(os.path.join(src, "scripts/build_openssl.sh"), "VERSION", "SHA256")
     o6_tag, o6_commit = pinned(os.path.join(src, "scripts/build_open62541.sh"), "TAG", "COMMIT")
@@ -228,10 +242,49 @@ def main():
             "comment": "Pinned in scripts/build_sqlite.sh; the distribution's SQLite is too old",
         }, "STATIC_LINK")
         requires = requires.replace("sqlite", "")
-    for pname, deb, rpm, lic in (("glibc", "libc6", "glibc", "LGPL-2.1-or-later"),
-                                 ("sqlite", "libsqlite3-0", "sqlite-libs", "blessing"),
-                                 ("libseccomp", "libseccomp2", "libseccomp", "LGPL-2.1-only")):
-        if pname != "glibc" and pname.replace("lib", "") not in requires:
+    if a.format == "STATIC":
+        # musl: MIT. MinGW-w64's runtime is under several licences (its
+        # copyright file ships in the archive's licenses/).
+        deb, lic = {"musl": ("musl-dev", "MIT"), "mingw-w64": ("mingw-w64-common", "NOASSERTION")}[a.runtime]
+        add({
+            "SPDXID": spdx_id(a.runtime),
+            "name": a.runtime,
+            "versionInfo": system_version("DEB", deb, None) or "NOASSERTION",
+            "downloadLocation": "NOASSERTION",
+            "licenseConcluded": lic,
+            "licenseDeclared": lic,
+            "copyrightText": "NOASSERTION",
+            "primaryPackagePurpose": "LIBRARY",
+            "filesAnalyzed": False,
+            "comment": "C runtime linked in; Debian package %s of the build system" % deb,
+        }, "STATIC_LINK")
+    if a.format == "FLATPAK":
+        with open(a.flatpak_manifest, encoding="utf-8") as f:
+            manifest = f.read()
+        rt = re.search(r"^runtime: *(\S+)$", manifest, re.M)
+        rt_ver = re.search(r"^runtime-version: *'?([^'\s]+)'?$", manifest, re.M)
+        if not rt or not rt_ver:
+            sys.exit("sbom.py: no runtime in %s" % a.flatpak_manifest)
+        add({
+            "SPDXID": spdx_id("flatpak-runtime"),
+            "name": rt.group(1),
+            "versionInfo": rt_ver.group(1),
+            "downloadLocation": "https://dl.flathub.org/repo/",
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": "NOASSERTION",
+            "copyrightText": "NOASSERTION",
+            "primaryPackagePurpose": "OPERATING-SYSTEM",
+            "filesAnalyzed": False,
+            "comment": "Flatpak runtime from Flathub: GTK 4, GLib, glibc and the rest of the UI stack",
+        }, "DEPENDS_ON")
+    system_libs = () if a.format in ("STATIC", "FLATPAK") else (
+        ("glibc", "libc6", "glibc", "LGPL-2.1-or-later", None),
+        ("sqlite", "libsqlite3-0", "sqlite-libs", "blessing", "sqlite"),
+        ("libseccomp", "libseccomp2", "libseccomp", "LGPL-2.1-only", "seccomp"),
+        # deb Depends: libgtk-4-1; rpm Requires: libgtk-4.so.1
+        ("gtk4", "libgtk-4-1", "gtk4", "LGPL-2.1-or-later", "libgtk-4"))
+    for pname, deb, rpm, lic, token in system_libs:
+        if token is not None and token not in requires:
             continue
         ver = system_version(a.format, deb, rpm) or "NOASSERTION"
         add({

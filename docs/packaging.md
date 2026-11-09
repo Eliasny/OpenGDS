@@ -7,11 +7,14 @@ OpenGDS ships as:
 | `opengds_<ver>-1~deb13_<arch>.deb`, `…~ubuntu24.04…` | Debian 13, Ubuntu 24.04 | server: `opengdsd`, `opengds-signer`, `gdsadm`, systemd units |
 | `opengds-<ver>-1.el9.<arch>.rpm`, `…fc<N>…` | RHEL, Alma and Rocky 9; Fedora | the same |
 | `gdsaudit_…deb`, `gdsaudit-…rpm` | the same distributions | the OpenGDS Auditor command-line tool |
-| `gdsaudit-gui_…deb`, `gdsaudit-gui-…rpm` | distributions with GTK 4.12 or newer | the Auditor's desktop UI (`gdsaudit-gui`, desktop entry `org.opengds.Auditor`); needs `gdsaudit` of the same version |
-| `org.opengds.Auditor` Flatpak (`packaging/flatpak/org.opengds.Auditor.yml`) | any distribution with Flatpak | `gdsaudit-gui` and `gdsaudit` on the GNOME runtime; a client profile trigger runs inside the sandbox, so use the headless `gdsaudit` to start host programs |
+| `gdsaudit-gui_…deb`, `gdsaudit-gui-…rpm` | the same distributions (GTK 4.12 or newer; EL 9 has 4.12) | the Auditor's desktop UI (`gdsaudit-gui`, desktop entry `org.opengds.Auditor`); needs `gdsaudit` of the same version |
+| `gdsaudit-gui-<ver>-<arch>.flatpak`, app `org.opengds.Auditor` (`packaging/flatpak/org.opengds.Auditor.yml`) | any distribution with Flatpak (`flatpak install gdsaudit-gui-….flatpak`; the GNOME runtime comes from Flathub) | `gdsaudit-gui` and `gdsaudit` on the GNOME runtime; a client profile trigger runs inside the sandbox, so use the headless `gdsaudit` to start host programs |
 | `opengds-<ver>-deb13-<arch>.tar.gz` | other glibc distributions | every component under `usr/` |
+| `gdsaudit-<ver>-linux-<arch>-static.tar.gz` | any Linux (`packaging/static/`) | the Auditor as one static program (musl), licences, README |
+| `gdsaudit-<ver>-windows-x86_64.zip` | 64-bit Windows 10 or later (`packaging/windows/`) | `gdsaudit.exe`, licences, README |
 | `opengds-<ver>.tar.gz` | building from source | `git archive` of the release tag |
 | `ghcr.io/eliasny/opengds:<ver>` | Docker, Podman, Kubernetes | server on a distroless base, amd64 and arm64 |
+| `ghcr.io/eliasny/gdsaudit:<ver>` | Docker, Podman, CI pipelines | the static Auditor on distroless/static (`packaging/static/Dockerfile`), amd64 and arm64 |
 
 Architectures: amd64 (x86_64) and arm64 (aarch64). Each binary artifact has an SPDX 2.3 SBOM next to it (`<artifact>.spdx.json`).
 
@@ -119,7 +122,8 @@ Signatures are detached (`<file>.sigstore.json`), so every published file stays 
 - the OpenGDS source at the release commit;
 - OpenSSL, with the version and the tarball SHA-256 pinned in `scripts/build_openssl.sh`;
 - open62541, with the commit pinned in `scripts/build_open62541.sh`, the patches carried from `docs/upstream/patches/`, and the git submodules that are compiled in;
-- glibc, SQLite and libseccomp, as dynamic dependencies, at the versions of the build system.
+- glibc, SQLite, libseccomp and (for `gdsaudit-gui`) GTK 4, as dynamic dependencies, at the versions of the build system;
+- for the static tarball and the Windows zip, the C runtime linked in (musl or MinGW-w64) instead; for the Flatpak, the GNOME runtime it runs on.
 
 ## Verifying a release
 
@@ -146,5 +150,5 @@ cosign verify ghcr.io/eliasny/opengds:0.1.0 \
 
 1. Set `project(OpenGDS VERSION x.y.z)` in `CMakeLists.txt` in a pull request.
 2. After it merges, tag the merge commit: `git tag -s vx.y.z && git push origin vx.y.z`.
-3. `.github/workflows/release.yml` builds every distribution and architecture twice, compares the builds, signs the files, pushes the image to ghcr.io and creates a draft GitHub release.
+3. `.github/workflows/release.yml` builds every distribution and architecture twice, and the static and Windows Auditor twice, compares the builds, builds the Flatpak (once: an OSTree commit records its build time), signs the files, pushes both images to ghcr.io and creates a draft GitHub release.
 4. Check the draft and publish it.
