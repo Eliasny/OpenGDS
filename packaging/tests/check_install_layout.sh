@@ -41,6 +41,14 @@ fi
 if [ -e "$BUILD/tools/auditor/gdsaudit" ]; then
     want 755 /usr/bin/gdsaudit
 fi
+if [ -e "$BUILD/tools/auditor/gdsaudit-gui" ]; then
+    want 755 /usr/bin/gdsaudit-gui
+    want 644 /usr/share/applications/org.opengds.Auditor.desktop
+    want 644 /usr/share/metainfo/org.opengds.Auditor.metainfo.xml
+    want 644 /usr/share/icons/hicolor/scalable/apps/org.opengds.Auditor.svg
+    # the UI runs the engine next to it
+    want 755 /usr/bin/gdsaudit
+fi
 # Nothing outside /usr: configuration and state are created at run time.
 extra=$(cd "$ROOT" && find . -mindepth 1 -maxdepth 1 ! -name usr)
 if [ -n "$extra" ]; then
