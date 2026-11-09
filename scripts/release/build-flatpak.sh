@@ -32,9 +32,19 @@ MANIFEST=packaging/flatpak/$APP.yml
 
 mkdir -p "$OUT" "$WORK"
 OUT=$(cd "$OUT" && pwd)
-flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse --force-clean \
+if ! flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse --force-clean \
     --state-dir="$WORK/state" --default-branch=stable --repo="$WORK/repo" \
-    "$WORK/build" "$MANIFEST"
+    "$WORK/build" "$MANIFEST"; then
+    # flatpak-builder does not show why appstreamcli compose failed: run it
+    # again in the build sandbox and print its hints
+    if [ -d "$WORK/build/files/share/metainfo" ]; then
+        flatpak build "$WORK/build" appstreamcli compose --verbose --prefix=/ --origin=debug \
+            --result-root=/app --data-dir=/tmp/as-data --icons-dir=/tmp/as-icons \
+            --hints-dir=/app/as-hints --components="$APP" /app || true
+        cat "$WORK"/build/files/as-hints/*.yaml 2>/dev/null || true
+    fi
+    exit 1
+fi
 B="gdsaudit-gui-$VERSION-$ARCH.flatpak"
 flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
     "$WORK/repo" "$OUT/$B" "$APP" stable
