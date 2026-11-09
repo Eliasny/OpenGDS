@@ -11,3 +11,9 @@ deadlock:UA_Timer_process
 # way, so its read/close of one fd shows as a race. Our code stays checked.
 called_from_lib:libglib-2.0.so.0
 called_from_lib:libgio-2.0.so.0
+# glibc: mktime() re-reads the time zone (tzset_internal frees and strdups
+# its saved TZ) under glibc's own tzset_lock, which TSan cannot see because
+# libc is not instrumented. open62541's stdout logger calls mktime through
+# UA_DateTime_localTimeUtcOffset on every line, so a server thread and a
+# client logging in the same process (unit_disc_mdns) report it as a race.
+race:tzset_internal
