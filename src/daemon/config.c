@@ -113,6 +113,13 @@ static bool set_u32(const field *f, const char *v, char *dst) {
     return true;
 }
 
+static bool set_str(const field *f, const char *v, size_t n, char *dst) {
+    if(n >= f->size || (f->k == T_PATH && v[0] != '/'))
+        return false;
+    memcpy(dst, v, n + 1);
+    return true;
+}
+
 static bool set_value(const field *f, const char *v, size_t n, gdsd_config *c) {
     char *dst = (char *)c + f->off;
     char tmp[GDSD_MAX_VALUE];
@@ -123,10 +130,7 @@ static bool set_value(const field *f, const char *v, size_t n, gdsd_config *c) {
     switch(f->k) {
     case T_STR:
     case T_PATH:
-        if(n >= f->size || (f->k == T_PATH && tmp[0] != '/'))
-            return false;
-        memcpy(dst, tmp, n + 1);
-        return true;
+        return set_str(f, tmp, n, dst);
     case T_BOOL:
         GDS_ASSERT(f->size == sizeof(bool));
         return set_bool(tmp, dst);

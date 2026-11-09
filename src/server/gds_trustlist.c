@@ -879,14 +879,19 @@ static void trust_cb(UA_Server *ua, void *data) {
     (void)ua;
     trust_job *j = data;
     gds_server *s = j->s;
-    UA_StatusCode r = gds_refuse_on_standby(s);
-    if(r == UA_STATUSCODE_GOOD)
-        r = is_open(true) ? UA_STATUSCODE_BADINVALIDSTATE : add_certificate(s, &j->cert);
-    UA_Variant in[2];
-    UA_Boolean trusted = true;
-    UA_Variant_setScalar(&in[0], &j->cert, &UA_TYPES[UA_TYPES_BYTESTRING]);
-    UA_Variant_setScalar(&in[1], &trusted, &UA_TYPES[UA_TYPES_BOOLEAN]);
-    audit_as(s, j->actor, TL_NODE(ADDCERTIFICATE), in, 2, r == UA_STATUSCODE_GOOD);
+    UA_StatusCode r = UA_STATUSCODE_BADSHUTDOWN;
+    /* A request that timed out stays queued; UA_Server_delete runs it after
+     * it has freed the namespaces, so it must neither change nor audit */
+    if(!__atomic_load_n(&s->stopping, __ATOMIC_ACQUIRE)) {
+        r = gds_refuse_on_standby(s);
+        if(r == UA_STATUSCODE_GOOD)
+            r = is_open(true) ? UA_STATUSCODE_BADINVALIDSTATE : add_certificate(s, &j->cert);
+        UA_Variant in[2];
+        UA_Boolean trusted = true;
+        UA_Variant_setScalar(&in[0], &j->cert, &UA_TYPES[UA_TYPES_BYTESTRING]);
+        UA_Variant_setScalar(&in[1], &trusted, &UA_TYPES[UA_TYPES_BOOLEAN]);
+        audit_as(s, j->actor, TL_NODE(ADDCERTIFICATE), in, 2, r == UA_STATUSCODE_GOOD);
+    }
     pthread_mutex_lock(&j->lock);
     j->result = r;
     j->done = true;
