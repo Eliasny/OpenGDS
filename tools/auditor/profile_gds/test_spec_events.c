@@ -26,6 +26,8 @@ typedef struct {
     size_t hits, good, bad;
     bool groupOk; /* CertificateGroup field was the default group on every hit */
     UA_NodeId wantGroup;
+    bool strOk;         /* the second field was the same String on every hit */
+    UA_String *wantStr; /* NULL: not checked; that String, set by the first hit */
 } ev_sink;
 
 static void on_event(UA_Client *c, UA_UInt32 subId, void *subCtx, UA_UInt32 monId, void *monCtx,
@@ -49,6 +51,18 @@ static void on_event(UA_Client *c, UA_UInt32 subId, void *subCtx, UA_UInt32 monI
         if(!ok)
             s->groupOk = false;
     }
+    if(s->wantStr) { /* every hit carries the same string, kept in *wantStr */
+        const UA_String *v =
+            f.mapSize > F_GROUP &&
+                    UA_Variant_hasScalarType(&f.map[F_GROUP].value, &UA_TYPES[UA_TYPES_STRING])
+                ? f.map[F_GROUP].value.data
+                : NULL;
+        bool first = v && v->length > 0 && s->wantStr->length == 0;
+        bool ok = v && v->length > 0 &&
+                  (first ? UA_String_copy(v, s->wantStr) == UA_STATUSCODE_GOOD
+                         : UA_String_equal(v, s->wantStr));
+        s->strOk = s->strOk && ok;
+    }
 }
 
 typedef struct {
@@ -58,10 +72,12 @@ typedef struct {
 } ev_watch;
 
 /* Subscribe to events of `type` (and subtypes) on the Server Object, selecting
- * Status and, with groupField, <GDS ns>:CertificateGroup. */
-static UA_StatusCode watch(gds_target *t, UA_NodeId type, bool groupField, ev_watch *w) {
+ * Status and, when given, a second field (`second`). */
+static UA_StatusCode watch_field(gds_target *t, UA_NodeId type, const UA_QualifiedName *second,
+                                 ev_watch *w) {
     memset(w, 0, sizeof(*w));
     w->sink.groupOk = true;
+    w->sink.strOk = true;
     UA_CreateSubscriptionRequest sreq = UA_CreateSubscriptionRequest_default();
     sreq.requestedPublishingInterval = 50;
     UA_CreateSubscriptionResponse sresp =
@@ -74,7 +90,7 @@ static UA_StatusCode watch(gds_target *t, UA_NodeId type, bool groupField, ev_wa
 
     UA_SimpleAttributeOperand sel[2];
     UA_QualifiedName qStatus = UA_QUALIFIEDNAME(0, "Status");
-    UA_QualifiedName qGroup = UA_QUALIFIEDNAME(t->ns, "CertificateGroup");
+    UA_QualifiedName qSecond = second ? *second : UA_QUALIFIEDNAME(0, "Status");
     for(size_t i = 0; i < 2; i++) {
         UA_SimpleAttributeOperand_init(&sel[i]);
         sel[i].typeDefinitionId = UA_NODEID_NUMERIC(0, UA_NS0ID_BASEEVENTTYPE);
@@ -82,7 +98,7 @@ static UA_StatusCode watch(gds_target *t, UA_NodeId type, bool groupField, ev_wa
         sel[i].browsePathSize = 1;
     }
     sel[0].browsePath = &qStatus;
-    sel[1].browsePath = &qGroup;
+    sel[1].browsePath = &qSecond;
 
     UA_LiteralOperand lit;
     UA_LiteralOperand_init(&lit);
@@ -98,7 +114,7 @@ static UA_StatusCode watch(gds_target *t, UA_NodeId type, bool groupField, ev_wa
     UA_EventFilter filter;
     UA_EventFilter_init(&filter);
     filter.selectClauses = sel;
-    filter.selectClausesSize = groupField ? 2 : 1;
+    filter.selectClausesSize = second ? 2 : 1;
     filter.whereClause.elements = &el;
     filter.whereClause.elementsSize = 1;
 
@@ -122,6 +138,12 @@ static UA_StatusCode watch(gds_target *t, UA_NodeId type, bool groupField, ev_wa
     w->ok = true;
     (void)UA_Client_run_iterate(t->client, 100);
     return UA_STATUSCODE_GOOD;
+}
+
+/* Status and, with groupField, <GDS ns>:CertificateGroup. */
+static UA_StatusCode watch(gds_target *t, UA_NodeId type, bool groupField, ev_watch *w) {
+    UA_QualifiedName qGroup = UA_QUALIFIEDNAME(t->ns, "CertificateGroup");
+    return watch_field(t, type, groupField ? &qGroup : NULL, w);
 }
 
 /* Wait until `want` events arrived or EV_WAIT ms passed. */
@@ -435,6 +457,104 @@ static void t_group_alarms(ga_ctx *ctx, void *p) {
         ga_pass(ctx, "%zu alarm(s) present with the standard type", present);
 }
 
+/* KeyCredential audit events (§8.5.9 - §8.5.11) with the ResourceUri of
+ * KeyCredentialAuditEventType (§8.5.8). */
+typedef struct {
+    ev_watch req, del, rev;
+    UA_String got[3]; /* the ResourceUri each watch saw */
+} kc_watch;
+
+static void kc_verdict_requested(ga_ctx *ctx, const kc_watch *w, const spec_kc_run *run) {
+    if(w->req.sink.hits < 2)
+        ga_fail(ctx, "%zu KeyCredentialRequested event(s) for one accepted and one refused "
+                     "request, expected 2", w->req.sink.hits);
+    else if(w->req.sink.good < 1 || w->req.sink.bad < 1)
+        ga_fail(ctx, "KeyCredentialRequested Status should be TRUE once and FALSE once (%zu/%zu)",
+                w->req.sink.good, w->req.sink.bad);
+    else if(w->del.sink.hits < 1)
+        ga_fail(ctx, "no KeyCredentialDelivered event after a successful FinishRequest");
+    else if(!w->req.sink.strOk || !w->del.sink.strOk)
+        ga_fail(ctx, "ResourceUri is not the service's ('%s')", run->resourceUri);
+    else
+        ga_pass(ctx, "Requested (accepted and refused) and Delivered with the ResourceUri");
+}
+
+static void kc_verdict_revoked(ga_ctx *ctx, const kc_watch *w, const spec_kc_run *run) {
+    if(gt_absent(ctx, run->revoke, true, "Revoke"))
+        return;
+    if(run->revoke != UA_STATUSCODE_GOOD)
+        ga_not_tested(ctx, "setup: Revoke -> %s", UA_StatusCode_name(run->revoke));
+    else if(w->rev.sink.hits < 1)
+        ga_fail(ctx, "no KeyCredentialRevoked event after a successful Revoke");
+    else if(!w->rev.sink.strOk)
+        ga_fail(ctx, "ResourceUri is not the service's ('%s')", run->resourceUri);
+    else
+        ga_pass(ctx, "KeyCredentialRevoked raised with the ResourceUri");
+}
+
+static UA_StatusCode kc_watch_all(gds_target *t, kc_watch *w) {
+    UA_QualifiedName qRes = UA_QUALIFIEDNAME(0, "ResourceUri");
+    memset(w, 0, sizeof(*w));
+    UA_StatusCode r = watch_field(t, gt_node(t, UA_GDSID_KEYCREDENTIALREQUESTEDAUDITEVENTTYPE),
+                                  &qRes, &w->req);
+    if(r == UA_STATUSCODE_GOOD)
+        r = watch_field(t, gt_node(t, UA_GDSID_KEYCREDENTIALDELIVEREDAUDITEVENTTYPE), &qRes,
+                        &w->del);
+    if(r == UA_STATUSCODE_GOOD)
+        r = watch_field(t, gt_node(t, UA_GDSID_KEYCREDENTIALREVOKEDAUDITEVENTTYPE), &qRes,
+                        &w->rev);
+    w->req.sink.wantStr = &w->got[0];
+    w->del.sink.wantStr = &w->got[1];
+    w->rev.sink.wantStr = &w->got[2];
+    return r;
+}
+
+static void kc_unwatch_all(gds_target *t, kc_watch *w) {
+    unwatch(t, &w->req);
+    unwatch(t, &w->del);
+    unwatch(t, &w->rev);
+    for(size_t i = 0; i < 3; i++)
+        UA_String_clear(&w->got[i]);
+}
+
+static void t_keycred(ga_ctx *ctx, gds_target *t, bool revoked) {
+    bool on;
+    if(!auditing(ctx, t, &on))
+        return;
+    kc_watch w;
+    spec_kc_run run;
+    UA_StatusCode r = kc_watch_all(t, &w);
+    if(r != UA_STATUSCODE_GOOD) {
+        ga_fail(ctx, "event subscriptions -> %s", UA_StatusCode_name(r));
+    } else if(spec_kc_exercise(ctx, t, revoked, &run)) {
+        drain(t, &w.req, 2);
+        drain(t, &w.del, 1);
+        if(revoked)
+            drain(t, &w.rev, 1);
+        UA_String res = UA_STRING(run.resourceUri);
+        ev_watch *each[3] = {&w.req, &w.del, &w.rev};
+        for(size_t i = 0; i < 3; i++)
+            if(w.got[i].length && !UA_String_equal(&w.got[i], &res))
+                each[i]->sink.strOk = false;
+        ga_note(ctx, "refused StartRequest -> %s; Revoke -> %s", UA_StatusCode_name(run.refused),
+                UA_StatusCode_name(run.revoke));
+        none_if_off(ctx, on, w.req.sink.hits + w.del.sink.hits + w.rev.sink.hits);
+        if(revoked)
+            kc_verdict_revoked(ctx, &w, &run);
+        else
+            kc_verdict_requested(ctx, &w, &run);
+    }
+    kc_unwatch_all(t, &w);
+}
+
+static void t_keycred_requested_delivered(ga_ctx *ctx, void *p) {
+    t_keycred(ctx, p, false);
+}
+
+static void t_keycred_revoked(ga_ctx *ctx, void *p) {
+    t_keycred(ctx, p, true);
+}
+
 const ga_test spec_events_tests[] = {
     {"gds.ev.registration_changed", "12 §6.5.12", "Register and Unregister raise ApplicationRegistrationChanged audit events",
      true, false, t_registration_changed},
@@ -444,6 +564,10 @@ const ga_test spec_events_tests[] = {
      true, false, t_certificate_revoked},
     {"gds.ev.trustlist_updated", "12 §7.8.2.1", "AddCertificate and RemoveCertificate each raise one TrustListUpdated event",
      true, false, t_trustlist_updated},
+    {"gds.ev.keycred_requested_delivered", "12 §8.5.8 - §8.5.10", "KeyCredential requests raise KeyCredentialRequested (accepted and refused) and KeyCredentialDelivered with the ResourceUri",
+     true, false, t_keycred_requested_delivered},
+    {"gds.ev.keycred_revoked", "12 §8.5.7, §8.5.11", "Revoke raises KeyCredentialRevoked with the ResourceUri",
+     true, false, t_keycred_revoked},
     {"gds.ev.auditing_flag", "5 §6.3.1; 12 §6.5.12", "Server.Auditing is TRUE when the GDS raises audit events",
      true, false, t_auditing_flag},
     {"gds.ev.group_alarms", "12 §7.8.3.1", "CertificateGroup alarms, when present, have the standard types",

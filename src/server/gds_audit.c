@@ -268,3 +268,13 @@ gds_status gds_audit_raise(gds_server *s, const char *user, const gds_audit_even
                 gds_status_name(st));
     return GDS_OK; /* the log is the record; delivery is best effort */
 }
+
+const char *gds_session_actor(const void *sessionContext) {
+    const gds_session *ss = sessionContext;
+    return ss && !gds_session_anonymous(ss) ? ss->user : NULL;
+}
+
+bool gds_audit_result(UA_StatusCode r) {
+    return r != UA_STATUSCODE_GOODCOMPLETESASYNCHRONOUSLY && r != UA_STATUSCODE_BADUSERACCESSDENIED &&
+           r != UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT && r != UA_STATUSCODE_BADINVALIDSTATE;
+}

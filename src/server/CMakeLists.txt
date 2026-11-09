@@ -11,6 +11,7 @@ add_library(gds_server STATIC
     gds_certmgr.c
     gds_directory.c
     gds_embed.c
+    gds_keycred.c
     gds_jwt.c
     gds_keypair.c
     gds_nodes.c
