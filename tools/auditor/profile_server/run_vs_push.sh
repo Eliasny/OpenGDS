@@ -37,6 +37,25 @@ chmod 600 "$W/user.pw"
 
 # start_server <name> [--break mutant]: fresh PKI; both Auditor identities
 # trusted, the admin one mapped to SecurityAdmin; "operator" a plain user
+# hook_cmd <name> [fresh]: the --restart-cmd/--setup-cmd that runs
+# restart-<name>.sh. HOOKS_VIA_WINE=1 (packaging/windows/check_under_wine.sh):
+# the Windows gdsaudit.exe runs hooks with cmd.exe, which cannot wait for a
+# Linux program, so the hook is a .bat that starts the script (start /unix)
+# and waits for the exit status it leaves in a file.
+hook_cmd() {
+    if [ "${HOOKS_VIA_WINE:-}" != 1 ]; then
+        echo "sh '$W/restart-$1.sh'${2:+ $2}"
+        return
+    fi
+    h="$W/hook-$1${2:+-$2}"
+    printf '#!/bin/sh\nsh "%s" %s; echo $? > "%s.rc"\n' "$W/restart-$1.sh" "${2:-}" "$h" > "$h.sh"
+    chmod +x "$h.sh"
+    win=Z:$(printf '%s' "$h" | tr / '\\')
+    printf '@echo off\r\ndel "%s.rc" 2>nul\r\nstart /unix %s.sh\r\n:w\r\nif exist "%s.rc" goto d\r\nping -n 2 127.0.0.1 >nul\r\ngoto w\r\n:d\r\nset /p RC=<"%s.rc"\r\nexit /b %%RC%%\r\n' \
+        "$win" "$h" "$win" "$win" > "$h.bat"
+    echo "$win.bat"
+}
+
 start_server() {
     name=$1
     shift
@@ -92,7 +111,7 @@ audit() { # audit <name> [args]: run the profile, TAP into $W/<name>.tap
     fi
     "$GA" server --url "opc.tcp://127.0.0.1:$PORT" --work "$W/auditor" \
         --user operator --user-password-file "$W/user.pw" --allow-changes --settle-timeout 40 \
-        --restart-cmd "sh '$W/restart-$NAME.sh'" "$@" \
+        --restart-cmd "$(hook_cmd "$NAME")" "$@" \
         > "$W/$name.tap" 2>&1
 }
 
@@ -139,7 +158,7 @@ if { [ -z "$ONLY" ] && $FIRST; } || [ "$ONLY" = good ]; then
     echo "=== good push_test_server --setup, SRV-SET"
     start_server setup --setup
     PIN=pki
-    audit setup $SETUP_ARGS --setup-cmd "sh '$W/restart-setup.sh' fresh" \
+    audit setup $SETUP_ARGS --setup-cmd "$(hook_cmd setup fresh)" \
         --expect "$E/push_test_server_setup.csv"
     G=$?
     PIN=tofu
@@ -162,7 +181,7 @@ while IFS=, read -r mutant test want; do
     SRV-SET-*)
         start_server "$mutant" --setup --break "$mutant"
         PIN=pki
-        audit "$mutant" $SETUP_ARGS --setup-cmd "sh '$W/restart-$mutant.sh' fresh" \
+        audit "$mutant" $SETUP_ARGS --setup-cmd "$(hook_cmd "$mutant" fresh)" \
             --stop-after "$test"
         PIN=tofu
         ;;

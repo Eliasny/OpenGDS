@@ -26,7 +26,7 @@ trap 'WINEDEBUG=-all "$WINESERVER" -k 2>/dev/null' EXIT
 WINEDEBUG=-all "$WINE" wineboot -i > /dev/null 2>&1 || true
 RC=0
 echo "=== server profile, gdsaudit.exe vs the good push_test_server"
-ONLY=good PUSH_PORT=${PUSH_PORT:-5901} sh "$ROOT/tools/auditor/profile_server/run_vs_push.sh" \
+ONLY=good HOOKS_VIA_WINE=1 PUSH_PORT=${PUSH_PORT:-5901} sh "$ROOT/tools/auditor/profile_server/run_vs_push.sh" \
     "$B" "$W/server" "$ROOT/tools/auditor/profile_server/expected" || RC=1
 echo "=== GDS profile, gdsaudit.exe vs mock_gds"
 GDS_PORT=${GDS_PORT:-5951} sh "$ROOT/tools/auditor/profile_gds/run_vs_mock.sh" \

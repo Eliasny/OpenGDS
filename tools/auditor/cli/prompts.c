@@ -5,12 +5,15 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#ifndef _WIN32
 #include <poll.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
+#include "common/platform.h"
 #include "common/banned.h"
 
 static int fd = -1;
@@ -65,13 +68,17 @@ static bool next_line(char *out, size_t outLen) {
             have = 0;
         if(ended || ga_abort_requested())
             return false;
+#ifndef _WIN32
         struct pollfd pfd = {fd, POLLIN, 0};
         int r = poll(&pfd, 1, 100);
         if(r < 0 && errno != EINTR)
             return false;
         if(r <= 0)
             continue; /* look at the abort flag again */
-        ssize_t got = read(fd, buf + have, GA_PROMPT_LINE - have);
+#endif
+        /* Windows: a plain file (no named pipes from the UI there), whose
+         * read never blocks */
+        ssize_t got = read(fd, buf + have, GDS_IO_CHUNK(GA_PROMPT_LINE - have));
         if(got < 0 && errno == EINTR)
             continue;
         if(got <= 0) {
@@ -97,7 +104,7 @@ static bool ask(size_t seq, const char *text, ga_answer *answer, char *note, siz
 }
 
 bool prompts_open(const char *path) {
-    fd = open(path, O_RDONLY | O_CLOEXEC);
+    fd = open(path, O_RDONLY | GDS_O_CLOEXEC);
     if(fd < 0) {
         perror(path);
         return false;
