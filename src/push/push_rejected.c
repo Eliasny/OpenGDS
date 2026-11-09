@@ -298,20 +298,27 @@ static gds_status open_dialog(push_rejected *r, const char *serverUri, entry *e)
     return gds_server_add_dialog(r->cfg.server, &d, &e->dialogId);
 }
 
+/* An application instance certificate not yet in tl: e (uri, name) and
+ * its thumbprint t are filled in */
+static bool candidate(const UA_ByteString *cert, const UA_TrustListDataType *tl, entry *e,
+                      uint8_t t[SHA256_LEN]) {
+    X509 *x = parse(cert);
+    memset(e, 0, sizeof(*e));
+    bool offer = x && !is_ca(x) && uri_of(x, e->uri, sizeof(e->uri)) && thumb_of(cert, t) &&
+                 !known_to(tl, cert, x);
+    if(offer)
+        cn_of(x, e->name, sizeof(e->name));
+    X509_free(x);
+    return offer;
+}
+
 size_t push_rejected_offer(push_rejected *r, const char *serverUri, const UA_ByteString *certs,
                            size_t n, const UA_TrustListDataType *tl) {
     size_t opened = 0;
     for(size_t i = 0; r && serverUri && i < n; i++) {
         uint8_t t[SHA256_LEN];
-        X509 *x = parse(&certs[i]);
         entry e;
-        memset(&e, 0, sizeof(e));
-        bool offer = x && !is_ca(x) && uri_of(x, e.uri, sizeof(e.uri)) &&
-                     thumb_of(&certs[i], t) && !known_to(tl, &certs[i], x);
-        if(offer)
-            cn_of(x, e.name, sizeof(e.name));
-        X509_free(x);
-        if(!offer)
+        if(!candidate(&certs[i], tl, &e, t))
             continue;
         pthread_mutex_lock(&r->lock);
         bool seen = find_thumb(r, t) != NULL;
