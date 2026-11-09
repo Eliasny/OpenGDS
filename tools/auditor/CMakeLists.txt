@@ -48,7 +48,7 @@ if(GDSAUDIT_SELFTESTS) # tests and self-test targets: full Linux builds only
 # Self-test targets: known-good reference implementations (Auditor plan, selftest/)
 add_executable(push_test_server selftest/push_test_server.c selftest/push_mgmt.c
                selftest/push_csr.c
-               selftest/push_setup.c)
+               selftest/push_setup.c selftest/push_kc.c)
 add_executable(pull_test_client selftest/pull_test_client.c)
 # Seeds of the server and client profiles (push_driver plays the
 # CertificateManager, mock_gds plays a GDS)

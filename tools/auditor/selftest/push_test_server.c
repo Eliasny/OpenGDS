@@ -52,6 +52,7 @@
 #include "common/limits.h"
 #include "common/safeint.h"
 #include "push_mgmt.h"
+#include "push_kc.h"
 #include "push_setup.h"
 #include "x509util.h"
 #include "common/banned.h"
@@ -587,6 +588,8 @@ int main(int argc, char **argv) {
     res |= pm_install(server, mutant, &key, sessionMode);
     if(res == UA_STATUSCODE_GOOD && setupMode)
         res = ps_install(server, pki, isAdminSession, sessionMode);
+    if(res == UA_STATUSCODE_GOOD)
+        res = pk_install(server, isAdminSession, sessionMode);
     if(res == UA_STATUSCODE_GOOD && pm_breaking("deprecated-policy")) {
         res = UA_ServerConfig_addSecurityPolicyBasic256(config, &cert, &key);
         if(res == UA_STATUSCODE_GOOD)
@@ -681,6 +684,7 @@ int main(int argc, char **argv) {
     pm_clear();
     bool again = setupMode && ps_reset_requested();
     ps_clear();
+    pk_clear();
     while(sessionFlags) {
         SessionFlag *n = sessionFlags->next;
         UA_NodeId_clear(&sessionFlags->sessionId);

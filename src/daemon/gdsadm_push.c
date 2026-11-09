@@ -38,6 +38,21 @@
  *       Without --setup-user the device must give SecurityAdmin to gdsadm's
  *       certificate while in setup.
  *
+ *   gdsadm push keycred URI --service NAME [--endpoint-url URL]...
+ *                           [device options as in push now] CONNECTION
+ *       a KeyCredential for the device (12 §8.4, push_keycred.h): find the
+ *       service NAME under the GDS's KeyCredentialManagement; connect to
+ *       the device and find its KeyCredentialConfiguration Object for the
+ *       service's ResourceUri, or CreateCredential (§8.6.3) with the
+ *       --endpoint-url URLs; StartRequest and FinishRequest on the GDS as
+ *       KeyCredentialAdmin for the device's ApplicationUri (§8.5.5,
+ *       §8.5.6); GetEncryptingKey and UpdateCredential with the secret
+ *       encrypted for the device's certificate (§8.6.6, §8.6.7)
+ *
+ *   gdsadm push keycred-delete URI --service NAME [device options] CONNECTION
+ *       DeleteCredential on the device's Object for the service (§8.6.8),
+ *       then Revoke of its CredentialId on the GDS (§8.5.7)
+ *
  *   gdsadm apps import FILE [--dry-run] [CONNECTION]
  *       one RegisterApplication per record of a CSV or JSON file
  *       (gdsadm_import.h), with a report line per record. A record whose
@@ -73,6 +88,7 @@
 #include "client/gdsc_session.h"
 #include "common/limits.h"
 #include "common/safeint.h"
+#include "push/push_keycred.h"
 #include "push/push_setup.h"
 #include "push/push_workflows.h"
 #include "common/banned.h"
@@ -97,6 +113,10 @@ typedef struct {
     const char *serverUri, *setupUser, *setupPasswordFile;
     /* certs revoke */
     const char *revokeCertFile;
+    /* push keycred */
+    const char *service;
+    const char *kcUrls[MAX_URLS];
+    size_t kcUrlN;
 } adm_args;
 
 typedef struct {
@@ -147,6 +167,7 @@ static bool parse_opt(adm_args *a, const char *opt, const char *v) {
         {"--server-uri", &a->serverUri},
         {"--setup-user", &a->setupUser},
         {"--setup-password-file", &a->setupPasswordFile},
+        {"--service", &a->service},
     };
     for(size_t i = 0; i < GDS_ARRAY_SIZE(single); i++) {
         if(strcmp(opt, single[i].name) == 0) {
@@ -162,6 +183,10 @@ static bool parse_opt(adm_args *a, const char *opt, const char *v) {
         return add_file(a->crlFiles, &a->crlN, v);
     if(strcmp(opt, "--discovery-url") == 0 && a->urlN < MAX_URLS) {
         a->urls[a->urlN++] = v;
+        return true;
+    }
+    if(strcmp(opt, "--endpoint-url") == 0 && a->kcUrlN < MAX_URLS) {
+        a->kcUrls[a->kcUrlN++] = v;
         return true;
     }
     if(strcmp(opt, "--poll-seconds") == 0)
@@ -518,9 +543,10 @@ static UA_StatusCode reverse_presents(const gdsc_session_cfg *dev, const adm_fil
     return r;
 }
 
-/* Steps 3-5 with the device's record and trust list in hand */
-static int push_to_device(const adm_args *a, adm_files *f, sign_ctx *sc, const char *url,
-                          const UA_TrustListDataType *tl) {
+/* The device's session: trusted through the GDS CA or its pinned
+ * certificate, with SecurityAdmin from gdsadm's certificate (Annex G.3) or
+ * from --device-user (12 §7.4) */
+static gdsc_session_cfg device_cfg(const adm_args *a, adm_files *f, const char *url) {
     /* The device is trusted through the GDS CA, or its pinned certificate */
     if(f->serverCert.data) {
         f->serverCertPinned = f->serverCert.data;
@@ -543,6 +569,13 @@ static int push_to_device(const adm_args *a, adm_files *f, sign_ctx *sc, const c
         c.userName = NULL;
         c.password = NULL;
     }
+    return c;
+}
+
+/* Steps 3-5 with the device's record and trust list in hand */
+static int push_to_device(const adm_args *a, adm_files *f, sign_ctx *sc, const char *url,
+                          const UA_TrustListDataType *tl) {
+    gdsc_session_cfg c = device_cfg(a, f, url);
     gdsc_session *dev = NULL;
     UA_StatusCode r = gdsc_session_open(&c, &dev);
     if(r != UA_STATUSCODE_GOOD)
@@ -617,6 +650,135 @@ int gdsadm_push_now(int argc, char **argv) {
     gdsc_session_close(gds);
     files_clear(&f);
     return rc;
+}
+
+/* ---- push keycred (12 §8.4, §8.6) ---- */
+
+typedef struct {
+    UA_Client *gds;
+    const gdsc_kc_service *svc;
+    const char *appUri;
+    unsigned pollSeconds;
+} kc_ctx;
+
+/* The credential comes from the GDS, which keeps only its hash */
+static gds_status issue_via_gds(void *ctx, char credentialId[GDSC_KC_ID_MAX + 1],
+                                gds_buf *secret) {
+    kc_ctx *k = ctx;
+    UA_StatusCode r =
+        gdsc_kc_request(k->gds, k->svc, k->appUri, k->pollSeconds, credentialId, secret);
+    if(r != UA_STATUSCODE_GOOD) {
+        report("KeyCredential StartRequest/FinishRequest on the GDS", r);
+        return GDS_EREMOTE;
+    }
+    return GDS_OK;
+}
+
+static void print_kc_report(const push_kc_report *rep, const char *url, bool del) {
+    if(rep->failedStep != PUSH_KC_STEP_NONE)
+        printf("failed at %s: %s\n", push_kc_step_name(rep->failedStep),
+               UA_StatusCode_name(rep->failedCode));
+    else if(del)
+        printf("credential %s deleted on %s\n", rep->credentialId[0] ? rep->credentialId : "(no id)",
+               url);
+    else
+        printf("credential %s pushed to %s (%s, %s)\n", rep->credentialId, url,
+               rep->created ? "new Object" : "existing Object", rep->policy);
+}
+
+/* After DeleteCredential: Revoke the CredentialId the device held */
+static int revoke_deleted(const kc_ctx *k, const push_kc_report *rep) {
+    if(!rep->credentialId[0]) {
+        printf("the device held no CredentialId; nothing to revoke on the GDS\n");
+        return 0;
+    }
+    UA_StatusCode r = gdsc_kc_revoke(k->gds, k->svc, rep->credentialId);
+    if(r != UA_STATUSCODE_GOOD)
+        return report("Revoke on the GDS", r);
+    printf("credential %s revoked on the GDS\n", rep->credentialId);
+    return 0;
+}
+
+static int kc_to_device(const adm_args *a, adm_files *f, kc_ctx *k, const char *url, bool del) {
+    gdsc_session_cfg c = device_cfg(a, f, url);
+    gdsc_session *dev = NULL;
+    UA_StatusCode r = gdsc_session_open(&c, &dev);
+    if(r != UA_STATUSCODE_GOOD)
+        return report("connect to the device", r);
+    gds_buf seen = {0};
+    if(gdsc_session_server_cert(dev, &seen) != GDS_OK)
+        gds_buf_free(&seen); /* GetEncryptingKey must then return the certificate */
+    push_kc_report rep;
+    gds_status s;
+    if(del) {
+        s = push_keycred_delete(gdsc_session_client(dev), k->svc->resourceUri, &rep);
+    } else {
+        push_kc_job job;
+        memset(&job, 0, sizeof(job));
+        job.name = a->service;
+        job.resourceUri = k->svc->resourceUri;
+        job.profileUri = k->svc->profileUri;
+        job.endpointUrls = a->kcUrls;
+        job.endpointUrlsN = a->kcUrlN;
+        job.issue = issue_via_gds;
+        job.issueCtx = k;
+        job.serverCert = seen.len ? &seen : NULL;
+        s = push_keycred_run(gdsc_session_client(dev), &job, &rep);
+    }
+    gdsc_session_close(dev);
+    gds_buf_free(&seen);
+    print_kc_report(&rep, url, del);
+    if(s != GDS_OK)
+        return 1;
+    return del ? revoke_deleted(k, &rep) : 0;
+}
+
+static int keycred_cmd(int argc, char **argv, bool del) {
+    adm_args a;
+    if(argc < 4 || argv[3][0] == '-' || !parse_args(argc, argv, 4, &a) || !a.service ||
+       !a.deviceUser != !a.devicePasswordFile || a.setupUser || a.setupPasswordFile ||
+       a.serverUri || (a.reversePort && a.serverUrl) || (del && a.kcUrlN)) {
+        fprintf(stderr, "usage: gdsadm push %s URI --service NAME%s "
+                        "[--server-url URL | --reverse-port PORT] [--server-cert DER] "
+                        "[--device-user NAME --device-password-file FILE] "
+                        "[--poll-seconds N] CONNECTION\n",
+                del ? "keycred-delete" : "keycred", del ? "" : " [--endpoint-url URL]...");
+        return 2;
+    }
+    a.uri = argv[3];
+    adm_files f;
+    memset(&f, 0, sizeof(f));
+    gdsc_session *gds = NULL;
+    UA_UInt16 ns = 0;
+    UA_ApplicationRecordDataType rec;
+    UA_ApplicationRecordDataType_init(&rec);
+    gdsc_kc_service svc;
+    memset(&svc, 0, sizeof(svc));
+    char url[GDS_MAX_PATH];
+    int rc = open_gds(&a, &f, &gds, &ns);
+    if(rc == 0)
+        rc = find_device(gdsc_session_client(gds), ns, &a, &rec, url, sizeof(url));
+    if(rc == 0) {
+        UA_StatusCode r = gdsc_kc_service_find(gdsc_session_client(gds), ns, a.service, &svc);
+        rc = r == UA_STATUSCODE_GOOD ? 0 : report("KeyCredentialService on the GDS", r);
+    }
+    if(rc == 0) {
+        kc_ctx k = {gdsc_session_client(gds), &svc, a.uri, (unsigned)a.pollSeconds};
+        rc = kc_to_device(&a, &f, &k, url, del);
+    }
+    gdsc_kc_service_clear(&svc);
+    UA_ApplicationRecordDataType_clear(&rec);
+    gdsc_session_close(gds);
+    files_clear(&f);
+    return rc;
+}
+
+int gdsadm_push_keycred(int argc, char **argv) {
+    return keycred_cmd(argc, argv, false);
+}
+
+int gdsadm_push_keycred_delete(int argc, char **argv) {
+    return keycred_cmd(argc, argv, true);
 }
 
 /* ---- push setup (Annex G.2) ---- */

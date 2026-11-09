@@ -148,8 +148,8 @@ struct gds_server {
     /* Approval hook (UASM ask A22); fixed before run */
     gds_approve_fn approve;
     void *approveCtx;
-    /* KeyCredentials from a source instead of the core (gds_keycred.c) */
-    bool hasKcSource;
+    /* KeyCredentials from a source instead of the core (gds_keycred.c);
+     * hasKcSource is below, next to pushSchedSet (padding) */
     gds_keycred_source kcSource;
     /* DefaultApplicationGroup TrustList LastUpdateTime (gds_trustlist.c);
      * server thread only */
@@ -157,6 +157,7 @@ struct gds_server {
     /* push scheduler (gds_push_slot.c, OpenGDS W3); fixed before run */
     gds_push_scheduler pushSched;
     bool pushSchedSet;
+    bool hasKcSource;
     /* StartNewKeyPairRequest secrets (gds_keypair.c); kpLock is a leaf lock */
     pthread_mutex_t kpLock;
     gds_kp_entry kp[GDS_MAX_KEYPAIR_REQUESTS];
