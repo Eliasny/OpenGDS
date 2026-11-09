@@ -105,7 +105,7 @@ The same commit, built in the same pinned build container, gives byte-identical 
 
 The build containers are pinned by digest, and every build writes `<dist>-<arch>.buildenv.txt`, the exact package versions it built with. Rebuilding an old Debian release later means installing those versions from snapshot.debian.org (`DEBIAN_SNAPSHOT=<date>` in `scripts/release/install-build-deps.sh` and in the Dockerfile). Release runs use the live mirrors, because snapshot.debian.org refuses many parallel downloads.
 
-Signing adds bytes: an RPM carries its signature inside, so compare the unsigned payload with `rpm --delsign` before comparing hashes. The `.deb` and `.tar.gz` files are signed with detached signatures and stay byte-identical. An RPM's SBOM records the SHA-256 of the unsigned package.
+Signatures are detached (`<file>.sigstore.json`), so every published file stays byte-identical to the build and to its SBOM's SHA-256. RPMs carry no embedded signature: verify them with cosign before installing them with `rpm -i` or `dnf install --nogpgcheck`.
 
 ## SBOM
 
@@ -118,7 +118,7 @@ Signing adds bytes: an RPM carries its signature inside, so compare the unsigned
 
 ## Verifying a release
 
-Every release file is signed twice (decision P1): with Sigstore keyless signing in the release workflow, and with the OpenGDS OpenPGP release key.
+Every release file, `SHA256SUMS` included, is signed with Sigstore keyless signing in the release workflow (decision P1, 9 November 2026: Sigstore only, no OpenPGP key), and GitHub records build provenance for each file and for the image.
 
 ```sh
 # Sigstore: proves the file came from the release workflow at that tag
@@ -128,11 +128,8 @@ cosign verify-blob opengds_0.1.0-1~deb13_amd64.deb \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 gh attestation verify opengds_0.1.0-1~deb13_amd64.deb --repo Eliasny/OpenGDS
 
-# OpenPGP (key in docs/release-signing-key.asc, fingerprint in SECURITY.md)
-gpg --import docs/release-signing-key.asc
-gpg --verify SHA256SUMS.asc && sha256sum -c SHA256SUMS --ignore-missing
-gpg --verify opengds_0.1.0-1~deb13_amd64.deb.asc
-rpm --import docs/release-signing-key.asc && rpm -K opengds-0.1.0-1.el9.x86_64.rpm
+# Checksums: verify SHA256SUMS as above (SHA256SUMS.sigstore.json), then
+sha256sum -c SHA256SUMS --ignore-missing
 
 # Container image
 cosign verify ghcr.io/eliasny/opengds:0.1.0 \
