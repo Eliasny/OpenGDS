@@ -23,6 +23,7 @@
 #include <unistd.h>
 
 #include "ca.h"
+#include "client/gdsc_session.h"
 #include "check.h"
 #include "common/buf.h"
 #include "gds_internal.h"
@@ -169,6 +170,40 @@ static bool last_user_is(const char *name) {
     lastUser[0] = '\0';
     pthread_mutex_unlock(&lastLock);
     return eq;
+}
+
+/* The push client (gdsc_session) with a user certificate apart from its
+ * ApplicationInstance Certificate (UASM: one cluster-wide user
+ * certificate that devices map to SecurityAdmin). */
+static UA_StatusCode push_client_as(const char *url, const pair *app, const UA_ByteString *server,
+                                    const pair *user, bool keyOnly) {
+    gds_buf appCert = {app->cert.data, app->cert.length}, appKey = {app->key.data, app->key.length};
+    gds_buf trust = {server->data, server->length};
+    gds_buf uc = {user ? user->cert.data : NULL, user ? user->cert.length : 0};
+    gds_buf uk = {user ? user->key.data : NULL, user ? user->key.length : 0};
+    gdsc_session_cfg c;
+    memset(&c, 0, sizeof(c));
+    c.endpointUrl = url;
+    c.serverUri = TEST_URI;
+    c.applicationUri = CLIENT_URI;
+    c.cert = &appCert;
+    c.key = &appKey;
+    c.trust = &trust;
+    c.trustN = 1;
+    c.identity = GDSC_IDENTITY_X509;
+    c.identityCert = user && !keyOnly ? &uc : NULL;
+    c.identityKey = user ? &uk : NULL;
+    gdsc_session *s = NULL;
+    UA_StatusCode r = gdsc_session_open(&c, &s);
+    if(r == UA_STATUSCODE_GOOD) {
+        size_t nOut = 0;
+        UA_Variant *out = NULL;
+        r = UA_Client_call(gdsc_session_client(s), UA_NODEID_NUMERIC(ns, OBJ),
+                           UA_NODEID_NUMERIC(ns, SWITCHOVER), 0, NULL, &nOut, &out);
+        UA_Array_delete(out, nOut, &UA_TYPES[UA_TYPES_VARIANT]);
+    }
+    gdsc_session_close(s);
+    return r;
 }
 
 /* ---- users ---- */
@@ -318,6 +353,17 @@ static void serve(fixture *f, gds_server *s, UA_UInt16 port, bool x509) {
         CHECK_EQ_INT(switch_as(url, &f->app, sc, &f->admin.cert, &f->stranger.key),
                      UA_STATUSCODE_BADUSERSIGNATUREINVALID);
         CHECK_EQ_INT(__atomic_load_n(&calls, __ATOMIC_SEQ_CST), 1);
+        /* the push client signs in with the admin's user certificate over
+         * the client application's channel */
+        CHECK_EQ_INT(push_client_as(url, &f->app, sc, &f->admin, false), UA_STATUSCODE_GOOD);
+        CHECK(last_user_is("admin"));
+        /* without one, its application certificate is the user token: not
+         * in the user trust list */
+        CHECK(push_client_as(url, &f->app, sc, NULL, false) != UA_STATUSCODE_GOOD);
+        /* a key without a certificate is refused before connecting */
+        CHECK_EQ_INT(push_client_as(url, &f->app, sc, &f->admin, true),
+                     UA_STATUSCODE_BADINVALIDARGUMENT);
+        CHECK_EQ_INT(__atomic_load_n(&calls, __ATOMIC_SEQ_CST), 2);
     } else {
         /* no user certificate trust list: no X.509 user tokens */
         CHECK(switch_as(url, &f->app, sc, &f->admin.cert, &f->admin.key) != UA_STATUSCODE_GOOD);

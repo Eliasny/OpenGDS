@@ -23,7 +23,8 @@ typedef enum {
     /* Anonymous UserIdentityToken: the SecureChannel's ApplicationInstance
      * Certificate carries the role (Annex G.3) */
     GDSC_IDENTITY_APP_CERT = 0,
-    /* X509IdentityToken with the same certificate and key */
+    /* X509IdentityToken: identityCert and identityKey below, or else the
+     * same certificate and key as the SecureChannel */
     GDSC_IDENTITY_X509 = 1,
     /* UserNameIdentityToken (userName, password below) */
     GDSC_IDENTITY_USERNAME = 2
@@ -40,6 +41,12 @@ typedef struct {
     const gds_buf *crls;
     size_t crlN;
     gdsc_identity identity;
+    /* GDSC_IDENTITY_X509 only, both or neither: a user certificate (DER)
+     * and its private key (DER) for the X509IdentityToken (OPC 10000-4
+     * §7.41.5), e.g. one an administrator maps to SecurityAdmin on the
+     * managed Server, apart from the ApplicationInstance Certificate */
+    const gds_buf *identityCert;
+    const gds_buf *identityKey;
     const char *userName;    /* GDSC_IDENTITY_USERNAME only */
     const gds_buf *password; /* GDSC_IDENTITY_USERNAME only; no NUL bytes */
     UA_UInt32 timeoutMs; /* per request; 0 = 10 s */

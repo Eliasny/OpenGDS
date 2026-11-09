@@ -291,13 +291,13 @@ static void units(void) {
     CHECK(u && !strcmp(u, "Push Model for Global Certificate and TrustList Management"));
     u = ga_conformance_unit("SRV-TXN-01");
     CHECK(u && !strcmp(u, "Server PushManagement Transactions"));
-    u = ga_conformance_unit("CLI-TRU-02"); /* unit not named yet */
-    CHECK(u && !strcmp(u, GA_CU_TBD));
+    u = ga_conformance_unit("CLI-TRU-02"); /* Client Facet's unit, decision D6 */
+    CHECK(u && !strcmp(u, "Pull Model for Global Certificate and TrustList Management"));
     CHECK(ga_conformance_unit("gds.dir.register_valid") == NULL);
     CHECK(ga_conformance_unit(NULL) == NULL);
     CHECK(ga_cu_table_len >= 100);
 
-    /* a test outside the catalogue and one not yet named get rows of their own */
+    /* a client test gets its unit's row; a test outside the catalogue a row of its own */
     ga_results r = {0};
     ga_event evs[] = {
         {.kind = GA_EV_RUN_STARTED, .profile = "client", .target = "x", .planned = 2},
@@ -313,7 +313,7 @@ static void units(void) {
     CHECK(f && ga_report_html(f, &r));
     if(f)
         fclose(f);
-    CHECK(html && strstr(html, "<em>Not named yet in the test catalogue</em></td><td>1</td>"));
+    CHECK(html && strstr(html, "<td>Pull Model for Global Certificate and TrustList Management</td><td>1</td>"));
     /* no verdict: Incomplete */
     CHECK(html && strstr(html, "<em>Not in the test catalogue</em></td><td>0</td><td>0</td>"
                                "<td>0</td><td>0</td><td>0</td><td class=\"v nt\">Incomplete"));
@@ -324,12 +324,14 @@ static void units(void) {
     CHECK(json && ga_json_valid(json, strlen(json)));
     CHECK(has(json, "\"finished\":null,"));
     CHECK(has(json, "\"outcome\":\"Did not finish\",\"exit\":null,\"aborted\":false"));
-    CHECK(has(json, "{\"unit\":null,\"state\":\"not_named\",\"counts\":{\"pass\":1,"));
+    CHECK(has(json, "{\"unit\":\"Pull Model for Global Certificate and TrustList Management\","
+                    "\"state\":\"named\",\"counts\":{\"pass\":1,"));
     CHECK(has(json, "{\"unit\":null,\"state\":\"not_in_catalogue\",\"counts\":{\"pass\":0,"
                     "\"fail\":0,\"warn\":0,\"not_supported\":0,\"not_tested\":0,"
                     "\"no_verdict\":1},\"outcome\":\"Incomplete\"}"));
     CHECK(has(json, "\"id\":\"CLI-TRU-02\",\"clause\":\"c\",\"title\":\"t\","
-                    "\"conformance_unit\":null,\"conformance_unit_state\":\"not_named\""));
+                    "\"conformance_unit\":\"Pull Model for Global Certificate and TrustList Management\","
+                    "\"conformance_unit_state\":\"named\""));
     CHECK(has(json, "\"conformance_unit\":null,\"conformance_unit_state\":\"not_in_catalogue\","
                     "\"changes\":false,\"operator\":false,\"verdict\":null,\"ms\":null,"
                     "\"evidence\":null,\"notes\":[]}"));

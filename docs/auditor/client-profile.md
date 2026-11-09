@@ -8,7 +8,7 @@ Spec: OPC 10000-12 v1.05.07 (2026-04-15) unless the clause names another Part. H
 
 ## ConformanceUnits
 
-The reference site lists only the CertificateManager-side ConformanceUnits (GDS Certificate Manager Pull Model). The client-side GDS ConformanceUnits are published on profiles.opcfoundation.org, which needs JavaScript and was not reachable while this catalogue was written. Every row in this profile therefore carries ConformanceUnit `TBD` until Elias reads the names there and they are filled in ([decision D6](README.md#decisions)).
+Every client test maps to **Pull Model for Global Certificate and TrustList Management**, the one ConformanceUnit of the Global Certificate Management Client Facet (`http://opcfoundation.org/UA-Profile/Client/GlobalCertificateManagement`, UACore 1.05, Released) in the OPC Foundation profile database ([profiles.opcfoundation.org/profile/1643](https://profiles.opcfoundation.org/profile/1643), read 2026-11-09). Its description: "Use the Certificate Management Services of UA Part 12 for the Pull model to manage Application Instance Certificates and Trust Lists including Revocation Lists." The reference site's ConformanceUnit search lists no client-side unit ([decision D6](README.md#decisions)).
 
 ## Fixtures
 
