@@ -255,7 +255,14 @@ static void test_plan_files(void) {
     avm_plan_init(&q);
     g_assert_true(avm_plan_load(&q, path, &e));
     g_assert_true(q.profile == AVM_PROFILE_CLIENT && q.listenPort == 4999);
-    eq_str(q.triggerCmd, "/opt/start 'two words'");
+    /* the same words (on Windows the path comes back as '\\opt\\start',
+     * quoted because of its backslashes) */
+    char **tw = NULL;
+    g_assert_true(g_shell_parse_argv(q.triggerCmd, NULL, &tw, NULL));
+    g_assert_true(g_strv_length(tw) == 2);
+    eq_str(tw[0], "/opt/start");
+    eq_str(tw[1], "two words");
+    g_strfreev(tw);
     eq_str(q.clientUser, "registrar");
     avm_plan_clear(&q);
     avm_plan_clear(&p);
