@@ -124,7 +124,12 @@ static gds_status sq_open(const char *path, sq_store **out) {
     char *err = NULL;
     rc = sqlite3_exec(s->db,
                       "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; "
-                      "PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;",
+                      "PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; "
+                      /* temporary files (statement journals, sorts) in
+                       * memory: the Landlock sandbox allows only the data
+                       * directory, so /var/tmp and /tmp fail with
+                       * SQLITE_CANTOPEN (docs/perf.md finding 3) */
+                      "PRAGMA temp_store=MEMORY;",
                       NULL, NULL, &err);
     if(rc != SQLITE_OK) {
         fprintf(stderr, "store: pragmas: %s\n", err ? err : "?");
