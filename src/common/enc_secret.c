@@ -168,7 +168,7 @@ static gds_status aes_cbc(const policy *pol, bool encrypt, const uint8_t *key, c
               EVP_CipherInit_ex(c, ci, NULL, key, iv, encrypt ? 1 : 0) == 1 &&
               EVP_CIPHER_CTX_set_padding(c, 0) == 1 &&
               EVP_CipherUpdate(c, data, &outl, data, (int)len) == 1 &&
-              EVP_CipherFinal_ex(c, data + outl, &fin) == 1 && (size_t)(outl + fin) == len;
+              EVP_CipherFinal_ex(c, data + outl, &fin) == 1 && (size_t)outl + (size_t)fin == len;
     EVP_CIPHER_CTX_free(c);
     return ok ? GDS_OK : GDS_ECRYPTO;
 }
@@ -194,6 +194,95 @@ gds_status gds_enc_secret_check(const char *policyUri, size_t policyLen, const g
 
 /* ---- encrypt ---- */
 
+/* KeyData (SigningKey, EncryptingKey, InitializationVector) encrypted with
+ * the receiver's public key into *enc (OPENSSL_malloc'd). */
+static gds_status key_data(const policy *pol, EVP_PKEY *pub, const uint8_t *sigKey,
+                           const uint8_t *encKey, const uint8_t *iv, gds_buf *enc) {
+    gds_buf kd = {0};
+    EVP_PKEY_CTX *pc = NULL;
+    size_t ekLen = 0;
+    gds_status r = put_bytes(&kd, sigKey, SIG_KEY_LEN);
+    if(r == GDS_OK)
+        r = put_bytes(&kd, encKey, pol->encKeyLen);
+    if(r == GDS_OK)
+        r = put_bytes(&kd, iv, IV_LEN);
+    if(r == GDS_OK) {
+        pc = oaep_ctx(pol, pub, true);
+        r = pc && EVP_PKEY_encrypt(pc, NULL, &ekLen, kd.data, kd.len) == 1 && ekLen <= UINT16_MAX
+                ? GDS_OK
+                : GDS_ECRYPTO;
+    }
+    if(r == GDS_OK)
+        r = (enc->data = OPENSSL_malloc(ekLen)) != NULL ? GDS_OK : GDS_ENOMEM;
+    if(r == GDS_OK)
+        r = EVP_PKEY_encrypt(pc, enc->data, &ekLen, kd.data, kd.len) == 1 ? GDS_OK : GDS_ECRYPTO;
+    enc->len = r == GDS_OK ? ekLen : 0;
+    gds_buf_free_secret(&kd);
+    EVP_PKEY_CTX_free(pc);
+    return r;
+}
+
+/* Nonce, Secret, padding, PaddingSize, encrypted in place. */
+static gds_status payload_of(const policy *pol, const uint8_t *encKey, const uint8_t *iv,
+                             const gds_buf *secret, gds_buf *payload) {
+    uint8_t nonce[NONCE_LEN];
+    gds_status r = RAND_bytes(nonce, NONCE_LEN) == 1 ? GDS_OK : GDS_ECRYPTO;
+    if(r == GDS_OK)
+        r = put_bytes(payload, nonce, NONCE_LEN);
+    if(r == GDS_OK)
+        r = put_bytes(payload, secret->data, secret->len);
+    size_t pad = (IV_LEN - (payload->len + 2) % IV_LEN) % IV_LEN;
+    uint8_t p[IV_LEN];
+    memset(p, (int)(pad & 0xFF), sizeof(p));
+    if(r == GDS_OK)
+        r = put(payload, p, pad);
+    if(r == GDS_OK)
+        r = put_u16(payload, (uint16_t)pad);
+    if(r == GDS_OK)
+        r = aes_cbc(pol, true, encKey, iv, payload->data, payload->len);
+    OPENSSL_cleanse(nonce, sizeof(nonce));
+    return r;
+}
+
+/* The header and both encrypted parts; *lenPos is the Length field. */
+static gds_status body_of(const policy *pol, const uint8_t thumb[20], const gds_buf *enc,
+                          const gds_buf *payload, gds_buf *out, size_t *lenPos) {
+    static const uint8_t typeId[4] = {0x01, 0x00, (uint8_t)(TYPE_ID_RSA_ENCRYPTED_SECRET & 0xFF),
+                                      (uint8_t)(TYPE_ID_RSA_ENCRYPTED_SECRET >> 8)};
+    static const uint8_t mask = 1;
+    gds_status r = put(out, typeId, sizeof(typeId));
+    if(r == GDS_OK)
+        r = put(out, &mask, 1);
+    *lenPos = out->len;
+    if(r == GDS_OK)
+        r = put_u32(out, 0);
+    if(r == GDS_OK)
+        r = put_bytes(out, pol->uri, strlen(pol->uri));
+    if(r == GDS_OK)
+        r = put_bytes(out, thumb, 20);
+    if(r == GDS_OK)
+        r = put_i64(out, UA_DateTime_now());
+    if(r == GDS_OK)
+        r = put_u16(out, (uint16_t)enc->len);
+    if(r == GDS_OK)
+        r = put(out, enc->data, enc->len);
+    if(r == GDS_OK)
+        r = put(out, payload->data, payload->len);
+    return r;
+}
+
+/* Fills in Length and appends the HMAC. */
+static gds_status sign_body(const uint8_t *sigKey, size_t lenPos, gds_buf *out) {
+    size_t after = out->len + SIG_LEN - (lenPos + 4);
+    if(after > INT32_MAX)
+        return GDS_ETOOBIG;
+    for(int i = 0; i < 4; i++)
+        out->data[lenPos + (size_t)i] = (uint8_t)(after >> (8 * i));
+    uint8_t sig[SIG_LEN];
+    gds_status r = hmac(sigKey, out->data, out->len, sig);
+    return r == GDS_OK ? put(out, sig, SIG_LEN) : r;
+}
+
 gds_status gds_enc_secret_rsa(const char *policyUri, size_t policyLen, const gds_buf *certDer,
                               const gds_buf *secret, gds_buf *out) {
     memset(out, 0, sizeof(*out));
@@ -208,92 +297,26 @@ gds_status gds_enc_secret_rsa(const char *policyUri, size_t policyLen, const gds
         X509_free(cert);
         return GDS_EINVAL;
     }
-    uint8_t keys[SIG_KEY_LEN + 32 + IV_LEN], nonce[NONCE_LEN], thumb[20], sig[SIG_LEN];
+    uint8_t keys[SIG_KEY_LEN + 32 + IV_LEN], thumb[20];
     uint8_t *sigKey = keys, *encKey = keys + SIG_KEY_LEN, *iv = keys + SIG_KEY_LEN + pol->encKeyLen;
-    gds_buf kd = {0}, payload = {0}, enc = {0};
-    EVP_PKEY_CTX *pc = NULL;
-    gds_status r = RAND_bytes(keys, (int)sizeof(keys)) == 1 && RAND_bytes(nonce, NONCE_LEN) == 1
-                       ? GDS_OK
-                       : GDS_ECRYPTO;
+    gds_buf payload = {0}, enc = {0};
+    size_t lenPos = 0;
+    gds_status r = RAND_bytes(keys, (int)sizeof(keys)) == 1 ? GDS_OK : GDS_ECRYPTO;
     if(r == GDS_OK)
         r = sha1(certDer, thumb);
-    /* KeyData: SigningKey, EncryptingKey, InitializationVector */
     if(r == GDS_OK)
-        r = put_bytes(&kd, sigKey, SIG_KEY_LEN);
+        r = key_data(pol, pub, sigKey, encKey, iv, &enc);
     if(r == GDS_OK)
-        r = put_bytes(&kd, encKey, pol->encKeyLen);
+        r = payload_of(pol, encKey, iv, secret, &payload);
     if(r == GDS_OK)
-        r = put_bytes(&kd, iv, IV_LEN);
-    size_t ekLen = 0;
-    if(r == GDS_OK) {
-        pc = oaep_ctx(pol, pub, true);
-        r = pc && EVP_PKEY_encrypt(pc, NULL, &ekLen, kd.data, kd.len) == 1 && ekLen <= UINT16_MAX
-                ? GDS_OK
-                : GDS_ECRYPTO;
-    }
+        r = body_of(pol, thumb, &enc, &payload, out, &lenPos);
     if(r == GDS_OK)
-        r = (enc.data = OPENSSL_malloc(ekLen)) != NULL ? GDS_OK : GDS_ENOMEM;
-    if(r == GDS_OK)
-        r = EVP_PKEY_encrypt(pc, enc.data, &ekLen, kd.data, kd.len) == 1 ? GDS_OK : GDS_ECRYPTO;
-    /* payload: Nonce, Secret, padding, PaddingSize */
-    if(r == GDS_OK)
-        r = put_bytes(&payload, nonce, NONCE_LEN);
-    if(r == GDS_OK)
-        r = put_bytes(&payload, secret->data, secret->len);
-    if(r == GDS_OK) {
-        size_t pad = (IV_LEN - (payload.len + 2) % IV_LEN) % IV_LEN;
-        uint8_t p[IV_LEN];
-        memset(p, (int)(pad & 0xFF), sizeof(p));
-        r = put(&payload, p, pad);
-        if(r == GDS_OK)
-            r = put_u16(&payload, (uint16_t)pad);
-    }
-    if(r == GDS_OK)
-        r = aes_cbc(pol, true, encKey, iv, payload.data, payload.len);
-    /* the whole: header, encrypted KeyData, encrypted payload, signature */
-    size_t lenPos = 0;
-    if(r == GDS_OK) {
-        static const uint8_t typeId[4] = {0x01, 0x00, (uint8_t)(TYPE_ID_RSA_ENCRYPTED_SECRET & 0xFF),
-                                          (uint8_t)(TYPE_ID_RSA_ENCRYPTED_SECRET >> 8)};
-        static const uint8_t mask = 1;
-        r = put(out, typeId, sizeof(typeId));
-        if(r == GDS_OK)
-            r = put(out, &mask, 1);
-        lenPos = out->len;
-        if(r == GDS_OK)
-            r = put_u32(out, 0);
-        if(r == GDS_OK)
-            r = put_bytes(out, pol->uri, strlen(pol->uri));
-        if(r == GDS_OK)
-            r = put_bytes(out, thumb, sizeof(thumb));
-        if(r == GDS_OK)
-            r = put_i64(out, UA_DateTime_now());
-        if(r == GDS_OK)
-            r = put_u16(out, (uint16_t)ekLen);
-        if(r == GDS_OK)
-            r = put(out, enc.data, ekLen);
-        if(r == GDS_OK)
-            r = put(out, payload.data, payload.len);
-    }
-    if(r == GDS_OK) {
-        size_t after = out->len + SIG_LEN - (lenPos + 4);
-        if(after > INT32_MAX) {
-            r = GDS_ETOOBIG;
-        } else {
-            for(int i = 0; i < 4; i++)
-                out->data[lenPos + (size_t)i] = (uint8_t)(after >> (8 * i));
-            r = hmac(sigKey, out->data, out->len, sig);
-        }
-    }
-    if(r == GDS_OK)
-        r = put(out, sig, SIG_LEN);
+        r = sign_body(sigKey, lenPos, out);
     if(r != GDS_OK)
         gds_buf_free(out);
     OPENSSL_cleanse(keys, sizeof(keys));
-    gds_buf_free_secret(&kd);
     gds_buf_free_secret(&payload);
     OPENSSL_free(enc.data);
-    EVP_PKEY_CTX_free(pc);
     X509_free(cert);
     return r;
 }
@@ -319,6 +342,44 @@ static gds_status rsa_decrypt(const policy *pol, EVP_PKEY *key, const uint8_t *i
     return r;
 }
 
+/* The fields before the payload: type, policy, certificate hash; *ek the
+ * encrypted KeyData, r->pos at the payload, *sigStart at the signature. */
+static gds_status read_header(const policy *pol, const gds_buf *certDer, const gds_buf *blob,
+                              rd *r, size_t *sigStart, const uint8_t **ek, uint16_t *ekLen) {
+    const uint8_t *typeId, *x, *uri, *thumb;
+    size_t uriLen, thumbLen;
+    uint32_t length;
+    if(!get(r, 4, &typeId) || typeId[0] != 0x01 || typeId[1] != 0 ||
+       (typeId[2] | (typeId[3] << 8)) != (int)TYPE_ID_RSA_ENCRYPTED_SECRET || !get(r, 1, &x) ||
+       *x != 1 || !get_u32(r, &length) || length != r->len - r->pos || length < SIG_LEN)
+        return GDS_EINVAL;
+    *sigStart = blob->len - SIG_LEN;
+    r->len = *sigStart; /* the fields end where the signature starts */
+    if(!get_bytes(r, &uri, &uriLen) || !uri || uriLen != strlen(pol->uri) ||
+       memcmp(uri, pol->uri, uriLen) != 0 || !get_bytes(r, &thumb, &thumbLen))
+        return GDS_EINVAL;
+    uint8_t want[20];
+    if(sha1(certDer, want) != GDS_OK ||
+       (thumbLen && (!thumb || thumbLen != 20 || memcmp(thumb, want, 20) != 0)))
+        return GDS_EINVAL;
+    return get(r, 8, &x) && get_u16(r, ekLen) && get(r, *ekLen, ek) ? GDS_OK : GDS_EINVAL;
+}
+
+/* The decrypted payload pl: Nonce, Secret, padding, PaddingSize. */
+static gds_status read_payload(const gds_buf *pl, gds_buf *secret) {
+    rd p = {pl->data, pl->len, 0};
+    const uint8_t *nonce, *sec;
+    size_t nl, secLen;
+    uint16_t pad = (uint16_t)(pl->data[pl->len - 2] | (pl->data[pl->len - 1] << 8));
+    if(!get_bytes(&p, &nonce, &nl) || !get_bytes(&p, &sec, &secLen) || !sec ||
+       p.len - p.pos != (size_t)pad + 2 || secLen == 0 || secLen > GDS_MAX_SECRET)
+        return GDS_EINVAL;
+    for(size_t i = 0; i < pad; i++)
+        if(pl->data[p.pos + i] != (uint8_t)(pad & 0xFF))
+            return GDS_EINVAL;
+    return gds_buf_dup(sec, secLen, secret);
+}
+
 gds_status gds_enc_secret_rsa_decrypt(const char *policyUri, size_t policyLen,
                                       const gds_buf *certDer, EVP_PKEY *key, const gds_buf *blob,
                                       gds_buf *secret) {
@@ -329,25 +390,14 @@ gds_status gds_enc_secret_rsa_decrypt(const char *policyUri, size_t policyLen,
     if(!blob || !blob->data || blob->len > MAX_BLOB || !key || !EVP_PKEY_is_a(key, "RSA"))
         return GDS_EINVAL;
     rd r = {blob->data, blob->len, 0};
-    const uint8_t *typeId, *x, *uri, *thumb, *ek;
-    size_t uriLen, thumbLen;
-    uint32_t length;
-    uint16_t ekLen;
-    if(!get(&r, 4, &typeId) || typeId[0] != 0x01 || typeId[1] != 0 ||
-       (typeId[2] | (typeId[3] << 8)) != (int)TYPE_ID_RSA_ENCRYPTED_SECRET || !get(&r, 1, &x) ||
-       *x != 1 || !get_u32(&r, &length) || length != r.len - r.pos || length < SIG_LEN)
-        return GDS_EINVAL;
-    size_t sigStart = r.len - SIG_LEN;
-    r.len = sigStart; /* the fields end where the signature starts */
-    uint8_t want[20];
-    if(!get_bytes(&r, &uri, &uriLen) || uriLen != strlen(pol->uri) ||
-       memcmp(uri, pol->uri, uriLen) != 0 || !get_bytes(&r, &thumb, &thumbLen) ||
-       sha1(certDer, want) != GDS_OK || (thumbLen && (thumbLen != 20 || memcmp(thumb, want, 20))) ||
-       !get(&r, 8, &x) || !get_u16(&r, &ekLen) || !get(&r, ekLen, &ek))
-        return GDS_EINVAL;
+    size_t sigStart = 0;
+    const uint8_t *ek = NULL;
+    uint16_t ekLen = 0;
+    gds_status st = read_header(pol, certDer, blob, &r, &sigStart, &ek, &ekLen);
     uint8_t kd[1024], sig[SIG_LEN];
     size_t kdLen = 0;
-    gds_status st = rsa_decrypt(pol, key, ek, ekLen, kd, sizeof(kd), &kdLen);
+    if(st == GDS_OK)
+        st = rsa_decrypt(pol, key, ek, ekLen, kd, sizeof(kd), &kdLen);
     rd k = {kd, kdLen, 0};
     const uint8_t *sigKey = NULL, *encKey = NULL, *iv = NULL;
     size_t sl = 0, el = 0, il = 0;
@@ -360,27 +410,15 @@ gds_status gds_enc_secret_rsa_decrypt(const char *policyUri, size_t policyLen,
     if(st == GDS_OK && CRYPTO_memcmp(sig, blob->data + sigStart, SIG_LEN) != 0)
         st = GDS_EINVAL;
     gds_buf pl = {0};
-    size_t plLen = sigStart - r.pos;
-    if(st == GDS_OK && (plLen == 0 || plLen % IV_LEN))
+    size_t plLen = st == GDS_OK ? sigStart - r.pos : 0;
+    if(st == GDS_OK && (plLen < 2 || plLen % IV_LEN))
         st = GDS_EINVAL;
     if(st == GDS_OK)
         st = gds_buf_dup(blob->data + r.pos, plLen, &pl);
     if(st == GDS_OK)
         st = aes_cbc(pol, false, encKey, iv, pl.data, pl.len);
-    if(st == GDS_OK) {
-        rd p = {pl.data, pl.len, 0};
-        const uint8_t *nonce, *sec;
-        size_t nl, secLen;
-        uint16_t pad = (uint16_t)(pl.data[pl.len - 2] | (pl.data[pl.len - 1] << 8));
-        if(!get_bytes(&p, &nonce, &nl) || !get_bytes(&p, &sec, &secLen) ||
-           p.len - p.pos != (size_t)pad + 2 || secLen == 0 || secLen > GDS_MAX_SECRET)
-            st = GDS_EINVAL;
-        for(size_t i = 0; st == GDS_OK && i < pad; i++)
-            if(pl.data[p.pos + i] != (uint8_t)(pad & 0xFF))
-                st = GDS_EINVAL;
-        if(st == GDS_OK)
-            st = gds_buf_dup(sec, secLen, secret);
-    }
+    if(st == GDS_OK)
+        st = read_payload(&pl, secret);
     gds_buf_free_secret(&pl);
     OPENSSL_cleanse(kd, sizeof(kd));
     return st;

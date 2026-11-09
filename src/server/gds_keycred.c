@@ -359,6 +359,297 @@ static GDS_METHOD(start_request) {
     return r;
 }
 
+/* ---- a KeyCredential source (gds_plugin.h) ---- */
+
+static UA_StatusCode finish_outputs(const gds_kc_request *q, const char *credentialId,
+                                    const gds_buf *plain, UA_Variant *output);
+
+#define SOURCE_VERIFIER "!source" /* matches no secret: the source holds it */
+#define ACTOR_MAX 160
+
+typedef struct {
+    gds_server *s;
+    gds_kc_request q; /* owns publicKey */
+    UA_Guid reqId;
+    char service[GDS_MAX_KC_SERVICE + 1];
+    char *resourceUri;
+    UA_String appUri;
+    UA_NodeId appId;
+    char replaces[GDS_MAX_KC_ID + 1];
+    char id[GDS_KEYCRED_ID_MAX + 1];
+    UA_ByteString secret;
+    char actor[ACTOR_MAX];
+    UA_Variant args[2]; /* the call's inputs, for the audit */
+    size_t nArgs;
+} source_job;
+
+static void source_job_free(void *p) {
+    source_job *j = p;
+    if(!j)
+        return;
+    gds_kc_request_clear(&j->q);
+    free(j->resourceUri);
+    UA_String_clear(&j->appUri);
+    UA_NodeId_clear(&j->appId);
+    if(j->secret.data)
+        OPENSSL_cleanse(j->secret.data, j->secret.length);
+    UA_ByteString_clear(&j->secret);
+    for(size_t i = 0; i < j->nArgs; i++)
+        UA_Variant_clear(&j->args[i]);
+    free(j);
+}
+
+static const gds_kc_service *service_named(const gds_server *s, const char *name) {
+    for(size_t i = 0; i < s->nKc; i++)
+        if(strcmp(s->kc[i].name, name) == 0)
+            return &s->kc[i];
+    return NULL;
+}
+
+static source_job *source_job_new(gds_server *s, const gds_kc_service *k, void *sessionContext,
+                                  const UA_Variant *input, size_t nArgs) {
+    source_job *j = calloc(1, sizeof(*j));
+    if(!j)
+        return NULL;
+    j->s = s;
+    memcpy(j->service, k->name, strlen(k->name) + 1);
+    j->resourceUri = dup_str(k->resourceUri);
+    const char *actor = gds_session_actor(sessionContext);
+    bool ok = j->resourceUri &&
+              gds_path(j->actor, sizeof(j->actor), "%s", actor ? actor : "") == GDS_OK;
+    for(size_t i = 0; ok && i < nArgs && i < 2; i++, j->nArgs++)
+        ok = UA_Variant_copy(&input[i], &j->args[i]) == UA_STATUSCODE_GOOD;
+    if(!ok) {
+        source_job_free(j);
+        return NULL;
+    }
+    return j;
+}
+
+static void source_audit(source_job *j, UA_UInt32 type, UA_UInt32 method, UA_StatusCode r,
+                         const char *okMsg) {
+    const gds_kc_service *k = service_named(j->s, j->service);
+    if(!k || !gds_audit_result(r))
+        return;
+    UA_String res = UA_STRING(k->resourceUri);
+    gds_event_field f;
+    f.nsIndex = 0;
+    f.name = "ResourceUri";
+    UA_Variant_setScalar(&f.value, &res, &UA_TYPES[UA_TYPES_STRING]);
+    gds_status a = gds_method_audit(j->s, j->actor, type, method,
+                                    UA_GDSID_WELLKNOWNROLE_KEYCREDENTIALADMIN, &f, 1, j->args,
+                                    j->nArgs, r == UA_STATUSCODE_GOOD,
+                                    r == UA_STATUSCODE_GOOD ? okMsg : UA_StatusCode_name(r));
+    if(a != GDS_OK && a != GDS_EUNSUPPORTED)
+        fprintf(stderr, "opengds: audit of a KeyCredential method: %s\n", gds_status_name(a));
+}
+
+static bool printable_id(const char *id) {
+    size_t n = strnlen(id, GDS_KEYCRED_ID_MAX + 1);
+    if(n == 0 || n > GDS_KEYCRED_ID_MAX)
+        return false;
+    for(size_t i = 0; i < n; i++)
+        if((unsigned char)id[i] < 0x21 || (unsigned char)id[i] > 0x7e)
+            return false;
+    return true;
+}
+
+/* Worker: the source makes the credential. */
+static UA_StatusCode issue_run(void *p, const gds_caller *caller, size_t nIn, const UA_Variant *in) {
+    (void)caller, (void)nIn, (void)in;
+    source_job *j = p;
+    const gds_keycred_source *src = &j->s->kcSource;
+    gds_keycred_issue_request req;
+    memset(&req, 0, sizeof(req));
+    req.abi_major = GDS_PLUGIN_ABI_MAJOR;
+    req.abi_minor = GDS_PLUGIN_ABI_MINOR;
+    req.struct_size = sizeof(req);
+    req.service = j->service;
+    req.resourceUri = j->resourceUri;
+    req.applicationUri = &j->appUri;
+    req.applicationId = &j->appId;
+    req.replaces = j->replaces[0] ? j->replaces : NULL;
+    char id[GDS_KEYCRED_ID_MAX + 1];
+    memset(id, 0, sizeof(id));
+    UA_ByteString secret = UA_BYTESTRING_NULL;
+    gds_status st = src->issue(src->ctx, &req, id, &secret);
+    id[GDS_KEYCRED_ID_MAX] = '\0';
+    UA_StatusCode r = UA_STATUSCODE_GOOD;
+    if(st != GDS_OK)
+        r = st == GDS_EDENIED ? UA_STATUSCODE_BADREQUESTNOTALLOWED : UA_STATUSCODE_BADINTERNALERROR;
+    else if(!printable_id(id) || secret.length == 0 || secret.length > GDS_KEYCRED_SECRET_MAX)
+        r = UA_STATUSCODE_BADINTERNALERROR; /* the source broke its contract */
+    if(r == UA_STATUSCODE_GOOD) {
+        memcpy(j->id, id, sizeof(j->id));
+        j->secret = secret;
+        UA_ByteString_init(&secret);
+    } else {
+        fprintf(stderr, "opengds: KeyCredential source issue: %s\n", gds_status_name(st));
+    }
+    if(secret.data)
+        OPENSSL_cleanse(secret.data, secret.length);
+    UA_ByteString_clear(&secret);
+    return r;
+}
+
+/* Server thread: store the CredentialId, answer with the secret. */
+static UA_StatusCode issue_done(gds_server *s, void *p, UA_StatusCode status, UA_Variant *output) {
+    source_job *j = p;
+    UA_StatusCode r = status;
+    if(r == UA_STATUSCODE_GOOD && !output) {
+        /* the caller is gone: nobody received the secret */
+        fprintf(stderr, "opengds: FinishRequest cancelled; source credential %s not delivered\n",
+                j->id);
+        r = UA_STATUSCODE_BADREQUESTCANCELLEDBYCLIENT;
+    }
+    if(r == UA_STATUSCODE_GOOD) {
+        gds_kc_cred c;
+        memset(&c, 0, sizeof(c));
+        memcpy(c.id, j->id, strlen(j->id) + 1);
+        c.appId = j->q.appId;
+        memcpy(c.service, j->service, sizeof(c.service));
+        memcpy(c.verifier, SOURCE_VERIFIER, sizeof(SOURCE_VERIFIER));
+        char replaced[GDS_MAX_KC_ID + 1] = "";
+        gds_lock(s);
+        gds_status st = gds_store_kc_deliver(s->store, &j->reqId, &c, replaced);
+        gds_unlock(s);
+        if(st == GDS_ESTATE)
+            r = UA_STATUSCODE_BADINVALIDARGUMENT; /* delivered or cancelled meanwhile */
+        else if(st != GDS_OK)
+            r = gds_status_to_ua(st);
+        if(r != UA_STATUSCODE_GOOD)
+            fprintf(stderr, "opengds: source credential %s not stored (%s): revoke it at the source\n",
+                    j->id, gds_status_name(st));
+        if(r == UA_STATUSCODE_GOOD) {
+            gds_buf plain = {j->secret.data, j->secret.length};
+            r = finish_outputs(&j->q, j->id, &plain, output);
+        }
+        if(r == UA_STATUSCODE_GOOD && replaced[0])
+            fprintf(stderr, "opengds: KeyCredential %s replaces %s\n", j->id, replaced);
+    }
+    if(r == UA_STATUSCODE_GOOD)
+        source_audit(j, UA_GDSID_KEYCREDENTIALDELIVEREDAUDITEVENTTYPE,
+                     UA_GDSID_KEYCREDENTIALSERVICETYPE_FINISHREQUEST, r, "KeyCredential delivered");
+    source_job_free(j);
+    return r;
+}
+
+typedef struct {
+    const UA_Guid *app;
+    const char *service;
+    char *id;
+} cred_of;
+
+static bool find_cred_id(void *ctx, const gds_kc_cred *c) {
+    cred_of *f = ctx;
+    if(UA_Guid_equal(&c->appId, f->app) && strcmp(c->service, f->service) == 0) {
+        memcpy(f->id, c->id, strlen(c->id) + 1);
+        return false;
+    }
+    return true;
+}
+
+/* FinishRequest of an approved request with a source: on a worker. Takes
+ * *q on success (it is cleared). */
+static UA_StatusCode defer_issue(gds_server *s, const gds_kc_service *k, gds_kc_request *q,
+                                 const UA_Guid *reqId, const UA_NodeId *sessionId,
+                                 void *sessionContext, const UA_NodeId *objectId,
+                                 const UA_Variant *input, UA_Variant *output) {
+    source_job *j = source_job_new(s, k, sessionContext, input, 2);
+    if(!j)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    j->reqId = *reqId;
+    app_uri(s, &q->appId, &j->appUri);
+    j->appId = UA_NODEID_GUID(s->ns, q->appId);
+    cred_of f = {&q->appId, k->name, j->replaces};
+    gds_lock(s);
+    gds_status st = gds_store_kc_cred_scan(s->store, find_cred_id, &f);
+    gds_unlock(s);
+    if(st != GDS_OK) {
+        source_job_free(j);
+        return gds_status_to_ua(st);
+    }
+    j->q = *q;
+    UA_StatusCode r = gds_embed_defer(s, sessionId, sessionContext, objectId, 0, NULL, output,
+                                      issue_run, issue_done, source_job_free, j);
+    if(r == UA_STATUSCODE_GOODCOMPLETESASYNCHRONOUSLY) {
+        memset(q, 0, sizeof(*q)); /* the job's now */
+    } else {
+        memset(&j->q, 0, sizeof(j->q)); /* still the caller's */
+        source_job_free(j);
+    }
+    return r;
+}
+
+/* Worker: the source drops the credential. */
+static UA_StatusCode revoke_run(void *p, const gds_caller *caller, size_t nIn,
+                                const UA_Variant *in) {
+    (void)caller, (void)nIn, (void)in;
+    source_job *j = p;
+    const gds_keycred_source *src = &j->s->kcSource;
+    gds_status st = src->revoke(src->ctx, j->service, j->id);
+    if(st != GDS_OK && st != GDS_ENOTFOUND) {
+        fprintf(stderr, "opengds: KeyCredential source revoke: %s\n", gds_status_name(st));
+        return UA_STATUSCODE_BADINTERNALERROR;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
+static UA_StatusCode revoke_done(gds_server *s, void *p, UA_StatusCode status, UA_Variant *output) {
+    (void)output;
+    source_job *j = p;
+    UA_StatusCode r = status;
+    if(r == UA_STATUSCODE_GOOD) {
+        gds_lock(s);
+        gds_status st = gds_store_kc_cred_delete(s->store, j->id);
+        gds_unlock(s);
+        r = st == GDS_ENOTFOUND ? UA_STATUSCODE_BADINVALIDARGUMENT : gds_status_to_ua(st);
+    }
+    source_audit(j, UA_GDSID_KEYCREDENTIALREVOKEDAUDITEVENTTYPE,
+                 UA_GDSID_KEYCREDENTIALSERVICETYPE_REVOKE, r, "KeyCredential revoked");
+    source_job_free(j);
+    return r;
+}
+
+static UA_StatusCode defer_revoke(gds_server *s, const gds_kc_service *k, const char *cid,
+                                  const UA_NodeId *sessionId, void *sessionContext,
+                                  const UA_NodeId *objectId, const UA_Variant *input,
+                                  UA_Variant *output) {
+    source_job *j = source_job_new(s, k, sessionContext, input, 1);
+    if(!j)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    memcpy(j->id, cid, strlen(cid) + 1);
+    UA_StatusCode r = gds_embed_defer(s, sessionId, sessionContext, objectId, 0, NULL, output,
+                                      revoke_run, revoke_done, source_job_free, j);
+    if(r != UA_STATUSCODE_GOODCOMPLETESASYNCHRONOUSLY)
+        source_job_free(j);
+    return r;
+}
+
+gds_status gds_server_set_keycred_source(gds_server *s, const gds_keycred_source *source) {
+    if(!s)
+        return GDS_EINVAL;
+    if(__atomic_load_n(&s->started, __ATOMIC_ACQUIRE))
+        return GDS_ESTATE;
+    if(!source) {
+        s->hasKcSource = false;
+        memset(&s->kcSource, 0, sizeof(s->kcSource));
+        return GDS_OK;
+    }
+    if(source->abi_major != GDS_PLUGIN_ABI_MAJOR || source->struct_size < sizeof(*source) ||
+       !source->issue || !source->revoke)
+        return GDS_EINVAL;
+    if(!gds_store_kc_supported(s->store))
+        return GDS_EUNSUPPORTED;
+    gds_status st = gds_embed_pool_start(s);
+    if(st != GDS_OK)
+        return st;
+    memcpy(&s->kcSource, source, sizeof(*source));
+    s->kcSource.struct_size = sizeof(s->kcSource);
+    s->hasKcSource = true;
+    return GDS_OK;
+}
+
 /* ---- FinishRequest (§8.5.6) ---- */
 
 static gds_status random_hex(char *out, size_t outLen) {
@@ -415,23 +706,23 @@ static gds_status make_credential(gds_kc_cred *c, char secret[64]) {
 
 /* CredentialId, CredentialSecret, CertificateThumbprint, SecurityPolicyUri,
  * GrantedRoles (empty: not relevant, §8.5.6). */
-static UA_StatusCode finish_outputs(const gds_kc_request *q, const gds_kc_cred *c,
-                                    const char *secret, UA_Variant *output) {
-    gds_buf plain = {(uint8_t *)(uintptr_t)secret, strlen(secret)}, enc = {0};
+static UA_StatusCode finish_outputs(const gds_kc_request *q, const char *credentialId,
+                                    const gds_buf *plain, UA_Variant *output) {
+    gds_buf enc = {0};
     char thumb[GDS_SHA1_HEX] = "";
     gds_status st = GDS_OK;
     if(q->publicKey.len > 0) {
-        st = gds_enc_secret_rsa(q->policy, strlen(q->policy), &q->publicKey, &plain, &enc);
+        st = gds_enc_secret_rsa(q->policy, strlen(q->policy), &q->publicKey, plain, &enc);
         if(st == GDS_OK)
             st = gds_sha1_hex(&q->publicKey, thumb);
     } else {
-        st = gds_buf_dup(plain.data, plain.len, &enc);
+        st = gds_buf_dup(plain->data, plain->len, &enc);
     }
     if(st != GDS_OK) {
         gds_buf_free_secret(&enc);
         return UA_STATUSCODE_BADINTERNALERROR;
     }
-    UA_String id = UA_STRING((char *)(uintptr_t)c->id);
+    UA_String id = UA_STRING((char *)(uintptr_t)credentialId);
     UA_ByteString sec = {enc.len, enc.data};
     UA_String tp = q->publicKey.len ? UA_STRING(thumb) : UA_STRING_NULL;
     UA_String pol = q->policy[0] ? UA_STRING((char *)(uintptr_t)q->policy) : UA_STRING_NULL;
@@ -450,6 +741,94 @@ static UA_StatusCode finish_outputs(const gds_kc_request *q, const gds_kc_cred *
 
 static GDS_METHOD(finish_request);
 
+/* FinishRequest's inputs, the request and the caller's right to it (an
+ * embedder's answer pending: Good_CompletesAsynchronously). */
+static UA_StatusCode finish_load(gds_server *s, const gds_kc_service *k, size_t inputSize,
+                                 const UA_Variant *input, UA_Guid *reqId, bool *cancel,
+                                 gds_kc_request *q) {
+    memset(q, 0, sizeof(*q));
+    if(inputSize < 2)
+        return UA_STATUSCODE_BADARGUMENTSMISSING;
+    if(inputSize > 2)
+        return UA_STATUSCODE_BADTOOMANYARGUMENTS;
+    const UA_Boolean *c = NULL;
+    UA_StatusCode r = gds_in_guid(s, inputSize, input, 0, reqId);
+    if(r == UA_STATUSCODE_BADNOTFOUND || r == UA_STATUSCODE_BADNODEIDUNKNOWN)
+        r = UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(r == UA_STATUSCODE_GOOD &&
+       gds_arg_scalar(&input[1], &UA_TYPES[UA_TYPES_BOOLEAN], (const void **)&c) !=
+           UA_STATUSCODE_GOOD)
+        r = UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    *cancel = *c;
+    gds_lock(s);
+    gds_status st = gds_store_kc_req_get(s->store, reqId, q);
+    gds_unlock(s);
+    if(st == GDS_ENOTFOUND || (st == GDS_OK && strcmp(q->service, k->name) != 0))
+        r = UA_STATUSCODE_BADINVALIDARGUMENT; /* §8.5.6: not a valid request */
+    else if(st != GDS_OK)
+        r = gds_status_to_ua(st);
+    if(r != UA_STATUSCODE_GOOD)
+        gds_kc_request_clear(q);
+    return r;
+}
+
+/* KeyCredentialAdmin, the application or the embedder, over the
+ * certificate that called StartRequest (§8.5.6). */
+static bool finish_allowed(gds_server *s, const void *sessionContext, const gds_kc_request *q) {
+    UA_String uri;
+    app_uri(s, &q->appId, &uri);
+    bool allowed = may(sessionContext, &q->appId, uri.length ? &uri : NULL);
+    UA_String_clear(&uri);
+    uint8_t caller[GDS_KC_CALLER];
+    if(allowed && q->hasCaller &&
+       (!caller_hash(sessionContext, caller) || memcmp(caller, q->caller, GDS_KC_CALLER) != 0))
+        allowed = false;
+    return allowed;
+}
+
+static UA_StatusCode finish_cancel(gds_server *s, const UA_Guid *reqId, const gds_kc_request *q,
+                                   UA_Variant *output) {
+    if(q->state != GDS_KC_PENDING && q->state != GDS_KC_APPROVED)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    gds_lock(s);
+    gds_status st = gds_store_kc_req_set_state(s->store, reqId, GDS_KC_CANCELLED);
+    gds_unlock(s);
+    if(st == GDS_OK && q->state == GDS_KC_PENDING)
+        gds_approvals_drop(s, reqId);
+    if(st == GDS_OK) /* no credential: empty outputs */
+        UA_Variant_setArray(&output[4], UA_EMPTY_ARRAY_SENTINEL, 0, &UA_TYPES[UA_TYPES_NODEID]);
+    return gds_status_to_ua(st);
+}
+
+/* The core's own credential for an approved request. */
+static UA_StatusCode finish_deliver(gds_server *s, const UA_Guid *reqId, const gds_kc_request *q,
+                                    UA_Variant *output) {
+    gds_kc_cred c;
+    memset(&c, 0, sizeof(c));
+    char secret[64];
+    c.appId = q->appId;
+    memcpy(c.service, q->service, sizeof(c.service));
+    gds_status st = make_credential(&c, secret);
+    char replaced[GDS_MAX_KC_ID + 1] = "";
+    if(st == GDS_OK) {
+        gds_lock(s);
+        st = gds_store_kc_deliver(s->store, reqId, &c, replaced);
+        gds_unlock(s);
+    }
+    UA_StatusCode r = st == GDS_ESTATE ? UA_STATUSCODE_BADINVALIDARGUMENT /* decided meanwhile */
+                                       : gds_status_to_ua(st);
+    if(r == UA_STATUSCODE_GOOD) {
+        gds_buf plain = {(uint8_t *)secret, strlen(secret)};
+        r = finish_outputs(q, c.id, &plain, output);
+    }
+    OPENSSL_cleanse(secret, sizeof(secret));
+    if(r == UA_STATUSCODE_GOOD && replaced[0])
+        fprintf(stderr, "opengds: KeyCredential %s replaces %s\n", c.id, replaced);
+    return r;
+}
+
 static GDS_METHOD(finish_impl) {
     GDS_METHOD_UNUSED;
     gds_server *s = gds_ctx(methodContext);
@@ -460,99 +839,31 @@ static GDS_METHOD(finish_impl) {
         return UA_STATUSCODE_BADINVALIDSTATE;
     if(!encrypted(sessionContext))
         return UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT;
-    if(inputSize < 2)
-        return UA_STATUSCODE_BADARGUMENTSMISSING;
-    if(inputSize > 2)
-        return UA_STATUSCODE_BADTOOMANYARGUMENTS;
-    const UA_Boolean *cancel = NULL;
     UA_Guid reqId;
-    UA_StatusCode r = gds_in_guid(s, inputSize, input, 0, &reqId);
-    if(r == UA_STATUSCODE_BADNOTFOUND || r == UA_STATUSCODE_BADNODEIDUNKNOWN)
-        r = UA_STATUSCODE_BADINVALIDARGUMENT;
-    if(r == UA_STATUSCODE_GOOD &&
-       gds_arg_scalar(&input[1], &UA_TYPES[UA_TYPES_BOOLEAN], (const void **)&cancel) !=
-           UA_STATUSCODE_GOOD)
-        r = UA_STATUSCODE_BADINVALIDARGUMENT;
+    bool cancel = false;
+    gds_kc_request q;
+    UA_StatusCode r = finish_load(s, k, inputSize, input, &reqId, &cancel, &q);
     if(r != UA_STATUSCODE_GOOD)
         return r;
-    gds_kc_request q;
-    gds_lock(s);
-    gds_status st = gds_store_kc_req_get(s->store, &reqId, &q);
-    gds_unlock(s);
-    if(st == GDS_ENOTFOUND || (st == GDS_OK && strcmp(q.service, k->name) != 0)) {
-        gds_kc_request_clear(&q);
-        return UA_STATUSCODE_BADINVALIDARGUMENT; /* §8.5.6: not a valid request */
-    }
-    if(st != GDS_OK)
-        return gds_status_to_ua(st);
-    UA_String uri;
-    app_uri(s, &q.appId, &uri);
-    bool allowed = may(sessionContext, &q.appId, uri.length ? &uri : NULL);
-    UA_String_clear(&uri);
-    uint8_t caller[GDS_KC_CALLER];
-    if(allowed && q.hasCaller &&
-       (!caller_hash(sessionContext, caller) || memcmp(caller, q.caller, GDS_KC_CALLER) != 0))
-        allowed = false; /* §8.5.6: the same certificate that called StartRequest */
-    if(!allowed) {
+    if(!finish_allowed(s, sessionContext, &q)) {
         UA_Guid app = q.appId;
         gds_kc_request_clear(&q);
         r = UA_STATUSCODE_BADUSERACCESSDENIED;
         DEFER_IF_DENIED(finish_request, r, app);
-    }
-    if(*cancel) {
-        if(q.state == GDS_KC_PENDING || q.state == GDS_KC_APPROVED) {
-            gds_lock(s);
-            st = gds_store_kc_req_set_state(s->store, &reqId, GDS_KC_CANCELLED);
-            gds_unlock(s);
-            if(st == GDS_OK && q.state == GDS_KC_PENDING)
-                gds_approvals_drop(s, &reqId);
-            r = gds_status_to_ua(st);
-        } else {
-            r = UA_STATUSCODE_BADINVALIDARGUMENT;
-        }
-        if(r == UA_STATUSCODE_GOOD) /* no credential: empty outputs */
-            UA_Variant_setArray(&output[4], UA_EMPTY_ARRAY_SENTINEL, 0,
-                                &UA_TYPES[UA_TYPES_NODEID]);
-        gds_kc_request_clear(&q);
         return r;
     }
-    switch(q.state) {
-    case GDS_KC_PENDING:
+    if(cancel)
+        r = finish_cancel(s, &reqId, &q, output);
+    else if(q.state == GDS_KC_PENDING)
         r = UA_STATUSCODE_BADREQUESTNOTCOMPLETE;
-        break;
-    case GDS_KC_REJECTED:
+    else if(q.state == GDS_KC_REJECTED)
         r = UA_STATUSCODE_BADREQUESTNOTALLOWED;
-        break;
-    case GDS_KC_APPROVED: {
-        gds_kc_cred c;
-        memset(&c, 0, sizeof(c));
-        char secret[64];
-        c.appId = q.appId;
-        memcpy(c.service, q.service, sizeof(c.service));
-        st = make_credential(&c, secret);
-        char replaced[GDS_MAX_KC_ID + 1] = "";
-        if(st == GDS_OK) {
-            gds_lock(s);
-            st = gds_store_kc_deliver(s->store, &reqId, &c, replaced);
-            gds_unlock(s);
-        }
-        if(st == GDS_ESTATE) /* decided or delivered meanwhile */
-            r = UA_STATUSCODE_BADINVALIDARGUMENT;
-        else if(st != GDS_OK)
-            r = gds_status_to_ua(st);
-        else
-            r = finish_outputs(&q, &c, secret, output);
-        OPENSSL_cleanse(secret, sizeof(secret));
-        if(r == UA_STATUSCODE_GOOD && replaced[0])
-            fprintf(stderr, "opengds: KeyCredential %s replaces %s\n", c.id, replaced);
-        break;
-    }
-    case GDS_KC_DELIVERED:
-    case GDS_KC_CANCELLED:
-    default:
-        r = UA_STATUSCODE_BADINVALIDARGUMENT;
-        break;
-    }
+    else if(q.state != GDS_KC_APPROVED)
+        r = UA_STATUSCODE_BADINVALIDARGUMENT; /* delivered or cancelled */
+    else if(s->hasKcSource)
+        r = defer_issue(s, k, &q, &reqId, sessionId, sessionContext, objectId, input, output);
+    else
+        r = finish_deliver(s, &reqId, &q, output);
     gds_kc_request_clear(&q);
     return r;
 }
@@ -614,6 +925,8 @@ static GDS_METHOD(revoke_impl) {
         r = UA_STATUSCODE_BADUSERACCESSDENIED;
         DEFER_IF_DENIED(revoke, r, c.appId);
     }
+    if(s->hasKcSource)
+        return defer_revoke(s, k, cid, sessionId, sessionContext, objectId, input, output);
     gds_lock(s);
     st = gds_store_kc_cred_delete(s->store, cid); /* "shall be deleted when revoked" */
     gds_unlock(s);

@@ -148,6 +148,9 @@ struct gds_server {
     /* Approval hook (UASM ask A22); fixed before run */
     gds_approve_fn approve;
     void *approveCtx;
+    /* KeyCredentials from a source instead of the core (gds_keycred.c) */
+    bool hasKcSource;
+    gds_keycred_source kcSource;
     /* DefaultApplicationGroup TrustList LastUpdateTime (gds_trustlist.c);
      * server thread only */
     UA_DateTime tlLastUpdate;
@@ -238,14 +241,16 @@ GDS_MUST_CHECK gds_status gds_cert_audit(gds_server *s, const char *actor, UA_UI
                                          const UA_Variant *args, size_t nArgs, bool ok,
                                          const char *msg);
 /* A core method that runs part of its work on a plugin worker (A19):
- * run(ctx, caller, inputs) on a worker, then done(s, ctx, run's status) on
- * the server thread, whose status completes the call (also when the call
- * was cancelled; done then frees ctx). Good_CompletesAsynchronously, or an
+ * run(ctx, caller, inputs) on a worker, then done(s, ctx, run's status,
+ * output) on the server thread, whose status completes the call (also
+ * when the call was cancelled: output is then NULL; done frees ctx). done
+ * may fill output, the method's output arguments. Good_CompletesAsynchronously, or an
  * error and ctx stays the caller's. ctxFree frees ctx if the server stops
  * before done ran. */
 typedef UA_StatusCode (*gds_defer_run_fn)(void *ctx, const gds_caller *caller, size_t nIn,
                                           const UA_Variant *in);
-typedef UA_StatusCode (*gds_defer_done_fn)(gds_server *s, void *ctx, UA_StatusCode status);
+typedef UA_StatusCode (*gds_defer_done_fn)(gds_server *s, void *ctx, UA_StatusCode status,
+                                           UA_Variant *output);
 typedef void (*gds_defer_free_fn)(void *ctx);
 /* Starts the plugin workers if they are not running yet. */
 GDS_MUST_CHECK gds_status gds_embed_pool_start(gds_server *s);

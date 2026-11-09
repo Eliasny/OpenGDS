@@ -1093,95 +1093,127 @@ static gds_status sq_kc_req_scan(void *ctx_, gds_kc_state state, gds_store_kc_re
     return r;
 }
 
+/* One step that returns no row: SQLITE_OK when done. */
+static int run_done(sqlite3_stmt *st) {
+    int rc = sqlite3_step(st);
+    return rc == SQLITE_DONE ? SQLITE_OK : rc;
+}
+
+/* sq_kc_deliver's steps, inside its transaction; each returns an SQLite
+ * code and finalizes its own statements. */
+static int kc_check_request(sqlite3 *db, const UA_Guid *requestId, const gds_kc_cred *cred,
+                            UA_Guid *appId, char service[GDS_MAX_KC_SERVICE + 1], gds_status *r) {
+    sqlite3_stmt *sel = NULL;
+    int rc = sqlite3_prepare_v2(db, "SELECT app_id, service, state FROM kc_requests WHERE id = ?1",
+                                -1, &sel, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(sel, 1, requestId);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_step(sel);
+    if(rc == SQLITE_DONE)
+        *r = GDS_ENOTFOUND;
+    else if(rc == SQLITE_ROW) {
+        bool read = column_guid(sel, 0, appId) &&
+                    column_cstr(sel, 1, service, GDS_MAX_KC_SERVICE + 1);
+        bool same = read && UA_Guid_equal(appId, &cred->appId) &&
+                    strcmp(service, cred->service) == 0;
+        if(read && sqlite3_column_int(sel, 2) != GDS_KC_APPROVED)
+            *r = GDS_ESTATE;
+        else if(!same)
+            *r = GDS_EINVAL; /* unreadable, or another application or service */
+    }
+    sqlite3_finalize(sel);
+    return rc == SQLITE_ROW || rc == SQLITE_DONE ? SQLITE_OK : rc;
+}
+
+/* The application's earlier credential for this service, if any. */
+static int kc_old_cred(sqlite3 *db, const UA_Guid *appId, const char *service,
+                       char replaced[GDS_MAX_KC_ID + 1]) {
+    sqlite3_stmt *old = NULL;
+    int rc = sqlite3_prepare_v2(db,
+                                "SELECT id FROM kc_credentials WHERE app_id = ?1 AND service = ?2 "
+                                "ORDER BY created DESC, rowid DESC LIMIT 1",
+                                -1, &old, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(old, 1, appId);
+    if(rc == SQLITE_OK)
+        rc = bind_cstr(old, 2, service);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_step(old);
+    if(rc == SQLITE_ROW && !column_cstr(old, 0, replaced, GDS_MAX_KC_ID + 1))
+        replaced[0] = '\0';
+    sqlite3_finalize(old);
+    return rc == SQLITE_ROW || rc == SQLITE_DONE ? SQLITE_OK : rc;
+}
+
+/* Deletes the application's credentials for the service, inserts cred. */
+static int kc_replace_cred(sqlite3 *db, const UA_Guid *appId, const char *service,
+                           const gds_kc_cred *cred) {
+    sqlite3_stmt *del = NULL, *ins = NULL;
+    int rc = sqlite3_prepare_v2(db, "DELETE FROM kc_credentials WHERE app_id = ?1 AND service = ?2",
+                                -1, &del, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(del, 1, appId);
+    if(rc == SQLITE_OK)
+        rc = bind_cstr(del, 2, service);
+    if(rc == SQLITE_OK)
+        rc = run_done(del);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_prepare_v2(db,
+                                "INSERT INTO kc_credentials(id, app_id, service, verifier, created) "
+                                "VALUES(?1, ?2, ?3, ?4, ?5)",
+                                -1, &ins, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_cstr(ins, 1, cred->id);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(ins, 2, appId);
+    if(rc == SQLITE_OK)
+        rc = bind_cstr(ins, 3, service);
+    if(rc == SQLITE_OK)
+        rc = bind_cstr(ins, 4, cred->verifier);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(ins, 5, now_s());
+    if(rc == SQLITE_OK)
+        rc = run_done(ins);
+    sqlite3_finalize(del);
+    sqlite3_finalize(ins);
+    return rc;
+}
+
+static int kc_mark_delivered(sqlite3 *db, const UA_Guid *requestId, const char *credId) {
+    sqlite3_stmt *up = NULL;
+    int rc = sqlite3_prepare_v2(db,
+                                "UPDATE kc_requests SET state = 3, credential_id = ?2, updated = ?3 "
+                                "WHERE id = ?1",
+                                -1, &up, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(up, 1, requestId);
+    if(rc == SQLITE_OK)
+        rc = bind_cstr(up, 2, credId);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(up, 3, now_s());
+    if(rc == SQLITE_OK)
+        rc = run_done(up);
+    sqlite3_finalize(up);
+    return rc;
+}
+
 static gds_status sq_kc_deliver(void *ctx_, const UA_Guid *requestId, const gds_kc_cred *cred,
                                 char replaced[GDS_MAX_KC_ID + 1]) {
     sq_store *s = ctx_;
-    sqlite3_stmt *sel = NULL, *old = NULL, *del = NULL, *ins = NULL, *up = NULL;
     gds_status r = GDS_OK;
     UA_Guid appId;
     char service[GDS_MAX_KC_SERVICE + 1];
     replaced[0] = '\0';
     int rc = sqlite3_exec(s->db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
     if(rc == SQLITE_OK)
-        rc = sqlite3_prepare_v2(s->db, "SELECT app_id, service, state FROM kc_requests WHERE id = ?1",
-                                -1, &sel, NULL);
-    if(rc == SQLITE_OK)
-        rc = bind_guid(sel, 1, requestId);
-    if(rc == SQLITE_OK) {
-        rc = sqlite3_step(sel);
-        if(rc == SQLITE_ROW) {
-            rc = SQLITE_OK;
-            if(!column_guid(sel, 0, &appId) || !column_cstr(sel, 1, service, sizeof(service)))
-                r = GDS_EINVAL;
-            else if(sqlite3_column_int(sel, 2) != GDS_KC_APPROVED)
-                r = GDS_ESTATE;
-            else if(!UA_Guid_equal(&appId, &cred->appId) || strcmp(service, cred->service) != 0)
-                r = GDS_EINVAL;
-        } else if(rc == SQLITE_DONE) {
-            rc = SQLITE_OK;
-            r = GDS_ENOTFOUND;
-        }
-    }
-    /* the application's earlier credential for this service */
+        rc = kc_check_request(s->db, requestId, cred, &appId, service, &r);
     if(rc == SQLITE_OK && r == GDS_OK)
-        rc = sqlite3_prepare_v2(s->db,
-                                "SELECT id FROM kc_credentials WHERE app_id = ?1 AND service = ?2 "
-                                "ORDER BY created DESC, rowid DESC LIMIT 1",
-                                -1, &old, NULL);
+        rc = kc_old_cred(s->db, &appId, service, replaced);
     if(rc == SQLITE_OK && r == GDS_OK)
-        rc = bind_guid(old, 1, &appId);
+        rc = kc_replace_cred(s->db, &appId, service, cred);
     if(rc == SQLITE_OK && r == GDS_OK)
-        rc = bind_cstr(old, 2, service);
-    if(rc == SQLITE_OK && r == GDS_OK) {
-        rc = sqlite3_step(old);
-        if(rc == SQLITE_ROW) {
-            rc = SQLITE_OK;
-            if(!column_cstr(old, 0, replaced, GDS_MAX_KC_ID + 1))
-                replaced[0] = '\0';
-        } else if(rc == SQLITE_DONE) {
-            rc = SQLITE_OK;
-        }
-    }
-    if(rc == SQLITE_OK && r == GDS_OK)
-        rc = sqlite3_prepare_v2(s->db,
-                                "DELETE FROM kc_credentials WHERE app_id = ?1 AND service = ?2", -1,
-                                &del, NULL);
-    if(rc == SQLITE_OK && r == GDS_OK)
-        rc = bind_guid(del, 1, &appId);
-    if(rc == SQLITE_OK && r == GDS_OK)
-        rc = bind_cstr(del, 2, service);
-    if(rc == SQLITE_OK && r == GDS_OK && (rc = sqlite3_step(del)) == SQLITE_DONE)
-        rc = SQLITE_OK;
-    if(rc == SQLITE_OK && r == GDS_OK)
-        rc = sqlite3_prepare_v2(s->db,
-                                "INSERT INTO kc_credentials(id, app_id, service, verifier, created) "
-                                "VALUES(?1, ?2, ?3, ?4, ?5)",
-                                -1, &ins, NULL);
-    if(rc == SQLITE_OK && r == GDS_OK)
-        rc = bind_cstr(ins, 1, cred->id);
-    if(rc == SQLITE_OK && r == GDS_OK)
-        rc = bind_guid(ins, 2, &appId);
-    if(rc == SQLITE_OK && r == GDS_OK)
-        rc = bind_cstr(ins, 3, service);
-    if(rc == SQLITE_OK && r == GDS_OK)
-        rc = bind_cstr(ins, 4, cred->verifier);
-    if(rc == SQLITE_OK && r == GDS_OK)
-        rc = sqlite3_bind_int64(ins, 5, now_s());
-    if(rc == SQLITE_OK && r == GDS_OK && (rc = sqlite3_step(ins)) == SQLITE_DONE)
-        rc = SQLITE_OK;
-    if(rc == SQLITE_OK && r == GDS_OK)
-        rc = sqlite3_prepare_v2(s->db,
-                                "UPDATE kc_requests SET state = 3, credential_id = ?2, updated = ?3 "
-                                "WHERE id = ?1",
-                                -1, &up, NULL);
-    if(rc == SQLITE_OK && r == GDS_OK)
-        rc = bind_guid(up, 1, requestId);
-    if(rc == SQLITE_OK && r == GDS_OK)
-        rc = bind_cstr(up, 2, cred->id);
-    if(rc == SQLITE_OK && r == GDS_OK)
-        rc = sqlite3_bind_int64(up, 3, now_s());
-    if(rc == SQLITE_OK && r == GDS_OK && (rc = sqlite3_step(up)) == SQLITE_DONE)
-        rc = SQLITE_OK;
+        rc = kc_mark_delivered(s->db, requestId, cred->id);
     if(rc == SQLITE_OK && r == GDS_OK)
         rc = sqlite3_exec(s->db, "COMMIT", NULL, NULL, NULL);
     if(rc != SQLITE_OK && r == GDS_OK)
@@ -1190,11 +1222,6 @@ static gds_status sq_kc_deliver(void *ctx_, const UA_Guid *requestId, const gds_
         replaced[0] = '\0';
         (void)sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL);
     }
-    sqlite3_finalize(sel);
-    sqlite3_finalize(old);
-    sqlite3_finalize(del);
-    sqlite3_finalize(ins);
-    sqlite3_finalize(up);
     return r;
 }
 

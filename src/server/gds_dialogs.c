@@ -186,7 +186,8 @@ static UA_StatusCode job_run(void *p, const gds_caller *caller, size_t nIn, cons
 }
 
 /* server thread */
-static UA_StatusCode job_done(gds_server *s, void *p, UA_StatusCode status) {
+static UA_StatusCode job_done(gds_server *s, void *p, UA_StatusCode status, UA_Variant *output) {
+    (void)output;
     respond_job *j = p;
     UA_NodeId source = UA_NODEID_NULL;
     bool close = false;

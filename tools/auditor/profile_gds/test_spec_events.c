@@ -57,12 +57,11 @@ static void on_event(UA_Client *c, UA_UInt32 subId, void *subCtx, UA_UInt32 monI
                     UA_Variant_hasScalarType(&f.map[F_GROUP].value, &UA_TYPES[UA_TYPES_STRING])
                 ? f.map[F_GROUP].value.data
                 : NULL;
-        if(!v || v->length == 0)
-            s->strOk = false;
-        else if(s->wantStr->length == 0)
-            s->strOk = UA_String_copy(v, s->wantStr) == UA_STATUSCODE_GOOD && s->strOk;
-        else if(!UA_String_equal(v, s->wantStr))
-            s->strOk = false;
+        bool first = v && v->length > 0 && s->wantStr->length == 0;
+        bool ok = v && v->length > 0 &&
+                  (first ? UA_String_copy(v, s->wantStr) == UA_STATUSCODE_GOOD
+                         : UA_String_equal(v, s->wantStr));
+        s->strOk = s->strOk && ok;
     }
 }
 
@@ -460,68 +459,92 @@ static void t_group_alarms(ga_ctx *ctx, void *p) {
 
 /* KeyCredential audit events (§8.5.9 - §8.5.11) with the ResourceUri of
  * KeyCredentialAuditEventType (§8.5.8). */
+typedef struct {
+    ev_watch req, del, rev;
+    UA_String got[3]; /* the ResourceUri each watch saw */
+} kc_watch;
+
+static void kc_verdict_requested(ga_ctx *ctx, const kc_watch *w, const spec_kc_run *run) {
+    if(w->req.sink.hits < 2)
+        ga_fail(ctx, "%zu KeyCredentialRequested event(s) for one accepted and one refused "
+                     "request, expected 2", w->req.sink.hits);
+    else if(w->req.sink.good < 1 || w->req.sink.bad < 1)
+        ga_fail(ctx, "KeyCredentialRequested Status should be TRUE once and FALSE once (%zu/%zu)",
+                w->req.sink.good, w->req.sink.bad);
+    else if(w->del.sink.hits < 1)
+        ga_fail(ctx, "no KeyCredentialDelivered event after a successful FinishRequest");
+    else if(!w->req.sink.strOk || !w->del.sink.strOk)
+        ga_fail(ctx, "ResourceUri is not the service's ('%s')", run->resourceUri);
+    else
+        ga_pass(ctx, "Requested (accepted and refused) and Delivered with the ResourceUri");
+}
+
+static void kc_verdict_revoked(ga_ctx *ctx, const kc_watch *w, const spec_kc_run *run) {
+    if(gt_absent(ctx, run->revoke, true, "Revoke"))
+        return;
+    if(run->revoke != UA_STATUSCODE_GOOD)
+        ga_not_tested(ctx, "setup: Revoke -> %s", UA_StatusCode_name(run->revoke));
+    else if(w->rev.sink.hits < 1)
+        ga_fail(ctx, "no KeyCredentialRevoked event after a successful Revoke");
+    else if(!w->rev.sink.strOk)
+        ga_fail(ctx, "ResourceUri is not the service's ('%s')", run->resourceUri);
+    else
+        ga_pass(ctx, "KeyCredentialRevoked raised with the ResourceUri");
+}
+
+static UA_StatusCode kc_watch_all(gds_target *t, kc_watch *w) {
+    UA_QualifiedName qRes = UA_QUALIFIEDNAME(0, "ResourceUri");
+    memset(w, 0, sizeof(*w));
+    UA_StatusCode r = watch_field(t, gt_node(t, UA_GDSID_KEYCREDENTIALREQUESTEDAUDITEVENTTYPE),
+                                  &qRes, &w->req);
+    if(r == UA_STATUSCODE_GOOD)
+        r = watch_field(t, gt_node(t, UA_GDSID_KEYCREDENTIALDELIVEREDAUDITEVENTTYPE), &qRes,
+                        &w->del);
+    if(r == UA_STATUSCODE_GOOD)
+        r = watch_field(t, gt_node(t, UA_GDSID_KEYCREDENTIALREVOKEDAUDITEVENTTYPE), &qRes,
+                        &w->rev);
+    w->req.sink.wantStr = &w->got[0];
+    w->del.sink.wantStr = &w->got[1];
+    w->rev.sink.wantStr = &w->got[2];
+    return r;
+}
+
+static void kc_unwatch_all(gds_target *t, kc_watch *w) {
+    unwatch(t, &w->req);
+    unwatch(t, &w->del);
+    unwatch(t, &w->rev);
+    for(size_t i = 0; i < 3; i++)
+        UA_String_clear(&w->got[i]);
+}
+
 static void t_keycred(ga_ctx *ctx, gds_target *t, bool revoked) {
     bool on;
     if(!auditing(ctx, t, &on))
         return;
-    UA_QualifiedName qRes = UA_QUALIFIEDNAME(0, "ResourceUri");
-    ev_watch req, del, rev;
-    UA_StatusCode r1 = watch_field(t, gt_node(t, UA_GDSID_KEYCREDENTIALREQUESTEDAUDITEVENTTYPE),
-                                   &qRes, &req);
-    UA_StatusCode r2 = watch_field(t, gt_node(t, UA_GDSID_KEYCREDENTIALDELIVEREDAUDITEVENTTYPE),
-                                   &qRes, &del);
-    UA_StatusCode r3 = watch_field(t, gt_node(t, UA_GDSID_KEYCREDENTIALREVOKEDAUDITEVENTTYPE),
-                                   &qRes, &rev);
-    UA_String got[3] = {UA_STRING_NULL, UA_STRING_NULL, UA_STRING_NULL};
-    req.sink.wantStr = &got[0];
-    del.sink.wantStr = &got[1];
-    rev.sink.wantStr = &got[2];
+    kc_watch w;
     spec_kc_run run;
-    if(r1 != UA_STATUSCODE_GOOD || r2 != UA_STATUSCODE_GOOD || r3 != UA_STATUSCODE_GOOD) {
-        ga_fail(ctx, "event subscriptions -> %s / %s / %s", UA_StatusCode_name(r1),
-                UA_StatusCode_name(r2), UA_StatusCode_name(r3));
+    UA_StatusCode r = kc_watch_all(t, &w);
+    if(r != UA_STATUSCODE_GOOD) {
+        ga_fail(ctx, "event subscriptions -> %s", UA_StatusCode_name(r));
     } else if(spec_kc_exercise(ctx, t, revoked, &run)) {
-        drain(t, &req, 2);
-        drain(t, &del, 1);
+        drain(t, &w.req, 2);
+        drain(t, &w.del, 1);
         if(revoked)
-            drain(t, &rev, 1);
+            drain(t, &w.rev, 1);
         UA_String res = UA_STRING(run.resourceUri);
+        ev_watch *each[3] = {&w.req, &w.del, &w.rev};
         for(size_t i = 0; i < 3; i++)
-            if(got[i].length && !UA_String_equal(&got[i], &res))
-                (i == 0 ? &req : i == 1 ? &del : &rev)->sink.strOk = false;
+            if(w.got[i].length && !UA_String_equal(&w.got[i], &res))
+                each[i]->sink.strOk = false;
         ga_note(ctx, "refused StartRequest -> %s; Revoke -> %s", UA_StatusCode_name(run.refused),
                 UA_StatusCode_name(run.revoke));
-        none_if_off(ctx, on, req.sink.hits + del.sink.hits + rev.sink.hits);
-        if(!revoked) {
-            if(req.sink.hits < 2)
-                ga_fail(ctx, "%zu KeyCredentialRequested event(s) for one accepted and one "
-                             "refused request, expected 2", req.sink.hits);
-            else if(req.sink.good < 1 || req.sink.bad < 1)
-                ga_fail(ctx, "KeyCredentialRequested Status should be TRUE once and FALSE once "
-                             "(%zu/%zu)", req.sink.good, req.sink.bad);
-            else if(del.sink.hits < 1)
-                ga_fail(ctx, "no KeyCredentialDelivered event after a successful FinishRequest");
-            else if(!req.sink.strOk || !del.sink.strOk)
-                ga_fail(ctx, "ResourceUri is not the service's ('%s')", run.resourceUri);
-            else
-                ga_pass(ctx, "Requested (accepted and refused) and Delivered with the ResourceUri");
-        } else if(gt_absent(ctx, run.revoke, true, "Revoke")) {
-            (void)0;
-        } else if(run.revoke != UA_STATUSCODE_GOOD) {
-            ga_not_tested(ctx, "setup: Revoke -> %s", UA_StatusCode_name(run.revoke));
-        } else if(rev.sink.hits < 1) {
-            ga_fail(ctx, "no KeyCredentialRevoked event after a successful Revoke");
-        } else if(!rev.sink.strOk) {
-            ga_fail(ctx, "ResourceUri is not the service's ('%s')", run.resourceUri);
-        } else {
-            ga_pass(ctx, "KeyCredentialRevoked raised with the ResourceUri");
-        }
+        none_if_off(ctx, on, w.req.sink.hits + w.del.sink.hits + w.rev.sink.hits);
+        if(revoked)
+            kc_verdict_revoked(ctx, &w, &run);
+        else
+            kc_verdict_requested(ctx, &w, &run);
     }
-    unwatch(t, &req);
-    unwatch(t, &del);
-    unwatch(t, &rev);
-    for(size_t i = 0; i < 3; i++)
-        UA_String_clear(&got[i]);
+    kc_unwatch_all(t, &w);
 }
 
 static void t_keycred_requested_delivered(ga_ctx *ctx, void *p) {

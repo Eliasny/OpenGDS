@@ -342,67 +342,93 @@ static void test_refused(gds_server *s) {
     CHECK_EQ_INT(kc_revoke(s, &admin, "opengds-none"), UA_STATUSCODE_BADINVALIDARGUMENT);
 }
 
-/* Manual: pending, rejected, cancelled, delivered once, replaced, revoked. */
-static void test_manual(gds_server *s, gds_store *st, UA_NodeId *leftPending) {
-    UA_NodeId a = UA_NODEID_NULL, b = UA_NODEID_NULL, c = UA_NODEID_NULL, e = UA_NODEID_NULL;
-    delivered d1, d2;
+static void check_delivered(gds_store *st, const delivered *d1);
+
+/* Manual: pending, approved, only over the asking certificate, once. */
+static void test_manual_deliver(gds_server *s, gds_store *st, delivered *d1) {
+    UA_NodeId a = UA_NODEID_NULL;
+    delivered d2;
     if(!CHECK_EQ_INT(start(s, &admin, &a), UA_STATUSCODE_GOOD))
         return;
     CHECK(dialog_exists(s, &a));
-    CHECK_EQ_INT(finish(s, &a, &d1), UA_STATUSCODE_BADREQUESTNOTCOMPLETE);
+    CHECK_EQ_INT(finish(s, &a, d1), UA_STATUSCODE_BADREQUESTNOTCOMPLETE);
     CHECK_EQ_INT(respond2(s, &a, 0), UA_STATUSCODE_GOOD);
     CHECK(!dialog_exists(s, &a));
-    /* only over the certificate that asked */
-    CHECK_EQ_INT(finish_as(s, &app, &a, false, &d1), UA_STATUSCODE_BADUSERACCESSDENIED);
-    if(CHECK_EQ_INT(finish(s, &a, &d1), UA_STATUSCODE_GOOD)) {
-        CHECK(strncmp(d1.id, "opengds-", 8) == 0 && strlen(d1.id) == 40);
-        CHECK(strlen(d1.secret) == 43); /* base64url of 32 bytes */
-        CHECK(strcmp(d1.policy, GDS_POLICY_BASIC256SHA256) == 0);
+    CHECK_EQ_INT(finish_as(s, &app, &a, false, d1), UA_STATUSCODE_BADUSERACCESSDENIED);
+    if(CHECK_EQ_INT(finish(s, &a, d1), UA_STATUSCODE_GOOD))
+        check_delivered(st, d1);
+    CHECK_EQ_INT(finish(s, &a, &d2), UA_STATUSCODE_BADINVALIDARGUMENT); /* once only */
+    UA_NodeId_clear(&a);
+}
+
+/* The credential: format, thumbprint, and only a hash in the store. */
+static void check_delivered(gds_store *st, const delivered *d1) {
+    {
+        CHECK(strncmp(d1->id, "opengds-", 8) == 0 && strlen(d1->id) == 40);
+        CHECK(strlen(d1->secret) == 43); /* base64url of 32 bytes */
+        CHECK(strcmp(d1->policy, GDS_POLICY_BASIC256SHA256) == 0);
         char hex[GDS_SHA1_HEX];
         gds_buf cert = {reqCert.data, reqCert.length};
-        CHECK(gds_sha1_hex(&cert, hex) == GDS_OK && strcmp(hex, d1.thumb) == 0);
+        CHECK(gds_sha1_hex(&cert, hex) == GDS_OK && strcmp(hex, d1->thumb) == 0);
         gds_kc_cred kc;
-        if(CHECK(gds_store_kc_cred_get(st, d1.id, &kc) == GDS_OK)) {
-            CHECK(strstr(kc.verifier, d1.secret) == NULL);
-            CHECK(verifier_matches(kc.verifier, d1.secret));
+        if(CHECK(gds_store_kc_cred_get(st, d1->id, &kc) == GDS_OK)) {
+            CHECK(strstr(kc.verifier, d1->secret) == NULL);
+            CHECK(verifier_matches(kc.verifier, d1->secret));
             CHECK(!verifier_matches(kc.verifier, "wrong"));
             CHECK(strcmp(kc.service, "mqtt") == 0);
         }
     }
-    CHECK_EQ_INT(finish(s, &a, &d2), UA_STATUSCODE_BADINVALIDARGUMENT); /* once only */
+}
 
-    /* rejected */
+/* Rejected; cancelled while pending (the dialog goes). */
+static void test_reject_cancel(gds_server *s) {
+    UA_NodeId b = UA_NODEID_NULL, c = UA_NODEID_NULL;
+    delivered d;
     if(CHECK_EQ_INT(start(s, &admin, &b), UA_STATUSCODE_GOOD)) {
         CHECK_EQ_INT(respond2(s, &b, 1), UA_STATUSCODE_GOOD);
-        CHECK_EQ_INT(finish(s, &b, &d2), UA_STATUSCODE_BADREQUESTNOTALLOWED);
+        CHECK_EQ_INT(finish(s, &b, &d), UA_STATUSCODE_BADREQUESTNOTALLOWED);
     }
-    /* cancelled while pending: the dialog goes */
     if(CHECK_EQ_INT(start(s, &admin, &c), UA_STATUSCODE_GOOD)) {
         CHECK_EQ_INT(finish_as(s, &admin, &c, true, NULL), UA_STATUSCODE_GOOD);
         CHECK(!dialog_exists(s, &c));
-        CHECK_EQ_INT(finish(s, &c, &d2), UA_STATUSCODE_BADINVALIDARGUMENT);
+        CHECK_EQ_INT(finish(s, &c, &d), UA_STATUSCODE_BADINVALIDARGUMENT);
     }
-    /* without encryption of its own (the channel protects it); replaces d1 */
-    if(CHECK_EQ_INT(start_full(s, &admin, APP_URI, NULL, NULL, &e), UA_STATUSCODE_GOOD) &&
-       CHECK_EQ_INT(respond2(s, &e, 0), UA_STATUSCODE_GOOD) &&
-       CHECK_EQ_INT(finish(s, &e, &d2), UA_STATUSCODE_GOOD)) {
-        CHECK(d2.thumb[0] == '\0' && d2.policy[0] == '\0' && strlen(d2.secret) == 43);
-        CHECK(strcmp(d1.id, d2.id) != 0);
-        gds_kc_cred kc;
-        CHECK(gds_store_kc_cred_get(st, d1.id, &kc) == GDS_ENOTFOUND);
-        CHECK_EQ_INT(count_creds(st), 1);
-        /* Revoke: someone else's refused; admin's deletes */
-        CHECK_EQ_INT(kc_revoke(s, &outsider, d2.id), UA_STATUSCODE_BADUSERACCESSDENIED);
-        CHECK_EQ_INT(kc_revoke(s, &plain, d2.id), UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT);
-        CHECK_EQ_INT(kc_revoke(s, &admin, d2.id), UA_STATUSCODE_GOOD);
-        CHECK(gds_store_kc_cred_get(st, d2.id, &kc) == GDS_ENOTFOUND);
-        CHECK_EQ_INT(kc_revoke(s, &admin, d2.id), UA_STATUSCODE_BADINVALIDARGUMENT);
-    }
-    CHECK_EQ_INT(start(s, &admin, leftPending), UA_STATUSCODE_GOOD);
-    UA_NodeId_clear(&a);
     UA_NodeId_clear(&b);
     UA_NodeId_clear(&c);
+}
+
+/* Without encryption of its own (the channel protects it); replaces d1;
+ * Revoke. */
+static void test_replace_revoke(gds_server *s, gds_store *st, const delivered *d1) {
+    UA_NodeId e = UA_NODEID_NULL;
+    delivered d2;
+    if(!CHECK_EQ_INT(start_full(s, &admin, APP_URI, NULL, NULL, &e), UA_STATUSCODE_GOOD) ||
+       !CHECK_EQ_INT(respond2(s, &e, 0), UA_STATUSCODE_GOOD) ||
+       !CHECK_EQ_INT(finish(s, &e, &d2), UA_STATUSCODE_GOOD)) {
+        UA_NodeId_clear(&e);
+        return;
+    }
+    CHECK(d2.thumb[0] == '\0' && d2.policy[0] == '\0' && strlen(d2.secret) == 43);
+    CHECK(strcmp(d1->id, d2.id) != 0);
+    gds_kc_cred kc;
+    CHECK(gds_store_kc_cred_get(st, d1->id, &kc) == GDS_ENOTFOUND);
+    CHECK_EQ_INT(count_creds(st), 1);
+    CHECK_EQ_INT(kc_revoke(s, &outsider, d2.id), UA_STATUSCODE_BADUSERACCESSDENIED);
+    CHECK_EQ_INT(kc_revoke(s, &plain, d2.id), UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT);
+    CHECK_EQ_INT(kc_revoke(s, &admin, d2.id), UA_STATUSCODE_GOOD);
+    CHECK(gds_store_kc_cred_get(st, d2.id, &kc) == GDS_ENOTFOUND);
+    CHECK_EQ_INT(kc_revoke(s, &admin, d2.id), UA_STATUSCODE_BADINVALIDARGUMENT);
     UA_NodeId_clear(&e);
+}
+
+static void test_manual(gds_server *s, gds_store *st, UA_NodeId *leftPending) {
+    delivered d1;
+    memset(&d1, 0, sizeof(d1));
+    test_manual_deliver(s, st, &d1);
+    test_reject_cancel(s);
+    if(d1.id[0])
+        test_replace_revoke(s, st, &d1);
+    CHECK_EQ_INT(start(s, &admin, leftPending), UA_STATUSCODE_GOOD);
 }
 
 /* After a restart the pending request has its dialog again. */
@@ -469,6 +495,42 @@ static void session_init(gds_session *x, const char *user, uint32_t roles) {
         x->anonymous = true;
 }
 
+static void sessions_init(void) {
+    session_init(&admin, "registrar", GDS_ROLE_DISCOVERY_ADMIN | GDS_ROLE_KEY_CREDENTIAL_ADMIN);
+    admin.clientCert = reqCert; /* borrowed: the channel certificate */
+    session_init(&approver, "approver", GDS_ROLE_REGISTRATION_AUTHORITY_ADMIN);
+    session_init(&outsider, NULL, 0);
+    session_init(&plain, "registrar", GDS_ROLE_DISCOVERY_ADMIN | GDS_ROLE_KEY_CREDENTIAL_ADMIN);
+    plain.securityMode = UA_MESSAGESECURITYMODE_SIGN;
+    session_init(&app, NULL, 0); /* the application itself (ApplicationSelfAdmin) */
+    app.clientAppUri = UA_STRING(APP_URI);
+    app.clientCert = UA_BYTESTRING("another certificate");
+    session_init(&appOther, NULL, 0);
+    appOther.clientAppUri = UA_STRING(TEST_URI ":other");
+    appOther.clientCert = UA_BYTESTRING("other");
+}
+
+/* One server on cfg: phase 0 the first start, 1 a restart, 2 renewals, 3 auto. */
+static void run_phase(const gds_server_config *cfg, gds_store *st, int phase, UA_NodeId *pending) {
+    gds_server *s = NULL;
+    if(!CHECK(gds_server_new(cfg, &s) == GDS_OK) || !s)
+        return;
+    UA_Server_setAdminSessionContext(gds_server_ua(s), &admin);
+    if(phase == 0 && register_app(s, APP_URI)) {
+        test_nodes(s);
+        test_refused(s);
+        test_manual(s, st, pending);
+    } else if(phase == 1) {
+        test_rebuilt(s, pending);
+    } else if(phase == 2) {
+        test_renewals(s);
+    } else if(phase == 3) {
+        test_auto(s);
+    }
+    UA_Server_setAdminSessionContext(gds_server_ua(s), NULL);
+    gds_server_delete(s);
+}
+
 int main(int argc, char **argv) {
     if(argc != 2) {
         fprintf(stderr, "usage: %s <dir>\n", argv[0]);
@@ -508,19 +570,7 @@ int main(int argc, char **argv) {
 
     test_enc_secret();
 
-    session_init(&admin, "registrar",
-                 GDS_ROLE_DISCOVERY_ADMIN | GDS_ROLE_KEY_CREDENTIAL_ADMIN);
-    admin.clientCert = reqCert; /* borrowed: the channel certificate */
-    session_init(&approver, "approver", GDS_ROLE_REGISTRATION_AUTHORITY_ADMIN);
-    session_init(&outsider, NULL, 0);
-    session_init(&plain, "registrar", GDS_ROLE_DISCOVERY_ADMIN | GDS_ROLE_KEY_CREDENTIAL_ADMIN);
-    plain.securityMode = UA_MESSAGESECURITYMODE_SIGN;
-    session_init(&app, NULL, 0); /* the application itself (ApplicationSelfAdmin) */
-    app.clientAppUri = UA_STRING(APP_URI);
-    app.clientCert = UA_BYTESTRING("another certificate");
-    session_init(&appOther, NULL, 0);
-    appOther.clientAppUri = UA_STRING(TEST_URI ":other");
-    appOther.clientCert = UA_BYTESTRING("other");
+    sessions_init();
 
     static gds_users users;
     static const char *const prof[] = {MQTT_PROFILE};
@@ -540,45 +590,14 @@ int main(int argc, char **argv) {
     cfg.keyCredServices = svc;
     cfg.keyCredServicesSize = 1;
 
-    gds_server *s = NULL;
     UA_NodeId pending = UA_NODEID_NULL;
-    if(CHECK(gds_server_new(&cfg, &s) == GDS_OK) && s) {
-        UA_Server_setAdminSessionContext(gds_server_ua(s), &admin);
-        if(register_app(s, APP_URI)) {
-            test_nodes(s);
-            test_refused(s);
-            test_manual(s, st, &pending);
-        }
-        UA_Server_setAdminSessionContext(gds_server_ua(s), NULL);
-    }
-    gds_server_delete(s);
-    s = NULL;
-
-    if(CHECK(gds_server_new(&cfg, &s) == GDS_OK) && s) { /* restart */
-        UA_Server_setAdminSessionContext(gds_server_ua(s), &admin);
-        test_rebuilt(s, &pending);
-        UA_Server_setAdminSessionContext(gds_server_ua(s), NULL);
-    }
-    gds_server_delete(s);
-    s = NULL;
-
-    app.clientCert = reqCert; /* the app asks over its own channel now */
+    run_phase(&cfg, st, 0, &pending);
+    run_phase(&cfg, st, 1, &pending); /* restart */
+    app.clientCert = reqCert;         /* the app asks over its own channel now */
     cfg.approval = GDS_APPROVE_RENEWALS;
-    if(CHECK(gds_server_new(&cfg, &s) == GDS_OK) && s) {
-        UA_Server_setAdminSessionContext(gds_server_ua(s), &admin);
-        test_renewals(s);
-        UA_Server_setAdminSessionContext(gds_server_ua(s), NULL);
-    }
-    gds_server_delete(s);
-    s = NULL;
-
+    run_phase(&cfg, st, 2, &pending);
     cfg.approval = GDS_APPROVE_ALL;
-    if(CHECK(gds_server_new(&cfg, &s) == GDS_OK) && s) {
-        UA_Server_setAdminSessionContext(gds_server_ua(s), &admin);
-        test_auto(s);
-        UA_Server_setAdminSessionContext(gds_server_ua(s), NULL);
-    }
-    gds_server_delete(s);
+    run_phase(&cfg, st, 3, &pending);
 
     UA_NodeId_clear(&pending);
     EVP_PKEY_free(reqKey);
