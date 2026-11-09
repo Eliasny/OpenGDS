@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MPL-2.0 */
 #include <open62541/nodeids.h>
 #include <openssl/evp.h>
+#include <openssl/pem.h>
 #include <openssl/x509v3.h>
 
 #include <stdlib.h>
@@ -252,7 +253,7 @@ static void no_destroy(void *ctx) {
 
 static void test_pre_sign(const gds_ca_subject *subj, const gds_buf *csr) {
     const gds_ca_backend b = {GDS_CA_ABI_VERSION, refuse_pre_sign, count_sign, no_buf, no_buf,
-                              no_destroy, NULL, NULL};
+                              no_destroy, NULL, NULL, NULL, NULL, NULL};
     gds_ca *ca = NULL;
     CHECK(gds_ca_wrap(&b, NULL, &ca) == GDS_OK);
     gds_ca_issued out;
@@ -334,6 +335,99 @@ static void test_reopen(const gds_ca_config *cfg, const gds_buf *firstCa) {
     CHECK(gds_ca_openssl_open(cfg, &ca) == GDS_ESTATE && ca == NULL);
 }
 
+/* ECC (docs/ca.md "ECC: one issuing CA per curve"): a P-256 or P-384 CSR is
+ * signed by the CA on its own curve with ECDSA, keyUsage digitalSignature
+ * only (OPC 10000-6 §6.2.2), and verifies against that issuer and its CRL.
+ * A key on the wrong curve, or RSA for an ECC type, is refused. */
+static void check_ecc_leaf(X509 *leaf, X509 *issuerCert, X509_CRL *crl, const char *curve,
+                           int mdNid) {
+    CHECK(X509_get_signature_nid(leaf) == mdNid);
+    CHECK(X509_get_signature_nid(issuerCert) == mdNid);
+    EVP_PKEY *ip = X509_get0_pubkey(issuerCert);
+    char group[32] = {0};
+    size_t gl = 0;
+    CHECK(ip && EVP_PKEY_get_group_name(ip, group, sizeof(group), &gl) == 1);
+    CHECK(strcmp(group, strcmp(curve, "P-256") == 0 ? "prime256v1" : "secp384r1") == 0);
+    CHECK(X509_verify(leaf, ip) == 1 && X509_CRL_verify(crl, ip) == 1);
+    CHECK(X509_get_key_usage(leaf) == KU_DIGITAL_SIGNATURE);
+    CHECK(X509_check_issued(issuerCert, leaf) == X509_V_OK);
+    check_subject(leaf);
+}
+
+/* Revocation lands on this issuer's CRL, not on the RSA one. */
+static void check_ecc_revoke(gds_ca *ca, gds_ca_issuer issuer, const gds_buf *serial) {
+    gds_buf crlDer = {0}, rsaCrl = {0};
+    CHECK(gds_ca_revoke_issuer(ca, issuer, serial) == GDS_OK);
+    CHECK(gds_ca_get_issuer_crl(ca, issuer, &crlDer) == GDS_OK);
+    CHECK(gds_ca_get_crl(ca, &rsaCrl) == GDS_OK);
+    const unsigned char *p = crlDer.data;
+    X509_CRL *after = d2i_X509_CRL(NULL, &p, (long)crlDer.len);
+    p = rsaCrl.data;
+    X509_CRL *rsaAfter = d2i_X509_CRL(NULL, &p, (long)rsaCrl.len);
+    CHECK(after && crl_count(after) >= 1 && rsaAfter);
+    X509_CRL_free(after);
+    X509_CRL_free(rsaAfter);
+    gds_buf_free(&crlDer);
+    gds_buf_free(&rsaCrl);
+}
+
+static void check_ecc(gds_ca *ca, const UA_ApplicationRecordDataType *rec, UA_UInt32 type,
+                      gds_ca_issuer issuer, const char *curve, const char *otherCurve, int mdNid) {
+    gds_ca_subject subj = {&reqId, rec, 615, type};
+    EVP_PKEY *k = EVP_PKEY_Q_keygen(NULL, NULL, "EC", curve);
+    EVP_PKEY *wrong = EVP_PKEY_Q_keygen(NULL, NULL, "EC", otherCurve);
+    EVP_PKEY *rsa = EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)2048);
+    gds_buf csr = {0}, bad = {0}, badRsa = {0}, caDer = {0}, crlDer = {0};
+    CHECK(k && wrong && rsa && make_csr(k, &csr) == GDS_OK && make_csr(wrong, &bad) == GDS_OK &&
+          make_csr(rsa, &badRsa) == GDS_OK);
+    gds_ca_issued out;
+    CHECK(gds_ca_sign_csr(ca, &subj, &bad, &out) == GDS_EINVAL);
+    CHECK(gds_ca_sign_csr(ca, &subj, &badRsa, &out) == GDS_EINVAL);
+    CHECK(gds_ca_sign_csr(ca, &subj, &csr, &out) == GDS_OK);
+    CHECK(gds_ca_get_issuer_cert(ca, issuer, &caDer) == GDS_OK);
+    CHECK(gds_ca_get_issuer_crl(ca, issuer, &crlDer) == GDS_OK);
+    X509 *leaf = parse_cert(&out.der), *issuerCert = parse_cert(&caDer);
+    const unsigned char *p = crlDer.data;
+    X509_CRL *crl = d2i_X509_CRL(NULL, &p, (long)crlDer.len);
+    CHECK(leaf && issuerCert && crl);
+    if(leaf && issuerCert && crl)
+        check_ecc_leaf(leaf, issuerCert, crl, curve, mdNid);
+    gds_buf_free(&crlDer);
+    check_ecc_revoke(ca, issuer, &out.serial);
+    X509_CRL_free(crl);
+    X509_free(issuerCert);
+    X509_free(leaf);
+    gds_ca_issued_clear(&out);
+    gds_buf_free(&caDer);
+    gds_buf_free(&crlDer);
+    gds_buf_free(&csr);
+    gds_buf_free(&bad);
+    gds_buf_free(&badRsa);
+    EVP_PKEY_free(k);
+    EVP_PKEY_free(wrong);
+    EVP_PKEY_free(rsa);
+}
+
+/* StartNewKeyPairRequest for an ECC type: an EC key on the curve. */
+static void check_ecc_key_pair(gds_ca *ca, const UA_ApplicationRecordDataType *rec) {
+    gds_ca_subject subj = {&reqId, rec, 615, UA_NS0ID_ECCNISTP384APPLICATIONCERTIFICATETYPE};
+    gds_ca_keyreq kr = {GDS_CA_KEY_PEM, NULL};
+    gds_ca_issued out;
+    gds_buf key = {0};
+    CHECK(gds_ca_new_key_pair(ca, &subj, &kr, &out, &key) == GDS_OK);
+    BIO *b = key.data ? BIO_new_mem_buf(key.data, (int)key.len) : NULL;
+    EVP_PKEY *k = b ? PEM_read_bio_PrivateKey(b, NULL, NULL, NULL) : NULL;
+    X509 *leaf = parse_cert(&out.der);
+    CHECK(k && EVP_PKEY_is_a(k, "EC") && leaf && X509_check_private_key(leaf, k) == 1);
+    X509_free(leaf);
+    EVP_PKEY_free(k);
+    BIO_free(b);
+    gds_buf_free_secret(&key);
+    gds_ca_issued_clear(&out);
+    subj.certificateType = UA_NS0ID_ECCBRAINPOOLP256R1APPLICATIONCERTIFICATETYPE;
+    CHECK(gds_ca_new_key_pair(ca, &subj, &kr, &out, &key) == GDS_EUNSUPPORTED);
+}
+
 int main(int argc, char **argv) {
     if(argc < 2) {
         fprintf(stderr, "usage: %s <dir>\n", argv[0]);
@@ -376,6 +470,11 @@ int main(int argc, char **argv) {
     test_refusals(ca, &subj, &csr);
     test_small_key(ca, &subj);
     test_pre_sign(&subj, &csr);
+    check_ecc(ca, &rec, UA_NS0ID_ECCNISTP256APPLICATIONCERTIFICATETYPE, GDS_CA_ISSUER_P256, "P-256",
+              "P-384", NID_ecdsa_with_SHA256);
+    check_ecc(ca, &rec, UA_NS0ID_ECCNISTP384APPLICATIONCERTIFICATETYPE, GDS_CA_ISSUER_P384, "P-384",
+              "P-256", NID_ecdsa_with_SHA384);
+    check_ecc_key_pair(ca, &rec);
     gds_buf first = {0};
     CHECK(gds_ca_get_ca_cert(ca, &first) == GDS_OK);
     gds_ca_close(ca);

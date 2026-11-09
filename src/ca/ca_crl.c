@@ -98,7 +98,7 @@ static gds_status issue_crl(ossl_ca *c, long number, X509_CRL *prev, X509_REVOKE
             r = GDS_ECRYPTO;
         }
     }
-    if(r == GDS_OK && (X509_CRL_sort(crl) != 1 || X509_CRL_sign(crl, c->key, EVP_sha256()) <= 0))
+    if(r == GDS_OK && (X509_CRL_sort(crl) != 1 || X509_CRL_sign(crl, c->key, c->md) <= 0))
         r = GDS_ECRYPTO;
     ASN1_TIME_free(last);
     ASN1_TIME_free(next);

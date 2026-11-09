@@ -163,16 +163,41 @@ gds_status gds_sigp_encode_request(gds_sigp_op op, const UA_Guid *requestId, gds
     return finish(out, r);
 }
 
-gds_status gds_sigp_encode_revoke(const gds_buf *serial, gds_buf *out) {
-    if(!serial || !serial->data || serial->len == 0 || serial->len > GDS_SIGP_MAX_SERIAL) {
+static bool issuer_ok(gds_ca_issuer issuer) {
+    return (unsigned)issuer < GDS_CA_ISSUERS;
+}
+
+gds_status gds_sigp_encode_revoke_issuer(gds_ca_issuer issuer, const gds_buf *serial,
+                                         gds_buf *out) {
+    if(!issuer_ok(issuer) || !serial || !serial->data || serial->len == 0 ||
+       serial->len > GDS_SIGP_MAX_SERIAL) {
         memset(out, 0, sizeof(*out));
         return GDS_EINVAL;
     }
+    uint8_t i = (uint8_t)issuer;
     gds_status r = begin(out, GDS_SIGP_REVOKE);
     if(r == GDS_OK)
         r = put_u16(out, (uint16_t)serial->len);
     if(r == GDS_OK)
         r = put(out, serial->data, serial->len);
+    if(r == GDS_OK && issuer != GDS_CA_ISSUER_RSA)
+        r = put(out, &i, 1);
+    return finish(out, r);
+}
+
+gds_status gds_sigp_encode_revoke(const gds_buf *serial, gds_buf *out) {
+    return gds_sigp_encode_revoke_issuer(GDS_CA_ISSUER_RSA, serial, out);
+}
+
+gds_status gds_sigp_encode_issuer_request(gds_sigp_op op, gds_ca_issuer issuer, gds_buf *out) {
+    if((op != GDS_SIGP_GET_CHAIN && op != GDS_SIGP_ISSUE_CRL) || !issuer_ok(issuer)) {
+        memset(out, 0, sizeof(*out));
+        return GDS_EINVAL;
+    }
+    uint8_t i = (uint8_t)issuer;
+    gds_status r = begin(out, op);
+    if(r == GDS_OK && issuer != GDS_CA_ISSUER_RSA)
+        r = put(out, &i, 1);
     return finish(out, r);
 }
 
@@ -221,6 +246,18 @@ static gds_status decode_key_pair(rd *r, gds_sigp_request *out) {
     return s;
 }
 
+/* Optional trailing issuer byte; none means the RSA issuer. */
+static gds_status decode_issuer(rd *r, gds_sigp_request *out) {
+    out->issuer = GDS_CA_ISSUER_RSA;
+    if(r->pos == r->len)
+        return GDS_OK;
+    uint8_t i = 0;
+    if(!get(r, &i, 1) || i == GDS_CA_ISSUER_RSA || !issuer_ok((gds_ca_issuer)i))
+        return GDS_EINVAL; /* RSA is never sent explicitly: one encoding per message */
+    out->issuer = (gds_ca_issuer)i;
+    return GDS_OK;
+}
+
 gds_status gds_sigp_decode(const uint8_t *msg, size_t len, gds_sigp_request *out) {
     rd r = {msg, len, 0};
     memset(out, 0, sizeof(*out));
@@ -233,12 +270,15 @@ gds_status gds_sigp_decode(const uint8_t *msg, size_t len, gds_sigp_request *out
         break;
     case GDS_SIGP_REVOKE:
         s = get_blob(&r, 2, GDS_SIGP_MAX_SERIAL, &out->serial);
+        if(s == GDS_OK)
+            s = decode_issuer(&r, out);
         break;
     case GDS_SIGP_NEW_KEY_PAIR:
         s = decode_key_pair(&r, out);
         break;
     case GDS_SIGP_GET_CHAIN:
     case GDS_SIGP_ISSUE_CRL:
+        s = decode_issuer(&r, out);
         break;
     }
     if(s == GDS_OK && r.pos != r.len)
