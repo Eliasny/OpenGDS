@@ -322,6 +322,7 @@ static void describe(char *d, size_t len, const push_setup_report *rep, gds_stat
 
 static void case_g2_state(void) {
     push_setup_state st;
+    memset(&st, 0, sizeof(st));
     UA_StatusCode r = probe(F.urlSetup, &F.setupDeviceCert, GDSC_IDENTITY_USERNAME, &st);
     char d[96];
     snprintf(d, sizeof(d), "%s state=%d hasInSetup=%d inSetup=%d", UA_StatusCode_name(r),
@@ -347,6 +348,7 @@ static void case_g2_cancel(void) {
     push_setup_report rep;
     gds_status s = push_setup_run(&j, &rep);
     push_setup_state st;
+    memset(&st, 0, sizeof(st));
     memset(&st, 0, sizeof(st));
     UA_StatusCode r = probe(F.urlSetup, &F.setupDeviceCert, GDSC_IDENTITY_USERNAME, &st);
     char d[240];
@@ -657,6 +659,10 @@ int main(int argc, char **argv) {
         s = start_device(argv[1], F.port + 2, "reverse", true);
     if(s == GDS_OK)
         s = start_mock(argv[2], F.port + 3, "0", "mock");
+    /* the two mocks share one CA dir: the second starts once the first
+     * has written the CA and its CRL, or both write ca.crl at once */
+    if(s == GDS_OK)
+        s = wait_up(F.urlMock);
     if(s == GDS_OK)
         s = start_mock(argv[2], F.port + 4, "3", "mock2");
     if(s == GDS_OK)
@@ -665,8 +671,6 @@ int main(int argc, char **argv) {
         s = read_device_cert("reverse", &F.reverseDeviceCert);
     if(s == GDS_OK)
         s = wait_up(F.urlSetup);
-    if(s == GDS_OK)
-        s = wait_up(F.urlMock);
     if(s == GDS_OK)
         s = wait_up(F.urlMock2);
     if(s != GDS_OK) {

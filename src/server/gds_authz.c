@@ -1218,7 +1218,7 @@ static gds_status set_chain(struct gds_authz *a, gds_buf *chain) {
     return GDS_OK;
 }
 
-#define RENEW_BEFORE (30 * 86400)
+#define RENEW_BEFORE ((int64_t)30 * 86400)
 #define RENEW_RETRY 3600
 
 /* A certificate close to expiry is fetched again; the ServiceCertificate

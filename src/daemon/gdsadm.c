@@ -310,32 +310,44 @@ static int approvals_respond(int argc, char **argv, UA_Int32 resp) {
     return 0;
 }
 
+static int apps_list(int argc, char **argv) {
+    return store_cmd(argc, argv, list_cb, false);
+}
+
+static int certs_status(int argc, char **argv) {
+    return store_cmd(argc, argv, status_cb, true);
+}
+
+static int approvals_approve(int argc, char **argv) {
+    return approvals_respond(argc, argv, 0);
+}
+
+static int approvals_reject(int argc, char **argv) {
+    return approvals_respond(argc, argv, 1);
+}
+
+static const struct {
+    const char *noun, *verb;
+    int (*run)(int argc, char **argv);
+} commands[] = {
+    {"apps", "list", apps_list},
+    {"apps", "register", gdsadm_apps_register},
+    {"apps", "import", gdsadm_apps_import},
+    {"apps", "unregister", gdsadm_apps_unregister},
+    {"certs", "revoke", gdsadm_certs_revoke},
+    {"certs", "status", certs_status},
+    {"push", "now", gdsadm_push_now},
+    {"push", "setup", gdsadm_push_setup},
+    {"approvals", "list", approvals_list},
+    {"approvals", "approve", approvals_approve},
+    {"approvals", "reject", approvals_reject},
+};
+
 int main(int argc, char **argv) {
     if(argc >= 2 && strcmp(argv[1], "hash-password") == 0)
         return hash_password(argc, argv);
-    if(argc >= 3 && strcmp(argv[1], "apps") == 0 && strcmp(argv[2], "list") == 0)
-        return store_cmd(argc, argv, list_cb, false);
-    if(argc >= 3 && strcmp(argv[1], "apps") == 0 && strcmp(argv[2], "register") == 0)
-        return gdsadm_apps_register(argc, argv);
-    if(argc >= 3 && strcmp(argv[1], "apps") == 0 && strcmp(argv[2], "import") == 0)
-        return gdsadm_apps_import(argc, argv);
-    if(argc >= 3 && strcmp(argv[1], "apps") == 0 && strcmp(argv[2], "unregister") == 0)
-        return gdsadm_apps_unregister(argc, argv);
-    if(argc >= 3 && strcmp(argv[1], "certs") == 0 && strcmp(argv[2], "revoke") == 0)
-        return gdsadm_certs_revoke(argc, argv);
-    if(argc >= 3 && strcmp(argv[1], "push") == 0 && strcmp(argv[2], "now") == 0)
-        return gdsadm_push_now(argc, argv);
-    if(argc >= 3 && strcmp(argv[1], "push") == 0 && strcmp(argv[2], "setup") == 0)
-        return gdsadm_push_setup(argc, argv);
-    if(argc >= 3 && strcmp(argv[1], "certs") == 0 && strcmp(argv[2], "status") == 0)
-        return store_cmd(argc, argv, status_cb, true);
-    if(argc >= 3 && strcmp(argv[1], "approvals") == 0) {
-        if(strcmp(argv[2], "list") == 0)
-            return approvals_list(argc, argv);
-        if(strcmp(argv[2], "approve") == 0)
-            return approvals_respond(argc, argv, 0);
-        if(strcmp(argv[2], "reject") == 0)
-            return approvals_respond(argc, argv, 1);
-    }
+    for(size_t i = 0; argc >= 3 && i < sizeof(commands) / sizeof(commands[0]); i++)
+        if(strcmp(argv[1], commands[i].noun) == 0 && strcmp(argv[2], commands[i].verb) == 0)
+            return commands[i].run(argc, argv);
     return usage();
 }
