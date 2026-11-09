@@ -126,6 +126,12 @@ if(OPENGDS_BUILD_AUDITOR)
     add_subdirectory(tests/integration)
     # Spec tests that drive the Auditor's test targets (Annex G setup)
     add_subdirectory(tests/spec)
+    # Performance targets (OpenGDS plan "Performance design and targets",
+    # docs/perf.md): built with the tests, run by hand with
+    # `cmake --build . --target perf`, never part of ctest
+    if(OPENGDS_BUILD_TESTS)
+        add_subdirectory(tests/perf)
+    endif()
 endif()
 
 # Install rules and packages (.deb, .rpm, .tar.gz; docs/packaging.md), only
