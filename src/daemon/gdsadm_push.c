@@ -708,6 +708,7 @@ static const char *state_name(UA_ServerState s) {
     case UA_SERVERSTATE_TEST: return "Test";
     case UA_SERVERSTATE_COMMUNICATIONFAULT: return "CommunicationFault";
     case UA_SERVERSTATE_UNKNOWN: return "Unknown";
+    case __UA_SERVERSTATE_FORCE32BIT:
     default: return "?";
     }
 }

@@ -294,7 +294,10 @@ static void flow_clear(gds_target *t, az_flow *f) {
         UA_Variant_setScalar(&in, (void *)(uintptr_t)apps[i], &UA_TYPES[UA_TYPES_NODEID]);
         size_t outN = 0;
         UA_Variant *out = NULL;
-        (void)gt_call(t, UA_GDSID_DIRECTORY_UNREGISTERAPPLICATION, 1, &in, 0, &outN, &out);
+        /* best-effort cleanup: an application already gone is fine */
+        UA_StatusCode r =
+            gt_call(t, UA_GDSID_DIRECTORY_UNREGISTERAPPLICATION, 1, &in, 0, &outN, &out);
+        (void)r;
         gt_free_out(out, outN);
     }
     UA_NodeId_clear(&f->svc);
