@@ -65,3 +65,4 @@ OpenGDS 1.0 issues RSA, P-256 and P-384 (Elias, 2026-11-09). Both the signer and
 
 - `pre_sign` (issue #13): optional. It is called right before every signature with the operation, the store's request id and a borrowed view of the record. A refusal leaves no certificate and no store change, and `GDS_ESTATE` maps to Bad_InvalidState.
 - `pluginFd` (issue #12): an optional pre-connected socket that the signer hands to its CA plugin. The signer never reads from it.
+- `gds_server_revoke_serial` (A23, `gds_plugin.h`): puts a serial that the store already marks revoked on the issuing CA's CRL, chosen by the certificate's issuer name, by its certificate type, or, with neither, on every issuer's CRL. UASM uses it for certificates that old nodes issued after a forced new primary and that the new primary never recorded. The signer still revokes only what the store marks revoked.
