@@ -184,6 +184,21 @@ typedef UA_StatusCode (*add_policy_fn)(UA_ServerConfig *, const UA_ByteString *,
 static UA_StatusCode find_servers_peers(UA_Server *server, void *context,
                                         UA_ApplicationDescription **out, size_t *n);
 
+/* The mDNS announce (disc_mdns.h); not with loopbackOnly: nothing on the
+ * subnet could reach 127.0.0.1. */
+static UA_StatusCode configure_mdns(UA_ServerConfig *c, const gds_server_config *cfg) {
+    gds_status st = cfg->loopbackOnly
+                        ? GDS_EINVAL
+                        : gds_disc_mdns_configure(c, &cfg->mdns, cfg->applicationName);
+    if(st == GDS_OK)
+        return UA_STATUSCODE_GOOD;
+    fprintf(stderr, "opengds: mDNS announce: %s%s\n", gds_status_name(st),
+            st == GDS_EUNSUPPORTED ? " (built without OPENGDS_WITH_MDNS)"
+            : cfg->loopbackOnly    ? " (not with loopback_only)"
+                                   : "");
+    return UA_STATUSCODE_BADCONFIGURATIONERROR;
+}
+
 static UA_StatusCode configure(UA_ServerConfig *c, const gds_server_config *cfg,
                                const gds_buf *caCert, gds_server *s) {
     UA_StatusCode r = UA_ServerConfig_setBasics_withPort(c, cfg->port);
@@ -243,18 +258,8 @@ static UA_StatusCode configure(UA_ServerConfig *c, const gds_server_config *cfg,
         r = set_description(c, cfg);
     if(r == UA_STATUSCODE_GOOD)
         r = set_listen_url(c, cfg);
-    if(r == UA_STATUSCODE_GOOD && cfg->mdns.enabled) {
-        gds_status st = cfg->loopbackOnly
-                            ? GDS_EINVAL
-                            : gds_disc_mdns_configure(c, &cfg->mdns, cfg->applicationName);
-        if(st != GDS_OK) {
-            fprintf(stderr, "opengds: mDNS announce: %s%s\n", gds_status_name(st),
-                    st == GDS_EUNSUPPORTED ? " (built without OPENGDS_WITH_MDNS)"
-                    : cfg->loopbackOnly    ? " (not with loopback_only)"
-                                           : "");
-            r = UA_STATUSCODE_BADCONFIGURATIONERROR;
-        }
-    }
+    if(r == UA_STATUSCODE_GOOD && cfg->mdns.enabled)
+        r = configure_mdns(c, cfg);
     return r;
 }
 

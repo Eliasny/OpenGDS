@@ -92,6 +92,27 @@ static void test_configure(void) {
     UA_ServerConfig_clear(&c);
 }
 
+/* The GDS's own record: its DiscoveryUrl and only the capability GDS; the
+ * caps filter (OPC 10000-4 §5.5.3) keeps it. false: another server. */
+static bool check_record(const UA_ServerOnNetwork *son, const char *url) {
+    /* open62541 names the instance "<name>-<host>" (one DNS label) */
+    if(son->serverName.length < strlen(TEST_NAME) ||
+       memcmp(son->serverName.data, TEST_NAME, strlen(TEST_NAME)) != 0)
+        return false;
+    CHECK(str_is(&son->discoveryUrl, url));
+    CHECK(son->serverCapabilitiesSize == 1 && str_is(&son->serverCapabilities[0], "GDS"));
+    UA_String caps = UA_STRING("GDS");
+    UA_ServerOnNetwork *f = NULL;
+    size_t fn = 0;
+    UA_Client *c = UA_Client_new();
+    UA_ClientConfig_setDefault(UA_Client_getConfig(c));
+    CHECK(UA_Client_findServersOnNetwork(c, url, 0, 0, 1, &caps, &fn, &f) == UA_STATUSCODE_GOOD &&
+          fn >= 1);
+    UA_Array_delete(f, fn, &UA_TYPES[UA_TYPES_SERVERONNETWORK]);
+    UA_Client_delete(c);
+    return true;
+}
+
 /* FindServersOnNetwork until the GDS's own record is there. */
 static int test_announced(gds_server *s, UA_UInt16 port) {
     char url[64];
@@ -116,25 +137,8 @@ static int test_announced(gds_server *s, UA_UInt16 port) {
         return SKIP;
     }
     bool found = false;
-    for(size_t i = 0; i < n; i++) {
-        /* open62541 names the instance "<name>-<host>" (one DNS label) */
-        if(son[i].serverName.length < strlen(TEST_NAME) ||
-           memcmp(son[i].serverName.data, TEST_NAME, strlen(TEST_NAME)) != 0)
-            continue;
-        found = true;
-        CHECK(str_is(&son[i].discoveryUrl, url));
-        CHECK(son[i].serverCapabilitiesSize == 1 && str_is(&son[i].serverCapabilities[0], "GDS"));
-        /* the caps filter (OPC 10000-4 §5.5.3) keeps it */
-        UA_String caps = UA_STRING("GDS");
-        UA_ServerOnNetwork *f = NULL;
-        size_t fn = 0;
-        UA_Client *c = UA_Client_new();
-        UA_ClientConfig_setDefault(UA_Client_getConfig(c));
-        CHECK(UA_Client_findServersOnNetwork(c, url, 0, 0, 1, &caps, &fn, &f) ==
-              UA_STATUSCODE_GOOD && fn >= 1);
-        UA_Array_delete(f, fn, &UA_TYPES[UA_TYPES_SERVERONNETWORK]);
-        UA_Client_delete(c);
-    }
+    for(size_t i = 0; i < n; i++)
+        found |= check_record(&son[i], url);
     CHECK(found);
     UA_Array_delete(son, n, &UA_TYPES[UA_TYPES_SERVERONNETWORK]);
 

@@ -338,27 +338,25 @@ static UA_StatusCode subscribe(UA_Client *c, event_queue *eq, UA_UInt32 *subId) 
         return r;
 
     static const struct {
-        UA_UInt32 type;
         const char *a, *b;
+        UA_UInt32 type;
         UA_UInt32 attr;
     } defs[GW_NFIELDS] = {
-        [GW_EVENT_ID] = {UA_NS0ID_BASEEVENTTYPE, "EventId", NULL, UA_ATTRIBUTEID_VALUE},
-        [GW_EVENT_TYPE] = {UA_NS0ID_BASEEVENTTYPE, "EventType", NULL, UA_ATTRIBUTEID_VALUE},
-        [GW_SOURCE_NODE] = {UA_NS0ID_BASEEVENTTYPE, "SourceNode", NULL, UA_ATTRIBUTEID_VALUE},
-        [GW_SOURCE_NAME] = {UA_NS0ID_BASEEVENTTYPE, "SourceName", NULL, UA_ATTRIBUTEID_VALUE},
-        [GW_TIME] = {UA_NS0ID_BASEEVENTTYPE, "Time", NULL, UA_ATTRIBUTEID_VALUE},
-        [GW_MESSAGE] = {UA_NS0ID_BASEEVENTTYPE, "Message", NULL, UA_ATTRIBUTEID_VALUE},
-        [GW_SEVERITY] = {UA_NS0ID_BASEEVENTTYPE, "Severity", NULL, UA_ATTRIBUTEID_VALUE},
-        [GW_CONDITION_ID] = {UA_NS0ID_CONDITIONTYPE, NULL, NULL, UA_ATTRIBUTEID_NODEID},
-        [GW_CONDITION_NAME] = {UA_NS0ID_CONDITIONTYPE, "ConditionName", NULL,
-                               UA_ATTRIBUTEID_VALUE},
-        [GW_RETAIN] = {UA_NS0ID_CONDITIONTYPE, "Retain", NULL, UA_ATTRIBUTEID_VALUE},
-        [GW_ENABLED] = {UA_NS0ID_CONDITIONTYPE, "EnabledState", "Id", UA_ATTRIBUTEID_VALUE},
-        [GW_ACKED] = {UA_NS0ID_ACKNOWLEDGEABLECONDITIONTYPE, "AckedState", "Id",
-                      UA_ATTRIBUTEID_VALUE},
-        [GW_ACTIVE] = {UA_NS0ID_ALARMCONDITIONTYPE, "ActiveState", "Id", UA_ATTRIBUTEID_VALUE},
-        [GW_CLIENT_USER] = {UA_NS0ID_AUDITEVENTTYPE, "ClientUserId", NULL, UA_ATTRIBUTEID_VALUE},
-        [GW_STATUS] = {UA_NS0ID_AUDITEVENTTYPE, "Status", NULL, UA_ATTRIBUTEID_VALUE},
+        [GW_EVENT_ID] = {"EventId", NULL, UA_NS0ID_BASEEVENTTYPE, UA_ATTRIBUTEID_VALUE},
+        [GW_EVENT_TYPE] = {"EventType", NULL, UA_NS0ID_BASEEVENTTYPE, UA_ATTRIBUTEID_VALUE},
+        [GW_SOURCE_NODE] = {"SourceNode", NULL, UA_NS0ID_BASEEVENTTYPE, UA_ATTRIBUTEID_VALUE},
+        [GW_SOURCE_NAME] = {"SourceName", NULL, UA_NS0ID_BASEEVENTTYPE, UA_ATTRIBUTEID_VALUE},
+        [GW_TIME] = {"Time", NULL, UA_NS0ID_BASEEVENTTYPE, UA_ATTRIBUTEID_VALUE},
+        [GW_MESSAGE] = {"Message", NULL, UA_NS0ID_BASEEVENTTYPE, UA_ATTRIBUTEID_VALUE},
+        [GW_SEVERITY] = {"Severity", NULL, UA_NS0ID_BASEEVENTTYPE, UA_ATTRIBUTEID_VALUE},
+        [GW_CONDITION_ID] = {NULL, NULL, UA_NS0ID_CONDITIONTYPE, UA_ATTRIBUTEID_NODEID},
+        [GW_CONDITION_NAME] = {"ConditionName", NULL, UA_NS0ID_CONDITIONTYPE, UA_ATTRIBUTEID_VALUE},
+        [GW_RETAIN] = {"Retain", NULL, UA_NS0ID_CONDITIONTYPE, UA_ATTRIBUTEID_VALUE},
+        [GW_ENABLED] = {"EnabledState", "Id", UA_NS0ID_CONDITIONTYPE, UA_ATTRIBUTEID_VALUE},
+        [GW_ACKED] = {"AckedState", "Id", UA_NS0ID_ACKNOWLEDGEABLECONDITIONTYPE, UA_ATTRIBUTEID_VALUE},
+        [GW_ACTIVE] = {"ActiveState", "Id", UA_NS0ID_ALARMCONDITIONTYPE, UA_ATTRIBUTEID_VALUE},
+        [GW_CLIENT_USER] = {"ClientUserId", NULL, UA_NS0ID_AUDITEVENTTYPE, UA_ATTRIBUTEID_VALUE},
+        [GW_STATUS] = {"Status", NULL, UA_NS0ID_AUDITEVENTTYPE, UA_ATTRIBUTEID_VALUE},
     };
     UA_SimpleAttributeOperand sel[GW_NFIELDS];
     UA_QualifiedName paths[GW_NFIELDS][2];
@@ -466,36 +464,43 @@ static int usage(void) {
     return 2;
 }
 
+/* One option with a value; false: unknown, repeated or malformed. */
+static bool parse_opt(watch_args *a, const char *k, const char *v) {
+    if(strcmp(k, "--trust") == 0 && a->trustN < MAX_FILES) {
+        a->trust[a->trustN++] = v;
+        return true;
+    }
+    if(strcmp(k, "--crl") == 0 && a->crlN < MAX_FILES) {
+        a->crl[a->crlN++] = v;
+        return true;
+    }
+    if(strcmp(k, "--count") == 0 && !a->count)
+        return gds_parse_long(v, 1, 1000000000L, &a->count);
+    if(strcmp(k, "--seconds") == 0 && !a->seconds)
+        return gds_parse_long(v, 1, 31L * 24 * 3600, &a->seconds);
+    const struct {
+        const char *name;
+        const char **field;
+    } single[] = {{"--url", &a->url}, {"--user", &a->user}, {"--password-file", &a->passwordFile}};
+    for(size_t i = 0; i < sizeof(single) / sizeof(single[0]); i++) {
+        if(strcmp(k, single[i].name) == 0 && !*single[i].field) {
+            *single[i].field = v;
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool parse(int argc, char **argv, watch_args *a) {
     memset(a, 0, sizeof(*a));
     for(int i = 2; i < argc; i++) {
-        const char *k = argv[i];
-        if(strcmp(k, "--json") == 0 && !a->json) {
+        if(strcmp(argv[i], "--json") == 0 && !a->json) {
             a->json = true;
             continue;
         }
-        if(i + 1 >= argc)
+        if(i + 1 >= argc || !parse_opt(a, argv[i], argv[i + 1]))
             return false;
-        const char *v = argv[++i];
-        if(strcmp(k, "--url") == 0 && !a->url)
-            a->url = v;
-        else if(strcmp(k, "--user") == 0 && !a->user)
-            a->user = v;
-        else if(strcmp(k, "--password-file") == 0 && !a->passwordFile)
-            a->passwordFile = v;
-        else if(strcmp(k, "--trust") == 0 && a->trustN < MAX_FILES)
-            a->trust[a->trustN++] = v;
-        else if(strcmp(k, "--crl") == 0 && a->crlN < MAX_FILES)
-            a->crl[a->crlN++] = v;
-        else if(strcmp(k, "--count") == 0 && !a->count) {
-            if(!gds_parse_long(v, 1, 1000000000L, &a->count))
-                return false;
-        } else if(strcmp(k, "--seconds") == 0 && !a->seconds) {
-            if(!gds_parse_long(v, 1, 31L * 24 * 3600, &a->seconds))
-                return false;
-        } else {
-            return false;
-        }
+        i++;
     }
     return a->url && a->user && a->passwordFile && a->trustN > 0;
 }

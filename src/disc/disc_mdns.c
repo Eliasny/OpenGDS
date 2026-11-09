@@ -15,6 +15,22 @@ bool gds_disc_mdns_built(void) {
 #endif
 }
 
+/* Length of the UTF-8 sequence at p (n bytes left); 0 if malformed. */
+static size_t utf8_len(const unsigned char *p, size_t n) {
+    unsigned char c = p[0];
+    size_t len = c < 0x80                       ? 1
+                 : (c & 0xe0) == 0xc0 && c >= 0xc2 ? 2 /* not overlong */
+                 : (c & 0xf0) == 0xe0              ? 3
+                 : (c & 0xf8) == 0xf0 && c <= 0xf4 ? 4
+                                                   : 0;
+    if(len == 0 || len > n)
+        return 0;
+    for(size_t i = 1; i < len; i++)
+        if((p[i] & 0xc0) != 0x80)
+            return 0;
+    return len;
+}
+
 /* Well-formed UTF-8 without control characters or '.'. */
 static bool name_ok(const char *s) {
     size_t n = strlen(s);
@@ -22,18 +38,9 @@ static bool name_ok(const char *s) {
         return false;
     const unsigned char *p = (const unsigned char *)s, *end = p + n;
     while(p < end) {
-        unsigned char c = *p;
-        size_t len = c < 0x80 ? 1 : (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3
-                                  : (c & 0xf8) == 0xf0 ? 4 : 0;
-        if(len == 0 || (size_t)(end - p) < len)
+        size_t len = utf8_len(p, (size_t)(end - p));
+        if(len == 0 || (len == 1 && (*p < 0x20 || *p == 0x7f || *p == '.')))
             return false;
-        if(len == 1 && (c < 0x20 || c == 0x7f || c == '.'))
-            return false;
-        if(len == 2 && c < 0xc2)
-            return false; /* overlong */
-        for(size_t i = 1; i < len; i++)
-            if((p[i] & 0xc0) != 0x80)
-                return false;
         p += len;
     }
     return true;
