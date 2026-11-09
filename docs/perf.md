@@ -59,7 +59,7 @@ the moment (Elias, 2026-11-09).
 
 | Target | Measured | Verdict |
 |---|---|---|
-| 50,000 registered applications | 50,000 registered; store 16 MiB; FindApplications p50 0.07 ms, p99 0.3 ms | met, with 2 to 6 failed registrations per run (finding 3) |
+| 50,000 registered applications | 50,000 registered; store 16 MiB; FindApplications p50 0.07 ms, p99 0.3 ms | met; the 2 to 6 failed registrations per run are fixed (finding 3) |
 | RegisterApplication 1,000 per second | 1,780 to 2,140 per second from 16 sessions; p50 6.7 ms, p99 19 ms | met |
 | 500 concurrent sessions | **100**; the other 400 are refused (Bad_SecureChannelClosed) | **missed** (finding 1) |
 | RSA-2048 issuance within 10% of `openssl speed` | CA slot 760 certificates/s against 915 bare RSA-3072 signatures/s: **81 to 87%** | **missed** (finding 2) |
@@ -105,8 +105,11 @@ Other numbers from the same run:
    needs a temporary file now and then (for example a statement journal), by default in
    `/var/tmp` or `/tmp`, which the Landlock sandbox does not allow. Run with
    `SQLITE_TMPDIR` set to the data directory, the same 50,000 registrations
-   had no failures. Possible fixes: `PRAGMA temp_store=MEMORY` in
-   `store_sqlite.c`, or a temporary directory under the data directory.
+   had no failures. **Fixed:** the store now opens with
+   `PRAGMA temp_store=MEMORY`, so SQLite never asks for a temporary file.
+   Rerun 2026-11-09 on the same host (16 sessions, 50,000 applications):
+   main 49,995 registered and 5 Bad_InternalError, with the fix 50,000 of
+   50,000 and no `unable to open database` in the log.
 
 ## Limits of these numbers
 
