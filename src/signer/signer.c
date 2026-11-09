@@ -123,6 +123,12 @@ gds_status gds_signer_handle(gds_signer *s, const uint8_t *msg, size_t len, gds_
     case GDS_SIGP_ISSUE_CRL:
         r = gds_ca_get_issuer_crl(s->ca, m.issuer, &der);
         break;
+    case GDS_SIGP_TOKEN_CHAIN:
+        r = gds_ca_token_chain(s->ca, (const char *)m.data.data, &der);
+        break;
+    case GDS_SIGP_TOKEN_SIGN: /* gds_ca_token_sign refuses anything but a JWS input */
+        r = gds_ca_token_sign(s->ca, &m.data, &der);
+        break;
     default:
         r = GDS_EUNSUPPORTED;
         break;

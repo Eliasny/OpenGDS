@@ -148,6 +148,8 @@ struct gds_server {
     /* StartNewKeyPairRequest secrets (gds_keypair.c); kpLock is a leaf lock */
     pthread_mutex_t kpLock;
     gds_kp_entry kp[GDS_MAX_KEYPAIR_REQUESTS];
+    /* the AuthorizationService (gds_authz.c); NULL when not configured */
+    struct gds_authz *authz;
 };
 
 /* ---- caller views (gds_caller.c, issue #17) ---- */
@@ -419,5 +421,18 @@ typedef struct {
 GDS_MUST_CHECK UA_StatusCode gds_add_directory_method(gds_server *s, UA_UInt32 id, const char *name,
                                                       const gds_method_arg *in, size_t nIn,
                                                       const gds_method_arg *out, size_t nOut);
+/* AuthorizationService (gds_authz.c, OPC 10000-12 §9.6): its object,
+ * methods and token tables. install: before the server runs; free: after
+ * UA_Server_delete. */
+GDS_MUST_CHECK UA_StatusCode gds_authz_install(gds_server *s, const gds_authz_config *cfg,
+                                               const gds_buf *ownCert);
+void gds_authz_free(gds_server *s);
+/* Add a method node under parent with these arguments; the
+ * InputArguments and OutputArguments get inId / outId when not null. */
+GDS_MUST_CHECK UA_StatusCode gds_add_method(gds_server *s, UA_NodeId node, UA_NodeId parent,
+                                            const char *name, const gds_method_arg *in,
+                                            size_t nIn, UA_NodeId inId,
+                                            const gds_method_arg *out, size_t nOut,
+                                            UA_NodeId outId);
 
 #endif

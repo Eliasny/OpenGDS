@@ -124,7 +124,7 @@ static gds_status seeds_app_record(void) {
     return r;
 }
 
-/* ---- fuzz_signer_msg: first byte 0 = request, 1/3/5/7 = reply ---- */
+/* ---- fuzz_signer_msg: first byte 0 = request, 1/3/5/7/9/11 = reply ---- */
 
 static const uint8_t SIDE_REQUEST[1] = {0};
 
@@ -139,10 +139,12 @@ static gds_status put_request(const char *name, gds_sigp_op op, const UA_Guid *i
 
 static gds_status put_reply(const char *name, gds_sigp_op op, gds_status st,
                             const gds_ca_issued *issued, const gds_buf *der) {
-    uint8_t side = op == GDS_SIGP_SIGN_CSR    ? 1u
-                   : op == GDS_SIGP_GET_CHAIN ? 3u
-                   : op == GDS_SIGP_REVOKE    ? 7u
-                                              : 5u;
+    uint8_t side = op == GDS_SIGP_SIGN_CSR      ? 1u
+                   : op == GDS_SIGP_GET_CHAIN   ? 3u
+                   : op == GDS_SIGP_REVOKE      ? 7u
+                   : op == GDS_SIGP_TOKEN_CHAIN ? 9u
+                   : op == GDS_SIGP_TOKEN_SIGN  ? 11u
+                                                : 5u;
     gds_buf m = {0};
     gds_status r = gds_sigp_encode_reply(op, st, issued, der, &m);
     if(r == GDS_OK)
@@ -183,6 +185,25 @@ static gds_status seeds_signer_msg(void) {
     if(r == GDS_OK) /* not marked revoked in the fixture store: refused */
         r = put("fuzz_signer_msg", "req-revoke.bin", SIDE_REQUEST, 1, m.data, m.len);
     gds_buf_free(&m);
+    /* the AccessToken key: chain, then a JWS input ({"alg":"RS256"}.{}) */
+    static const char uri[] = "urn:opengds:fuzz:AuthorizationService";
+    static const char jws[] = "eyJhbGciOiJSUzI1NiJ9.e30";
+    gds_buf u = {(uint8_t *)(uintptr_t)uri, sizeof(uri) - 1};
+    gds_buf j = {(uint8_t *)(uintptr_t)jws, sizeof(jws) - 1};
+    if(r == GDS_OK)
+        r = gds_sigp_encode_token(GDS_SIGP_TOKEN_CHAIN, &u, &m);
+    if(r == GDS_OK)
+        r = put("fuzz_signer_msg", "req-token-chain.bin", SIDE_REQUEST, 1, m.data, m.len);
+    gds_buf_free(&m);
+    if(r == GDS_OK)
+        r = gds_sigp_encode_token(GDS_SIGP_TOKEN_SIGN, &j, &m);
+    if(r == GDS_OK)
+        r = put("fuzz_signer_msg", "req-token-sign.bin", SIDE_REQUEST, 1, m.data, m.len);
+    gds_buf_free(&m);
+    if(r == GDS_OK)
+        r = put_reply("reply-token-chain-ok.bin", GDS_SIGP_TOKEN_CHAIN, GDS_OK, NULL, &der);
+    if(r == GDS_OK)
+        r = put_reply("reply-token-sign-ok.bin", GDS_SIGP_TOKEN_SIGN, GDS_OK, NULL, &der);
     return r;
 }
 
