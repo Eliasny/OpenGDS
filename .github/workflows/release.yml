@@ -150,7 +150,8 @@ jobs:
         run: |
           set -eu
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder ninja-build
+          # elfutils: flatpak-builder strips the binaries with eu-strip
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder ninja-build elfutils
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
           WORK=$RUNNER_TEMP/flatpak scripts/release/build-flatpak.sh dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
