@@ -10,7 +10,20 @@
  *
  * Identity (12 §7.7.2, Connect step): the ApplicationInstance Certificate
  * with an Anonymous token, an X509IdentityToken of the same certificate, or
- * a user name and password (an administrator, 12 §7.4). */
+ * a user name and password (an administrator, 12 §7.4).
+ *
+ * Reverse Connect (OPC 10000-6 §7.1.3, Table 78): for a Server
+ * behind a firewall that opens connections to the Client. The session then
+ * listens on reversePort for the Server's ReverseHello and runs over the
+ * connection the Server opened. Two connections are used: the first is the
+ * discovery channel (GetEndpoints, SecurityPolicy None), the second the
+ * SignAndEncrypt channel of the session; a Server retries its connection
+ * after the first one closes. The endpoint is chosen by the Server's
+ * SecurityLevel among the endpoints we accept (open62541 chooses it on the
+ * reverse connection), and a policy gdsc_policy_rank refuses still fails.
+ * The same checks as for a direct connection follow: the Server certificate
+ * against the trust list, and serverUri, which is required here because a
+ * listening socket takes any caller. */
 #ifndef OPENGDS_CLIENT_GDSC_SESSION_H
 #define OPENGDS_CLIENT_GDSC_SESSION_H
 
@@ -50,6 +63,12 @@ typedef struct {
     const char *userName;    /* GDSC_IDENTITY_USERNAME only */
     const gds_buf *password; /* GDSC_IDENTITY_USERNAME only; no NUL bytes */
     UA_UInt32 timeoutMs; /* per request; 0 = 10 s */
+    /* Reverse Connect: 0 = connect to endpointUrl. Otherwise listen on this
+     * TCP port (on reverseHost, NULL = every interface) and wait up to
+     * reverseWaitMs (0 = 60 s) for each connection from the Server */
+    UA_UInt16 reversePort;
+    const char *reverseHost;
+    UA_UInt32 reverseWaitMs;
 } gdsc_session_cfg;
 
 typedef struct gdsc_session gdsc_session;
@@ -87,6 +106,10 @@ const UA_String *gdsc_session_policy(const gdsc_session *s);
  * verified it (DER, a copy; free with gds_buf_free). GDS_ENOTFOUND if none
  * was seen. */
 GDS_MUST_CHECK gds_status gdsc_session_server_cert(const gdsc_session *s, gds_buf *out);
+/* The Server's ApplicationDescription from the selected endpoint (copied
+ * into out; UA_ApplicationDescription_clear it) */
+GDS_MUST_CHECK UA_StatusCode gdsc_session_server_description(gdsc_session *s,
+                                                             UA_ApplicationDescription *out);
 void gdsc_session_close(gdsc_session *s);
 
 /* After ApplyChanges: the Server's SignAndEncrypt endpoints whose

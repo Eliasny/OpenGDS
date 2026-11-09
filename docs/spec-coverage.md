@@ -79,6 +79,23 @@ KeyCredentialConfiguration (§8.6) of a server under test are covered by the
 ApplyChanges, CancelChanges), SRV-WIRE, SRV-PER, SRV-REJ (GetRejectedList),
 SRV-SET (Annex G.2 setup), SRV-KC (KeyCredentialConfiguration) and SRV-AUD.
 
+## Application setup (Annex G) and Reverse Connect (`tests/spec/`)
+
+OpenGDS's own client side of Annex G is covered by `tests/spec/test_spec_annex_g.c`
+(against the Auditor's `push_test_server --setup` and `mock_gds`) and end to
+end with opengdsd by `tests/spec/run_annex_g_vs_opengdsd.sh`.
+
+| Spec item | Clause | Tests (verdict) |
+|---|---|---|
+| Push setup: setup state check (State NoConfiguration, InApplicationSetup) | 12 Annex G.2, §7.10.3 | `annexg.g2.state` (pass), `annexg.g2.not-in-setup` (pass) |
+| Push setup: only a pre-authorized device | 12 Annex G.2 (last paragraph), §7.5 | `annexg.g2.not-preauthorized` (pass) |
+| Push setup: trust list, certificate, ApplyChanges; CancelChanges on failure, device stays in setup | 12 Annex G.2, §7.7.2, §7.10.11 | `annexg.g2.setup` (pass), `annexg.g2.presents-issued` (pass), `annexg.g2.cancel-in-setup` (pass) |
+| Push setup: SecurityAdmin Role configured (AddIdentity, Application rule), device leaves setup | 12 Annex G.2, G.3; 18 §4.4.3, §4.4.5 | `annexg.g2.admin-rule` (pass), `annexg.g2.setup` (pass) |
+| Reverse Connect: ReverseHello, Server identity checked | 6 §7.1.3 (Table 78) | `annexg.rc.wrong-uri` (pass), `annexg.rc.setup` (pass) |
+| Pull setup: register, CSR with a new key, FinishRequest, trust list, persisted together | 12 Annex G.1, §7.6 (Table 21) | `annexg.g1.first` (pass) |
+| Pull setup: the issued certificate instead of credentials; no connection to an untrusted GDS | 12 Annex G.1 | `annexg.g1.renew-check` (pass), `annexg.g1.untrusted-gds` (pass) |
+| Pull setup: a pending request continues in the next run | 12 §7.6 (Table 21, SigningRequestPending) | `annexg.g1.pending` (pass) |
+
 ## UASM (Part 14 SKS, Part 21 onboarding, Part 100)
 
 UASM keeps its own matrix in `tests/spec/coverage.csv` in the UASM
