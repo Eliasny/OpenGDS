@@ -11,17 +11,22 @@
 #define MAX_CONFIG_FILE ((size_t)64 * 1024)
 #define DEFAULT_PORT 58810
 
-typedef enum { T_STR, T_PATH, T_BOOL, T_PORT, T_APPROVAL } kind;
+typedef enum { T_STR, T_PATH, T_BOOL, T_PORT, T_APPROVAL, T_U32 } kind;
 
 typedef struct {
     const char *key;
     size_t off, size;
     kind k;
     bool required;
+    long min, max; /* T_U32 */
 } field;
 
 #define F(name, member, k, req)                                                          \
-    {name, offsetof(gdsd_config, member), sizeof(((gdsd_config *)0)->member), k, req}
+    {name, offsetof(gdsd_config, member), sizeof(((gdsd_config *)0)->member), k, req, 0, 0}
+#define U(name, member, lo, hi)                                                          \
+    {name, offsetof(gdsd_config, member), sizeof(((gdsd_config *)0)->member), T_U32, false, \
+     lo, hi}
+#define DAY 86400L
 
 static const field fields[] = {
     F("application_uri", applicationUri, T_STR, true),
@@ -38,6 +43,13 @@ static const field fields[] = {
     F("port", port, T_PORT, false),
     F("loopback_only", loopbackOnly, T_BOOL, false),
     F("approval", approval, T_APPROVAL, false),
+    F("push", push, T_BOOL, false),
+    U("push_interval", pushIntervalS, 1, DAY),
+    U("push_concurrency", pushConcurrency, 1, 64),
+    U("push_jitter", pushJitterS, 0, DAY),
+    U("push_backoff_min", pushBackoffMinS, 1, DAY),
+    U("push_backoff_max", pushBackoffMaxS, 1, 30 * DAY),
+    U("push_rejected_interval", pushRejectedS, 0, 30 * DAY),
 };
 #define NFIELDS (sizeof(fields) / sizeof(fields[0]))
 
@@ -88,6 +100,15 @@ static bool set_approval(const char *v, char *dst) {
     return false;
 }
 
+static bool set_u32(const field *f, const char *v, char *dst) {
+    long n = 0;
+    if(!gds_parse_long(v, f->min, f->max, &n))
+        return false;
+    uint32_t u = (uint32_t)n;
+    memcpy(dst, &u, sizeof(u));
+    return true;
+}
+
 static bool set_value(const field *f, const char *v, size_t n, gdsd_config *c) {
     char *dst = (char *)c + f->off;
     char tmp[GDSD_MAX_VALUE];
@@ -111,6 +132,9 @@ static bool set_value(const field *f, const char *v, size_t n, gdsd_config *c) {
     case T_APPROVAL:
         GDS_ASSERT(f->size == sizeof(uint8_t));
         return set_approval(tmp, dst);
+    case T_U32:
+        GDS_ASSERT(f->size == sizeof(uint32_t));
+        return set_u32(f, tmp, dst);
     default:
         return false;
     }
@@ -122,6 +146,12 @@ static void defaults(gdsd_config *c) {
     memcpy(c->productUri, "https://opengds.org/opengds", sizeof("https://opengds.org/opengds"));
     c->port = DEFAULT_PORT;
     c->approval = GDSD_APPROVE_RENEWALS;
+    c->pushIntervalS = 60;
+    c->pushConcurrency = 4;
+    c->pushJitterS = 300;
+    c->pushBackoffMinS = 60;
+    c->pushBackoffMaxS = 6 * 3600;
+    c->pushRejectedS = 3600;
 }
 
 static bool is_name_char(char c) {
@@ -229,6 +259,8 @@ gds_status gdsd_config_parse(const char *text, size_t len, gdsd_config *out, uns
     }
     if(out->signer[0] && out->signerSocket[0])
         return GDS_EINVAL; /* one way to reach the signer */
+    if(out->pushBackoffMaxS < out->pushBackoffMinS)
+        return GDS_EINVAL;
     return GDS_OK;
 }
 

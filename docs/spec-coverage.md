@@ -99,7 +99,8 @@ These items have no test yet, and each needs work before it can have one:
   RequestorData of Table 149 from an identity provider.
 - RequestAccessToken (§9.6.5), which the spec deprecates.
 - GetRejectedList (§7.8.3.1, Optional) on GDS certificate groups. The push
-  side covers it as SRV-REJ.
+  side covers it as SRV-REJ, and the push engine calls it on devices
+  (`tests/integration/test_push_engine.c`, `docs/push.md`).
 - Push side: DefaultValidationOptions, HasSecureElement and
   ConfigurationFile, the ServerConfiguration ProductUri, ApplicationNames and
   ApplicationType, the CertificateExpired and TrustListOutOfDate alarms, and

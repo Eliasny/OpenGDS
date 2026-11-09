@@ -66,7 +66,7 @@ typedef struct {
      * for a RegistrationAuthorityAdmin (gds_approvals.c). */
     gds_approval_policy approval;
     /* KeyCredentialServices (0 .. GDS_MAX_KC_SERVICES); copied. They need
-     * a store with the KeyCredential calls (store backend minor 6). The
+     * a store with the KeyCredential calls (store backend minor 7). The
      * approval policy applies to their requests as well. */
     const gds_keycred_service *keyCredServices;
     size_t keyCredServicesSize;

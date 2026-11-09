@@ -155,6 +155,27 @@ GDS_MUST_CHECK gds_status gds_store_tl_get(gds_store *s, uint32_t groupId, gds_b
 GDS_MUST_CHECK gds_status gds_store_tl_put(gds_store *s, uint32_t groupId, const gds_buf *data,
                                            int64_t lastUpdate);
 
+/* ---- push targets (OPC 10000-12 §7.7; OpenGDS plan push_engine.c,
+ * schema 1 table push_targets) ----
+ * The Servers the push engine manages: one row per application, with the
+ * opc.tcp endpoint the engine connects to and whether it is enabled. The
+ * row goes when the application is deleted. GDS_EUNSUPPORTED for a backend
+ * before minor 6. Put adds or replaces the row (GDS_ENOTFOUND: no such
+ * application); delete is GDS_ENOTFOUND when there was no row. */
+#define GDS_MAX_PUSH_ENDPOINT 512
+typedef struct {
+    UA_Guid appId;
+    const char *endpoint; /* borrowed in a scan callback; NUL-terminated */
+    bool enabled;
+} gds_push_target_row;
+typedef bool (*gds_push_target_cb)(void *ctx, const gds_push_target_row *row);
+GDS_MUST_CHECK gds_status gds_store_push_target_put(gds_store *s, const UA_Guid *appId,
+                                                    const char *endpoint, bool enabled);
+GDS_MUST_CHECK gds_status gds_store_push_target_delete(gds_store *s, const UA_Guid *appId);
+/* In application order; the callback returns false to stop. */
+GDS_MUST_CHECK gds_status gds_store_push_target_scan(gds_store *s, gds_push_target_cb cb,
+                                                     void *ctx);
+
 /* ---- the audit log (issue #18) ----
  * Append-only and hash-chained: row n's hash is
  *   SHA-256(prev_hash || seq (8 bytes, big-endian) || time (8 bytes,
@@ -237,7 +258,7 @@ typedef struct {
 } gds_kc_cred;
 
 void gds_kc_request_clear(gds_kc_request *r);
-/* Does the backend have the KeyCredential calls (minor 6)? */
+/* Does the backend have the KeyCredential calls (minor 7)? */
 bool gds_store_kc_supported(gds_store *s);
 GDS_MUST_CHECK gds_status gds_store_kc_req_insert(gds_store *s, const gds_kc_request *r);
 GDS_MUST_CHECK gds_status gds_store_kc_req_get(gds_store *s, const UA_Guid *id,
@@ -266,8 +287,10 @@ GDS_MUST_CHECK gds_status gds_store_kc_cred_scan(gds_store *s, gds_store_kc_cred
  * transaction: it commits fully or changes nothing. The core calls a
  * backend from one thread at a time (see "Single-writer" above). */
 #define GDS_STORE_ABI_MAJOR 1u
-#define GDS_STORE_ABI_MINOR 6u /* 1: the audit log; 2: req_scan; 3: cert_revoke, cert_revoke_app,
-                                  cert_is_revoked; 4: cert_scan; 5: tl_get, tl_put; 6: kc_* */
+#define GDS_STORE_ABI_MINOR 7u /* 1: the audit log; 2: req_scan; 3: cert_revoke, cert_revoke_app,
+                                  cert_is_revoked; 4: cert_scan; 5: tl_get, tl_put;
+                                  6: push_target_put, push_target_delete,
+                                  push_target_scan; 7: kc_* */
 
 typedef struct {
     uint32_t abi_major;
@@ -309,6 +332,11 @@ typedef struct {
     gds_status (*tl_get)(void *ctx, uint32_t groupId, gds_buf *data, int64_t *lastUpdate);
     gds_status (*tl_put)(void *ctx, uint32_t groupId, const gds_buf *data, int64_t lastUpdate);
     /* minor 6 */
+    gds_status (*push_target_put)(void *ctx, const UA_Guid *appId, const char *endpoint,
+                                  bool enabled);
+    gds_status (*push_target_delete)(void *ctx, const UA_Guid *appId);
+    gds_status (*push_target_scan)(void *ctx, gds_push_target_cb cb, void *cbCtx);
+    /* minor 7 */
     gds_status (*kc_req_insert)(void *ctx, const gds_kc_request *r);
     gds_status (*kc_req_get)(void *ctx, const UA_Guid *id, gds_kc_request *out);
     gds_status (*kc_req_set_state)(void *ctx, const UA_Guid *id, gds_kc_state state);
@@ -331,8 +359,9 @@ typedef struct {
  * UnregisterApplication answer Bad_NotSupported. Before minor 4 (or with
  * cert_scan NULL) gds_store_cert_scan returns GDS_EUNSUPPORTED. Before minor 5
  * the trust list calls return GDS_EUNSUPPORTED, so the group trust lists
- * can be read but not written (Bad_NotSupported). Before minor 6 (or with
- * any kc_* NULL) the KeyCredential calls return GDS_EUNSUPPORTED and the
+ * can be read but not written (Bad_NotSupported). Before minor 6 the push
+ * target calls return GDS_EUNSUPPORTED and the push engine has no targets.
+ * Before minor 7 (or with any kc_* NULL) the KeyCredential calls return GDS_EUNSUPPORTED and the
  * server offers no KeyCredentialService. */
 GDS_MUST_CHECK gds_status gds_store_open_backend(const gds_store_backend *be, void *ctx,
                                                  gds_store **out);

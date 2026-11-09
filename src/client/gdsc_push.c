@@ -385,3 +385,35 @@ UA_StatusCode gdsc_apply_changes(UA_Client *c) {
 UA_StatusCode gdsc_cancel_changes(UA_Client *c) {
     return call_no_args(c, UA_NS0ID_SERVERCONFIGURATION_CANCELCHANGES);
 }
+
+UA_StatusCode gdsc_get_rejected_list(UA_Client *c, UA_ByteString **certs, size_t *n) {
+    *certs = NULL;
+    *n = 0;
+    const UA_NodeId obj = ns0(UA_NS0ID_SERVERCONFIGURATION);
+    const UA_NodeId method = ns0(UA_NS0ID_SERVERCONFIGURATION_GETREJECTEDLIST);
+    UA_Variant *out = NULL;
+    size_t outN = 0;
+    UA_StatusCode r = call(c, &obj, &method, 0, NULL, 1, &out, &outN);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    const UA_Variant *v = &out[0];
+    if(UA_Variant_isEmpty(v)) {
+        out_free(&out, &outN); /* an empty list may come as a null array */
+        return UA_STATUSCODE_GOOD;
+    }
+    if(v->type != &UA_TYPES[UA_TYPES_BYTESTRING] || UA_Variant_isScalar(v))
+        r = UA_STATUSCODE_BADUNEXPECTEDERROR;
+    else if(v->arrayLength > GDS_MAX_TRUSTLIST_ENTRIES)
+        r = UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
+    const UA_ByteString *a = (const UA_ByteString *)v->data;
+    for(size_t i = 0; r == UA_STATUSCODE_GOOD && i < v->arrayLength; i++)
+        if(a[i].length > GDS_MAX_CERT_SIZE)
+            r = UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
+    if(r == UA_STATUSCODE_GOOD && v->arrayLength > 0) {
+        r = UA_Array_copy(v->data, v->arrayLength, (void **)certs, &UA_TYPES[UA_TYPES_BYTESTRING]);
+        if(r == UA_STATUSCODE_GOOD)
+            *n = v->arrayLength;
+    }
+    out_free(&out, &outN);
+    return r;
+}

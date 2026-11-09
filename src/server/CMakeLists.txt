@@ -15,6 +15,7 @@ add_library(gds_server STATIC
     gds_nodes.c
     gds_plugin_tl.c
     gds_policy.c
+    gds_push_slot.c
     gds_registrar.c
     gds_revoke.c
     gds_server.c

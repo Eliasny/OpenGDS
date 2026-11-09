@@ -27,7 +27,7 @@ Once its socket, store and CA are open (with `--listen`: at the first connection
 
 `opengdsd` sandboxes itself the same way once it has started (store, CA or signer connection, own certificate), with a wider profile for the OPC UA server:
 
-- Landlock: `data_dir` read-write, `ca_dir` read-write only with the in-process CA, the configuration and users files read-only, and `/etc/hosts`, `/etc/resolv.conf`, `/etc/nsswitch.conf`, `/etc/host.conf`, `/etc/gai.conf` and `/etc/localtime` read-only. TCP bind is allowed only on `port`, and TCP connect is not allowed at all (`opengdsd` makes no outgoing connections; push runs in `gdsadm`).
+- Landlock: `data_dir` read-write, `ca_dir` read-write only with the in-process CA, the configuration and users files read-only, and `/etc/hosts`, `/etc/resolv.conf`, `/etc/nsswitch.conf`, `/etc/host.conf`, `/etc/gai.conf` and `/etc/localtime` read-only. TCP bind is allowed only on `port`. TCP connect is not allowed unless `push = true`, which lets the push engine connect to devices (`docs/push.md`).
 - seccomp: the signer's allowlist plus sockets, epoll, timers and threads. `clone` is allowed only with `CLONE_THREAD`, so `fork` fails, and `clone3` answers ENOSYS so that libc falls back to `clone`. `ioctl` is limited to FIONBIO and FIONREAD. `execve`, `ptrace` and the others kill the process.
 
 The `opengds-signer: sandbox:` and `opengdsd: sandbox:` log lines (`Landlock ABI N, seccomp on`) show what applied. seccomp needs libseccomp (2.5 or later) at build time. `-DOPENGDS_SECCOMP=ON` makes it required, and without it the build applies Landlock only. Builds with AddressSanitizer or ThreadSanitizer skip the sandbox.
@@ -111,7 +111,7 @@ Requests follow `approval` exactly as certificate requests do: `auto` approves e
 
 On an approved request FinishRequest generates the credential: the CredentialId `opengds-` followed by 32 hex digits, and a secret of 32 random bytes in base64url (43 characters). The secret is returned once and never stored: the store keeps only a salted hash in the format of `mosquitto_passwd` (`$7$`, PBKDF2-SHA512), so a broker can check it. A new credential for the same application and service replaces the earlier one. An application that embeds OpenGDS (UASM) can supply the credentials itself instead, through `gds_server_set_keycred_source` in `gds_plugin.h`: its source makes the CredentialId and secret on a plugin worker and is asked first on Revoke, and the store then keeps only the CredentialId. Revoke (§8.5.7) deletes a credential; KeyCredentialAdmin or the application itself may call it. Unregistering an application deletes its credentials and requests.
 
-The requests and credentials are in the store (schema 5), so they survive a restart and replicate with it. A store backend without them (before store ABI minor 6) cannot start with a `keycred_service` line.
+The requests and credentials are in the store (schema 5), so they survive a restart and replicate with it. A store backend without them (before store ABI minor 7) cannot start with a `keycred_service` line.
 
 ## Revoking certificates
 

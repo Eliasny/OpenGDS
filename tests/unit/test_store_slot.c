@@ -135,6 +135,7 @@ static const gds_store_backend refusingBackend = {
     rf_cert_revoke, rf_cert_revoke_app, rf_cert_is_revoked,
     NULL, /* no cert_scan */
     NULL, NULL, /* no trust lists */
+    NULL, NULL, NULL, /* no push targets */
     NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, /* no KeyCredentials */
 };
 

@@ -146,6 +146,14 @@ add_executable(test_keypair_map test_keypair_map.c)
 target_link_libraries(test_keypair_map PRIVATE gds_server)
 add_test(NAME unit_keypair_map COMMAND test_keypair_map)
 
+# OpenGDS W3: the push engine's timing rules, the push target list and the
+# push-scheduling slot
+add_executable(test_push_sched test_push_sched.c)
+target_link_libraries(test_push_sched PRIVATE gds_push_engine)
+add_test(NAME unit_push_sched COMMAND test_push_sched)
+add_executable(test_push_targets test_push_targets.c)
+target_link_libraries(test_push_targets PRIVATE gds_push_engine)
+add_test(NAME unit_push_targets COMMAND test_push_targets "${CMAKE_CURRENT_BINARY_DIR}/push-targets-run")
 add_executable(test_keycred test_keycred.c)
 target_link_libraries(test_keycred PRIVATE gds_server)
 add_test(NAME unit_keycred COMMAND test_keycred "${CMAKE_CURRENT_BINARY_DIR}/keycred-run")

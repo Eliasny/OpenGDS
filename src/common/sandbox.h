@@ -44,8 +44,11 @@ typedef struct {
     const gds_sb_path *paths; /* the only file system access left */
     size_t nPaths;
     /* Landlock ABI 4+: the one TCP port the process may bind (0: none).
-     * TCP connect is never allowed. */
+     * TCP connect is never allowed, unless tcpConnect is set. */
     unsigned short tcpBindPort;
+    /* GDS_SB_DAEMON only: outgoing TCP connections to any port, for the
+     * push engine, which connects to the managed Servers (docs/push.md) */
+    bool tcpConnect;
 } gds_sandbox;
 
 /* What gds_sandbox_apply() put in place, for the log and the tests. */
