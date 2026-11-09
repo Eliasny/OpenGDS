@@ -26,7 +26,7 @@
  * server profile still restores the target; a second signal kills.
  * SIGUSR1 pauses before the next test, SIGUSR2 resumes. Windows has no
  * such signals: there the desktop UI passes --control NAME, three named
- * events NAME-pause, NAME-resume and NAME-abort, and gives --events and
+ * events NAME-paused, NAME-changed and NAME-abort, and gives --events and
  * --prompts as named pipes (\\.\pipe\...).
  *
  * gds runs the GDS profile (the T0 spec tests) against a GDS; server runs
@@ -515,21 +515,21 @@ static void install_abort_handler(void) {
     signal(SIGBREAK, on_signal);
 }
 
-/* --control NAME: the desktop UI sets NAME-pause, NAME-resume or NAME-abort
- * (auto-reset events it created) where Linux would send SIGUSR1, SIGUSR2
- * or SIGINT. The UI also closes the answer pipe on abort, so a prompt
- * waiting in read() ends. */
-static HANDLE controlEvents[3];
+/* --control NAME: events the desktop UI created, used where Linux would
+ * send SIGUSR1, SIGUSR2 or SIGINT. NAME-paused (manual reset) holds the
+ * pause state; the UI sets or resets it, then sets NAME-changed, and the
+ * state is read after each wake, so the last click wins however fast they
+ * come. NAME-abort aborts. The UI also closes the answer pipe on abort, so
+ * a prompt waiting in read() ends. */
+static HANDLE controlEvents[3]; /* changed, abort, paused */
 
 static DWORD WINAPI control_thread(LPVOID arg) {
     (void)arg;
     for(;;) {
-        DWORD w = WaitForMultipleObjects(3, controlEvents, FALSE, INFINITE);
+        DWORD w = WaitForMultipleObjects(2, controlEvents, FALSE, INFINITE);
         if(w == WAIT_OBJECT_0)
-            ga_request_pause(true);
+            ga_request_pause(WaitForSingleObject(controlEvents[2], 0) == WAIT_OBJECT_0);
         else if(w == WAIT_OBJECT_0 + 1)
-            ga_request_pause(false);
-        else if(w == WAIT_OBJECT_0 + 2)
             ga_request_abort();
         else
             return 0;
@@ -537,7 +537,7 @@ static DWORD WINAPI control_thread(LPVOID arg) {
 }
 
 static bool start_control(const char *name) {
-    static const char *const suffix[3] = {"-pause", "-resume", "-abort"};
+    static const char *const suffix[3] = {"-changed", "-abort", "-paused"};
     for(int i = 0; i < 3; i++) {
         char n[256];
         if(snprintf(n, sizeof(n), "%s%s", name, suffix[i]) >= (int)sizeof(n) ||

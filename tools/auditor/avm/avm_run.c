@@ -37,7 +37,7 @@ struct AvmRun {
     char *error;
 #ifdef G_OS_WIN32
     HANDLE answerPipe;  /* the engine's --prompts pipe (answerFd is unused) */
-    HANDLE control[3];  /* pause, resume, abort (the engine's --control) */
+    HANDLE control[3];  /* changed, abort, paused (the engine's --control) */
     struct pipe_connect *connecting; /* pipes the engine has not opened yet */
 #endif
 };
@@ -304,7 +304,9 @@ static gboolean wait_connect(HANDLE pipe, OVERLAPPED *ov) {
     if(GetOverlappedResult(pipe, ov, &n, FALSE))
         return TRUE;
     DWORD e = GetLastError();
-    /* ERROR_IO_INCOMPLETE: the event was set because it was already connected */
+    /* ERROR_IO_INCOMPLETE: start_connect set the event itself because the
+     * client was already there; no I/O ran on this OVERLAPPED, so
+     * GetOverlappedResult has nothing to report */
     return e == ERROR_PIPE_CONNECTED || e == ERROR_NO_DATA || e == ERROR_IO_INCOMPLETE;
 }
 
@@ -373,12 +375,14 @@ AvmRun *avm_run_start(char **argv, const char *runDir, const AvmRunCallbacks *cb
     c->events = new_pipe(evName, PIPE_ACCESS_INBOUND);
     c->answers = new_pipe(ansName, PIPE_ACCESS_OUTBOUND);
     HANDLE control[3] = {NULL, NULL, NULL};
-    static const char *const suffix[3] = {"-pause", "-resume", "-abort"};
+    /* changed and abort auto-reset; paused manual-reset: the pause state,
+     * read by the engine after each "changed" (cli/main.c) */
+    static const char *const suffix[3] = {"-changed", "-abort", "-paused"};
     gboolean ok = c->ovEvents.hEvent && c->ovAnswers.hEvent &&
                   c->events != INVALID_HANDLE_VALUE && c->answers != INVALID_HANDLE_VALUE;
     for(int i = 0; ok && i < 3; i++) {
         char *n = g_strconcat(ctlName, suffix[i], NULL);
-        control[i] = CreateEventA(NULL, FALSE, FALSE, n); /* auto-reset */
+        control[i] = CreateEventA(NULL, i == 2, FALSE, n);
         ok = control[i] && GetLastError() != ERROR_ALREADY_EXISTS;
         g_free(n);
     }
@@ -577,8 +581,8 @@ void avm_run_abort(AvmRun *run) {
     if(!run || run->exited || !run->proc)
         return;
 #ifdef G_OS_WIN32
-    if(run->control[2])
-        SetEvent(run->control[2]);
+    if(run->control[1])
+        SetEvent(run->control[1]);
     close_answers(run); /* a prompt the engine waits on ends */
 #else
     g_subprocess_send_signal(run->proc, SIGINT);
@@ -589,9 +593,13 @@ void avm_run_pause(AvmRun *run, gboolean paused) {
     if(!run || run->exited || !run->proc)
         return;
 #ifdef G_OS_WIN32
-    HANDLE h = run->control[paused ? 0 : 1];
-    if(h)
-        SetEvent(h);
+    if(run->control[2] && run->control[0]) {
+        if(paused)
+            SetEvent(run->control[2]);
+        else
+            ResetEvent(run->control[2]);
+        SetEvent(run->control[0]);
+    }
 #else
     g_subprocess_send_signal(run->proc, paused ? SIGUSR1 : SIGUSR2);
 #endif
