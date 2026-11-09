@@ -261,6 +261,65 @@ gds_status cax_add_san(X509 *x, const UA_ApplicationRecordDataType *rec) {
     return r;
 }
 
+/* The SubjectPublicKeyInfo parameters X509_set_pubkey writes: NULL for
+ * rsaEncryption, the curve OID for id-ecPublicKey. */
+/* RSAPublicKey in DER: the generic decoder's own DER encoding of it is
+ * byte for byte the same (no long-form or indefinite lengths). */
+static bool rsa_bits_der(const unsigned char *bits, int len) {
+    const unsigned char *p = bits;
+    ASN1_SEQUENCE_ANY *seq = d2i_ASN1_SEQUENCE_ANY(NULL, &p, len);
+    unsigned char *again = NULL;
+    int n = seq && p == bits + len && sk_ASN1_TYPE_num(seq) == 2
+                ? i2d_ASN1_SEQUENCE_ANY(seq, &again)
+                : -1;
+    bool ok = n == len && again && memcmp(again, bits, (size_t)len) == 0;
+    OPENSSL_free(again);
+    sk_ASN1_TYPE_pop_free(seq, ASN1_TYPE_free);
+    return ok;
+}
+
+/* What X509_set_pubkey would write for the key: rsaEncryption with NULL
+ * parameters and a DER RSAPublicKey, or id-ecPublicKey with a named curve
+ * (P-256 or P-384) and an uncompressed point. */
+static bool spki_canonical(const ASN1_OBJECT *alg, int ptype, const void *pval,
+                           const unsigned char *bits, int len) {
+    int nid = OBJ_obj2nid(alg);
+    if(nid == NID_rsaEncryption)
+        return ptype == V_ASN1_NULL && rsa_bits_der(bits, len);
+    if(nid != NID_X9_62_id_ecPublicKey || ptype != V_ASN1_OBJECT)
+        return false;
+    int curve = OBJ_obj2nid(pval);
+    int point = curve == NID_X9_62_prime256v1 ? 65 : curve == NID_secp384r1 ? 97 : 0;
+    return len == point && bits[0] == 0x04; /* POINT_CONVERSION_UNCOMPRESSED */
+}
+
+gds_status cax_set_pubkey_from_req(X509 *x, X509_REQ *req, EVP_PKEY *pk) {
+    const unsigned char *bits = NULL;
+    int bitsLen = 0;
+    X509_ALGOR *alg = NULL;
+    const ASN1_OBJECT *algObj = NULL;
+    const void *pval = NULL;
+    int ptype = V_ASN1_UNDEF;
+    if(X509_PUBKEY_get0_param(NULL, &bits, &bitsLen, &alg, X509_REQ_get_X509_PUBKEY(req)) != 1 ||
+       !alg || !bits || bitsLen <= 0)
+        return GDS_EINVAL;
+    X509_ALGOR_get0(&algObj, &ptype, &pval, alg);
+    if(!algObj || !spki_canonical(algObj, ptype, pval, bits, bitsLen))
+        return X509_set_pubkey(x, pk) == 1 ? GDS_OK : GDS_ECRYPTO;
+    ASN1_OBJECT *o = OBJ_dup(algObj);
+    ASN1_OBJECT *curve = ptype == V_ASN1_OBJECT ? OBJ_dup(pval) : NULL;
+    unsigned char *copy = OPENSSL_memdup(bits, (size_t)bitsLen);
+    /* set0_param takes o, curve and copy only when it succeeds */
+    if(!o || (ptype == V_ASN1_OBJECT && !curve) || !copy ||
+       X509_PUBKEY_set0_param(X509_get_X509_PUBKEY(x), o, ptype, curve, copy, bitsLen) != 1) {
+        ASN1_OBJECT_free(o);
+        ASN1_OBJECT_free(curve);
+        OPENSSL_free(copy);
+        return GDS_ENOMEM;
+    }
+    return GDS_OK;
+}
+
 gds_status cax_cert_der(X509 *x, gds_buf *out) {
     memset(out, 0, sizeof(*out));
     int n = i2d_X509(x, NULL);

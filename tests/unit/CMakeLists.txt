@@ -6,6 +6,11 @@ add_test(NAME unit_store COMMAND test_store "${CMAKE_CURRENT_BINARY_DIR}/store-r
 add_executable(test_ca test_ca.c)
 target_link_libraries(test_ca PRIVATE gds_ca)
 add_test(NAME unit_ca COMMAND test_ca "${CMAKE_CURRENT_BINARY_DIR}/ca-run")
+
+# the certificate's subjectPublicKeyInfo copied from the CSR (src/ca/ca_x509.c)
+add_executable(test_ca_pubkey test_ca_pubkey.c)
+target_link_libraries(test_ca_pubkey PRIVATE gds_ca)
+add_test(NAME unit_ca_pubkey COMMAND test_ca_pubkey)
 add_executable(test_signer test_signer.c)
 target_link_libraries(test_signer PRIVATE gds_signer gds_ca_ipc)
 add_test(NAME unit_signer COMMAND test_signer "${CMAKE_CURRENT_BINARY_DIR}/signer-run")

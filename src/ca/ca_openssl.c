@@ -232,7 +232,10 @@ static bool csr_key_fits(EVP_PKEY *pk, gds_ca_issuer issuer) {
     return EVP_PKEY_is_a(pk, "RSA") && bits >= 2048 && bits <= 4096;
 }
 
-static gds_status check_csr(const gds_buf *csrDer, gds_ca_issuer issuer, EVP_PKEY **pkOut) {
+/* On GDS_OK the caller owns *reqOut and *pkOut. */
+static gds_status check_csr(const gds_buf *csrDer, gds_ca_issuer issuer, X509_REQ **reqOut,
+                            EVP_PKEY **pkOut) {
+    *reqOut = NULL;
     *pkOut = NULL;
     if(csrDer->len == 0 || csrDer->len > GDS_MAX_CSR_SIZE)
         return csrDer->len ? GDS_ETOOBIG : GDS_EINVAL;
@@ -250,11 +253,13 @@ static gds_status check_csr(const gds_buf *csrDer, gds_ca_issuer issuer, EVP_PKE
     if(csr_key_fits(pk, issuer))
         r = GDS_OK;
 done:
-    if(r != GDS_OK)
+    if(r != GDS_OK) {
         EVP_PKEY_free(pk);
-    else
+        X509_REQ_free(req);
+    } else {
         *pkOut = pk;
-    X509_REQ_free(req);
+        *reqOut = req;
+    }
     return r;
 }
 
@@ -287,8 +292,8 @@ static gds_status leaf_extensions(ossl_ca *c, X509 *x, const UA_ApplicationRecor
     return r;
 }
 
-static gds_status build_leaf(ossl_ca *c, const UA_ApplicationRecordDataType *rec, EVP_PKEY *pk,
-                             X509 **out, gds_ca_issued *issued) {
+static gds_status build_leaf(ossl_ca *c, const UA_ApplicationRecordDataType *rec, X509_REQ *req,
+                             EVP_PKEY *pk, X509 **out, gds_ca_issued *issued) {
     *out = NULL;
     if(rec->applicationNamesSize == 0)
         return GDS_EINVAL;
@@ -309,9 +314,10 @@ static gds_status build_leaf(ossl_ca *c, const UA_ApplicationRecordDataType *rec
     if(r == GDS_OK)
         r = cax_make_name(&rec->applicationNames[0].text, c->org, &name);
     if(r == GDS_OK && (X509_set_subject_name(x, name) != 1 ||
-                       X509_set_issuer_name(x, X509_get_subject_name(c->cert)) != 1 ||
-                       X509_set_pubkey(x, pk) != 1))
+                       X509_set_issuer_name(x, X509_get_subject_name(c->cert)) != 1))
         r = GDS_ECRYPTO;
+    if(r == GDS_OK)
+        r = cax_set_pubkey_from_req(x, req, pk);
     if(r == GDS_OK)
         r = leaf_extensions(c, x, rec);
     X509_NAME_free(name);
@@ -328,17 +334,19 @@ static gds_status build_leaf(ossl_ca *c, const UA_ApplicationRecordDataType *rec
 static gds_status issuer_sign_csr(ossl_ca *c, const gds_ca_subject *subj, const gds_buf *csrDer,
                                   gds_ca_issued *out) {
     EVP_PKEY *pk = NULL;
-    gds_status r = check_csr(csrDer, c->issuer, &pk);
+    X509_REQ *req = NULL;
+    gds_status r = check_csr(csrDer, c->issuer, &req, &pk);
     if(r != GDS_OK)
         return r;
     X509 *x = NULL;
-    r = build_leaf(c, subj->record, pk, &x, out);
+    r = build_leaf(c, subj->record, req, pk, &x, out);
     if(r == GDS_OK && X509_sign(x, c->key, c->md) <= 0)
         r = GDS_ECRYPTO;
     if(r == GDS_OK)
         r = cax_cert_der(x, &out->der);
     X509_free(x);
     EVP_PKEY_free(pk);
+    X509_REQ_free(req);
     return r;
 }
 

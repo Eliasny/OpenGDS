@@ -44,6 +44,14 @@ GDS_MUST_CHECK gds_status cax_add_san(X509 *x, const UA_ApplicationRecordDataTyp
  * brackets. Refuses anything that is not a DNS name or an IP literal. */
 GDS_MUST_CHECK gds_status cax_url_host(const UA_String *url, char *host, size_t hostLen,
                                        bool *isIp);
+/* x's subjectPublicKeyInfo: the request's, copied as it is when it is in
+ * the one encoding X509_set_pubkey(pk) would write (rsaEncryption with
+ * NULL parameters and a DER RSAPublicKey, RFC 3279 §2.3.1; id-ecPublicKey
+ * with the P-256 or P-384 curve OID and an uncompressed point, RFC 5480
+ * §2.1.1, §2.2), else encoded from pk. pk is the key decoded from req.
+ * The copy saves encoding the key through the provider again (perf
+ * finding 2, docs/perf.md). */
+GDS_MUST_CHECK gds_status cax_set_pubkey_from_req(X509 *x, X509_REQ *req, EVP_PKEY *pk);
 GDS_MUST_CHECK gds_status cax_cert_der(X509 *x, gds_buf *out);
 GDS_MUST_CHECK gds_status cax_crl_der(X509_CRL *c, gds_buf *out);
 

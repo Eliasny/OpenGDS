@@ -25,7 +25,7 @@ lines, with `ERRORS <step> <StatusCode> <count>` lines for failed calls and
 | `DEVICES` | 64 | `push_test_server` instances for `load_push` |
 | `PUSH_PARALLEL` | 64 | parallel push sessions |
 | `PUSH_JOBS` | 256 | pushes in total |
-| `SIGN_SECONDS` | 5 | length of each `bench_sign` measure |
+| `SIGN_SECONDS` | 5 | CPU seconds of each `bench_sign` measure, in 0.25 s rounds |
 
 64 devices need more inotify instances than the Linux default of 128 per user
 (open62541's file certificate store takes them):
@@ -40,7 +40,7 @@ stable runner, and is left for later.
 
 | Tool | Measures |
 |---|---|
-| `bench_sign` | `gds_ca_sign_csr` through the CA slot with the built-in OpenSSL backend (the code `opengds-signer` runs), against the bare `EVP_PKEY_sign` with a key of the CA's type and size, which is what `openssl speed` times. Single thread. RSA and P-256 issuers. |
+| `bench_sign` | `gds_ca_sign_csr` through the CA slot with the built-in OpenSSL backend (the code `opengds-signer` runs), against the bare `EVP_PKEY_sign` with a key of the CA's type and size, which is what `openssl speed` times. Single thread, thread CPU time; the bare and the CA measure alternate in 0.25 s rounds and the ratio is the median of the rounds' ratios. RSA and P-256 issuers. |
 | `bench_register` | RegisterApplication (OPC 10000-12 §6.5.5) rate from T sessions until the store holds `APPS` records, then FindApplications latency at that size. |
 | `load_pull` | N pull agents, each with its own SignAndEncrypt session: first all sessions are opened and held together (concurrent sessions), then each runs RegisterApplication, StartSigningRequest/FinishRequest (polled every 20 ms) and GetTrustList with every session still open. |
 | `load_push` | P workers, each with a GDS session, push to D `push_test_server` devices the way `gdsadm push now` does (§7.7.2, Annex G.3): trust list, CreateSigningRequest, signing on the GDS, UpdateCertificate, ApplyChanges. Reports pushes per second and what that covers in 24 h. |
@@ -62,7 +62,7 @@ the moment (Elias, 2026-11-09).
 | 50,000 registered applications | 50,000 registered; store 16 MiB; FindApplications p50 0.07 ms, p99 0.3 ms | met; the 2 to 6 failed registrations per run are fixed (finding 3) |
 | RegisterApplication 1,000 per second | 1,780 to 2,140 per second from 16 sessions; p50 6.7 ms, p99 19 ms | met |
 | 500 concurrent sessions | 500 open at once, then 500 pull workflows with every session held (before finding 1 was fixed: 100, the other 400 refused) | met (finding 1) |
-| RSA-2048 issuance within 10% of `openssl speed` | CA slot 760 certificates/s against 915 bare RSA-3072 signatures/s: **81 to 87%** | **missed** (finding 2) |
+| RSA-2048 issuance within 10% of `openssl speed` | CA slot 820 to 870 certificates/s against 910 to 960 bare RSA-3072 signatures/s: **88 to 91%** in CPU time, 97.7% in instructions (before finding 2: 81 to 87%) | borderline (finding 2) |
 | Push coverage 10,000 servers per 24 h with 64 parallel sessions | 256 pushes to 64 devices in 10 s: 25.5 per second, about 2.2 million per 24 h | met |
 | Daemon memory at 50,000 apps under 150 MB | `opengdsd` 26 MiB (31 MiB after the pull load), `opengds-signer` 8 MiB | met |
 | Cold start with 50,000 records under 2 s | 0.35 to 0.40 s to listening | met |
@@ -107,7 +107,29 @@ Other numbers from the same run:
    issuing reaches 760 to 800. The rest is the CSR parse and its
    proof-of-possession check, building the certificate from the record, and
    DER encoding. With an RSA-2048 CA key every number would roughly triple,
-   but the ratio is what the target names.
+   but the ratio is what the target names. **Rework, 2026-11-09:**
+   - Profile (callgrind, RSA only): issuing one certificate is 32.5 million
+     instructions against 31.8 million for the bare signature (97.7%);
+     `X509_sign` itself costs what the bare signature costs. Of the rest,
+     encoding the CSR's key again for the certificate
+     (`X509_set_pubkey`, through the provider encoders) was the largest
+     part, 23 µs for RSA-2048 and 31 µs for P-256.
+   - The certificate now takes the CSR's subjectPublicKeyInfo as it is
+     when it is already in the one form `X509_set_pubkey` would write
+     (rsaEncryption with NULL parameters and a DER RSAPublicKey; P-256 or
+     P-384 named curve with an uncompressed point), and encodes the key
+     again otherwise (`cax_set_pubkey_from_req`, `unit_ca_pubkey`).
+   - `bench_sign` measured the bare signature and then the CA for 5 s each
+     in wall-clock time; on this shared host the speed drifts by 10 to 20%
+     within a minute, which landed on one side. It now uses the thread's
+     CPU time and alternates the two in 0.25 s rounds.
+   - Rerun, three runs of 10 s: RSA 88.2, 91.2 and 89.6% (P-256 issuance
+     5,700 certificates/s, up from 4,400 to 4,900). The remaining gap in
+     time is larger than in instructions; most likely the CSR decode and
+     certificate build between two signatures push the modular
+     exponentiation's code and tables out of the CPU caches (not measured:
+     no hardware counters in this VM). On a host with steadier timing (a CI runner or
+     bare metal) the number should be rechecked.
 3. **A few registrations fail with Bad_InternalError under load.** 2 to 6 of
    50,000 per run; `opengdsd` logs
    `store: insert application: unable to open database file (14)`. SQLite
