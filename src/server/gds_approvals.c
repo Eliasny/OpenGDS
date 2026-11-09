@@ -63,9 +63,18 @@ static UA_StatusCode dialog_fields(UA_Server *ua, UA_NodeId c, const gds_request
     UA_Int32 def = -1, ok = RESP_APPROVE, cancel = RESP_REJECT, last = -1;
     UA_UInt16 severity = DIALOG_SEVERITY;
     UA_Boolean retain = true;
-    UA_StatusCode r = gds_cond_set_field(ua, c, "Message", &message, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
+    /* open62541's hooks on EnabledState/Id and Severity fire their own
+     * events and overwrite Message ("The alarm was enabled", "The alarm
+     * severity has increased"), so every client saw that text instead of
+     * the request. As for plugin dialogs (gds_dialogs.c): the hooks go, the
+     * one event is gds_approvals_raise's, Severity is set before Message. */
+    UA_StatusCode r = gds_cond_detach_hook(ua, c, "EnabledState", "Id");
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_cond_detach_hook(ua, c, "Severity", NULL);
     if(r == UA_STATUSCODE_GOOD)
         r = gds_cond_set_field(ua, c, "Severity", &severity, &UA_TYPES[UA_TYPES_UINT16]);
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_cond_set_field(ua, c, "Message", &message, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
     if(r == UA_STATUSCODE_GOOD)
         r = gds_cond_set_field(ua, c, "Prompt", &prompt, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
     if(r == UA_STATUSCODE_GOOD)
