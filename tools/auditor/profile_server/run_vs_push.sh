@@ -53,7 +53,8 @@ hook_cmd() {
     win=Z:$(printf '%s' "$h" | tr / '\\')
     printf '@echo off\r\ndel "%s.rc" 2>nul\r\nstart /unix %s.sh\r\n:w\r\nif exist "%s.rc" goto d\r\nping -n 2 127.0.0.1 >nul\r\ngoto w\r\n:d\r\nset /p RC=<"%s.rc"\r\nexit /b %%RC%%\r\n' \
         "$win" "$h" "$win" "$win" > "$h.bat"
-    echo "$win.bat"
+    # printf, not echo: dash's echo turns the \r of Z:\home\runner into CR
+    printf '%s\n' "$win.bat"
 }
 
 start_server() {
