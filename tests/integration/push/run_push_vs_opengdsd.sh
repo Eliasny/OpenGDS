@@ -13,6 +13,10 @@
 #      the device is touched (CancelChanges after a failed step is covered by
 #      tests/integration/test_push_flow.c)
 #   7. gdsadm certs status shows the device's certificate in the store
+#   7b. gdsadm push keycred: a KeyCredential from the GDS's KeyCredential
+#       service pushed to the device (12 §8.4, §8.6), pushed again into the
+#       same Object, refused without KeyCredentialAdmin, then deleted on the
+#       device and revoked on the GDS (keycred-delete)
 #   8-10. certs revoke and apps unregister (the CRL is checked with openssl)
 #   11. gdsadm apps import of a CSV and a JSON file: per-record report,
 #       already registered records left alone, DiscoveryAdmin required
@@ -62,7 +66,7 @@ chmod 600 "$W/admin.pw" "$W/viewer.pw" "$W/ca.pw"
 CRED=$("$GDSADM" hash-password < "$W/admin.pw") || fail "gdsadm hash-password"
 VCRED=$("$GDSADM" hash-password < "$W/viewer.pw") || fail "gdsadm hash-password"
 {
-    echo "admin DiscoveryAdmin,CertificateAuthorityAdmin $CRED"
+    echo "admin DiscoveryAdmin,CertificateAuthorityAdmin,KeyCredentialAdmin $CRED"
     echo "viewer - $VCRED"
 } > "$W/users"
 chmod 600 "$W/users"
@@ -77,6 +81,7 @@ signer = $SIGNER
 ca_passphrase_file = $W/ca.pw
 organization = OpenGDS push tracer
 approval = auto
+keycred_service = mqtt urn:opengds:push-tracer:broker http://opcfoundation.org/UA-Profile/Authentication/mqtt-username
 CONF
 
 echo "=============== 1. opengdsd, and gdsadm's own certificate ==============="
@@ -166,6 +171,48 @@ for path, (der,) in zip((newest, older), rows):
     with open(path, "wb") as f:
         f.write(der)
 PY
+
+echo "=============== 7b. gdsadm push keycred ==============="
+# kc_ids: the CredentialIds the GDS's store holds for the device
+kc_ids() {
+    python3 - "$W/data/opengds.db" "$DEV_URI" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+for (i,) in con.execute("SELECT k.id FROM kc_credentials k JOIN applications a ON a.id = k.app_id "
+                        "WHERE a.uri = ? AND k.service = 'mqtt'", (sys.argv[2],)):
+    print(i)
+PY
+}
+# shellcheck disable=SC2046
+"$GDSADM" push keycred "$DEV_URI" --service mqtt --endpoint-url mqtts://127.0.0.1:1883 \
+    $(conn admin "$W/admin.pw") > "$W/kc1.txt" 2>&1 || { cat "$W/kc1.txt"; fail "push keycred"; }
+cat "$W/kc1.txt"
+expect "pushed to .* (new Object, http://opcfoundation.org/UA/SecurityPolicy#Aes256_Sha256_RsaPss)" "$W/kc1.txt"
+ID1=$(sed -n 's/^credential \(opengds-[0-9A-Fa-f]*\) pushed.*/\1/p' "$W/kc1.txt")
+[ -n "$ID1" ] || fail "no CredentialId in the report"
+[ "$(kc_ids)" = "$ID1" ] || fail "the GDS store does not hold exactly $ID1 for the device"
+expect "UpdateCredential: a secret of 43 bytes" "$W/device.log"
+# shellcheck disable=SC2046
+"$GDSADM" push keycred "$DEV_URI" --service mqtt $(conn admin "$W/admin.pw") \
+    > "$W/kc2.txt" 2>&1 || { cat "$W/kc2.txt"; fail "second push keycred"; }
+expect "pushed to .* (existing Object" "$W/kc2.txt"
+ID2=$(sed -n 's/^credential \(opengds-[0-9A-Fa-f]*\) pushed.*/\1/p' "$W/kc2.txt")
+[ -n "$ID2" ] && [ "$ID2" != "$ID1" ] || fail "the second push did not issue a new credential"
+[ "$(kc_ids)" = "$ID2" ] || fail "the new credential did not replace $ID1 in the store"
+# shellcheck disable=SC2046
+if "$GDSADM" push keycred "$DEV_URI" --service mqtt $(conn viewer "$W/viewer.pw") \
+    > "$W/kc3.txt" 2>&1; then
+    cat "$W/kc3.txt"; fail "a KeyCredential push without KeyCredentialAdmin succeeded"
+fi
+expect "BadUserAccessDenied" "$W/kc3.txt"
+[ "$(kc_ids)" = "$ID2" ] || fail "a refused push changed the store"
+# shellcheck disable=SC2046
+"$GDSADM" push keycred-delete "$DEV_URI" --service mqtt $(conn admin "$W/admin.pw") \
+    > "$W/kc4.txt" 2>&1 || { cat "$W/kc4.txt"; fail "push keycred-delete"; }
+cat "$W/kc4.txt"
+expect "credential $ID2 deleted on" "$W/kc4.txt"
+expect "credential $ID2 revoked on the GDS" "$W/kc4.txt"
+[ -z "$(kc_ids)" ] || fail "the GDS store still holds a credential for the device"
 
 echo "=============== 8. gdsadm certs revoke (no CertificateAuthorityAdmin: refused) ==============="
 # shellcheck disable=SC2046

@@ -65,6 +65,12 @@ typedef struct {
     bool setupPushed;          /* SRV-SET-03 applied a trust list and t-good in setup */
     bool setupEnded;           /* SRV-SET-04 ended setup with a SecurityAdmin identity */
     const char *only;          /* --only: tests that run only when selected by name check it */
+    /* KeyCredential push (srv_keycred.c) */
+    bool kcAbsent;             /* SRV-KC-01: CreateCredential is not offered */
+    bool kcCreated;            /* kcNode is the credential SRV-KC-01 created */
+    UA_NodeId kcNode;
+    gds_buf kcKey;             /* PublicKey of SRV-KC-04 */
+    char kcPolicy[256];        /* its RevisedSecurityPolicyUri */
     char adminPassword[256];
     char userPassword[256];
     char targetUri[GDS_MAX_APPLICATION_URI + 1]; /* learned from GetEndpoints */

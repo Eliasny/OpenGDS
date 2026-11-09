@@ -6,6 +6,8 @@
 int gdsadm_apps_register(int argc, char **argv);
 int gdsadm_push_now(int argc, char **argv);
 int gdsadm_push_setup(int argc, char **argv);
+int gdsadm_push_keycred(int argc, char **argv);
+int gdsadm_push_keycred_delete(int argc, char **argv);
 int gdsadm_apps_unregister(int argc, char **argv);
 int gdsadm_certs_revoke(int argc, char **argv);
 int gdsadm_apps_import(int argc, char **argv);

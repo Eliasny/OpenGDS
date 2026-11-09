@@ -158,6 +158,8 @@ void st_clear(srv_target *t) {
     gds_buf_free(&t->caIntDer);
     gds_buf_free(&t->caIntCrl);
     gds_buf_free(&t->peerInt);
+    UA_NodeId_clear(&t->kcNode);
+    gds_buf_free(&t->kcKey);
     gds_buf_free(&t->adminCert);
     gds_buf_free_secret(&t->adminKey);
     OPENSSL_cleanse(t->adminPassword, sizeof(t->adminPassword));

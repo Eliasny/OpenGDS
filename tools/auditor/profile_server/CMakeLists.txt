@@ -14,6 +14,7 @@ add_library(gdsaudit_profile_server STATIC
     srv_persistence.c
     srv_setup.c
     srv_audit.c
+    srv_keycred.c
     srv_restore.c)
 target_include_directories(gdsaudit_profile_server PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(gdsaudit_profile_server PUBLIC gdsaudit_core)
