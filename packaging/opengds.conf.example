@@ -16,3 +16,6 @@ organization = Example Oy
 approval = renewals
 # ca_dir is read by the signer only; with signer_socket the passphrase
 # belongs to opengds-signer@.service (LoadCredentialEncrypted)
+# scheduled pushes to the targets set with "gdsctl push-targets" (docs/push.md)
+# push = true
+# push_jitter = 300

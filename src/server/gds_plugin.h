@@ -45,7 +45,7 @@ extern "C" {
 #endif
 
 #define GDS_PLUGIN_ABI_MAJOR 1u
-#define GDS_PLUGIN_ABI_MINOR 1u /* 1: gds_caller.clientCertificate (A14) */
+#define GDS_PLUGIN_ABI_MINOR 2u /* 1: gds_caller.clientCertificate (A14); 2: push scheduling */
 
 /* The values of MessageSecurityMode (OPC 10000-4 §7.20). */
 typedef enum {
@@ -656,6 +656,94 @@ GDS_MUST_CHECK gds_status gds_server_add_trust_list(struct gds_server *s,
  * RemoveCertificate answer Bad_InvalidState. */
 GDS_MUST_CHECK gds_status gds_server_set_trust_list(struct gds_server *s, const UA_NodeId *groupId,
                                                     const UA_TrustListDataType *tl);
+
+/* ---- push scheduling (OpenGDS plan W3, push.h "next_jobs(now, budget)") ----
+ * The push engine (src/push/push_engine.c) keeps the Servers in the push
+ * target list (gds_server_push_targets) up to date with the push model of
+ * OPC 10000-12 §7.7: it renews a certificate when a third of its lifetime
+ * is left, pushes the trust list again when it or a CRL in it changes,
+ * backs off after a failure and adds random jitter to every job. Each
+ * tick it lists the due jobs and asks the scheduler which of them to start
+ * now; at most `budget` may start (the engine's free concurrency).
+ *
+ * The built-in scheduler starts the earliest due jobs first. A plugin
+ * replaces it, for example UASM's push waves (maintenance windows, canary
+ * first, pause on failures), with gds_server_set_push_scheduler before
+ * gds_server_run. The engine still decides what is due and does the
+ * pushing; the scheduler only picks and orders. It never runs on a
+ * STANDBY node: there the engine lists nothing. */
+
+/* Why a job is due (gds_push_job.reasons). */
+#define GDS_PUSH_CHECK 0x01u     /* nothing known about the Server yet: look, push what it lacks */
+#define GDS_PUSH_RENEW 0x02u     /* a third of the certificate's lifetime left, or not the GDS's */
+#define GDS_PUSH_TRUSTLIST 0x04u /* the trust list or one of its CRLs changed */
+#define GDS_PUSH_REJECTED 0x08u  /* time to read the Server's rejected list (§7.10.12) */
+#define GDS_PUSH_RETRY 0x10u     /* the last attempt failed; back-off has passed */
+
+typedef struct {
+    UA_NodeId applicationId;    /* the target's record (GDS namespace) */
+    const char *applicationUri; /* borrowed for the call */
+    const char *endpointUrl;    /* borrowed for the call */
+    uint32_t reasons;           /* GDS_PUSH_* */
+    UA_DateTime due;            /* when it became due, jitter and back-off included */
+    UA_DateTime certNotAfter;   /* of the certificate the Server presents; 0: unknown */
+    uint32_t failures;          /* consecutive failed attempts */
+} gds_push_job;
+
+/* due: the nDue due jobs, earliest first; write the indexes of the jobs to
+ * start now, in start order, to picked (room for budget) and return how
+ * many (at most budget). Called on the engine's thread once per tick;
+ * must not block. */
+typedef size_t (*gds_push_next_jobs_fn)(void *ctx, UA_DateTime now, size_t budget,
+                                        const gds_push_job *due, size_t nDue, size_t *picked);
+/* After a job, with its outcome: Good, or the status of the failed step.
+ * Called on an engine worker; must not block. */
+typedef void (*gds_push_job_done_fn)(void *ctx, const gds_push_job *job, UA_StatusCode result);
+
+typedef struct {
+    uint32_t abi_major;
+    uint32_t abi_minor;
+    size_t struct_size;
+    gds_push_next_jobs_fn next_jobs; /* required */
+    gds_push_job_done_fn job_done;   /* may be NULL */
+    void *ctx;
+} gds_push_scheduler;
+
+/* Replaces the built-in scheduler; NULL restores it. The struct is copied,
+ * ctx is borrowed. Before gds_server_run (GDS_ESTATE after); GDS_EINVAL for
+ * another ABI major or no next_jobs. */
+GDS_MUST_CHECK gds_status gds_server_set_push_scheduler(struct gds_server *s,
+                                                        const gds_push_scheduler *sched);
+/* The scheduler in force (the engine's view); false: the built-in one. */
+bool gds_server_push_scheduler(struct gds_server *s, gds_push_scheduler *out);
+/* The built-in scheduler: the earliest due jobs, up to budget. */
+size_t gds_push_next_jobs_default(void *ctx, UA_DateTime now, size_t budget,
+                                  const gds_push_job *due, size_t nDue, size_t *picked);
+
+/* The push target list (store table push_targets): every Server the
+ * engine manages, with its ApplicationUri and the endpoint the engine
+ * connects to. cb borrows its arguments and returns false to stop.
+ * Targets whose record is gone are left out. GDS_EUNSUPPORTED: the store
+ * backend has no push targets (before store ABI minor 6). Any thread
+ * except the server thread. */
+typedef bool (*gds_push_target_fn)(void *ctx, const UA_NodeId *applicationId,
+                                   const char *applicationUri, const char *endpointUrl,
+                                   bool enabled);
+GDS_MUST_CHECK gds_status gds_server_push_targets(struct gds_server *s, gds_push_target_fn cb,
+                                                  void *ctx);
+
+/* Adds a certificate to the Trusted list of the DefaultApplicationGroup's
+ * TrustList, as AddCertificate with isTrustedCertificate TRUE does (OPC
+ * 10000-12 §7.8.2.6): an application instance certificate, not a CA. The
+ * change is audited (TrustListUpdatedAuditEventType) with actor as
+ * ClientUserId, and moves LastUpdateTime, so the push engine pushes the
+ * list again. Runs on the server thread and waits up to timeoutMs: call it
+ * from any other thread while the server runs. GDS_ENOTLEADER on a
+ * STANDBY node; GDS_EINVAL: not a usable certificate; GDS_ESTATE: the list
+ * is open for writing; GDS_EREMOTE: no answer within timeoutMs. */
+GDS_MUST_CHECK gds_status gds_server_trust_certificate(struct gds_server *s, const char *actor,
+                                                       const UA_ByteString *cert,
+                                                       uint32_t timeoutMs);
 
 #ifdef __cplusplus
 }

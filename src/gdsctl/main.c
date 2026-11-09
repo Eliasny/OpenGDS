@@ -5,6 +5,7 @@
  *                 --passphrase-file <file> [--kdf-cost <10..20>]
  *   gdsctl restore --archive <archive> --passphrase-file <file>
  *                  --store <store.db> --ca-dir <dir> [--journal <file> ...]
+ *   gdsctl push-targets add|remove|list --store <store.db> ... (push_targets.c)
  *
  * verify-audit exit status: 0 everything verifies, 1 findings (listed on
  * stdout), 2 usage or a store or journal that cannot be read. backup: 0
@@ -18,6 +19,7 @@
 
 #include "backup.h"
 #include "common/safeint.h"
+#include "push_targets.h"
 #include "verify_audit.h"
 #include "common/banned.h"
 
@@ -40,7 +42,8 @@ static int usage(void) {
             "       gdsctl backup --store <store.db> --ca-dir <dir> --out <archive>\n"
             "                     --passphrase-file <file> [--kdf-cost <10..20>]\n"
             "       gdsctl restore --archive <archive> --passphrase-file <file>\n"
-            "                      --store <store.db> --ca-dir <dir> [--journal <file> ...]\n");
+            "                      --store <store.db> --ca-dir <dir> [--journal <file> ...]\n"
+            "       gdsctl push-targets add|remove|list --store <store.db> ...\n");
     return 2;
 }
 
@@ -187,6 +190,8 @@ static int restore(const options *o) {
 }
 
 int main(int argc, char **argv) {
+    if(argc >= 2 && strcmp(argv[1], "push-targets") == 0)
+        return gdsctl_push_targets(argc, argv);
     options o;
     if(!parse(argc, argv, &o))
         return usage();

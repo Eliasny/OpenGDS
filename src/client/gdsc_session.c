@@ -462,6 +462,14 @@ const UA_String *gdsc_session_policy(const gdsc_session *s) {
     return &s->policy;
 }
 
+gds_status gdsc_session_server_cert(const gdsc_session *s, gds_buf *out) {
+    out->data = NULL;
+    out->len = 0;
+    if(!s || !s->tap || s->tap->seen.length == 0)
+        return GDS_ENOTFOUND;
+    return gds_buf_dup(s->tap->seen.data, s->tap->seen.length, out);
+}
+
 void gdsc_session_close(gdsc_session *s) {
     if(!s)
         return;
