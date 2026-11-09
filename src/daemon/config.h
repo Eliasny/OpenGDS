@@ -28,6 +28,13 @@
  *                      ResourceUri and its ProfileUris (comma-separated);
  *                      may be repeated, up to GDSD_MAX_KC times. Requests
  *                      follow `approval` like certificate requests.
+ *   authorization_service = false                 (default) true: the AuthorizationService
+ *                      (OPC 10000-12 §9.6) issues AccessTokens for registered Servers,
+ *                      signed by a key that the CA backend (the signer) holds
+ *   authorization_service_uri = urn:...           (ServiceUri; default: application_uri
+ *                                                    followed by /AuthorizationService)
+ *   access_token_lifetime  = 3600                 (seconds, 60..86400)
+ *   refresh_token_lifetime = 86400                (seconds, 0..2592000; 0: no RefreshTokens)
  *
  * The push engine (docs/push.md "Scheduled pushes"; off by default):
  *   push             = true                         (manage the push targets)
@@ -87,6 +94,10 @@ typedef struct {
         pushRejectedS;
     gdsd_keycred keycred[GDSD_MAX_KC];
     uint8_t nKeycred;
+    bool authorizationService;
+    char authorizationServiceUri[GDSD_MAX_VALUE];
+    uint32_t accessTokenLifetime;  /* seconds */
+    uint32_t refreshTokenLifetime; /* seconds; 0: none */
 } gdsd_config;
 
 /* The values of gds_approval_policy (gds_server.h). */

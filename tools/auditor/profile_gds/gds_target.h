@@ -94,6 +94,15 @@ UA_Client *gt_sign_only_session(gds_target *t, UA_StatusCode *r);
 GDS_MUST_CHECK UA_StatusCode gt_issue(gds_target *t, ga_ctx *ctx, char *uri, size_t uriLen,
                                       UA_NodeId *appId, gds_buf *cert, gds_buf *issuer);
 
+/* gt_issue that also keeps the private key (*key, gds_buf_free_secret), so
+ * the Auditor can open Sessions as that application. */
+GDS_MUST_CHECK UA_StatusCode gt_issue_key(gds_target *t, ga_ctx *ctx, char *uri, size_t uriLen,
+                                          UA_NodeId *appId, gds_buf *cert, gds_buf *issuer,
+                                          gds_buf *key);
+/* A fresh secure client with another application identity, not connected. */
+UA_Client *gt_new_client_as(gds_target *t, const gds_buf *cert, const gds_buf *key,
+                            const char *appUri);
+
 /* StartSigningRequest + FinishRequest polling. On Good, certOut/issuers are
  * owned by the caller; privKeyLen reports whether a private key came back. */
 GDS_MUST_CHECK UA_StatusCode gt_sign(gds_target *t, const UA_NodeId *appId, const gds_buf *csr,

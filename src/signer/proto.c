@@ -143,7 +143,8 @@ static gds_status read_header(rd *r, gds_sigp_op *op) {
     if(magic != GDS_SIGP_MAGIC || version != GDS_SIGP_VERSION || body != r->len - GDS_SIGP_HEADER)
         return GDS_EINVAL;
     if(o != GDS_SIGP_SIGN_CSR && o != GDS_SIGP_GET_CHAIN && o != GDS_SIGP_ISSUE_CRL &&
-       o != GDS_SIGP_REVOKE && o != GDS_SIGP_NEW_KEY_PAIR)
+       o != GDS_SIGP_REVOKE && o != GDS_SIGP_NEW_KEY_PAIR && o != GDS_SIGP_TOKEN_CHAIN &&
+       o != GDS_SIGP_TOKEN_SIGN)
         return GDS_EUNSUPPORTED;
     *op = (gds_sigp_op)o;
     return GDS_OK;
@@ -153,7 +154,7 @@ static gds_status read_header(rd *r, gds_sigp_op *op) {
 
 gds_status gds_sigp_encode_request(gds_sigp_op op, const UA_Guid *requestId, gds_buf *out) {
     if((op == GDS_SIGP_SIGN_CSR && !requestId) || op == GDS_SIGP_REVOKE ||
-       op == GDS_SIGP_NEW_KEY_PAIR) {
+       op == GDS_SIGP_NEW_KEY_PAIR || op == GDS_SIGP_TOKEN_CHAIN || op == GDS_SIGP_TOKEN_SIGN) {
         memset(out, 0, sizeof(*out));
         return GDS_EINVAL; /* gds_sigp_encode_revoke, gds_sigp_encode_new_key_pair */
     }
@@ -224,7 +225,42 @@ gds_status gds_sigp_encode_new_key_pair(const UA_Guid *requestId, gds_ca_key_for
     return finish(out, r);
 }
 
+static size_t token_max(gds_sigp_op op) {
+    return op == GDS_SIGP_TOKEN_CHAIN ? GDS_MAX_APPLICATION_URI : GDS_CA_MAX_JWS_INPUT;
+}
+
+gds_status gds_sigp_encode_token(gds_sigp_op op, const gds_buf *data, gds_buf *out) {
+    if((op != GDS_SIGP_TOKEN_CHAIN && op != GDS_SIGP_TOKEN_SIGN) || !data || !data->data ||
+       data->len == 0 || data->len > token_max(op)) {
+        memset(out, 0, sizeof(*out));
+        return GDS_EINVAL;
+    }
+    gds_status r = begin(out, op);
+    if(r == GDS_OK)
+        r = op == GDS_SIGP_TOKEN_CHAIN ? put_u16(out, (uint16_t)data->len)
+                                       : put_u32(out, (uint32_t)data->len);
+    if(r == GDS_OK)
+        r = put(out, data->data, data->len);
+    return finish(out, r);
+}
+
+/* The URI gets a terminating NUL and may hold no other. */
+static gds_status decode_token(rd *r, gds_sigp_request *out) {
+    bool uri = out->op == GDS_SIGP_TOKEN_CHAIN;
+    gds_status s = get_blob(r, uri ? 2 : 4, token_max(out->op), &out->data);
+    if(s != GDS_OK || !uri)
+        return s;
+    if(memchr(out->data.data, 0, out->data.len))
+        return GDS_EINVAL;
+    uint8_t nul = 0;
+    s = gds_buf_append(&out->data, &nul, 1, GDS_MAX_APPLICATION_URI + 1);
+    if(s == GDS_OK)
+        out->data.len--; /* the NUL stays after the bytes */
+    return s;
+}
+
 void gds_sigp_request_clear(gds_sigp_request *r) {
+    gds_buf_free(&r->data);
     gds_buf_free(&r->serial);
     gds_buf_free_secret(&r->password);
 }
@@ -279,6 +315,10 @@ gds_status gds_sigp_decode(const uint8_t *msg, size_t len, gds_sigp_request *out
     case GDS_SIGP_GET_CHAIN:
     case GDS_SIGP_ISSUE_CRL:
         s = decode_issuer(&r, out);
+        break;
+    case GDS_SIGP_TOKEN_CHAIN:
+    case GDS_SIGP_TOKEN_SIGN:
+        s = decode_token(&r, out);
         break;
     }
     if(s == GDS_OK && r.pos != r.len)

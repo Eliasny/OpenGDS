@@ -344,7 +344,8 @@ static UA_StatusCode install_auditing(gds_server *s) {
                                    : r;
 }
 
-static gds_status install(gds_server *s) {
+static gds_status install(gds_server *s, const gds_authz_config *authz,
+                          const gds_buf *ownCert) {
     size_t ns = 0;
     UA_String uri = UA_STRING(GDS_NS_URI);
     if(UA_Server_getNamespaceByName(s->ua, uri, &ns) != UA_STATUSCODE_GOOD || ns > UA_UINT16_MAX) {
@@ -369,6 +370,8 @@ static gds_status install(gds_server *s) {
         r = gds_alarms_install(s);
     if(r == UA_STATUSCODE_GOOD)
         r = install_auditing(s);
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_authz_install(s, authz, ownCert);
     if(r != UA_STATUSCODE_GOOD) {
         fprintf(stderr, "opengds: installing the GDS methods failed: %s\n", UA_StatusCode_name(r));
         return GDS_ENOTFOUND;
@@ -435,7 +438,7 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
         gds_server_delete(s);
         return GDS_EINVAL;
     }
-    st = install(s);
+    st = install(s, cfg->authz, &cfg->ownCert);
     if(st != GDS_OK) {
         gds_server_delete(s);
         return st;
@@ -516,6 +519,7 @@ void gds_server_delete(gds_server *s) {
     gds_embed_free(s);
     gds_alarms_free(s);
     gds_ptl_free(s);
+    gds_authz_free(s);
     gds_access_uninstall();
     gds_buf_free(&s->caCert);
     for(size_t i = 0; i < GDS_CA_ISSUERS; i++)

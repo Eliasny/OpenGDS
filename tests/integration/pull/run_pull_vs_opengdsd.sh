@@ -77,6 +77,7 @@ ca_passphrase_file = $W/ca.pw
 organization = OpenGDS pull tracer
 approval = auto
 keycred_service = mqtt urn:opengds:pull-tracer:broker http://opcfoundation.org/UA/Profile/Transport/pubsub-mqtt-uadp
+authorization_service = true
 CONF
 
 cp "$W/opengds.conf" "$W/base.conf"

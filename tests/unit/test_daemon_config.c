@@ -32,6 +32,16 @@ static void test_ok(void) {
     CHECK(parse(BASE, &c, &line) == GDS_OK && c.port == 58810 &&
           c.approval == GDSD_APPROVE_RENEWALS); /* default */
     CHECK(parse(BASE "approval = auto\n", &c, &line) == GDS_OK && c.approval == GDSD_APPROVE_AUTO);
+    /* the AuthorizationService: off by default (Elias 2026-11-09), 1 h and
+     * 24 h token lifetimes */
+    CHECK(parse(BASE, &c, &line) == GDS_OK && !c.authorizationService &&
+          c.authorizationServiceUri[0] == '\0' && c.accessTokenLifetime == 3600 &&
+          c.refreshTokenLifetime == 86400);
+    CHECK(parse(BASE "authorization_service = true\nauthorization_service_uri = urn:test:az\n"
+                     "access_token_lifetime = 60\nrefresh_token_lifetime = 0\n",
+                &c, &line) == GDS_OK &&
+          c.authorizationService && strcmp(c.authorizationServiceUri, "urn:test:az") == 0 &&
+          c.accessTokenLifetime == 60 && c.refreshTokenLifetime == 0);
 }
 
 /* Values a key does not accept. */
@@ -44,6 +54,12 @@ static void test_bad_values(void) {
     CHECK(parse(BASE "auto_approve = true\n", &c, &line) == GDS_EINVAL); /* the T1 key is gone */
     CHECK(parse(BASE "port = 12x\n", &c, &line) == GDS_EINVAL);
     CHECK(parse(BASE "loopback_only = yes\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "access_token_lifetime = 59\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "access_token_lifetime = 86401\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "access_token_lifetime = 0\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "refresh_token_lifetime = 2592001\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "refresh_token_lifetime = -1\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "authorization_service = on\n", &c, &line) == GDS_EINVAL);
 }
 
 static void test_refused(void) {

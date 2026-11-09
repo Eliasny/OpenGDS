@@ -113,6 +113,24 @@ On an approved request FinishRequest generates the credential: the CredentialId 
 
 The requests and credentials are in the store (schema 5), so they survive a restart and replicate with it. A store backend without them (before store ABI minor 7) cannot start with a `keycred_service` line.
 
+## AccessTokens (AuthorizationService)
+
+opengdsd can issue AccessTokens (OPC 10000-12 §9.6) for the Server applications registered in its directory. It is off until the configuration turns it on:
+
+```
+authorization_service = true
+# authorization_service_uri = urn:example:opengds/AuthorizationService   (default: application_uri + "/AuthorizationService")
+# access_token_lifetime = 3600      (seconds, 60 to 86400)
+# refresh_token_lifetime = 86400    (seconds, 0 to 30 days; 0: no RefreshTokens)
+```
+
+- **Who may ask:** a client whose SecureChannel certificate this GDS CA issued (the AccessTokenRequestor privilege, §9.2), over an encrypted SecureChannel.
+- **For what:** the ResourceId is the ApplicationUri of a registered Server (any type except Client). Tokens are JWTs (OPC 10000-6 §6.5.2): `iss` is the ServiceUri, `aud` the ResourceId, `sub` the user or the client application, `roles` the user's roles from the users file, and `cnf` binds the token to the client certificate.
+- **UserTokenPolicies:** `opengds-session` (Anonymous: the Session's own user, or the client application when the Session has none), `opengds-username` (a user and password from the users file, sent inside the encrypted channel) and, when the users file has X.509 users, `opengds-x509`. Five failed identity checks lock the client certificate out for five minutes (OPC 10000-4 §7.40.2.1).
+- **Signing key:** an RSA 2048 key that lives in opengds-signer next to the CA keys (`ca_dir/token/`, encrypted under the CA passphrase). Its certificate is issued by the RSA CA for the ServiceUri and renewed automatically 30 days before it expires; ServiceCertificate is that certificate followed by the CA certificate. opengdsd only sends the signer the token to sign, and the signer signs nothing that is not an RS256 JWT.
+- **In memory only:** open requests (5 minutes, bound to their Session) and RefreshTokens. A restart or a switchover forgets them, and clients start again with StartRequestToken. Each RefreshToken works once and reads the user's roles again, so a removed user gets no new token. The standby refuses all token methods.
+- **Audit:** AccessTokenRequestedAuditEventType for each FinishRequestToken and AccessTokenIssuedAuditEventType for each token, visible to SecurityAdmin and AuthorizationServiceAdmin. Passwords, tokens and signatures never appear in the events.
+
 ## Revoking certificates
 
 A session with the CertificateAuthorityAdmin role calls RevokeCertificate (OPC 10000-12 §7.9.6) on the Directory object with the ApplicationId and the certificate. Bad_NotFound means the application is not registered; Bad_InvalidArgument means this GDS did not issue that certificate to that application. UnregisterApplication revokes every certificate of the application before it deletes the record (§6.5.8).

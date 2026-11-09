@@ -17,6 +17,7 @@
 #include "common/banned.h"
 
 #define DEFAULT_TIMEOUT_MS 10000u
+#define DEFAULT_REVERSE_WAIT_MS 60000u
 #define POLICY_PREFIX "http://opcfoundation.org/UA/SecurityPolicy#"
 
 /* The Server certificate as the client verified it on the SecureChannel.
@@ -356,7 +357,8 @@ gds_status gdsc_cert_uri(const gds_buf *certDer, char *out, size_t outLen) {
 }
 
 static bool cfg_valid(const gdsc_session_cfg *pc) {
-    return pc && pc->endpointUrl && pc->cert && pc->cert->data && pc->key && pc->key->data &&
+    return pc && (pc->endpointUrl || pc->reversePort) && pc->cert && pc->cert->data && pc->key &&
+           pc->key->data && (pc->reversePort == 0 || pc->serverUri) &&
            (pc->trustN == 0 || pc->trust) && (pc->crlN == 0 || pc->crls) &&
            (!pc->applicationUri || strlen(pc->applicationUri) < GDS_MAX_APPLICATION_URI) &&
            (pc->identityCert != NULL) == (pc->identityKey != NULL) &&
@@ -424,6 +426,83 @@ static UA_StatusCode check_server_identity(gdsc_session *s, const gdsc_session_c
     return UA_STATUSCODE_GOOD;
 }
 
+/* ---- Reverse Connect (OPC 10000-6 §7.1.3) ---- */
+
+static UA_UInt64 now_ms(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (UA_UInt64)t.tv_sec * 1000u + (UA_UInt64)t.tv_nsec / 1000000u;
+}
+
+/* Listen for one connection from the Server and drive the client on it until
+ * the session is activated (Good), the channel closes after GetEndpoints
+ * chose an encrypted endpoint (Bad_ConnectionClosed: listen again), or the
+ * wait ends (Bad_Timeout). */
+static UA_StatusCode reverse_round(UA_Client *c, const gdsc_session_cfg *pc) {
+    UA_String host = UA_STRING((char *)(uintptr_t)(pc->reverseHost ? pc->reverseHost : ""));
+    UA_StatusCode r = UA_Client_startListeningForReverseConnect(
+        c, pc->reverseHost ? &host : NULL, pc->reverseHost ? 1 : 0, pc->reversePort);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    const UA_UInt64 deadline =
+        now_ms() + (pc->reverseWaitMs ? pc->reverseWaitMs : DEFAULT_REVERSE_WAIT_MS);
+    bool connected = false;
+    for(;;) {
+        (void)UA_Client_run_iterate(c, 50);
+        UA_SecureChannelState cs;
+        UA_SessionState ss;
+        UA_StatusCode st;
+        UA_Client_getState(c, &cs, &ss, &st);
+        if(ss == UA_SESSIONSTATE_ACTIVATED && st == UA_STATUSCODE_GOOD)
+            return UA_STATUSCODE_GOOD;
+        if(cs != UA_SECURECHANNELSTATE_CLOSED && cs != UA_SECURECHANNELSTATE_REVERSE_LISTENING)
+            connected = true;
+        /* noReconnect: the client does not dial the Server itself when the
+         * channel closes; the Server opens the next connection */
+        if(connected && cs == UA_SECURECHANNELSTATE_CLOSED)
+            return (st == UA_STATUSCODE_GOOD || st == UA_STATUSCODE_BADNOTCONNECTED ||
+                    st == UA_STATUSCODE_BADCONNECTIONCLOSED)
+                       ? UA_STATUSCODE_BADCONNECTIONCLOSED
+                       : st;
+        if(st != UA_STATUSCODE_GOOD && connected)
+            return st;
+        if(now_ms() >= deadline) {
+            UA_Client_disconnect(c);
+            return UA_STATUSCODE_BADTIMEOUT;
+        }
+    }
+}
+
+static UA_StatusCode reverse_open(gdsc_session *s, const gdsc_session_cfg *pc) {
+    UA_ClientConfig *cc = UA_Client_getConfig(s->client);
+    cc->noReconnect = true;
+    /* the first connection leaves the port in TIME_WAIT when we close it */
+    cc->tcpReuseAddr = true;
+    UA_ByteString_clear(&s->tap->seen);
+    UA_StatusCode r = reverse_round(s->client, pc);
+    if(r == UA_STATUSCODE_BADCONNECTIONCLOSED) {
+        /* The first connection was the discovery channel */
+        UA_ByteString_clear(&s->tap->seen);
+        r = reverse_round(s->client, pc);
+    }
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    UA_String policy = UA_STRING_NULL;
+    UA_MessageSecurityMode mode = UA_MESSAGESECURITYMODE_INVALID;
+    r = UA_Client_getConnectionAttribute_scalar(s->client, UA_QUALIFIEDNAME(0, "securityPolicyUri"),
+                                                &UA_TYPES[UA_TYPES_STRING], &policy);
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Client_getConnectionAttribute_scalar(s->client, UA_QUALIFIEDNAME(0, "securityMode"),
+                                                    &UA_TYPES[UA_TYPES_MESSAGESECURITYMODE],
+                                                    &mode);
+    if(r == UA_STATUSCODE_GOOD && (mode != UA_MESSAGESECURITYMODE_SIGNANDENCRYPT ||
+                                   gdsc_policy_rank(&policy) == 0))
+        r = UA_STATUSCODE_BADSECURITYPOLICYREJECTED;
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_String_copy(&policy, &s->policy);
+    return r;
+}
+
 UA_StatusCode gdsc_session_open(const gdsc_session_cfg *pc, gdsc_session **out) {
     *out = NULL;
     if(!cfg_valid(pc))
@@ -433,6 +512,17 @@ UA_StatusCode gdsc_session_open(const gdsc_session_cfg *pc, gdsc_session **out) 
         return UA_STATUSCODE_BADOUTOFMEMORY;
     UA_StatusCode r = UA_STATUSCODE_BADOUTOFMEMORY;
     s->client = client_new(pc, &s->tap);
+    if(s->client && pc->reversePort) {
+        r = reverse_open(s, pc);
+        if(r == UA_STATUSCODE_GOOD)
+            r = check_server_identity(s, pc);
+        if(r != UA_STATUSCODE_GOOD) {
+            gdsc_session_close(s);
+            return r;
+        }
+        *out = s;
+        return UA_STATUSCODE_GOOD;
+    }
     if(s->client)
         r = choose_policy(s->client, pc, &s->policy);
     if(r == UA_STATUSCODE_GOOD) {
@@ -468,6 +558,15 @@ gds_status gdsc_session_server_cert(const gdsc_session *s, gds_buf *out) {
     if(!s || !s->tap || s->tap->seen.length == 0)
         return GDS_ENOTFOUND;
     return gds_buf_dup(s->tap->seen.data, s->tap->seen.length, out);
+}
+
+UA_StatusCode gdsc_session_server_description(gdsc_session *s, UA_ApplicationDescription *out) {
+    UA_ApplicationDescription_init(out);
+    UA_ApplicationDescription ad; /* borrowed from the client */
+    UA_StatusCode r = UA_Client_getConnectionAttribute_scalar(
+        s->client, UA_QUALIFIEDNAME(0, "serverDescription"),
+        &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION], &ad);
+    return r == UA_STATUSCODE_GOOD ? UA_ApplicationDescription_copy(&ad, out) : r;
 }
 
 void gdsc_session_close(gdsc_session *s) {

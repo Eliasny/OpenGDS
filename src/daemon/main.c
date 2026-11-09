@@ -194,6 +194,17 @@ typedef struct {
     size_t issuersN;
 } daemon_state;
 
+/* The AccessToken key lives with the CA keys (the signer, or the
+ * in-process CA in development). */
+static gds_status token_sign(void *ctx, const uint8_t *data, size_t len, gds_buf *sig) {
+    gds_buf in = {(uint8_t *)(uintptr_t)data, len};
+    return gds_ca_token_sign(ctx, &in, sig);
+}
+
+static gds_status token_chain(void *ctx, const char *serviceUri, gds_buf *out) {
+    return gds_ca_token_chain(ctx, serviceUri, out);
+}
+
 static gds_status start(daemon_state *d) {
     char storePath[GDS_MAX_PATH];
     gds_status r = gds_users_load(d->cfg.usersFile, &d->users);
@@ -252,6 +263,17 @@ static gds_status start(daemon_state *d) {
     }
     sc.keyCredServices = kc;
     sc.keyCredServicesSize = d->cfg.nKeycred;
+    gds_authz_config az = {0};
+    if(d->cfg.authorizationService) {
+        az.serviceUri = d->cfg.authorizationServiceUri[0] ? d->cfg.authorizationServiceUri : NULL;
+        az.sign = token_sign;
+        az.chain = token_chain;
+        az.signCtx = d->ca;
+        az.alg = "RS256";
+        az.accessLifetime = d->cfg.accessTokenLifetime;
+        az.refreshLifetime = d->cfg.refreshTokenLifetime;
+        sc.authz = &az;
+    }
     return gds_server_new(&sc, &d->server);
 }
 
