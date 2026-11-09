@@ -45,7 +45,8 @@ fi
 # (docs/upstream/README.md): key file after a key-kept CSR push, #None for
 # discovery in the secure-only config, GDS headers installed with AUTOLOAD,
 # ConditionRefresh keeping the original EventId (Part 9, 5.5.7), FindServers
-# peers (Part 4, 6.6.2.4.5.1), access control for receiving events (Part 3, 8.55).
+# peers (Part 4, 6.6.2.4.5.1), access control for receiving events (Part 3, 8.55),
+# DER CRLs shorter than 256 bytes (ECC CAs).
 # A cached source tree may already have them; apply each patch only once.
 PATCHES="$(cd "$(dirname "$0")/.." && pwd)/docs/upstream/patches/v1.5.10"
 for p in "$PATCHES"/*.patch; do

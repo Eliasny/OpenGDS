@@ -265,10 +265,25 @@ void gt_drop(UA_Client *c) {
     UA_Client_delete(c);
 }
 
+UA_Client *gt_new_client_as(gds_target *t, const gds_buf *cert, const gds_buf *key,
+                            const char *appUri) {
+    UA_Client *c = uac_new_secure(cert, key, t->trust, t->trustN, t->crls, t->crlN, appUri);
+    if(c)
+        UA_Client_getConfig(c)->customDataTypes = &gdsTypes;
+    return c;
+}
+
 UA_StatusCode gt_issue(gds_target *t, ga_ctx *ctx, char *uri, size_t uriLen, UA_NodeId *appId,
                        gds_buf *cert, gds_buf *issuer) {
+    return gt_issue_key(t, ctx, uri, uriLen, appId, cert, issuer, NULL);
+}
+
+UA_StatusCode gt_issue_key(gds_target *t, ga_ctx *ctx, char *uri, size_t uriLen,
+                           UA_NodeId *appId, gds_buf *cert, gds_buf *issuer, gds_buf *keyOut) {
     cert->data = issuer->data = NULL;
     cert->len = issuer->len = 0;
+    if(keyOut)
+        *keyOut = (gds_buf){0};
     UA_StatusCode r = gt_register(t, UA_APPLICATIONTYPE_CLIENT, uri, uriLen, appId);
     if(r != UA_STATUSCODE_GOOD)
         return r;
@@ -279,6 +294,10 @@ UA_StatusCode gt_issue(gds_target *t, ga_ctx *ctx, char *uri, size_t uriLen, UA_
         r = UA_STATUSCODE_BADINTERNALERROR;
     else
         r = gt_sign(t, appId, &csr, ctx, cert, issuer, &privLen);
+    if(r == UA_STATUSCODE_GOOD && keyOut) {
+        *keyOut = key;
+        key = (gds_buf){0};
+    }
     gds_buf_free_secret(&key);
     gds_buf_free(&csr);
     if(r != UA_STATUSCODE_GOOD)

@@ -132,6 +132,30 @@ gds_status gds_store_cert_add(gds_store *s, const UA_Guid *appId, uint32_t group
     return s->be.cert_add(s->ctx, appId, groupId, certType, serial, der, notBefore, notAfter);
 }
 
+gds_status gds_store_cert_issue(gds_store *s, const UA_Guid *reqId, const UA_Guid *appId,
+                                uint32_t groupId, uint32_t certType, const gds_buf *serial,
+                                const gds_buf *der, int64_t notBefore, int64_t notAfter) {
+    if(!reqId || !appId || !serial || !der)
+        return GDS_EINVAL;
+    if(s->be.cert_issue)
+        return s->be.cert_issue(s->ctx, reqId, appId, groupId, certType, serial, der, notBefore,
+                                notAfter);
+    /* A backend before minor 7: two transactions, as before A24. */
+    gds_request q;
+    memset(&q, 0, sizeof(q));
+    gds_status r = s->be.req_get(s->ctx, reqId, &q);
+    if(r != GDS_OK)
+        return r;
+    bool received = q.state == GDS_REQ_RECEIVED;
+    gds_request_clear(&q);
+    if(!received)
+        return GDS_ESTATE;
+    r = s->be.cert_add(s->ctx, appId, groupId, certType, serial, der, notBefore, notAfter);
+    if(r == GDS_OK)
+        r = s->be.req_set_state(s->ctx, reqId, GDS_REQ_ISSUED, der, UA_STATUSCODE_GOOD);
+    return r;
+}
+
 gds_status gds_store_cert_latest(gds_store *s, const UA_Guid *appId, uint32_t groupId,
                                  uint32_t certType, gds_buf *der, int64_t *notAfter) {
     return s->be.cert_latest(s->ctx, appId, groupId, certType, der, notAfter);
@@ -178,6 +202,43 @@ gds_status gds_store_tl_put(gds_store *s, uint32_t groupId, const gds_buf *data,
     if(data->len > GDS_MAX_TRUSTLIST_SIZE)
         return GDS_ETOOBIG;
     return s->be.tl_put(s->ctx, groupId, data, lastUpdate);
+}
+
+static bool endpoint_ok(const char *e) {
+    if(!e)
+        return false;
+    size_t n = strnlen(e, GDS_MAX_PUSH_ENDPOINT);
+    if(n <= 10 || n >= GDS_MAX_PUSH_ENDPOINT || strncmp(e, "opc.tcp://", 10) != 0)
+        return false;
+    for(size_t i = 0; i < n; i++)
+        if((unsigned char)e[i] <= 0x20 || (unsigned char)e[i] == 0x7f)
+            return false;
+    return true;
+}
+
+gds_status gds_store_push_target_put(gds_store *s, const UA_Guid *appId, const char *endpoint,
+                                     bool enabled) {
+    if(!s->be.push_target_put)
+        return GDS_EUNSUPPORTED; /* a backend before minor 6 */
+    if(!appId || !endpoint_ok(endpoint))
+        return GDS_EINVAL;
+    return s->be.push_target_put(s->ctx, appId, endpoint, enabled);
+}
+
+gds_status gds_store_push_target_delete(gds_store *s, const UA_Guid *appId) {
+    if(!s->be.push_target_delete)
+        return GDS_EUNSUPPORTED;
+    if(!appId)
+        return GDS_EINVAL;
+    return s->be.push_target_delete(s->ctx, appId);
+}
+
+gds_status gds_store_push_target_scan(gds_store *s, gds_push_target_cb cb, void *ctx) {
+    if(!s->be.push_target_scan)
+        return GDS_EUNSUPPORTED;
+    if(!cb)
+        return GDS_EINVAL;
+    return s->be.push_target_scan(s->ctx, cb, ctx);
 }
 
 gds_status gds_store_audit_scan(gds_store *s, int64_t fromSeq, gds_audit_scan_cb cb, void *ctx) {

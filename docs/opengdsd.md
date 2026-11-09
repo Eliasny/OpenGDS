@@ -27,7 +27,7 @@ Once its socket, store and CA are open (with `--listen`: at the first connection
 
 `opengdsd` sandboxes itself the same way once it has started (store, CA or signer connection, own certificate), with a wider profile for the OPC UA server:
 
-- Landlock: `data_dir` read-write, `ca_dir` read-write only with the in-process CA, the configuration and users files read-only, and `/etc/hosts`, `/etc/resolv.conf`, `/etc/nsswitch.conf`, `/etc/host.conf`, `/etc/gai.conf` and `/etc/localtime` read-only. TCP bind is allowed only on `port`, and TCP connect is not allowed at all (`opengdsd` makes no outgoing connections; push runs in `gdsadm`).
+- Landlock: `data_dir` read-write, `ca_dir` read-write only with the in-process CA, the configuration and users files read-only, and `/etc/hosts`, `/etc/resolv.conf`, `/etc/nsswitch.conf`, `/etc/host.conf`, `/etc/gai.conf` and `/etc/localtime` read-only. TCP bind is allowed only on `port`. TCP connect is not allowed unless `push = true`, which lets the push engine connect to devices (`docs/push.md`).
 - seccomp: the signer's allowlist plus sockets, epoll, timers and threads. `clone` is allowed only with `CLONE_THREAD`, so `fork` fails, and `clone3` answers ENOSYS so that libc falls back to `clone`. `ioctl` is limited to FIONBIO and FIONREAD. `execve`, `ptrace` and the others kill the process.
 
 The `opengds-signer: sandbox:` and `opengdsd: sandbox:` log lines (`Landlock ABI N, seccomp on`) show what applied. seccomp needs libseccomp (2.5 or later) at build time. `-DOPENGDS_SECCOMP=ON` makes it required, and without it the build applies Landlock only. Builds with AddressSanitizer or ThreadSanitizer skip the sandbox.
@@ -94,6 +94,24 @@ gdsadm approvals reject ...same options... REQUEST_ID
 StartNewKeyPairRequest (OPC 10000-12 §7.9.4) is for applications that cannot make their own key. The signer generates the key for the requested CertificateType (RSA 2048 for RsaSha256ApplicationCertificateType, the default; a P-256 or P-384 key for EccNistP256 and EccNistP384) and the CA on that curve signs its certificate (docs/ca.md, "ECC: one issuing CA per curve"). A type outside the group's CertificateTypes is Bad_InvalidArgument. PrivateKeyFormat is `PFX` or `PEM` (PKCS #8); any other value is Bad_InvalidArgument. With a PrivateKeyPassword (at most 256 bytes) the key is encrypted with AES-256 (the PFX also uses PBKDF2 with 600,000 iterations and a SHA-256 MAC); without one it is delivered unencrypted, over the encrypted session only. SubjectName and DomainNames are ignored: the application record decides both, as for StartSigningRequest.
 
 These requests go through the same approval policy as signing requests. The password and the key are never written to disk. `opengdsd` keeps them in memory, the password until the key is generated and the key until FinishRequest returns it once. If `opengdsd` restarts, the node switches to standby, or nobody calls FinishRequest within a day, the request fails with Bad_RequestNotAllowed and the application starts again. At most 64 key pair requests are open at once; beyond that the method answers Bad_ServerTooBusy.
+
+## AccessTokens (AuthorizationService)
+
+opengdsd can issue AccessTokens (OPC 10000-12 §9.6) for the Server applications registered in its directory. It is off until the configuration turns it on:
+
+```
+authorization_service = true
+# authorization_service_uri = urn:example:opengds/AuthorizationService   (default: application_uri + "/AuthorizationService")
+# access_token_lifetime = 3600      (seconds, 60 to 86400)
+# refresh_token_lifetime = 86400    (seconds, 0 to 30 days; 0: no RefreshTokens)
+```
+
+- **Who may ask:** a client whose SecureChannel certificate this GDS CA issued (the AccessTokenRequestor privilege, §9.2), over an encrypted SecureChannel.
+- **For what:** the ResourceId is the ApplicationUri of a registered Server (any type except Client). Tokens are JWTs (OPC 10000-6 §6.5.2): `iss` is the ServiceUri, `aud` the ResourceId, `sub` the user or the client application, `roles` the user's roles from the users file, and `cnf` binds the token to the client certificate.
+- **UserTokenPolicies:** `opengds-session` (Anonymous: the Session's own user, or the client application when the Session has none), `opengds-username` (a user and password from the users file, sent inside the encrypted channel) and, when the users file has X.509 users, `opengds-x509`. Five failed identity checks lock the client certificate out for five minutes (OPC 10000-4 §7.40.2.1).
+- **Signing key:** an RSA 2048 key that lives in opengds-signer next to the CA keys (`ca_dir/token/`, encrypted under the CA passphrase). Its certificate is issued by the RSA CA for the ServiceUri and renewed automatically 30 days before it expires; ServiceCertificate is that certificate followed by the CA certificate. opengdsd only sends the signer the token to sign, and the signer signs nothing that is not an RS256 JWT.
+- **In memory only:** open requests (5 minutes, bound to their Session) and RefreshTokens. A restart or a switchover forgets them, and clients start again with StartRequestToken. Each RefreshToken works once and reads the user's roles again, so a removed user gets no new token. The standby refuses all token methods.
+- **Audit:** AccessTokenRequestedAuditEventType for each FinishRequestToken and AccessTokenIssuedAuditEventType for each token, visible to SecurityAdmin and AuthorizationServiceAdmin. Passwords, tokens and signatures never appear in the events.
 
 ## Revoking certificates
 

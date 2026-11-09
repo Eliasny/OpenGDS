@@ -12,7 +12,10 @@
  * signature, garbage and a certificate of another issuer apart.
  * ECC certificates (P-256, P-384) come from, are checked against and are
  * revoked on the CRL of their own curve's issuing CA.
+ * gds_server_revoke_serial (UASM ask A23) puts a serial the store marks
+ * revoked on the issuer's CRL by certificate, by type, or on all of them.
  * SPDX-License-Identifier: MPL-2.0 */
+#include <open62541/plugin/certificategroup.h>
 #include <open62541/plugin/create_certificate.h>
 #include <open62541/plugin/log_stdout.h>
 #include <openssl/evp.h>
@@ -323,7 +326,25 @@ static void test_get_and_check(gds_server *s, const UA_NodeId *app, const UA_Byt
 
 /* One certificate per curve: each from its own CA, checked and revoked
  * against that CA's CRL only; unregistering revokes on every curve. */
+/* open62541 loads the ECC CRLs, which are below 256 bytes when empty
+ * (docs/upstream/09-short-der-crl.md, patch 0007). */
+static void check_crls_load(gds_ca *ca) {
+    for(unsigned i = GDS_CA_ISSUER_P256; i < GDS_CA_ISSUERS; i++) {
+        gds_buf der = {0};
+        if(!CHECK(gds_ca_get_issuer_crl(ca, (gds_ca_issuer)i, &der) == GDS_OK)) // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange): i < GDS_CA_ISSUERS
+            continue;
+        CHECK(der.len < 256); /* empty: the short DER form 0x30 0x81 */
+        UA_ByteString b = {der.len, der.data};
+        UA_String name = UA_STRING_NULL;
+        CHECK_EQ_INT(UA_CertificateUtils_getSubjectName(&b, &name), UA_STATUSCODE_GOOD);
+        CHECK(name.length > 0);
+        UA_String_clear(&name);
+        gds_buf_free(&der);
+    }
+}
+
 static void test_ecc(gds_server *s, gds_ca *ca, const UA_NodeId *app) {
+    check_crls_load(ca);
     UA_ByteString p256 = UA_BYTESTRING_NULL, p384 = UA_BYTESTRING_NULL;
     if(!issue_type(s, app, UA_NS0ID_ECCNISTP256APPLICATIONCERTIFICATETYPE, &p256) ||
        !issue_type(s, app, UA_NS0ID_ECCNISTP384APPLICATIONCERTIFICATETYPE, &p384)) {
@@ -422,6 +443,70 @@ static void test_method_audit(gds_server *s, const UA_NodeId *app) {
     UA_NodeId_clear(&other);
 }
 
+/* A23: the store marks the serial revoked, then gds_server_revoke_serial
+ * puts it on the issuing CA's CRL: by the certificate's issuer, by the
+ * certificate type, or, with neither, on every issuer's CRL. */
+static UA_ByteString store_revoke(gds_server *s, const UA_NodeId *app, const UA_ByteString *cert) {
+    gds_buf der = {cert->data, cert->length}, serial = {0};
+    CHECK(gds_store_cert_revoke(s->store, &app->identifier.guid, &der, &serial) == GDS_OK);
+    UA_ByteString r = {serial.len, serial.data};
+    return r;
+}
+
+static void test_revoke_serial(gds_server *s, gds_ca *ca, const UA_NodeId *app) {
+    UA_ByteString rsa = UA_BYTESTRING_NULL, p256 = UA_BYTESTRING_NULL, p384 = UA_BYTESTRING_NULL;
+    if(!issue(s, app, &rsa) ||
+       !issue_type(s, app, UA_NS0ID_ECCNISTP256APPLICATIONCERTIFICATETYPE, &p256) ||
+       !issue_type(s, app, UA_NS0ID_ECCNISTP384APPLICATIONCERTIFICATETYPE, &p384)) {
+        UA_ByteString_clear(&rsa);
+        UA_ByteString_clear(&p256);
+        return;
+    }
+    int nr = 0, n2 = 0, n3 = 0, n = 0;
+    CHECK(!on_crl(ca, &rsa, &nr));
+    CHECK(!on_issuer_crl(ca, GDS_CA_ISSUER_P256, &p256, &n2));
+    CHECK(!on_issuer_crl(ca, GDS_CA_ISSUER_P384, &p384, &n3));
+
+    UA_ByteString empty = UA_BYTESTRING_NULL;
+    UA_NodeId notType = UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATATYPE);
+    UA_NodeId t256 = UA_NODEID_NUMERIC(0, UA_NS0ID_ECCNISTP256APPLICATIONCERTIFICATETYPE);
+    UA_ByteString srsa = store_revoke(s, app, &rsa);
+    CHECK_EQ_INT(gds_server_revoke_serial(NULL, &srsa, NULL, NULL), GDS_EINVAL);
+    CHECK_EQ_INT(gds_server_revoke_serial(s, &empty, NULL, NULL), GDS_EINVAL);
+    CHECK_EQ_INT(gds_server_revoke_serial(s, &srsa, NULL, &notType), GDS_EINVAL);
+    CHECK(gds_server_set_role(s, GDS_NODE_STANDBY, 100, 0) == GDS_OK);
+    CHECK_EQ_INT(gds_server_revoke_serial(s, &srsa, &rsa, NULL), GDS_ESTATE);
+    CHECK(gds_server_set_role(s, GDS_NODE_STANDALONE, 255, 0) == GDS_OK);
+    CHECK(!on_crl(ca, &rsa, NULL));
+
+    /* Neither certificate nor type: on every issuer's CRL, once. */
+    CHECK_EQ_INT(gds_server_revoke_serial(s, &srsa, NULL, NULL), GDS_OK);
+    CHECK_EQ_INT(gds_server_revoke_serial(s, &srsa, NULL, NULL), GDS_OK);
+    CHECK(on_crl(ca, &rsa, &n) && n == nr + 1);
+    CHECK(!on_issuer_crl(ca, GDS_CA_ISSUER_P256, &p256, &n) && n == n2 + 1);
+    CHECK(!on_issuer_crl(ca, GDS_CA_ISSUER_P384, &p384, &n) && n == n3 + 1);
+
+    /* By type: only that curve's CRL. */
+    UA_ByteString s256 = store_revoke(s, app, &p256);
+    CHECK_EQ_INT(gds_server_revoke_serial(s, &s256, NULL, &t256), GDS_OK);
+    CHECK(on_issuer_crl(ca, GDS_CA_ISSUER_P256, &p256, &n) && n == n2 + 2);
+    CHECK(!on_crl(ca, &p256, &n) && n == nr + 1);
+    CHECK(!on_issuer_crl(ca, GDS_CA_ISSUER_P384, &p256, &n) && n == n3 + 1);
+
+    /* By the certificate's issuer name. */
+    UA_ByteString s384 = store_revoke(s, app, &p384);
+    CHECK_EQ_INT(gds_server_revoke_serial(s, &s384, &p384, NULL), GDS_OK);
+    CHECK(on_issuer_crl(ca, GDS_CA_ISSUER_P384, &p384, &n) && n == n3 + 2);
+    CHECK(!on_crl(ca, &p384, &n) && n == nr + 1);
+
+    UA_ByteString_clear(&srsa);
+    UA_ByteString_clear(&s256);
+    UA_ByteString_clear(&s384);
+    UA_ByteString_clear(&rsa);
+    UA_ByteString_clear(&p256);
+    UA_ByteString_clear(&p384);
+}
+
 static void test_unregister(gds_server *s, gds_ca *ca, const UA_NodeId *b) {
     UA_ByteString c1 = UA_BYTESTRING_NULL, c2 = UA_BYTESTRING_NULL;
     if(!issue(s, b, &c1) || !issue(s, b, &c2)) {
@@ -442,6 +527,20 @@ static void test_unregister(gds_server *s, gds_ca *ca, const UA_NodeId *b) {
     UA_ByteString_clear(&c2);
 }
 
+/* Remove the CA of an earlier run: each issuer's directory holds these. */
+static void fresh_ca(const char *caDir) {
+    static const char *const sub[] = {"", "/nistP256", "/nistP384"};
+    static const char *const file[] = {"ca.der", "ca.crl", "ca.key.pem"};
+    for(size_t i = GDS_ARRAY_SIZE(sub); i-- > 0;) {
+        char path[1100];
+        for(size_t j = 0; j < GDS_ARRAY_SIZE(file); j++)
+            if(gds_path(path, sizeof(path), "%s%s/%s", caDir, sub[i], file[j]) == GDS_OK)
+                (void)unlink(path);
+        if(i > 0 && gds_path(path, sizeof(path), "%s%s", caDir, sub[i]) == GDS_OK)
+            (void)rmdir(path);
+    }
+}
+
 int main(int argc, char **argv) {
     if(argc != 2) {
         fprintf(stderr, "usage: %s <dir>\n", argv[0]);
@@ -452,6 +551,7 @@ int main(int argc, char **argv) {
     CHECK(gds_path(db, sizeof(db), "%s/store.db", argv[1]) == GDS_OK);
     CHECK(gds_path(caDir, sizeof(caDir), "%s/ca", argv[1]) == GDS_OK);
     (void)unlink(db);
+    fresh_ca(caDir); /* empty CRLs for check_crls_load */
 
     static uint8_t pw[] = "revoke-test-passphrase";
     static gds_buf pass = {pw, sizeof(pw) - 1};
@@ -494,15 +594,18 @@ int main(int argc, char **argv) {
     if(CHECK(gds_server_new(&cfg, &s) == GDS_OK) && s) {
         UA_Server_setAdminSessionContext(gds_server_ua(s), &admin);
         UA_NodeId a = UA_NODEID_NULL, b = UA_NODEID_NULL, c = UA_NODEID_NULL,
-                  d = UA_NODEID_NULL;
+                  d = UA_NODEID_NULL, e = UA_NODEID_NULL;
         if(register_app(s, TEST_URI ":a", &a) && register_app(s, TEST_URI ":b", &b) &&
-           register_app(s, TEST_URI ":c", &c) && register_app(s, TEST_URI ":d", &d)) {
+           register_app(s, TEST_URI ":c", &c) && register_app(s, TEST_URI ":d", &d) &&
+           register_app(s, TEST_URI ":e", &e)) {
             test_revoke(s, ca, &a, &b);
             test_get_and_check(s, &c, &cert);
             test_unregister(s, ca, &b);
             test_ecc(s, ca, &d);
             test_method_audit(s, &c);
+            test_revoke_serial(s, ca, &e);
         }
+        UA_NodeId_clear(&e);
         UA_NodeId_clear(&d);
         UA_NodeId_clear(&c);
         UA_NodeId_clear(&a);

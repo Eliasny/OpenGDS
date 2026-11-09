@@ -16,11 +16,15 @@
  *   GET_CHAIN  [issuer u8]
  *   ISSUE_CRL  [issuer u8]
  *              issuer is a gds_ca_issuer other than RSA; absent = RSA.
+ *   TOKEN_CHAIN   uriLen u16 | ServiceUri (gds_ca_token_chain)
+ *   TOKEN_SIGN    inputLen u32 | JWS signing input (gds_ca_token_sign;
+ *              the signer checks it is one)
  * Reply body: status u32, then on GDS_OK:
  *   SIGN_CSR   notBefore i64 | notAfter i64 | serialLen u16 | serial |
  *              derLen u32 | der
  *   NEW_KEY_PAIR  as SIGN_CSR, then keyLen u32 | key (PFX or PEM)
  *   GET_CHAIN, ISSUE_CRL, REVOKE   derLen u32 | der (REVOKE: the new CRL)
+ *   TOKEN_CHAIN, TOKEN_SIGN   derLen u32 | der (the chain; the signature)
  * SPDX-License-Identifier: MPL-2.0 */
 #ifndef OPENGDS_SIGNER_PROTO_H
 #define OPENGDS_SIGNER_PROTO_H
@@ -48,7 +52,9 @@ typedef enum {
     GDS_SIGP_NEW_KEY_PAIR = GDS_CA_OP_NEW_KEY_PAIR,
     GDS_SIGP_REVOKE = GDS_CA_OP_REVOKE,
     GDS_SIGP_ISSUE_CRL = GDS_CA_OP_ISSUE_CRL,
-    GDS_SIGP_GET_CHAIN = 5
+    GDS_SIGP_GET_CHAIN = 5,
+    GDS_SIGP_TOKEN_CHAIN = 6,
+    GDS_SIGP_TOKEN_SIGN = 7
 } gds_sigp_op;
 
 GDS_MUST_CHECK gds_status gds_sigp_encode_request(gds_sigp_op op, const UA_Guid *requestId,
@@ -59,6 +65,8 @@ GDS_MUST_CHECK gds_status gds_sigp_encode_revoke_issuer(gds_ca_issuer issuer,
 /* GET_CHAIN or ISSUE_CRL of one issuer. */
 GDS_MUST_CHECK gds_status gds_sigp_encode_issuer_request(gds_sigp_op op, gds_ca_issuer issuer,
                                                         gds_buf *out);
+/* TOKEN_CHAIN (data: the ServiceUri) or TOKEN_SIGN (data: the input). */
+GDS_MUST_CHECK gds_status gds_sigp_encode_token(gds_sigp_op op, const gds_buf *data, gds_buf *out);
 /* Decodes any request. serial (may be NULL) receives the REVOKE serial,
  * owned by the caller. */
 GDS_MUST_CHECK gds_status gds_sigp_decode_request_ex(const uint8_t *msg, size_t len,
@@ -77,6 +85,7 @@ typedef struct {
     gds_ca_key_format format; /* NEW_KEY_PAIR */
     gds_buf password;         /* NEW_KEY_PAIR, may be empty */
     gds_ca_issuer issuer;     /* REVOKE, GET_CHAIN, ISSUE_CRL */
+    gds_buf data;             /* TOKEN_CHAIN (NUL-terminated URI), TOKEN_SIGN */
 } gds_sigp_request;
 GDS_MUST_CHECK gds_status gds_sigp_decode(const uint8_t *msg, size_t len, gds_sigp_request *out);
 void gds_sigp_request_clear(gds_sigp_request *r);

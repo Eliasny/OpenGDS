@@ -8,5 +8,5 @@ add_library(gds_backup STATIC backup.c)
 target_include_directories(gds_backup PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(gds_backup PUBLIC gds_verify_audit)
 
-add_executable(gdsctl main.c)
+add_executable(gdsctl main.c push_targets.c)
 target_link_libraries(gdsctl PRIVATE gds_backup)
