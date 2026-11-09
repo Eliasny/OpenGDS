@@ -88,6 +88,8 @@ SRV-PER-01,pass
 SRV-PER-02,pass
 SRV-PER-03,pass
 SRV-PER-04,pass
+SRV-AUD-01,pass
+SRV-AUD-02,pass
 SRV-SET-01,not_tested   # only with --only SRV-SET; push_test_server_setup.csv covers it
 SRV-SET-02,not_tested   # only with --only SRV-SET; push_test_server_setup.csv covers it
 SRV-SET-03,not_tested   # only with --only SRV-SET; push_test_server_setup.csv covers it

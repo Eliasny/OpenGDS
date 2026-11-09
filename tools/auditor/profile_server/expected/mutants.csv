@@ -93,3 +93,5 @@ setup-exit-no-role,SRV-SET-03,fail
 setup-sticky,SRV-SET-04,fail
 setup-open-after,SRV-SET-05,warn
 reset-no-shutdown,SRV-SET-06,fail
+audit-no-trustlist-event,SRV-AUD-01,fail
+audit-no-cert-event,SRV-AUD-02,fail

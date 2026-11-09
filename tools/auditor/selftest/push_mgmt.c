@@ -161,6 +161,10 @@ static const struct {
     {"update-accept-bad-key", "SRV-UPD-10",
      "with --accept-keys: UpdateCertificate accepts a private key of another certificate"},
     /* push_setup.c (push_test_server --setup) */
+    {"audit-no-trustlist-event", "SRV-AUD-01",
+     "no TrustListUpdatedAuditEventType when a trust list is put in use"},
+    {"audit-no-cert-event", "SRV-AUD-02",
+     "no CertificateUpdatedAuditEventType when a certificate is put in use"},
     {"setup-state-running", "SRV-SET-01", "in application setup ServerStatus.State is Running"},
     {"setup-no-cert", "SRV-SET-02", "in application setup the endpoints present no certificate"},
     {"setup-exit-no-role", "SRV-SET-03",
@@ -407,6 +411,8 @@ void pm_session_closed(const UA_NodeId *sessionId) {
     }
 }
 
+static void notice_free(void);
+
 void pm_clear(void) {
     if(hasStartupPki) {
         startupPki.clear(&startupPki);
@@ -421,6 +427,7 @@ void pm_clear(void) {
             file_free(&P.files[i]);
     txn_clear();
     reject_clear();
+    notice_free();
 }
 
 /* ---------------- Trust list helpers ---------------- */
@@ -1040,6 +1047,63 @@ static UA_SecurityPolicy *stale_policy(void) {
 }
 
 /* Put a list in use and move LastUpdateTime (§7.8.2.1). */
+/* ---------------- Audit events (12 §7.8.2.13, §7.10.27) ----------------
+ * Server.Auditing is TRUE; each change put in use raises one event. */
+#define DAG_NODE UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP
+#define DAG_TL_NODE UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST
+
+static void audit_event(UA_UInt32 type, UA_UInt32 source, const char *what, UA_KeyValuePair *f,
+                        size_t n) {
+    UA_KeyValueMap m = {n, f};
+    UA_StatusCode r = UA_Server_createEvent(P.server, ns0(source), ns0(type), 100,
+                                            UA_LOCALIZEDTEXT("en", (char *)(uintptr_t)what), &m,
+                                            NULL, NULL);
+    UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "audit event: %s -> %s", what,
+                UA_StatusCode_name(r));
+}
+
+static UA_StatusCode auditing_read(UA_Server *server, const UA_NodeId *sessionId,
+                                   void *sessionContext, const UA_NodeId *nodeId, void *nodeContext,
+                                   UA_Boolean includeSourceTimeStamp, const UA_NumericRange *range,
+                                   UA_DataValue *value) {
+    (void)server, (void)sessionId, (void)sessionContext, (void)nodeId, (void)nodeContext;
+    (void)includeSourceTimeStamp;
+    if(range)
+        return UA_STATUSCODE_BADINDEXRANGEINVALID;
+    UA_Boolean on = true;
+    value->hasValue = true;
+    return UA_Variant_setScalarCopy(&value->value, &on, &UA_TYPES[UA_TYPES_BOOLEAN]);
+}
+
+static void audit_trustlist(void) {
+    if(breaking("audit-no-trustlist-event"))
+        return;
+    UA_Boolean ok = true;
+    UA_NodeId tl = ns0(DAG_TL_NODE);
+    UA_KeyValuePair f[2];
+    f[0].key = UA_QUALIFIEDNAME(0, "/Status");
+    UA_Variant_setScalar(&f[0].value, &ok, &UA_TYPES[UA_TYPES_BOOLEAN]);
+    f[1].key = UA_QUALIFIEDNAME(0, "/TrustListId");
+    UA_Variant_setScalar(&f[1].value, &tl, &UA_TYPES[UA_TYPES_NODEID]);
+    audit_event(UA_NS0ID_TRUSTLISTUPDATEDAUDITEVENTTYPE, DAG_TL_NODE, "TrustList updated", f, 2);
+}
+
+static void audit_certificate(void) {
+    if(breaking("audit-no-cert-event"))
+        return;
+    UA_Boolean ok = true;
+    UA_NodeId group = ns0(DAG_NODE);
+    UA_KeyValuePair f[3];
+    f[0].key = UA_QUALIFIEDNAME(0, "/Status");
+    UA_Variant_setScalar(&f[0].value, &ok, &UA_TYPES[UA_TYPES_BOOLEAN]);
+    f[1].key = UA_QUALIFIEDNAME(0, "/CertificateGroup");
+    UA_Variant_setScalar(&f[1].value, &group, &UA_TYPES[UA_TYPES_NODEID]);
+    f[2].key = UA_QUALIFIEDNAME(0, "/CertificateType");
+    UA_Variant_setScalar(&f[2].value, &P.certType, &UA_TYPES[UA_TYPES_NODEID]);
+    audit_event(UA_NS0ID_CERTIFICATEUPDATEDAUDITEVENTTYPE, UA_NS0ID_SERVERCONFIGURATION,
+                "Certificate updated", f, 3);
+}
+
 static UA_StatusCode install_list(const UA_TrustListDataType *l) {
     UA_CertificateGroup *g = pki();
     UA_StatusCode r = g->setTrustList(g, l);
@@ -1057,6 +1121,7 @@ static UA_StatusCode install_list(const UA_TrustListDataType *l) {
             v);
     if(onListInstalled)
         onListInstalled(); /* sessions are checked against the new list (§7.8.2.5) */
+    audit_trustlist();
     return r;
 }
 
@@ -1125,6 +1190,8 @@ static UA_StatusCode apply(bool closeNow) {
         if(sp && r == UA_STATUSCODE_GOOD && P.ownKey.length)
             r = sp->updateCertificate(sp, old, P.ownKey);
         UA_ByteString_clear(&old);
+        if(r == UA_STATUSCODE_GOOD)
+            audit_certificate();
         if(r == UA_STATUSCODE_GOOD && P.certKey.length) { /* the new key pair is in use */
             secret_clear(&P.ownKey);
             P.ownKey = P.certKey;
@@ -1160,6 +1227,9 @@ static struct {
     UA_Variant *output; /* the waiting ApplyChanges (its async operation) */
     bool cancelled;     /* the server gave up on it (session closed, shutdown) */
     UA_DateTime until;  /* the announced interruption, 0: none */
+    UA_StatusCode result; /* applied, response not yet sent (respond_due) */
+    UA_ByteString cert;
+    UA_NodeId type;
 } N;
 
 static void reason_write(const char *text) {
@@ -1171,41 +1241,68 @@ static void reason_write(const char *text) {
         UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "ShutdownReason not written");
 }
 
+/* An ApplyChanges still waiting for respond_due at shutdown */
+static void notice_free(void) {
+    UA_ByteString_clear(&N.cert);
+    UA_NodeId_clear(&N.type);
+}
+
 static void notice_clear(void) {
     memset(&N, 0, sizeof(N));
     reason_write("");
 }
 
-static void notice_due(UA_Server *server, void *data) {
+/* The change is applied when the notice is due; the response, and then the
+ * channels' close, follow PM_PUBLISH_MS later, so that what the change
+ * raised (its audit event, 12 §7.10.27) is published first. */
+#define PM_PUBLISH_MS 250
+
+static void respond_due(UA_Server *server, void *data) {
     (void)data;
     UA_Variant *out = N.output;
     bool cancelled = N.cancelled;
+    UA_StatusCode r = N.result;
+    UA_ByteString cert = N.cert;
+    UA_NodeId type = N.type;
     notice_clear();
-    if(cancelled) {
+    if(!cancelled) {
+        UA_StatusCode s = UA_Server_setAsyncCallMethodResult(server, out, r);
+        if(s != UA_STATUSCODE_GOOD)
+            UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "ApplyChanges result -> %s",
+                           UA_StatusCode_name(s));
+    }
+    /* the response first (the delayed callbacks run in order, open62541
+     * EventLoop); the same certificate again, now closing the channels */
+    if(r == UA_STATUSCODE_GOOD) {
+        UA_StatusCode c = UA_Server_updateCertificate(
+            server, ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP), type,
+            cert, NULL);
+        if(c != UA_STATUSCODE_GOOD)
+            UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "closing the channels -> %s",
+                           UA_StatusCode_name(c));
+    }
+    UA_ByteString_clear(&cert);
+    UA_NodeId_clear(&type);
+}
+
+static void notice_due(UA_Server *server, void *data) {
+    (void)data;
+    if(N.cancelled) {
+        notice_clear();
         UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "ApplyChanges cancelled");
         return;
     }
-    UA_ByteString cert = UA_BYTESTRING_NULL;
-    UA_NodeId type = UA_NODEID_NULL;
     UA_StatusCode r = UA_STATUSCODE_BADINVALIDSTATE; /* the transaction went with its session */
     if(P.txn && P.hasCert) {
-        r = UA_ByteString_copy(&P.cert, &cert) | UA_NodeId_copy(&P.certType, &type);
+        r = UA_ByteString_copy(&P.cert, &N.cert) | UA_NodeId_copy(&P.certType, &N.type);
         if(r == UA_STATUSCODE_GOOD)
             r = apply(false);
     }
-    apply_done(r);
-    /* the response first: the delayed callbacks run in order (open62541 EventLoop) */
-    UA_StatusCode s = UA_Server_setAsyncCallMethodResult(server, out, r);
-    if(r == UA_STATUSCODE_GOOD) /* the same certificate again, now closing the channels */
-        r = UA_Server_updateCertificate(
-            server, ns0(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP),
-            type, cert, NULL);
-    if(s != UA_STATUSCODE_GOOD || r != UA_STATUSCODE_GOOD)
-        UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND,
-                       "ApplyChanges result -> %s, closing the channels -> %s",
-                       UA_StatusCode_name(s), UA_StatusCode_name(r));
-    UA_ByteString_clear(&cert);
-    UA_NodeId_clear(&type);
+    N.result = apply_done(r);
+    UA_EventLoop *el = UA_Server_getConfig(server)->eventLoop;
+    UA_DateTime due = el->dateTime_nowMonotonic(el) + PM_PUBLISH_MS * UA_DATETIME_MSEC;
+    if(UA_Server_addTimedCallback(server, respond_due, NULL, due, NULL) != UA_STATUSCODE_GOOD)
+        respond_due(server, NULL); /* at once, then */
 }
 
 static UA_StatusCode notice_start(UA_Variant *output) {
@@ -2201,6 +2298,11 @@ UA_StatusCode pm_install(UA_Server *server, const char *mutant, const UA_ByteStr
     /* CancelChanges is Optional (§7.10.11): offered when the node exists */
     if(set_cb(UA_NS0ID_SERVERCONFIGURATION_CANCELCHANGES, scCancelChanges) != UA_STATUSCODE_GOOD)
         UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "no CancelChanges node");
+    /* Server.Auditing TRUE (the library's value source reads FALSE) */
+    UA_CallbackValueSource aud = {auditing_read, NULL};
+    if(UA_Server_setVariableNode_callbackValueSource(server, ns0(UA_NS0ID_SERVER_AUDITING), aud) !=
+       UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINTERNALERROR;
     if(advertise(server) != UA_STATUSCODE_GOOD || optional_methods(server) != UA_STATUSCODE_GOOD ||
        structure_mutants(server) != UA_STATUSCODE_GOOD ||
        trustlist_props(server) != UA_STATUSCODE_GOOD || diagnostics(server) != UA_STATUSCODE_GOOD ||
