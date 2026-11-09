@@ -349,7 +349,6 @@ static void case_g2_cancel(void) {
     gds_status s = push_setup_run(&j, &rep);
     push_setup_state st;
     memset(&st, 0, sizeof(st));
-    memset(&st, 0, sizeof(st));
     UA_StatusCode r = probe(F.urlSetup, &F.setupDeviceCert, GDSC_IDENTITY_USERNAME, &st);
     char d[240];
     describe(d, sizeof(d), &rep, s);
@@ -671,6 +670,8 @@ int main(int argc, char **argv) {
         s = read_device_cert("reverse", &F.reverseDeviceCert);
     if(s == GDS_OK)
         s = wait_up(F.urlSetup);
+    if(s == GDS_OK)
+        s = wait_up(F.urlMock);
     if(s == GDS_OK)
         s = wait_up(F.urlMock2);
     if(s != GDS_OK) {
