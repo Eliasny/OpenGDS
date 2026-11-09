@@ -15,7 +15,17 @@
 /* Comparisons as functions: keeps comparison operators out of macro
  * arguments, which cppcheck cannot parse without the GLib headers. */
 static void eq_str(const char *got, const char *want) {
+#ifdef G_OS_WIN32
+    /* paths come back in Windows form (\\w for /w): compare with / */
+    char *g = got ? g_strdelimit(g_strdup(got), "\\", '/') : NULL;
+    char *w = want ? g_strdelimit(g_strdup(want), "\\", '/') : NULL;
+    gboolean same = g_strcmp0(g, w) == 0;
+    g_free(g);
+    g_free(w);
+    if(!same) {
+#else
     if(g_strcmp0(got, want) != 0) {
+#endif
         g_printerr("expected \"%s\"\n     got \"%s\"\n", want ? want : "(null)",
                    got ? got : "(null)");
         g_test_fail();
