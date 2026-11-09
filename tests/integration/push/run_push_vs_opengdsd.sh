@@ -20,6 +20,9 @@
 #   8-10. certs revoke and apps unregister (the CRL is checked with openssl)
 #   11. gdsadm apps import of a CSV and a JSON file: per-record report,
 #       already registered records left alone, DiscoveryAdmin required
+#   12. gdsadm roles (OPC 10000-18 §4.4): a SecurityAdmin maps the viewer to
+#       DiscoveryAdmin, which lets the viewer register; a non-SecurityAdmin is
+#       refused; add-app/remove-app and remove-identity round trip
 # Usage: run_push_vs_opengdsd.sh <build-dir> <work-dir>
 # SPDX-License-Identifier: MPL-2.0
 set -u
@@ -61,13 +64,16 @@ wait_log() { # wait_log <pid> <log> <what>
 
 printf 'secret\n' > "$W/admin.pw"
 printf 'viewer-secret\n' > "$W/viewer.pw"
+printf 'secadm-secret\n' > "$W/secadm.pw"
 printf 'push-tracer-ca-passphrase\n' > "$W/ca.pw"
-chmod 600 "$W/admin.pw" "$W/viewer.pw" "$W/ca.pw"
+chmod 600 "$W/admin.pw" "$W/viewer.pw" "$W/secadm.pw" "$W/ca.pw"
 CRED=$("$GDSADM" hash-password < "$W/admin.pw") || fail "gdsadm hash-password"
 VCRED=$("$GDSADM" hash-password < "$W/viewer.pw") || fail "gdsadm hash-password"
+SCRED=$("$GDSADM" hash-password < "$W/secadm.pw") || fail "gdsadm hash-password"
 {
     echo "admin DiscoveryAdmin,CertificateAuthorityAdmin,KeyCredentialAdmin $CRED"
     echo "viewer - $VCRED"
+    echo "secadm SecurityAdmin $SCRED"
 } > "$W/users"
 chmod 600 "$W/users"
 cat > "$W/opengds.conf" <<CONF
@@ -283,4 +289,43 @@ expect "BadUserAccessDenied" "$W/import3.txt"
 for u in press hmi scada; do
     grep -q "urn:opengds:test:import:$u" "$W/apps.txt" || { cat "$W/apps.txt"; fail "import:$u not in the store"; }
 done
+
+echo "=============== 12. gdsadm roles (OPC 10000-18) ==============="
+# shellcheck disable=SC2046
+"$GDSADM" roles add-identity DiscoveryAdmin UserName viewer $(conn admin "$W/admin.pw") \
+    > "$W/roles0.txt" 2>&1 && { cat "$W/roles0.txt"; fail "a non-SecurityAdmin changed a Role"; }
+expect "BadUserAccessDenied" "$W/roles0.txt"
+# shellcheck disable=SC2046
+"$GDSADM" roles add-identity DiscoveryAdmin UserName viewer $(conn secadm "$W/secadm.pw") \
+    > "$W/roles1.txt" 2>&1 || { cat "$W/roles1.txt"; fail "roles add-identity"; }
+# shellcheck disable=SC2046
+"$GDSADM" roles list $(conn secadm "$W/secadm.pw") > "$W/roles3.txt" 2>&1 || { cat "$W/roles3.txt"; fail "roles list"; }
+cat "$W/roles3.txt"
+expect "identity UserName viewer" "$W/roles3.txt"
+expect "identity UserName secadm" "$W/roles3.txt"
+# shellcheck disable=SC2046
+"$GDSADM" apps import "$W/import.json" $(conn viewer "$W/viewer.pw") > "$W/roles4.txt" 2>&1 || \
+    { cat "$W/roles4.txt"; fail "the viewer, now a DiscoveryAdmin, could not register"; }
+expect "0 registered, 2 already registered, 0 failed" "$W/roles4.txt"
+# an Applications entry restricts the Role to that client (§4.4.7): listed,
+# then removed again so gdsadm keeps DiscoveryAdmin
+# shellcheck disable=SC2046
+"$GDSADM" roles add-app Observer urn:opengds:test:roles:tool $(conn secadm "$W/secadm.pw") \
+    > "$W/roles2.txt" 2>&1 || { cat "$W/roles2.txt"; fail "roles add-app"; }
+# shellcheck disable=SC2046
+"$GDSADM" roles list $(conn secadm "$W/secadm.pw") > "$W/roles8.txt" 2>&1 || fail "roles list"
+expect "application urn:opengds:test:roles:tool" "$W/roles8.txt"
+# shellcheck disable=SC2046
+"$GDSADM" roles remove-app Observer urn:opengds:test:roles:tool $(conn secadm "$W/secadm.pw") \
+    > "$W/roles9.txt" 2>&1 || { cat "$W/roles9.txt"; fail "roles remove-app"; }
+# shellcheck disable=SC2046
+"$GDSADM" roles remove-identity DiscoveryAdmin UserName viewer $(conn secadm "$W/secadm.pw") \
+    > "$W/roles5.txt" 2>&1 || { cat "$W/roles5.txt"; fail "roles remove-identity"; }
+# shellcheck disable=SC2046
+"$GDSADM" roles remove-identity DiscoveryAdmin UserName viewer $(conn secadm "$W/secadm.pw") \
+    > "$W/roles6.txt" 2>&1 && { cat "$W/roles6.txt"; fail "a second remove-identity succeeded"; }
+expect "BadNotFound" "$W/roles6.txt"
+# shellcheck disable=SC2046
+"$GDSADM" roles list $(conn secadm "$W/secadm.pw") > "$W/roles7.txt" 2>&1 || fail "roles list"
+grep -q "identity UserName viewer" "$W/roles7.txt" && { cat "$W/roles7.txt"; fail "the rule is still listed"; }
 echo "PUSH TRACER PASSED"

@@ -61,6 +61,10 @@ static bool is_server(UA_ApplicationType t) {
 
 /* The one record with this ApplicationUri; *rec owned by the caller. */
 static int find(gds_store *st, const char *uri, UA_ApplicationRecordDataType *rec) {
+    if(!uri) {
+        fprintf(stderr, "gdsctl: --uri is required\n");
+        return 2;
+    }
     UA_ApplicationRecordDataType *recs = NULL;
     size_t n = 0;
     gds_status r = gds_store_app_find_uri(st, &(UA_String){strlen(uri), (UA_Byte *)(uintptr_t)uri},

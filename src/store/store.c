@@ -404,3 +404,60 @@ gds_status gds_store_kc_cred_scan(gds_store *s, gds_store_kc_cred_cb cb, void *c
         return GDS_EUNSUPPORTED;
     return s->be.kc_cred_scan(s->ctx, cb, ctx);
 }
+
+/* ---- OPC 10000-18 rules and users (minor 9) ---- */
+
+static bool text_ok(const char *v, size_t max) {
+    return v && memchr(v, '\0', max + 1) != NULL;
+}
+
+static bool rule_ok(const gds_role_rule *r) {
+    return r && r->kind >= GDS_RULE_IDENTITY && r->kind <= GDS_RULE_ENDPOINT && r->role[0] &&
+           text_ok(r->role, sizeof(r->role) - 1) && text_ok(r->criteria, GDS_MAX_RULE_TEXT) &&
+           text_ok(r->securityPolicyUri, GDS_MAX_RULE_URI) &&
+           text_ok(r->transportProfileUri, GDS_MAX_RULE_URI);
+}
+
+static bool user_ok(const gds_store_user *u) {
+    return u && u->name[0] && text_ok(u->name, GDS_MAX_STORE_USER_NAME) && u->credential[0] &&
+           text_ok(u->credential, GDS_MAX_USER_CREDENTIAL) &&
+           text_ok(u->description, GDS_MAX_USER_DESCRIPTION);
+}
+
+gds_status gds_store_rule_add(gds_store *s, const gds_role_rule *r) {
+    if(!s->be.rule_add)
+        return GDS_EUNSUPPORTED;
+    return rule_ok(r) ? s->be.rule_add(s->ctx, r) : GDS_EINVAL;
+}
+
+gds_status gds_store_rule_remove(gds_store *s, const gds_role_rule *r) {
+    if(!s->be.rule_remove)
+        return GDS_EUNSUPPORTED;
+    return rule_ok(r) ? s->be.rule_remove(s->ctx, r) : GDS_EINVAL;
+}
+
+gds_status gds_store_rule_scan(gds_store *s, gds_rule_scan_cb cb, void *ctx) {
+    if(!s->be.rule_scan)
+        return GDS_EUNSUPPORTED;
+    return cb ? s->be.rule_scan(s->ctx, cb, ctx) : GDS_EINVAL;
+}
+
+gds_status gds_store_user_put(gds_store *s, const gds_store_user *u, bool create) {
+    if(!s->be.user_put)
+        return GDS_EUNSUPPORTED;
+    return user_ok(u) ? s->be.user_put(s->ctx, u, create) : GDS_EINVAL;
+}
+
+gds_status gds_store_user_delete(gds_store *s, const char *name) {
+    if(!s->be.user_delete)
+        return GDS_EUNSUPPORTED;
+    return name && name[0] && text_ok(name, GDS_MAX_STORE_USER_NAME)
+               ? s->be.user_delete(s->ctx, name)
+               : GDS_EINVAL;
+}
+
+gds_status gds_store_user_scan(gds_store *s, gds_user_scan_cb cb, void *ctx) {
+    if(!s->be.user_scan)
+        return GDS_EUNSUPPORTED;
+    return cb ? s->be.user_scan(s->ctx, cb, ctx) : GDS_EINVAL;
+}

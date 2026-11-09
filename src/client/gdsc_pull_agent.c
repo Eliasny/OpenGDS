@@ -376,9 +376,9 @@ static UA_StatusCode run_steps(run_ctx *x) {
         return failed(x, GDSC_PULL_STEP_GROUPS, r);
     if(!UA_NodeId_isNull(&x->st->pendingRequest)) {
         /* Table 21 SigningRequestPending: repeat count 0 */
-        r = finish(x, 0);
-        if(r != UA_STATUSCODE_GOOD)
-            r = UA_STATUSCODE_GOOD; /* dropped: a new request below */
+        if(finish(x, 0) != UA_STATUSCODE_GOOD) {
+            /* dropped: a new request below */
+        }
         if(x->res->pending)
             return UA_STATUSCODE_GOOD; /* still waiting: nothing else to do */
     }

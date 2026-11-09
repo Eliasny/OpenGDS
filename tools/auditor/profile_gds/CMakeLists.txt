@@ -15,6 +15,7 @@ add_library(gdsaudit_profile_gds STATIC
     test_spec_authz.c
     test_spec_events.c
     test_spec_roles.c
+    test_spec_part18.c
     test_spec_model.c)
 target_include_directories(gdsaudit_profile_gds PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(gdsaudit_profile_gds PUBLIC gdsaudit_core)
