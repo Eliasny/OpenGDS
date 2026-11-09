@@ -294,10 +294,10 @@ static void flow_clear(gds_target *t, az_flow *f) {
         UA_Variant_setScalar(&in, (void *)(uintptr_t)apps[i], &UA_TYPES[UA_TYPES_NODEID]);
         size_t outN = 0;
         UA_Variant *out = NULL;
-        /* best-effort cleanup: an application already gone is fine */
-        UA_StatusCode r =
-            gt_call(t, UA_GDSID_DIRECTORY_UNREGISTERAPPLICATION, 1, &in, 0, &outN, &out);
-        (void)r;
+        /* Clean-up: a record already gone is fine. */
+        if(gt_call(t, UA_GDSID_DIRECTORY_UNREGISTERAPPLICATION, 1, &in, 0, &outN, &out) !=
+           UA_STATUSCODE_GOOD)
+            fprintf(stderr, "# clean-up: UnregisterApplication failed\n");
         gt_free_out(out, outN);
     }
     UA_NodeId_clear(&f->svc);

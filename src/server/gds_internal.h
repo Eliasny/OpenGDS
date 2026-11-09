@@ -80,6 +80,9 @@ struct gds_server {
     bool workPending, workStop;
     bool plugStop; /* plugin workers stop (plugLock); here for packing */
     bool started;  /* gds_server_run was called (__atomic); here for packing */
+    bool stopping; /* gds_server_delete began (__atomic): queued callbacks
+                    * that run while UA_Server_delete drains the event loop
+                    * must not touch the server's nodes or namespaces */
     bool ptlBound;            /* ptlLock; here for packing */
     bool alarmDrainScheduled; /* alarmLock; here for packing */
     /* plugin privilege providers, fixed before the server runs */

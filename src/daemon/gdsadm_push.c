@@ -699,7 +699,7 @@ static gds_status enroll_via_gds(void *ctx, const UA_ApplicationDescription *ad,
 }
 
 static const char *state_name(UA_ServerState s) {
-    switch(s) {
+    switch((int)s) { /* -Wswitch-enum: the enum has a FORCE32BIT member */
     case UA_SERVERSTATE_RUNNING: return "Running";
     case UA_SERVERSTATE_FAILED: return "Failed";
     case UA_SERVERSTATE_NOCONFIGURATION: return "NoConfiguration";

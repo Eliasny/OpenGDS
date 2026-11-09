@@ -148,6 +148,7 @@ static const gds_store_backend BACKEND = {
     NULL,
     NULL, NULL, /* no trust lists */
     NULL, NULL, NULL, /* no push targets */
+    NULL,             /* no cert_issue */
 };
 
 static gds_status hook_open(void *ctx, gds_store **out) {

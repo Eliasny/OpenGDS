@@ -107,13 +107,14 @@ gds_status gdsc_make_csr(const UA_NodeId *certType, const char *applicationUri,
                X509_REQ_set_subject_name(req, name) == 1 && X509_REQ_set_pubkey(req, pk) == 1 &&
                X509_REQ_add_extensions(req, exts) == 1 &&
                X509_REQ_sign(req, pk, EVP_sha256()) > 0) {
-                /* i2d first: the order in which arguments are evaluated
-                 * is unspecified, so d must not be read in the same call */
+                /* i2d first: the order in which a call's arguments are
+                 * evaluated is unspecified (C11 6.5.2.2p10), and clang
+                 * reads d before i2d sets it */
                 unsigned char *d = NULL;
                 int n = i2d_X509_REQ(req, &d);
                 s = der_out(d, n, csrOut, false);
+                d = NULL;
                 if(s == GDS_OK) {
-                    d = NULL;
                     n = i2d_PrivateKey(pk, &d);
                     s = der_out(d, n, keyOut, true);
                 }

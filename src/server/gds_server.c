@@ -472,6 +472,7 @@ void gds_server_delete(gds_server *s) {
         return;
     gds_worker_stop(s);
     gds_embed_stop(s);
+    __atomic_store_n(&s->stopping, true, __ATOMIC_RELEASE);
     if(s->ua)
         UA_Server_delete(s->ua); /* closes every session, cancels plugin calls */
     gds_embed_free(s);
