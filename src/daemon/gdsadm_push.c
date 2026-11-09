@@ -1180,6 +1180,46 @@ static int roles_usage(void) {
     return 2;
 }
 
+/* gdsadm roles add-identity|remove-identity|add-app|remove-app: argv[3]
+ * names the role; rule is the identity rule, NULL for an ApplicationUri
+ * in argv[4]. */
+static int roles_change(UA_Client *c, const char *verb, char **argv,
+                        UA_IdentityMappingRuleType *rule) {
+    int rc = 0;
+    const UA_NodeId roleSet =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
+    const char *method = strcmp(verb, "add-identity") == 0      ? "AddIdentity"
+                         : strcmp(verb, "remove-identity") == 0 ? "RemoveIdentity"
+                         : strcmp(verb, "add-app") == 0         ? "AddApplication"
+                                                                : "RemoveApplication";
+    UA_NodeId role = UA_NODEID_NULL, m = UA_NODEID_NULL;
+    UA_StatusCode r = child_by_name(c, &roleSet, argv[3], &role);
+    if(r != UA_STATUSCODE_GOOD) {
+        rc = report(argv[3], r);
+    } else if((r = child_by_name(c, &role, method, &m)) != UA_STATUSCODE_GOOD) {
+        rc = report(method, r);
+    } else {
+        UA_Variant in;
+        UA_String uri = UA_STRING(argv[4]);
+        if(rule)
+            UA_Variant_setScalar(&in, rule,
+                                 &UA_TYPES[UA_TYPES_IDENTITYMAPPINGRULETYPE]);
+        else
+            UA_Variant_setScalar(&in, &uri, &UA_TYPES[UA_TYPES_STRING]);
+        size_t outN = 0;
+        UA_Variant *out = NULL;
+        r = UA_Client_call(c, role, m, 1, &in, &outN, &out);
+        UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
+        if(r == UA_STATUSCODE_GOOD)
+            printf("%s %s: done\n", argv[3], method);
+        else
+            rc = report(method, r);
+    }
+    UA_NodeId_clear(&role);
+    UA_NodeId_clear(&m);
+    return rc;
+}
+
 int gdsadm_roles(int argc, char **argv) {
     /* argv: gdsadm roles VERB ... */
     if(argc < 3)
@@ -1215,37 +1255,7 @@ int gdsadm_roles(int argc, char **argv) {
     if(rc == 0 && list) {
         rc = roles_list(c);
     } else if(rc == 0) {
-        const UA_NodeId roleSet =
-            UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
-        const char *method = strcmp(verb, "add-identity") == 0      ? "AddIdentity"
-                             : strcmp(verb, "remove-identity") == 0 ? "RemoveIdentity"
-                             : strcmp(verb, "add-app") == 0         ? "AddApplication"
-                                                                    : "RemoveApplication";
-        UA_NodeId role = UA_NODEID_NULL, m = UA_NODEID_NULL;
-        UA_StatusCode r = child_by_name(c, &roleSet, argv[3], &role);
-        if(r != UA_STATUSCODE_GOOD) {
-            rc = report(argv[3], r);
-        } else if((r = child_by_name(c, &role, method, &m)) != UA_STATUSCODE_GOOD) {
-            rc = report(method, r);
-        } else {
-            UA_Variant in;
-            UA_String uri = UA_STRING(argv[4]);
-            if(identity)
-                UA_Variant_setScalar(&in, &rule,
-                                     &UA_TYPES[UA_TYPES_IDENTITYMAPPINGRULETYPE]);
-            else
-                UA_Variant_setScalar(&in, &uri, &UA_TYPES[UA_TYPES_STRING]);
-            size_t outN = 0;
-            UA_Variant *out = NULL;
-            r = UA_Client_call(c, role, m, 1, &in, &outN, &out);
-            UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
-            if(r == UA_STATUSCODE_GOOD)
-                printf("%s %s: done\n", argv[3], method);
-            else
-                rc = report(method, r);
-        }
-        UA_NodeId_clear(&role);
-        UA_NodeId_clear(&m);
+        rc = roles_change(c, verb, argv, identity ? &rule : NULL);
     }
     gdsc_session_close(gds);
     files_clear(&f);

@@ -709,6 +709,35 @@ RULE_METHOD(m_remove_endpoint, GDS_RULE_ENDPOINT, false)
 
 /* ---- the Properties ---- */
 
+/* Copies the rules of one role bit and kind into arr, which holds as
+ * many entries as there are such rules (read_prop). Called with rlock. */
+static UA_StatusCode copy_rules(unsigned bit, gds_rule_kind kind, void *arr) {
+    UA_StatusCode r = UA_STATUSCODE_GOOD;
+    size_t k = 0;
+    for(size_t i = 0; i < nRules && r == UA_STATUSCODE_GOOD; i++) {
+        const gds_role_rule *e = &rules[i].r;
+        if(rules[i].bit != bit || e->kind != kind)
+            continue;
+        if(kind == GDS_RULE_IDENTITY) {
+            UA_IdentityMappingRuleType *v = &((UA_IdentityMappingRuleType *)arr)[k];
+            v->criteriaType = (UA_IdentityCriteriaType)e->criteriaType;
+            r = cs_copy(e->criteria, &v->criteria);
+        } else if(kind == GDS_RULE_ENDPOINT) {
+            UA_EndpointType *v = &((UA_EndpointType *)arr)[k];
+            v->securityMode = (UA_MessageSecurityMode)e->securityMode;
+            r = cs_copy(e->criteria, &v->endpointUrl);
+            if(r == UA_STATUSCODE_GOOD)
+                r = cs_copy(e->securityPolicyUri, &v->securityPolicyUri);
+            if(r == UA_STATUSCODE_GOOD)
+                r = cs_copy(e->transportProfileUri, &v->transportProfileUri);
+        } else {
+            r = cs_copy(e->criteria, &((UA_String *)arr)[k]);
+        }
+        k++;
+    }
+    return r;
+}
+
 static UA_StatusCode read_prop(UA_Server *server, const UA_NodeId *sessionId,
                                void *sessionContext, const UA_NodeId *nodeId, void *nodeContext,
                                UA_Boolean includeSourceTimeStamp, const UA_NumericRange *range,
@@ -748,31 +777,8 @@ static UA_StatusCode read_prop(UA_Server *server, const UA_NodeId *sessionId,
     void *arr = n ? UA_Array_new(n, t) : UA_EMPTY_ARRAY_SENTINEL;
     if(!arr)
         r = UA_STATUSCODE_BADOUTOFMEMORY;
-    size_t k = 0;
-    for(size_t i = 0; i < nRules && r == UA_STATUSCODE_GOOD; i++) {
-        const gds_role_rule *e = &rules[i].r;
-        if(rules[i].bit != p->bit || e->kind != kind)
-            continue;
-        if(kind == GDS_RULE_IDENTITY) {
-            UA_IdentityMappingRuleType *v = &((UA_IdentityMappingRuleType *)arr)[k];
-            v->criteriaType = (UA_IdentityCriteriaType)e->criteriaType;
-            r = cs_copy(e->criteria, &v->criteria);
-        } else if(kind == GDS_RULE_ENDPOINT) {
-            UA_EndpointType *v = &((UA_EndpointType *)arr)[k];
-            v->securityMode = (UA_MessageSecurityMode)e->securityMode;
-            r = cs_copy(e->criteria, &v->endpointUrl);
-            if(r == UA_STATUSCODE_GOOD)
-                r = cs_copy(e->securityPolicyUri,
-                                   &v->securityPolicyUri);
-            if(r == UA_STATUSCODE_GOOD)
-                r = cs_copy(e->transportProfileUri,
-                                   &v->transportProfileUri);
-        } else {
-            r = cs_copy(e->criteria,
-                               &((UA_String *)arr)[k]);
-        }
-        k++;
-    }
+    if(r == UA_STATUSCODE_GOOD)
+        r = copy_rules(p->bit, kind, arr);
     pthread_mutex_unlock(&rlock);
     if(r != UA_STATUSCODE_GOOD) {
         if(arr && n)
