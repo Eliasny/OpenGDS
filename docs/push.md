@@ -168,6 +168,48 @@ pull_agent --gds opc.tcp://gds.example:4840 --trust ca.der --crl ca.crl \
     --app-uri urn:example:hmi3 --name "HMI 3" --dir /var/lib/hmi3/pki   # renewals
 ```
 
+## KeyCredentials to a device (§8.4, §8.6)
+
+A device that talks to a broker or another resource that is not an OPC UA
+server (an MQTT broker for PubSub, for example) needs a KeyCredential: a
+user name (the CredentialId) and a secret. When the device implements the
+KeyCredentialConfiguration Object (§8.6.4), `gdsadm` can push one that the
+GDS issues for one of its KeyCredential services (`keycred_service` in
+opengdsd.conf, see docs/opengdsd.md):
+
+```sh
+gdsadm push keycred urn:example:plc7 --service mqtt \
+    --endpoint-url mqtts://broker.example:8883 CONNECTION
+gdsadm push keycred-delete urn:example:plc7 --service mqtt CONNECTION
+```
+
+`push keycred` connects to the device as for `push now` (the same device
+options). It finds the device's KeyCredentialConfiguration Object with the
+service's ResourceUri, or makes one with CreateCredential (§8.6.3); the
+Object is named after the service and gets the `--endpoint-url` URLs. Only
+then does it ask the GDS for a credential: StartRequest and FinishRequest
+for the device's ApplicationUri (§8.5.5, §8.5.6), which needs the
+KeyCredentialAdmin role and follows the GDS's `approval` setting
+(`--poll-seconds` waits for an approval). The GDS keeps only a salted hash
+of the secret, and the new credential replaces the device's earlier one.
+`gdsadm` then calls GetEncryptingKey (§8.6.6), encrypts the secret for the
+device's certificate as an RsaEncryptedSecret (OPC 10000-4 §7.40.2.4) and
+hands it over with UpdateCredential (§8.6.7). The secret never goes to the
+device in plain text, although §8.6.7 would allow that inside the
+encrypted channel, and it is never written anywhere by `gdsadm`. When
+GetEncryptingKey returns no certificate, the certificate the device
+presented on the channel is used (§8.4). Devices that offer only ECC or
+RSA-DH policies there are refused with Bad_SecurityPolicyRejected.
+
+`push keycred-delete` reads the Object's CredentialId, calls
+DeleteCredential (§8.6.8) and then Revoke (§8.5.7) on the GDS for that
+CredentialId.
+
+The scheduled push engine does not push KeyCredentials: which device gets
+which credential is the administrator's choice, made with these commands.
+`push_keycred.h` is the workflow both use, so an embedder can call it with
+its own issue callback.
+
 ## Code
 
 | File | What |
@@ -183,6 +225,8 @@ pull_agent --gds opc.tcp://gds.example:4840 --trust ca.der --crl ca.crl \
 | `src/gdsctl/push_targets.c` | `gdsctl push-targets` |
 | `src/push/push_setup.c` | Annex G.2 setup: state check, register, push, SecurityAdmin Role |
 | `src/client/gdsc_pull_agent.c` | Annex G.1 pull agent for applications |
+| `src/client/gdsc_keycred.c` | KeyCredential methods: the GDS's service (§8.5) and the device's Objects (§8.6) |
+| `src/push/push_keycred.c` | §8.4 KeyCredential push: find or create, issue, encrypt, UpdateCredential |
 | `src/daemon/gdsadm_push.c` | `gdsadm apps register`, `gdsadm push now`, `gdsadm push setup` |
 | `examples/pull_agent.c` | An application that embeds the pull agent |
 | `tests/spec/test_spec_annex_g.c` | Annex G and Reverse Connect spec tests |

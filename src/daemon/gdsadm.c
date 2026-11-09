@@ -14,6 +14,8 @@
  *   gdsadm certs revoke URI ...             RevokeCertificate
  *   gdsadm push now URI ...                 push trust list + certificate to a device
  *   gdsadm push setup ...                   Annex G.2 setup of a device in setup state
+ *   gdsadm push keycred URI --service NAME  push a KeyCredential to a device (§8.6)
+ *   gdsadm push keycred-delete URI ...      delete it there and Revoke it on the GDS
  *
  * Passwords are read from stdin or a file, never argv. The store is opened read-only
  * and may be read while opengdsd runs. approve and reject answer the request's
@@ -60,6 +62,8 @@ static int usage(void) {
                     "       gdsadm push setup --server-uri URI --server-cert DER\n"
                     "                       (--server-url URL | --reverse-port PORT)\n"
                     "                       [--setup-user NAME --setup-password-file FILE] CONNECTION\n"
+                    "       gdsadm push keycred URI --service NAME [--endpoint-url URL]... [device options] CONNECTION\n"
+                    "       gdsadm push keycred-delete URI --service NAME [device options] CONNECTION\n"
                     "  CONNECTION: --gds URL --cert DER --key DER --trust DER... [--crl DER]...\n"
                     "              --user NAME --password-file FILE\n");
     return 2;
@@ -338,6 +342,8 @@ static const struct {
     {"certs", "status", certs_status},
     {"push", "now", gdsadm_push_now},
     {"push", "setup", gdsadm_push_setup},
+    {"push", "keycred", gdsadm_push_keycred},
+    {"push", "keycred-delete", gdsadm_push_keycred_delete},
     {"approvals", "list", approvals_list},
     {"approvals", "approve", approvals_approve},
     {"approvals", "reject", approvals_reject},

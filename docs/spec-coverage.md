@@ -80,6 +80,18 @@ KeyCredentialConfiguration (§8.6) of a server under test are covered by the
 ApplyChanges, CancelChanges), SRV-WIRE, SRV-PER, SRV-REJ (GetRejectedList),
 SRV-SET (Annex G.2 setup), SRV-KC (KeyCredentialConfiguration) and SRV-AUD.
 
+KeyCredential push (§8.6), against `push_test_server` with a mutant per test:
+
+| Spec item | Clause | Tests (verdict) |
+|---|---|---|
+| CreateCredential, KeyCredentialConfigurationType Object | 12 §8.6.3, §8.6.5 | `SRV-KC-01` (pass), `SRV-KC-02` (pass) |
+| SecurityAdmin for Create-, Update- and DeleteCredential | 12 §8.6.3, §8.6.7, §8.6.8 | `SRV-KC-03` (pass) |
+| GetEncryptingKey | 12 §8.6.6 | `SRV-KC-04` (pass) |
+| UpdateCredential: RsaEncryptedSecret, SecurityPolicy, thumbprint, plaintext | 12 §8.6.7 | `SRV-KC-05` .. `SRV-KC-08` (pass) |
+| DeleteCredential | 12 §8.6.8 | `SRV-KC-09` (pass) |
+| ServiceStatus | 12 §8.6.5 | `SRV-KC-10` (pass, slow) |
+| OpenGDS as the administration component (§8.4): `gdsadm push keycred` and `keycred-delete` | 12 §8.4, §8.5.5 - §8.5.7, §8.6.3 - §8.6.8 | `integration_push_vs_opengdsd` step 7b |
+
 ## Application setup (Annex G) and Reverse Connect (`tests/spec/`)
 
 OpenGDS's own client side of Annex G is covered by `tests/spec/test_spec_annex_g.c`
@@ -123,3 +135,6 @@ These items have no test yet, and each needs work before it can have one:
   ConfigurationFile, the ServerConfiguration ProductUri, ApplicationNames and
   ApplicationType, the CertificateExpired and TrustListOutOfDate alarms, and
   AuthorizationServiceConfigurationType (§9.7) have no SRV-* test yet.
+- KeyCredentialUpdatedAuditEventType and KeyCredentialDeletedAuditEventType
+  (§8.6.9, §8.6.10) on a managed Server: no SRV-* test yet, and
+  `push_test_server` does not raise them.
