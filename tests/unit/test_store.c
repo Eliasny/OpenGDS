@@ -391,6 +391,7 @@ static void test_migrate_from_2(const char *dir) {
     if(!CHECK(sqlite3_open(path, &db) == SQLITE_OK))
         return;
     CHECK(sqlite3_exec(db,
+                       "DROP TABLE users; DROP TABLE role_rules; "
                        "DROP TABLE kc_credentials; DROP TABLE kc_requests; "
                        "DROP TABLE trust_lists; DROP TRIGGER applications_record_id_insert; "
                        "DROP TRIGGER applications_record_id_update; DROP TABLE record_counter; "
@@ -400,7 +401,7 @@ static void test_migrate_from_2(const char *dir) {
     sqlite3_close(db);
     if(!CHECK(gds_store_open(path, &s) == GDS_OK) || !s)
         return;
-    CHECK_EQ_INT(gds_store_schema_version(s), 5);
+    CHECK_EQ_INT(gds_store_schema_version(s), 6);
     scan_ctx all = {0, 0};
     CHECK(gds_store_app_scan(s, 0, count_cb, &all) == GDS_OK);
     CHECK_EQ_INT(all.n, 2);
@@ -445,7 +446,7 @@ int main(int argc, char **argv) {
     gds_store *s = NULL;
     if(!CHECK(gds_store_open(path, &s) == GDS_OK) || !s)
         return CHECK_DONE();
-    CHECK_EQ_INT(gds_store_schema_version(s), 5);
+    CHECK_EQ_INT(gds_store_schema_version(s), 6);
     struct stat sb;
     CHECK(stat(path, &sb) == 0 && (sb.st_mode & 0777) == 0640); /* group read: the signer */
 

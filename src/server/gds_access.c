@@ -1,6 +1,7 @@
 /* OpenGDS - users, roles and sessions.
  * SPDX-License-Identifier: MPL-2.0 */
 #include "gds_access.h"
+#include "gds_roles.h"
 
 #include <open62541/nodeids.h>
 #include <open62541/nodeids_gds.h>
@@ -185,6 +186,13 @@ static unsigned role_by_name(span f) {
             return bit;
     }
     return 0;
+}
+
+unsigned gds_role_bit_by_name(const char *name) {
+    if(!name)
+        return 0;
+    span f = {name, strlen(name)};
+    return role_by_name(f);
 }
 
 gds_status gds_access_add_role(const char *name, const UA_NodeId *id, UA_UInt16 gdsNs) {
@@ -443,6 +451,23 @@ const gds_user *gds_users_check(const gds_users *u, const UA_String *name, const
     return ok ? found : NULL;
 }
 
+bool gds_password_verify(const char *credential, const UA_ByteString *pw) {
+    gds_user u;
+    memset(&u, 0, sizeof(u));
+    span f = {credential ? credential : "", credential ? strlen(credential) : 0};
+    bool parsed = f.n > 0 && parse_credential(f, &u) && !u.x509;
+    /* a malformed credential costs the same as a good one */
+    static const uint8_t dummySalt[GDS_PBKDF2_SALT] = {0};
+    uint8_t h[GDS_PBKDF2_HASH];
+    bool ok = pw && pw->length > 0 &&
+              pbkdf2(pw->data, pw->length, parsed ? u.salt : dummySalt,
+                     parsed ? u.iterations : GDS_PBKDF2_DEFAULT_ITER, h) &&
+              parsed && CRYPTO_memcmp(h, u.hash, sizeof(h)) == 0;
+    OPENSSL_cleanse(h, sizeof(h));
+    OPENSSL_cleanse(&u, sizeof(u));
+    return ok;
+}
+
 /* ---- sessions ---- */
 
 /* Activated sessions, for audit event visibility (gds_audit.c). Written on
@@ -454,6 +479,7 @@ typedef struct {
     bool anonymous;
     unsigned roles;
     UA_DateTime notAfter;
+    gds_session *ctx; /* server thread only */
 } live_session;
 static live_session live[MAX_LIVE_SESSIONS];
 static size_t nLive;
@@ -479,6 +505,7 @@ static void live_set(const UA_NodeId *id, const gds_session *s) {
         live[nLive].anonymous = s->anonymous;
         live[nLive].roles = s->roles;
         live[nLive].notAfter = s->notAfter;
+        live[nLive].ctx = (gds_session *)(uintptr_t)s;
         nLive++;
     }
     pthread_mutex_unlock(&sessLock);
@@ -491,8 +518,9 @@ size_t gds_access_sessions_with(unsigned roles, bool anonymous, bool authenticat
     pthread_mutex_lock(&sessLock);
     for(size_t i = 0; i < nLive && n < max; i++) {
         const live_session *l = &live[i];
-        bool anon = l->anonymous || (l->notAfter != 0 && now > l->notAfter);
-        bool match = anonymous || (authenticated && !anon) || (!anon && (l->roles & roles) != 0);
+        bool expired = l->notAfter != 0 && now > l->notAfter;
+        bool anon = l->anonymous || expired;
+        bool match = anonymous || (authenticated && !anon) || (!expired && (l->roles & roles) != 0);
         if(match && UA_NodeId_copy(&l->id, &out[n]) == UA_STATUSCODE_GOOD)
             n++;
     }
@@ -507,6 +535,47 @@ bool gds_access_session_live(const UA_NodeId *sessionId) {
         found = UA_NodeId_equal(&live[i].id, sessionId);
     pthread_mutex_unlock(&sessLock);
     return found;
+}
+
+/* Roles of a session: the users file's and the mapping rules' */
+static void evaluate(gds_session *s) {
+    s->roles = gds_roles_evaluate(s, s->fileRoles);
+}
+
+void gds_access_reevaluate(void) {
+    pthread_mutex_lock(&sessLock);
+    for(size_t i = 0; i < nLive; i++) {
+        if(!live[i].ctx)
+            continue;
+        evaluate(live[i].ctx);
+        live[i].roles = live[i].ctx->roles;
+    }
+    pthread_mutex_unlock(&sessLock);
+}
+
+void gds_access_close_user_sessions(UA_Server *ua, const char *user, const UA_NodeId *keep) {
+    UA_NodeId ids[64];
+    for(;;) {
+        size_t n = 0;
+        pthread_mutex_lock(&sessLock);
+        for(size_t i = 0; i < nLive && n < GDS_ARRAY_SIZE(ids); i++) {
+            const gds_session *c = live[i].ctx;
+            if(!c || c->token != GDS_TOKEN_USERNAME || !c->managedUser ||
+               strcmp(c->user, user) != 0 || (keep && UA_NodeId_equal(&live[i].id, keep)))
+                continue;
+            if(UA_NodeId_copy(&live[i].id, &ids[n]) == UA_STATUSCODE_GOOD)
+                n++;
+        }
+        pthread_mutex_unlock(&sessLock);
+        for(size_t i = 0; i < n; i++) {
+            /* closeSession runs close_session, which drops the entry */
+            if(UA_Server_closeSession(ua, &ids[i]) != UA_STATUSCODE_GOOD)
+                live_remove(&ids[i]);
+            UA_NodeId_clear(&ids[i]);
+        }
+        if(n < GDS_ARRAY_SIZE(ids))
+            break;
+    }
 }
 
 static void live_clear(void) {
@@ -600,13 +669,20 @@ static UA_StatusCode login_cb(const UA_String *userName, const UA_ByteString *pa
     if(userName->length == 0 && password->length == 0) {
         s->anonymous = true;
     } else {
+        s->token = GDS_TOKEN_USERNAME;
         const gds_user *u = gds_users_check(users, userName, password);
-        if(!u) {
+        if(u) {
+            memcpy(s->user, u->name, sizeof(s->user));
+            s->fileRoles = u->roles | embed_bits(u);
+        } else if(userName->length <= GDS_MAX_USER_NAME && gds_musers_login(userName, password)) {
+            /* a Part 18 managed user (gds_users.c): Roles only from rules */
+            memcpy(s->user, userName->data, userName->length);
+            s->user[userName->length] = '\0';
+            s->managedUser = true;
+        } else {
             free(s);
             return UA_STATUSCODE_BADUSERACCESSDENIED;
         }
-        memcpy(s->user, u->name, sizeof(s->user));
-        s->roles = u->roles | embed_bits(u);
     }
     *sessionContext = s;
     return UA_STATUSCODE_GOOD;
@@ -641,19 +717,39 @@ static UA_StatusCode activate_x509(const UA_X509IdentityToken *t, void **session
     if(!x509Enabled)
         return UA_STATUSCODE_BADIDENTITYTOKENREJECTED;
     const gds_user *u = gds_users_check_cert(installedUsers, &t->certificateData);
-    if(!u)
-        return UA_STATUSCODE_BADUSERACCESSDENIED;
     UA_DateTime end = not_after(&t->certificateData);
     if(end == 0 || UA_DateTime_now() > end)
-        return UA_STATUSCODE_BADIDENTITYTOKENREJECTED;
+        return u ? UA_STATUSCODE_BADIDENTITYTOKENREJECTED : UA_STATUSCODE_BADUSERACCESSDENIED;
     gds_session *s = calloc(1, sizeof(*s));
     if(!s)
         return UA_STATUSCODE_BADOUTOFMEMORY;
-    memcpy(s->user, u->name, sizeof(s->user));
-    s->roles = u->roles | embed_bits(u);
+    s->token = GDS_TOKEN_X509;
     s->notAfter = end;
+    gds_roles_cert_facts(&t->certificateData, s);
+    if(u) {
+        memcpy(s->user, u->name, sizeof(s->user));
+        s->fileRoles = u->roles | embed_bits(u);
+    } else {
+        /* not in the users file: a trusted user certificate that an OPC
+         * 10000-18 Thumbprint or X509Subject rule names. The rules need
+         * the session's endpoint, so activate() checks them. */
+        char hex[2 * sizeof(s->certSha1) + 1];
+        if(gds_hex(s->certSha1, sizeof(s->certSha1), hex, sizeof(hex)) != GDS_OK) {
+            free(s);
+            return UA_STATUSCODE_BADINTERNALERROR;
+        }
+        (void)snprintf(s->user, sizeof(s->user), "x509:%s", hex);
+        s->ruleOnly = true;
+    }
     *sessionContext = s;
     return UA_STATUSCODE_GOOD;
+}
+
+static void copy_cstr(char *dst, size_t cap, const UA_String *v) {
+    size_t n = v->length < cap - 1 ? v->length : 0; /* too long: compares with nothing */
+    if(n)
+        memcpy(dst, v->data, n);
+    dst[n] = '\0';
 }
 
 static UA_StatusCode activate(UA_Server *server, UA_AccessControl *ac,
@@ -674,20 +770,40 @@ static UA_StatusCode activate(UA_Server *server, UA_AccessControl *ac,
         return r;
     }
     gds_session *s = *sessionContext;
-    if(s != old)
-        session_free(old); /* re-activation with a new identity */
-    if(s && s->clientCert.length == 0 && cert && cert->length > 0) {
+    if(!s) {
+        s = calloc(1, sizeof(*s));
+        if(!s) {
+            *sessionContext = old;
+            return UA_STATUSCODE_BADOUTOFMEMORY;
+        }
+        s->anonymous = true;
+        *sessionContext = s;
+    }
+    if(s->clientCert.length == 0 && cert && cert->length > 0) {
         /* any issuer (A14); only a GDS-CA certificate names an application */
         if(UA_ByteString_copy(cert, &s->clientCert) == UA_STATUSCODE_GOOD)
             s->clientAppUri = cert_app_uri(cert);
     }
-    if(s && ep) {
+    if(ep) {
         s->securityMode = ep->securityMode;
         UA_String_clear(&s->securityPolicyUri);
         if(UA_String_copy(&ep->securityPolicyUri, &s->securityPolicyUri) != UA_STATUSCODE_GOOD)
             s->securityPolicyUri = UA_STRING_NULL;
+        copy_cstr(s->endpointUrl, sizeof(s->endpointUrl), &ep->endpointUrl);
+        copy_cstr(s->transportProfileUri, sizeof(s->transportProfileUri),
+                  &ep->transportProfileUri);
     }
-    if(s && sessionId)
+    evaluate(s);
+    if(s->ruleOnly && s->roles == 0) {
+        /* a certificate that neither the users file nor a rule names */
+        if(s != old)
+            session_free(s);
+        *sessionContext = old;
+        return UA_STATUSCODE_BADUSERACCESSDENIED;
+    }
+    if(s != old)
+        session_free(old); /* re-activation with a new identity */
+    if(sessionId)
         live_set(sessionId, s);
     return UA_STATUSCODE_GOOD;
 }
@@ -732,7 +848,12 @@ static UA_UInt32 no_rights(UA_Server *server, UA_AccessControl *ac, const UA_Nod
 }
 static UA_Byte read_only(UA_Server *server, UA_AccessControl *ac, const UA_NodeId *sid,
                          void *sctx, const UA_NodeId *nodeId, void *nctx) {
-    (void)server, (void)ac, (void)sid, (void)sctx, (void)nodeId, (void)nctx;
+    (void)server, (void)ac, (void)sid, (void)nctx;
+    /* OPC 10000-18 §4.4.1, §5.2.1: the Role configuration and the Users
+     * Property are readable by administrators over an encrypted channel
+     * only */
+    if(gds_roles_is_secret(nodeId))
+        return gds_roles_admin(sctx) ? UA_ACCESSLEVELMASK_READ : 0;
     return UA_ACCESSLEVELMASK_READ;
 }
 
@@ -786,6 +907,12 @@ bool gds_access_x509_users(void) {
 
 bool gds_method_executable(const struct gds_server *s, const void *sessionContext,
                            const UA_NodeId *methodId) {
+    /* OPC 10000-18 RoleType and UserManagement methods: they check the
+     * caller themselves, so a refusal names its cause (Bad_UserAccessDenied,
+     * Bad_SecurityModeInsufficient; ChangePassword is for every USERNAME
+     * session, §5.2.8) */
+    if(gds_roles_is_method(methodId))
+        return true;
     int d = gds_embed_decide(s, sessionContext, methodId);
     if(d >= 0)
         return d == 1;
@@ -838,6 +965,7 @@ static UA_Boolean receive_event(UA_Server *server, UA_AccessControl *ac, const U
 
 void gds_access_uninstall(void) {
     live_clear();
+    gds_roles_reset();
     x509Enabled = false;
     embed_roles_clear();
     installedUsers = NULL;

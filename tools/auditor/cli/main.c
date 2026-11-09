@@ -151,6 +151,7 @@ static size_t collect(ga_test *all) {
                 {spec_authz_tests, spec_authz_count},
                 {spec_events_tests, spec_events_count},
                 {spec_roles_tests, spec_roles_count},
+                {spec_part18_tests, spec_part18_count},
                 {spec_model_tests, spec_model_count}};
     size_t n = 0;
     for(size_t s = 0; s < GDS_ARRAY_SIZE(sets); s++)

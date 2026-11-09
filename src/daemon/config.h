@@ -54,6 +54,14 @@
  *   mdns_interface   = 192.0.2.10                   (default: all) IPv4 address of the
  *                      interface to announce on
  *
+ *   password_min_length = 15                       (default) PasswordLength low of the OPC
+ *                      10000-18 UserManagement, 8..256 characters (NIST SP
+ *                      800-63B-4 §3.1.1.2 asks 15 for a password alone)
+ *   single_admin     = false                        (default) true lets one identity hold
+ *                      SecurityAdmin, CertificateAuthorityAdmin and
+ *                      RegistrationAuthorityAdmin together (Part 18 AddIdentity;
+ *                      separation of duties, docs/architecture.md)
+ *
  * With `signer` or `signer_socket` the CA key never enters opengdsd
  * (decision G1). With `signer` the passphrase file path (not its content)
  * is passed to the child; with `signer_socket` the signer's own unit holds
@@ -97,6 +105,7 @@ typedef struct {
     char caPassphraseFile[GDS_MAX_PATH];
     uint16_t port;
     bool loopbackOnly;
+    bool singleAdmin;
     uint8_t approval; /* GDSD_APPROVE_* */
     bool push;
     uint32_t pushIntervalS, pushConcurrency, pushJitterS, pushBackoffMinS, pushBackoffMaxS,
@@ -110,7 +119,12 @@ typedef struct {
     bool mdns;
     char mdnsServerName[GDSD_MAX_VALUE];
     char mdnsInterface[GDSD_MAX_VALUE];
+    uint32_t passwordMinLength;
 } gdsd_config;
+
+#define GDSD_PASSWORD_MIN_DEFAULT 15
+#define GDSD_PASSWORD_MIN_FLOOR 8
+#define GDSD_PASSWORD_MIN_CEIL 256
 
 /* The values of gds_approval_policy (gds_server.h). */
 #define GDSD_APPROVE_AUTO 1
