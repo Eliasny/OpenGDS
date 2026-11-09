@@ -506,6 +506,27 @@ static void test_rules_users(gds_store *s) {
     CHECK(gds_store_user_put(s, &u, true) == GDS_OK); /* kept for the reopen check */
 }
 
+/* Everything survives a reopen. */
+static void test_reopen(const char *path, const UA_Guid *id) {
+    gds_store *s = NULL;
+    if(CHECK(gds_store_open(path, &s) == GDS_OK) && s) {
+        UA_ApplicationRecordDataType got;
+        CHECK(gds_store_app_get(s, id, &got) == GDS_OK);
+        UA_ApplicationRecordDataType_clear(&got);
+        gds_buf tl = {0};
+        int64_t lu = 0;
+        CHECK(gds_store_tl_get(s, 615, &tl, &lu) == GDS_OK && tl.len == 2 && lu == 300);
+        gds_buf_free(&tl);
+        int n = 0;
+        CHECK(gds_store_rule_scan(s, count_rule, &n) == GDS_OK);
+        CHECK_EQ_INT(n, 1);
+        n = 0;
+        CHECK(gds_store_user_scan(s, count_user, &n) == GDS_OK);
+        CHECK_EQ_INT(n, 1);
+        gds_store_close(s);
+    }
+}
+
 int main(int argc, char **argv) {
     if(argc < 2) {
         fprintf(stderr, "usage: %s <dir>\n", argv[0]);
@@ -546,23 +567,7 @@ int main(int argc, char **argv) {
         gds_store_close(s);
     CHECK(stat(path, &sb) == 0 && (sb.st_mode & 0777) == 0640);
 
-    /* everything survives a reopen */
-    if(CHECK(gds_store_open(path, &s) == GDS_OK) && s) {
-        UA_ApplicationRecordDataType got;
-        CHECK(gds_store_app_get(s, &id, &got) == GDS_OK);
-        UA_ApplicationRecordDataType_clear(&got);
-        gds_buf tl = {0};
-        int64_t lu = 0;
-        CHECK(gds_store_tl_get(s, 615, &tl, &lu) == GDS_OK && tl.len == 2 && lu == 300);
-        gds_buf_free(&tl);
-        int n = 0;
-        CHECK(gds_store_rule_scan(s, count_rule, &n) == GDS_OK);
-        CHECK_EQ_INT(n, 1);
-        n = 0;
-        CHECK(gds_store_user_scan(s, count_user, &n) == GDS_OK);
-        CHECK_EQ_INT(n, 1);
-        gds_store_close(s);
-    }
+    test_reopen(path, &id);
     test_migrate_from_2(argv[1]);
     return CHECK_DONE();
 }
