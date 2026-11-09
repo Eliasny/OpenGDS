@@ -1,0 +1,85 @@
+From 739494a30330a414f3d318828792ae6db98c2b34 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Elias=20Nyk=C3=A4nen?=
+ <61413159+Eliasny@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 06:52:33 +0000
+Subject: [PATCH] fix(server): ConditionRefresh before the first Condition
+
+ConditionRefresh and ConditionRefresh2 (Part 9, 5.5.7) answer
+Bad_InternalError until the server has created its first Condition: the
+ConditionType Method callbacks are set only by setStandardConditionCallbacks
+when the first ConditionSource is added. A client that subscribes to a
+server without active Conditions and calls ConditionRefresh, as Part 9
+asks it to, gets an error instead of RefreshStartEvent and RefreshEndEvent.
+
+Set the Method callbacks once when the server is initialized.
+---
+ src/server/ua_server.c                         |  6 ++++++
+ src/server/ua_server_internal.h                |  3 +++
+ src/server/ua_subscription_alarms_conditions.c | 17 +++++++++++------
+ 3 files changed, 20 insertions(+), 6 deletions(-)
+
+diff --git a/src/server/ua_server.c b/src/server/ua_server.c
+index 7d81038..0143280 100644
+--- a/src/server/ua_server.c
++++ b/src/server/ua_server.c
+@@ -586,6 +586,12 @@ UA_Server_init(UA_Server *server) {
+     UA_CHECK_STATUS(res, goto cleanup);
+ #endif
+ 
++#if defined(UA_ENABLE_SUBSCRIPTIONS_ALARMS_CONDITIONS) && defined(UA_GENERATED_NAMESPACE_ZERO_FULL)
++    /* ConditionRefresh works before the first Condition (Part 9, 5.5.7) */
++    res = UA_ConditionList_initMethods(server);
++    UA_CHECK_STATUS(res, goto cleanup);
++#endif
++
+ #ifdef UA_ENABLE_NODESET_INJECTOR
+     res = UA_Server_injectNodesets(server);
+     UA_CHECK_STATUS(res, goto cleanup);
+diff --git a/src/server/ua_server_internal.h b/src/server/ua_server_internal.h
+index 182fde1..39072bf 100644
+--- a/src/server/ua_server_internal.h
++++ b/src/server/ua_server_internal.h
+@@ -459,6 +459,9 @@ UA_getConditionId(UA_Server *server, const UA_NodeId *conditionNodeId,
+ void
+ UA_ConditionList_delete(UA_Server *server);
+ 
++UA_StatusCode
++UA_ConditionList_initMethods(UA_Server *server);
++
+ UA_Boolean
+ isConditionOrBranch(UA_Server *server,
+                     const UA_NodeId *condition,
+diff --git a/src/server/ua_subscription_alarms_conditions.c b/src/server/ua_subscription_alarms_conditions.c
+index 56034e9..4b0aafd 100644
+--- a/src/server/ua_subscription_alarms_conditions.c
++++ b/src/server/ua_subscription_alarms_conditions.c
+@@ -2423,15 +2423,20 @@ setStandardConditionCallbacks(UA_Server *server, const UA_NodeId* condition,
+     retval = setConditionVariableCallbacks(server, condition, conditionType);
+     CONDITION_ASSERT_RETURN_RETVAL(retval, "Set ConditionVariable Callback failed",);
+ 
+-    /* Set callbacks for Method Components (needs to be set only once!) */
+-    if(LIST_EMPTY(&server->conditionSources)) {
+-        retval = setConditionMethodCallbacks(server, condition, conditionType);
+-        CONDITION_ASSERT_RETURN_RETVAL(retval, "Set Method Callback failed",);
+-    }
+-
++    /* The callbacks of the ConditionType Method Components are set once, when
++     * the server is initialized (UA_ConditionList_initMethods) */
+     return retval;
+ }
+ 
++/* ConditionRefresh and ConditionRefresh2 (Part 9, 5.5.7) must work before
++ * the first Condition exists: they then send RefreshStartEvent and
++ * RefreshEndEvent only. Set the Method callbacks at server start. */
++UA_StatusCode
++UA_ConditionList_initMethods(UA_Server *server) {
++    UA_LOCK_ASSERT(&server->serviceMutex);
++    return setConditionMethodCallbacks(server, NULL, NULL);
++}
++
+ static UA_StatusCode
+ addCondition_finish(UA_Server *server, const UA_NodeId conditionId,
+                     const UA_NodeId conditionType, const UA_QualifiedName conditionName,
+-- 
+2.43.0
+

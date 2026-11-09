@@ -34,6 +34,7 @@ v1.5.10 (`93c3bdfc9`), on Ubuntu 24.04, GCC 13, OpenSSL 3.0.13.
 | [7. FindServers cannot return the other servers of a redundant set](07-findservers-peers.md) | Not yet searched upstream. Violates OPC 10000-4 §6.6.2.4.5.1 and, for the mirror-back, §5.5.2.2. | [v1.5.10 0005](patches/v1.5.10/0005-findservers-peers.patch) | Carried (UASM ask A15): `UA_ServerConfig.findServersPeers`, and the EndpointUrl mirrored for the server itself only. |
 | [8. Every session receives every event](08-receive-events.md) | Not yet searched upstream. No way to apply the ReceiveEvents permission (OPC 10000-3 §8.55), also in ConditionRefresh (OPC 10000-9 §5.5.7). | [v1.5.10 0006](patches/v1.5.10/0006-access-control-receive-event.patch) | Carried (UASM ask A19): `UA_AccessControl.allowReceiveEvent`, asked per MonitoredItem. |
 | [9. DER CRLs shorter than 256 bytes do not load](09-short-der-crl.md) | Not yet searched upstream. ECC CA CRLs with no entries (about 200 bytes) are taken for PEM and never loaded. | [v1.5.10 0007](patches/v1.5.10/0007-load-short-der-crl.patch) | Carried: without it the file store writes the CRL under an empty name (UBSan abort in the push tracer) and revocation by the ECC CAs is not enforced. |
+| [10. ConditionRefresh fails before the first Condition](10-condition-refresh-before-first-condition.md) | open62541 master no longer has this A&C code; not searched on `1.5`. Violates OPC 10000-9 §5.5.7. | [v1.5.10 0008](patches/v1.5.10/0008-condition-refresh-before-first-condition.patch), [1.5 0003](patches/1.5/0003-condition-refresh-before-first-condition.patch) | Carried (Elias, 2026-11-09): the ConditionType Method callbacks are set at server start. Found by `gdsadm watch`. |
 
 ## Results
 
@@ -67,7 +68,7 @@ Each new test was run without the library change (it must fail) and with it
   applies them to our pinned v1.5.10 (O3), so `push_test_server` pairs its
   certificate and key by file name, `mock_gds` no longer adds #None itself,
   the GDS headers are installed by open62541, and ConditionRefresh keeps
-  EventIds. **Editing these files changes our
+  EventIds and works before the first Condition. **Editing these files changes our
   build** (the CI cache key includes them). Drop each one once open62541
   releases the fix and we move the pin. The Auditor's Flatpak manifest
   (`packaging/flatpak/org.opengds.Auditor.yml`) lists them too: add or drop
@@ -104,5 +105,8 @@ the API change.
 9. Gap 6: open the drafted issue, then branch from `origin/1.5`,
    `git am docs/upstream/patches/1.5/0002-sks-time-to-next-key.patch`, and open
    the PR against `1.5` with the drafted text.
-10. Put the issue and PR links into the table above, or tell a thread and it
+10. Gap 10: open the drafted issue, then branch from `origin/1.5`,
+   `git am docs/upstream/patches/1.5/0003-condition-refresh-before-first-condition.patch`,
+   and open the PR against `1.5` with the drafted text.
+11. Put the issue and PR links into the table above, or tell a thread and it
    will.

@@ -238,7 +238,7 @@ Each text line holds the UTC time, the severity, the EventType, the source and t
 
 `gdsadm watch` runs until SIGINT or SIGTERM, `--count` events or `--seconds` seconds, then exits 0; it exits 1 if it cannot connect or loses the connection.
 
-On open62541 v1.5.10, ConditionRefresh fails with Bad_InternalError until the GDS has created its first Condition (an alarm or a waiting request); `gdsadm watch` then says so on stderr and shows new events only.
+If ConditionRefresh fails, `gdsadm watch` says so on stderr and shows new events only.
 
 ## Redundancy
 

@@ -6,7 +6,8 @@
 #      client) finds the GDS by FindServersOnNetwork (OPC 10000-4 §5.5.3)
 #      with its DiscoveryUrl and the capability GDS (OPC 10000-12 Annex C,
 #      Annex D); skipped where the host cannot open the multicast socket
-#   4. gdsadm watch --json: a certificate request that waits for approval
+#   4. gdsadm watch --json: ConditionRefresh works before the first
+#      Condition (patch 0008); a certificate request that waits for approval
 #      (approval = manual) shows as its DialogCondition, live
 #   5. gdsadm watch (text) started later: ConditionRefresh shows the
 #      waiting request (OPC 10000-9 §5.5.7); approving it ends the wait
@@ -130,6 +131,9 @@ sleep 2 # the subscription is up before the request arrives
 PC=$!
 BG="$WP $PC"
 wait "$WP" || fail "gdsadm watch --json exited with an error"
+# no Condition existed when it subscribed: ConditionRefresh still works
+# (OPC 10000-9 §5.5.7; open62541 patch 0008)
+grep -q "ConditionRefresh" "$W/watch-json.log" && { cat "$W/watch-json.log"; fail "ConditionRefresh failed"; }
 cat "$W/watch.json"
 expect '"eventType":"DialogConditionType"' "$W/watch.json"
 expect '"refresh":false' "$W/watch.json"
