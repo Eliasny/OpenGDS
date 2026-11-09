@@ -55,19 +55,20 @@ the service Object, which is itself Optional.
 | FinishRequest (KeyCredential) | Method | M if service | §8.5.6 | `gds.kc.cancel` (not_supported), `gds.kc.finish_unknown` (not_supported), `gds.kc.request_flow` (not_supported) |
 | Revoke (KeyCredential) | Method | O | §8.5.7 | `gds.kc.revoke` (not_supported), `gds.kc.revoke_unknown` (not_supported) |
 | KeyCredential audit events | Events | M if service | §8.5.9 | **none** |
-| AuthorizationServices / AuthorizationServiceType | Object | O | §9.6.4 | `gds.az.service` (not_supported) |
-| RequestAccessToken | Method (deprecated) | O | §9.6.5 | **none** |
-| StartRequestToken | Method | O | §9.6.6 | `gds.az.sign_only` (not_supported), `gds.az.start_unknown_resource` (not_supported) |
-| FinishRequestToken | Method | O | §9.6.7 | `gds.az.finish_unknown` (not_supported) |
-| RefreshToken | Method | O | §9.6.8 | `gds.az.refresh_rejected` (not_supported) |
-| GetServiceDescription | Method | M if service | §9.6.9 | `gds.az.description` (not_supported) |
-| AccessToken audit events | Events | M if service | §9.6.10 | **none** |
+| AuthorizationServices / AuthorizationServiceType | Object | O | §9.6.4 | `gds.az.service` (pass) |
+| RequestAccessToken | Method (deprecated) | O | §9.6.5 | **none** (not offered: deprecated) |
+| StartRequestToken | Method | O | §9.6.6 | `gds.az.sign_only` (pass), `gds.az.start_unknown_resource` (pass), `gds.az.token_flow` (pass) |
+| FinishRequestToken | Method | O | §9.6.7 | `gds.az.finish_unknown` (pass), `gds.az.token_flow` (pass) |
+| RefreshToken | Method | O | §9.6.8 | `gds.az.refresh_rejected` (pass), `gds.az.token_refresh` (pass) |
+| GetServiceDescription | Method | M if service | §9.6.9 | `gds.az.description` (pass) |
+| AccessTokenRequestedAuditEventType | Event | M if service | §9.6.10 | `gds.az.audit_requested` (pass) |
+| AccessTokenIssuedAuditEventType | Event | M if service | §9.6.11 | `gds.az.audit_issued` (pass) |
 
 Security of the channel and sessions: `gds.sec.endpoints` (pass; Part 4
 §5.4.4, Part 7), `gds.sec.none_session` (pass), `gds.sec.anonymous_register`
 (pass), and the sign-only tests `gds.acc.sign_sign_only` (pass),
 `gds.acc.keypair_sign_only` (pass), `gds.kc.sign_only` (not_supported) and
-`gds.az.sign_only` (not_supported). FileType handles are per Session
+`gds.az.sign_only` (pass). FileType handles are per Session
 (Part 20 §4.2.2): `gds.tl.handle_other_session` (pass).
 
 ## Push side (Auditor server profile, `docs/auditor/server-profile.md`)
@@ -92,13 +93,14 @@ says why none applies, or names the open decision it waits on.
 
 These items have no test yet, and each needs work before it can have one:
 
-- KeyCredential audit events (§8.5.9 to §8.5.11) and AccessToken audit
-  events (§9.6.10, §9.6.11). Both need a running KeyCredential or
-  Authorization service to trigger them; opengdsd has neither until W5.
-- A full AccessToken flow through StartRequestToken and FinishRequestToken
-  (§9.6.6, §9.6.7). The tests cover the refusals; a granted token needs the
-  RequestorData of Table 149 from an identity provider.
-- RequestAccessToken (§9.6.5), which the spec deprecates.
+- KeyCredential audit events (§8.5.9 to §8.5.11). They need a running
+  KeyCredential service to trigger them.
+- AccessTokens for the UserName and X.509 UserTokenPolicies. The Auditor
+  has no user credentials of the target, so `gds.az.token_flow` uses the
+  Session's own identity (an Anonymous policy, §9.3 Implicit); opengdsd's
+  unit test `unit_authz` covers the other two policies and the lockout.
+- RequestAccessToken (§9.6.5), which the spec deprecates; opengdsd does not
+  offer it.
 - GetRejectedList (§7.8.3.1, Optional) on GDS certificate groups. The push
   side covers it as SRV-REJ, and the push engine calls it on devices
   (`tests/integration/test_push_engine.c`, `docs/push.md`).

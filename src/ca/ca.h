@@ -22,7 +22,7 @@
 #include "common/buf.h"
 #include "common/compiler.h"
 
-#define GDS_CA_ABI_VERSION 4u /* 2: revoke; 3: new_key_pair; 4: issuers */
+#define GDS_CA_ABI_VERSION 5u /* 2: revoke; 3: new_key_pair; 4: issuers; 5: token key */
 /* Backends of an older version are accepted; the fields they lack are NULL. */
 #define GDS_CA_ABI_MIN_VERSION 2u
 
@@ -116,6 +116,16 @@ typedef struct {
     gds_status (*get_issuer_cert)(void *ctx, gds_ca_issuer issuer, gds_buf *out);
     gds_status (*get_issuer_crl)(void *ctx, gds_ca_issuer issuer, gds_buf *out);
     gds_status (*revoke_issuer)(void *ctx, gds_ca_issuer issuer, const gds_buf *serial);
+    /* ABI 5, optional, both or none (NULL: GDS_EUNSUPPORTED). The
+     * AuthorizationService token key (OPC 10000-12 §9.6; Elias 2026-11-09:
+     * kept next to the CA keys). token_chain makes sure the key and its
+     * certificate exist, the certificate issued by the RSA issuer for
+     * serviceUri and not close to expiry, and returns the chain: that
+     * certificate, then the issuer's (DER, back to back). token_sign signs
+     * a JWS signing input (RFC 7515 §5.1; gds_ca_jws_input_ok has checked
+     * it) with that key, RS256, and returns the signature. */
+    gds_status (*token_chain)(void *ctx, const char *serviceUri, gds_buf *out);
+    gds_status (*token_sign)(void *ctx, const gds_buf *input, gds_buf *sig);
 } gds_ca_backend;
 
 /* Settings for the built-in OpenSSL backend (ca_openssl.c). Defaults are set
@@ -165,6 +175,14 @@ GDS_MUST_CHECK gds_status gds_ca_get_issuer_cert(gds_ca *ca, gds_ca_issuer issue
 GDS_MUST_CHECK gds_status gds_ca_get_issuer_crl(gds_ca *ca, gds_ca_issuer issuer, gds_buf *out);
 GDS_MUST_CHECK gds_status gds_ca_revoke_issuer(gds_ca *ca, gds_ca_issuer issuer,
                                                const gds_buf *serial);
+/* The AccessToken signing key (backend token_chain / token_sign). */
+#define GDS_CA_MAX_JWS_INPUT ((size_t)16 * 1024)
+GDS_MUST_CHECK gds_status gds_ca_token_chain(gds_ca *ca, const char *serviceUri, gds_buf *out);
+/* GDS_EINVAL unless input is a JWS signing input for RS256: base64url
+ * header '.' base64url payload, the header a JSON object that starts
+ * {"alg":"RS256". So the key signs nothing but AccessTokens. */
+GDS_MUST_CHECK gds_status gds_ca_token_sign(gds_ca *ca, const gds_buf *input, gds_buf *sig);
+bool gds_ca_jws_input_ok(const uint8_t *in, size_t len);
 /* Revoke the certificate with this serial (OPC 10000-12 §7.9.6). The caller
  * has checked that this CA issued it. */
 GDS_MUST_CHECK gds_status gds_ca_revoke(gds_ca *ca, const gds_buf *serial);

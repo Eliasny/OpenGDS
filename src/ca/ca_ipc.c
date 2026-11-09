@@ -141,6 +141,21 @@ static gds_status ipc_revoke_issuer(void *ctx, gds_ca_issuer issuer, const gds_b
     return r;
 }
 
+static gds_status ipc_token(void *ctx, gds_sigp_op op, const gds_buf *data, gds_buf *out) {
+    gds_buf req = {0};
+    gds_status r = gds_sigp_encode_token(op, data, &req);
+    return r == GDS_OK ? exchange(ctx, op, req, NULL, out) : r;
+}
+
+static gds_status ipc_token_chain(void *ctx, const char *serviceUri, gds_buf *out) {
+    gds_buf uri = {(uint8_t *)(uintptr_t)serviceUri, strlen(serviceUri)};
+    return ipc_token(ctx, GDS_SIGP_TOKEN_CHAIN, &uri, out);
+}
+
+static gds_status ipc_token_sign(void *ctx, const gds_buf *input, gds_buf *sig) {
+    return ipc_token(ctx, GDS_SIGP_TOKEN_SIGN, input, sig);
+}
+
 static void ipc_destroy(void *ctx) {
     ipc_ca *c = ctx;
     if(!c)
@@ -164,6 +179,8 @@ static const gds_ca_backend ipc_backend = {
     .get_issuer_cert = ipc_get_issuer_cert,
     .get_issuer_crl = ipc_get_issuer_crl,
     .revoke_issuer = ipc_revoke_issuer,
+    .token_chain = ipc_token_chain,
+    .token_sign = ipc_token_sign,
 };
 
 gds_status gds_ca_ipc_open(int fd, int timeoutMs, gds_ca **out) {

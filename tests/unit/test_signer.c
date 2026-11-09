@@ -475,6 +475,142 @@ static gds_ca *open_direct_ca(const char *dir) {
     return ca;
 }
 
+/* ---- the AccessToken key (TOKEN_CHAIN, TOKEN_SIGN) ---- */
+
+#define TOKEN_URI "urn:opengds:test:AuthorizationService"
+/* base64url of {"alg":"RS256","typ":"JWT"} '.' base64url of {} */
+#define JWS_OK "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.e30"
+
+static void test_jws_input(void) {
+    static const struct {
+        const char *in;
+        bool ok;
+    } cases[] = {
+        {JWS_OK, true},
+        {"eyJhbGciOiJSUzI1NiJ9.e30", true},          /* {"alg":"RS256"} */
+        {"eyJhbGciOiJFUzI1NiJ9.e30", false},         /* {"alg":"ES256"} */
+        {"eyJhbGciOiJSUzI1NiJ9", false},             /* no payload */
+        {"eyJhbGciOiJSUzI1NiJ9.", false},
+        {".e30", false},
+        {"eyJhbGciOiJSUzI1NiJ9.e30.c2ln", false},    /* a whole JWS */
+        {"eyJhbGciOiJSUzI1NiJ9.e3+", false},         /* base64, not base64url */
+        {"eyJhbGciOiJSUzI1Ni.e30", false},           /* header cut short */
+        {"MIIB.e30", false},
+    };
+    for(size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+        CHECK(gds_ca_jws_input_ok((const uint8_t *)cases[i].in, strlen(cases[i].in)) ==
+              cases[i].ok);
+}
+
+static X509 *first_of(const gds_buf *chain, size_t *len) {
+    const unsigned char *p = chain->data;
+    X509 *x = chain->data ? d2i_X509(NULL, &p, (long)chain->len) : NULL;
+    *len = x ? (size_t)(p - chain->data) : 0;
+    return x;
+}
+
+static bool san_uri_is(X509 *x, const char *uri) {
+    GENERAL_NAMES *g = X509_get_ext_d2i(x, NID_subject_alt_name, NULL, NULL);
+    bool ok = false;
+    for(int i = 0; g && i < sk_GENERAL_NAME_num(g); i++) {
+        const GENERAL_NAME *n = sk_GENERAL_NAME_value(g, i);
+        if(n->type == GEN_URI)
+            ok = (size_t)n->d.uniformResourceIdentifier->length == strlen(uri) &&
+                 memcmp(n->d.uniformResourceIdentifier->data, uri, strlen(uri)) == 0;
+    }
+    GENERAL_NAMES_free(g);
+    return ok;
+}
+
+static bool verifies(X509 *x, const char *in, const gds_buf *sig) {
+    EVP_MD_CTX *mc = EVP_MD_CTX_new();
+    bool ok = mc && EVP_DigestVerifyInit(mc, NULL, EVP_sha256(), NULL, X509_get0_pubkey(x)) == 1 &&
+              EVP_DigestVerify(mc, sig->data, sig->len, (const uint8_t *)in, strlen(in)) == 1;
+    EVP_MD_CTX_free(mc);
+    return ok;
+}
+
+static void test_ipc_token(gds_ca *ipc, gds_ca *direct, gds_signer *s, const char *caDir) {
+    gds_buf in = {(uint8_t *)(uintptr_t)JWS_OK, strlen(JWS_OK)}, sig = {0}, chain = {0};
+    /* no certificate yet: nothing is signed */
+    CHECK(gds_ca_token_sign(ipc, &in, &sig) == GDS_ESTATE && !sig.data);
+    CHECK(gds_ca_token_chain(ipc, "", &chain) == GDS_EINVAL);
+    CHECK(gds_ca_token_chain(ipc, TOKEN_URI, &chain) == GDS_OK);
+    size_t len = 0;
+    X509 *leaf = first_of(&chain, &len);
+    gds_buf caDer = {0};
+    CHECK(gds_ca_get_ca_cert(direct, &caDer) == GDS_OK);
+    /* chain = token certificate || RSA CA certificate */
+    CHECK(leaf && chain.len == len + caDer.len &&
+          memcmp(chain.data + len, caDer.data, caDer.len) == 0);
+    const unsigned char *p = caDer.data;
+    X509 *caCert = d2i_X509(NULL, &p, (long)caDer.len);
+    CHECK(leaf && caCert && X509_check_issued(caCert, leaf) == X509_V_OK &&
+          X509_verify(leaf, X509_get0_pubkey(caCert)) == 1);
+    CHECK(leaf && san_uri_is(leaf, TOKEN_URI));
+    CHECK(leaf && (X509_get_key_usage(leaf) & ~(uint32_t)KU_DIGITAL_SIGNATURE) == 0 &&
+          (X509_get_key_usage(leaf) & KU_DIGITAL_SIGNATURE));
+    CHECK(leaf && X509_check_ca(leaf) == 0);
+    CHECK(gds_ca_token_sign(ipc, &in, &sig) == GDS_OK && leaf && verifies(leaf, JWS_OK, &sig));
+    gds_buf_free(&sig);
+    /* the same URI: the same certificate; another: a new one, same key */
+    gds_buf again = {0};
+    CHECK(gds_ca_token_chain(ipc, TOKEN_URI, &again) == GDS_OK && again.len == chain.len &&
+          memcmp(again.data, chain.data, chain.len) == 0);
+    gds_buf_free(&again);
+    CHECK(gds_ca_token_chain(ipc, TOKEN_URI ":2", &again) == GDS_OK);
+    X509 *leaf2 = first_of(&again, &len);
+    CHECK(leaf2 && leaf && san_uri_is(leaf2, TOKEN_URI ":2") &&
+          EVP_PKEY_eq(X509_get0_pubkey(leaf2), X509_get0_pubkey(leaf)) == 1 &&
+          X509_cmp(leaf2, leaf) != 0);
+    gds_buf_free(&again);
+    /* the signer refuses anything but a JWS signing input, even when
+     * opengdsd's own check is bypassed */
+    static const char csrLike[] = "\x30\x82\x01\x0a not a token";
+    gds_buf bad = {(uint8_t *)(uintptr_t)csrLike, sizeof(csrLike) - 1}, msg = {0}, reply = {0};
+    CHECK(gds_sigp_encode_token(GDS_SIGP_TOKEN_SIGN, &bad, &msg) == GDS_OK);
+    CHECK(gds_signer_handle(s, msg.data, msg.len, &reply) == GDS_OK);
+    gds_status st = GDS_OK;
+    CHECK(gds_sigp_decode_reply(GDS_SIGP_TOKEN_SIGN, reply.data, reply.len, &st, NULL, &sig) ==
+              GDS_OK &&
+          st == GDS_EINVAL && !sig.data);
+    gds_buf_free(&msg);
+    gds_buf_free(&reply);
+    CHECK(gds_ca_token_sign(ipc, &bad, &sig) == GDS_EINVAL);
+    /* a restarted signer signs with the key and certificate from disk */
+    gds_ca *reopened = open_direct_ca(caDir);
+    CHECK(reopened && gds_ca_token_sign(reopened, &in, &sig) == GDS_OK && leaf2 &&
+          verifies(leaf2, JWS_OK, &sig));
+    gds_buf_free(&sig);
+    gds_ca_close(reopened);
+    X509_free(leaf2);
+    X509_free(leaf);
+    X509_free(caCert);
+    gds_buf_free(&caDer);
+    gds_buf_free(&chain);
+}
+
+static void test_token_proto(void) {
+    gds_buf msg = {0}, uri = {(uint8_t *)(uintptr_t)TOKEN_URI, strlen(TOKEN_URI)};
+    gds_sigp_request m;
+    CHECK(gds_sigp_encode_token(GDS_SIGP_TOKEN_CHAIN, &uri, &msg) == GDS_OK);
+    CHECK(gds_sigp_decode(msg.data, msg.len, &m) == GDS_OK && m.op == GDS_SIGP_TOKEN_CHAIN &&
+          m.data.len == strlen(TOKEN_URI) && strcmp((const char *)m.data.data, TOKEN_URI) == 0);
+    gds_sigp_request_clear(&m);
+    msg.data[GDS_SIGP_HEADER + 2 + 3] = 0; /* a NUL inside the URI */
+    CHECK(gds_sigp_decode(msg.data, msg.len, &m) == GDS_EINVAL);
+    for(size_t n = 0; n < msg.len; n++)
+        CHECK(gds_sigp_decode(msg.data, n, &m) != GDS_OK);
+    gds_buf_free(&msg);
+    gds_buf empty = {(uint8_t *)(uintptr_t)"", 0};
+    CHECK(gds_sigp_encode_token(GDS_SIGP_TOKEN_SIGN, &empty, &msg) == GDS_EINVAL && !msg.data);
+    CHECK(gds_sigp_encode_token(GDS_SIGP_GET_CHAIN, &uri, &msg) == GDS_EINVAL && !msg.data);
+    CHECK(gds_sigp_encode_request(GDS_SIGP_TOKEN_SIGN, NULL, &msg) == GDS_EINVAL && !msg.data);
+    static uint8_t big[GDS_CA_MAX_JWS_INPUT + 1];
+    gds_buf tooBig = {big, sizeof(big)};
+    CHECK(gds_sigp_encode_token(GDS_SIGP_TOKEN_SIGN, &tooBig, &msg) == GDS_EINVAL && !msg.data);
+}
+
 int main(int argc, char **argv) {
     if(argc < 2) {
         fprintf(stderr, "usage: %s <dir>\n", argv[0]);
@@ -485,6 +621,9 @@ int main(int argc, char **argv) {
     CHECK(gds_path(db, sizeof(db), "%s/store.db", argv[1]) == GDS_OK);
     CHECK(gds_path(caDir, sizeof(caDir), "%s/ca", argv[1]) == GDS_OK);
     (void)unlink(db);
+    char tokenFile[1100];
+    CHECK(gds_path(tokenFile, sizeof(tokenFile), "%s/token/token.der", caDir) == GDS_OK);
+    (void)unlink(tokenFile); /* a fresh token certificate each run */
 
     gds_store *w = NULL;
     if(!CHECK(gds_store_open(db, &w) == GDS_OK) || !w)
@@ -517,6 +656,7 @@ int main(int argc, char **argv) {
             test_ipc_revoke(ipc, w, &appId, &issued);
         gds_ca_issued_clear(&issued);
         test_ipc_key_pair(ipc, w, &appId);
+        test_ipc_token(ipc, s.ca, &s, caDir);
     }
     gds_ca_close(ipc); /* closes sv[0]: the signer sees EOF */
     CHECK(pthread_join(th, NULL) == 0);
@@ -528,6 +668,8 @@ int main(int argc, char **argv) {
     test_revoke_proto();
     test_key_pair_proto();
     test_issuer_proto();
+    test_jws_input();
+    test_token_proto();
     gds_journal_close(s.journal);
     gds_ca_close(s.ca);
     gds_store_close(s.store);
