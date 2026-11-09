@@ -26,6 +26,21 @@ typedef enum {
     GDS_APPROVE_MANUAL = 3
 } gds_approval_policy;
 
+/* A KeyCredentialService (OPC 10000-12 §8.5.4) that the GDS offers: an
+ * Object <name> under KeyCredentialManagement. resourceUri names the
+ * resource (an MQTT broker, an authorization server ...) that accepts the
+ * credentials; profileUris (1 .. GDS_MAX_KC_PROFILES) its authentication
+ * mechanisms (OPC 10000-7). The GDS issues each application a random
+ * CredentialId and secret for it and stores only a hash of the secret
+ * (gds_keycred.c). name: 1 .. 64 of [A-Za-z0-9._-]. */
+#define GDS_MAX_KC_SERVICES 8
+#define GDS_MAX_KC_PROFILES 8
+typedef struct {
+    const char *name;
+    const char *resourceUri;
+    const char *const *profileUris;
+    size_t profileUrisSize;
+} gds_keycred_service;
 /* The AuthorizationService (OPC 10000-12 §9.6, gds_authz.c): a GDS
  * object under AuthorizationServices that issues JWT AccessTokens (OPC
  * 10000-6 §6.5.2). The signer is a callback, so the key may live outside
@@ -77,6 +92,11 @@ typedef struct {
     /* Which certificate requests are approved on arrival; the others wait
      * for a RegistrationAuthorityAdmin (gds_approvals.c). */
     gds_approval_policy approval;
+    /* KeyCredentialServices (0 .. GDS_MAX_KC_SERVICES); copied. They need
+     * a store with the KeyCredential calls (store backend minor 8). The
+     * approval policy applies to their requests as well. */
+    const gds_keycred_service *keyCredServices;
+    size_t keyCredServicesSize;
     /* NULL: no AuthorizationService (§9.6 is Optional) */
     const gds_authz_config *authz;
 } gds_server_config;

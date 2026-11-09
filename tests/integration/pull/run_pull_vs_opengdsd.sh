@@ -62,7 +62,7 @@ printf 'secret\n' > "$W/registrar.pw"
 printf 'pull-tracer-ca-passphrase\n' > "$W/ca.pw"
 chmod 600 "$W/registrar.pw" "$W/ca.pw"
 CRED=$("$GDSADM" hash-password < "$W/registrar.pw") || fail "gdsadm hash-password"
-echo "registrar DiscoveryAdmin,CertificateAuthorityAdmin,SecurityAdmin $CRED" > "$W/users"
+echo "registrar DiscoveryAdmin,CertificateAuthorityAdmin,SecurityAdmin,KeyCredentialAdmin $CRED" > "$W/users"
 echo "approver RegistrationAuthorityAdmin $CRED" >> "$W/users"
 chmod 600 "$W/users"
 cat > "$W/opengds.conf" <<CONF
@@ -76,6 +76,7 @@ signer = $SIGNER
 ca_passphrase_file = $W/ca.pw
 organization = OpenGDS pull tracer
 approval = auto
+keycred_service = mqtt urn:opengds:pull-tracer:broker http://opcfoundation.org/UA/Profile/Transport/pubsub-mqtt-uadp
 authorization_service = true
 CONF
 

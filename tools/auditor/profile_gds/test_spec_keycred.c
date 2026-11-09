@@ -438,6 +438,45 @@ static void t_sign_only(ga_ctx *ctx, void *p) {
     UA_NodeId_clear(&k.svc);
 }
 
+bool spec_kc_exercise(ga_ctx *ctx, gds_target *t, bool revoke, spec_kc_run *out) {
+    memset(out, 0, sizeof(*out));
+    kc_svc k;
+    if(!find_svc(ctx, t, &k))
+        return false;
+    UA_NodeId rn;
+    if(gt_find(t->client, k.svc, t->ns, "ResourceUri", &rn) == UA_STATUSCODE_GOOD) {
+        UA_Variant v;
+        UA_Variant_init(&v);
+        if(UA_Client_readValueAttribute(t->client, rn, &v) == UA_STATUSCODE_GOOD &&
+           UA_Variant_hasScalarType(&v, &UA_TYPES[UA_TYPES_STRING])) {
+            const UA_String *s = v.data;
+            if(s->length < sizeof(out->resourceUri))
+                memcpy(out->resourceUri, s->data, s->length);
+        }
+        UA_Variant_clear(&v);
+        UA_NodeId_clear(&rn);
+    }
+    char uri[URI_LEN];
+    gt_unique_uri(t, uri, sizeof(uri)); /* never registered */
+    UA_NodeId req;
+    out->refused = start_req(t, NULL, &k, uri, true, true, &req);
+    UA_NodeId_clear(&req);
+    kc_cred c;
+    memset(&c, 0, sizeof(c));
+    out->flow = full_flow(ctx, t, &k, &c);
+    out->revoke = UA_STATUSCODE_BADNOTHINGTODO;
+    if(out->flow == UA_STATUSCODE_GOOD && c.id[0])
+        out->revoke = revoke ? revoke_cred(t, &k, c.id) : UA_STATUSCODE_BADNOTHINGTODO;
+    if(!revoke && c.id[0])
+        (void)revoke_cred(t, &k, c.id); /* tidy up */
+    UA_NodeId_clear(&k.svc);
+    if(out->flow != UA_STATUSCODE_GOOD) {
+        ga_not_tested(ctx, "setup: KeyCredential request flow -> %s", UA_StatusCode_name(out->flow));
+        return false;
+    }
+    return true;
+}
+
 const ga_test spec_keycred_tests[] = {
     {"gds.kc.service", "12 §8.5.3, §8.5.4", "KeyCredentialManagement holds a KeyCredentialService with its Mandatory members",
      false, false, t_service},

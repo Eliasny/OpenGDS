@@ -5,6 +5,7 @@
  * or the application itself; Find and Query are open to every session on
  * an encrypted channel (§6.2).
  * SPDX-License-Identifier: MPL-2.0 */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -48,9 +49,29 @@ static GDS_METHOD(find_applications) {
 
 /* ---- RegisterApplication / UpdateApplication / UnregisterApplication ---- */
 
-static GDS_METHOD(register_application) {
-    GDS_METHOD_UNUSED;
-    gds_server *s = gds_ctx(methodContext);
+/* ApplicationRegistrationChangedAuditEventType (§6.5.12) for a Register,
+ * Update or Unregister an administrator was allowed to make, with its
+ * outcome in Status. */
+static void audit_registration(gds_server *s, void *sessionContext, UA_UInt32 method,
+                               size_t inputSize, const UA_Variant *input, UA_StatusCode r) {
+    if(!gds_audit_result(r))
+        return;
+    static const char *const msg[] = {"application registered", "application updated",
+                                      "application unregistered"};
+    size_t i = method == UA_GDSID_DIRECTORY_REGISTERAPPLICATION ? 0
+               : method == UA_GDSID_DIRECTORY_UPDATEAPPLICATION ? 1
+                                                                : 2;
+    gds_status a = gds_method_audit(s, gds_session_actor(sessionContext),
+                                    UA_GDSID_APPLICATIONREGISTRATIONCHANGEDAUDITEVENTTYPE, method,
+                                    UA_GDSID_WELLKNOWNROLE_DISCOVERYADMIN, NULL, 0, input,
+                                    inputSize < 1 ? inputSize : 1, r == UA_STATUSCODE_GOOD,
+                                    r == UA_STATUSCODE_GOOD ? msg[i] : UA_StatusCode_name(r));
+    if(a != GDS_OK && a != GDS_EUNSUPPORTED)
+        fprintf(stderr, "opengds: audit of a registration change: %s\n", gds_status_name(a));
+}
+
+static UA_StatusCode register_impl(gds_server *s, void *sessionContext, size_t inputSize,
+                                   const UA_Variant *input, UA_Variant *output) {
     if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
         return UA_STATUSCODE_BADINVALIDSTATE;
     if(!gds_session_has(sessionContext, GDS_ROLE_DISCOVERY_ADMIN))
@@ -73,10 +94,8 @@ static GDS_METHOD(register_application) {
     return UA_Variant_setScalarCopy(&output[0], &nid, &UA_TYPES[UA_TYPES_NODEID]);
 }
 
-static GDS_METHOD(update_application) {
-    GDS_METHOD_UNUSED;
-    (void)output;
-    gds_server *s = gds_ctx(methodContext);
+static UA_StatusCode update_impl(gds_server *s, void *sessionContext, size_t inputSize,
+                                 const UA_Variant *input) {
     if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
         return UA_STATUSCODE_BADINVALIDSTATE;
     if(!gds_session_has(sessionContext, GDS_ROLE_DISCOVERY_ADMIN))
@@ -96,10 +115,8 @@ static GDS_METHOD(update_application) {
     return gds_status_to_ua(st);
 }
 
-static GDS_METHOD(unregister_application) {
-    GDS_METHOD_UNUSED;
-    (void)output;
-    gds_server *s = gds_ctx(methodContext);
+static UA_StatusCode unregister_impl(gds_server *s, void *sessionContext, size_t inputSize,
+                                     const UA_Variant *input) {
     if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
         return UA_STATUSCODE_BADINVALIDSTATE;
     if(!gds_session_has(sessionContext, GDS_ROLE_DISCOVERY_ADMIN))
@@ -117,6 +134,33 @@ static GDS_METHOD(unregister_application) {
     gds_status st = gds_store_app_delete(s->store, &id);
     gds_unlock(s);
     return gds_status_to_ua(st);
+}
+
+static GDS_METHOD(register_application) {
+    GDS_METHOD_UNUSED;
+    gds_server *s = gds_ctx(methodContext);
+    UA_StatusCode r = register_impl(s, sessionContext, inputSize, input, output);
+    audit_registration(s, sessionContext, UA_GDSID_DIRECTORY_REGISTERAPPLICATION, inputSize, input, r);
+    return r;
+}
+
+static GDS_METHOD(update_application) {
+    GDS_METHOD_UNUSED;
+    (void)output;
+    gds_server *s = gds_ctx(methodContext);
+    UA_StatusCode r = update_impl(s, sessionContext, inputSize, input);
+    audit_registration(s, sessionContext, UA_GDSID_DIRECTORY_UPDATEAPPLICATION, inputSize, input, r);
+    return r;
+}
+
+static GDS_METHOD(unregister_application) {
+    GDS_METHOD_UNUSED;
+    (void)output;
+    gds_server *s = gds_ctx(methodContext);
+    UA_StatusCode r = unregister_impl(s, sessionContext, inputSize, input);
+    audit_registration(s, sessionContext, UA_GDSID_DIRECTORY_UNREGISTERAPPLICATION, inputSize,
+                       input, r);
+    return r;
 }
 
 /* ---- GetApplication ---- */

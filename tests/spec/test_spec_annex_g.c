@@ -659,8 +659,8 @@ int main(int argc, char **argv) {
         s = start_device(argv[1], F.port + 2, "reverse", true);
     if(s == GDS_OK)
         s = start_mock(argv[2], F.port + 3, "0", "mock");
-    /* the two mocks share one CA dir: the second starts once the first
-     * has written the CA and its CRL, or both write ca.crl at once */
+    /* both mocks share the CA directory and write its ca.crl at start:
+     * start the second once the first is up */
     if(s == GDS_OK)
         s = wait_up(F.urlMock);
     if(s == GDS_OK)

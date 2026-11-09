@@ -137,6 +137,7 @@ static const gds_store_backend refusingBackend = {
     NULL, NULL, /* no trust lists */
     NULL, NULL, NULL, /* no push targets */
     NULL,             /* no cert_issue */
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, /* no KeyCredentials */
 };
 
 static void test_open_backend(void) {

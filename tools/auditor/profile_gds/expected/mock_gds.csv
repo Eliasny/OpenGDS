@@ -90,6 +90,8 @@ gds.ev.registration_changed,not_tested
 gds.ev.certificate_requested_delivered,not_supported
 gds.ev.certificate_revoked,not_supported
 gds.ev.trustlist_updated,not_tested
+gds.ev.keycred_requested_delivered,not_supported
+gds.ev.keycred_revoked,not_supported
 gds.ev.auditing_flag,not_supported
 gds.ev.group_alarms,not_supported
 gds.acc.unregister_other,pass

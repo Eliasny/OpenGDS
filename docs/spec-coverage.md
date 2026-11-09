@@ -25,21 +25,21 @@ the service Object, which is itself Optional.
 | GetApplication | Method | M | §6.5.9 | `gds.dir.get_application` (pass), `gds.dir.get_unknown` (pass) |
 | QueryApplications | Method | M | §6.5.10 | `gds.dir.query_by_uri` (pass), `gds.qry.capabilities` (pass), `gds.qry.na_excluded` (pass), `gds.qry.name` (pass), `gds.qry.paging` (pass), `gds.qry.product_uri` (pass), `gds.qry.type_mask` (pass), `gds.qry.uri_pattern` (pass) |
 | QueryServers | Method (deprecated) | M | §6.5.11 | `gds.qry.servers` (pass) |
-| ApplicationRegistrationChangedAuditEventType | Event | M | §6.5.12 | `gds.ev.auditing_flag` (not_supported), `gds.ev.registration_changed` (not_supported) |
+| ApplicationRegistrationChangedAuditEventType | Event | M | §6.5.12 | `gds.ev.auditing_flag` (pass), `gds.ev.registration_changed` (pass) |
 | Directory roles | DiscoveryAdmin, self-admin | M | §6.2 | `gds.acc.unregister_other` (pass), `gds.acc.update_other` (pass), `gds.sec.anonymous_register` (pass) |
 | CertificateDirectoryType | member list | M | §7.9.2 | `gds.model.directory` (pass) |
 | StartSigningRequest | Method | M | §7.9.3 | `gds.acc.sign_other` (pass), `gds.acc.sign_sign_only` (pass), `gds.cm.bad_csr` (pass), `gds.cm.csr_wrong_uri` (pass), `gds.cm.sign_bad_group` (pass), `gds.cm.sign_bad_type` (pass), `gds.cm.sign_null_group` (pass), `gds.cm.sign_unknown_app` (pass), `gds.cm.signing_flow` (pass) |
 | StartNewKeyPairRequest | Method | M | §7.9.4 | `gds.acc.keypair_sign_only` (pass), `gds.cm.keypair_bad_format` (pass), `gds.cm.keypair_pem` (pass), `gds.cm.keypair_pfx` (pass), `gds.cm.keypair_unknown_app` (pass) |
 | FinishRequest | Method | M | §7.9.5 | `gds.cm.finish_unknown` (pass), `gds.cm.keypair_pem` (pass), `gds.cm.keypair_pfx` (pass), `gds.cm.signing_flow` (pass) |
-| RevokeCertificate | Method | O | §7.9.6 | `gds.acc.revoke_needs_ca_admin` (pass), `gds.cm.revoke` (pass), `gds.cm.revoke_foreign` (pass), `gds.cm.revoke_unknown_app` (pass), `gds.ev.certificate_revoked` (not_supported) |
+| RevokeCertificate | Method | O | §7.9.6 | `gds.acc.revoke_needs_ca_admin` (pass), `gds.cm.revoke` (pass), `gds.cm.revoke_foreign` (pass), `gds.cm.revoke_unknown_app` (pass), `gds.ev.certificate_revoked` (pass) |
 | GetCertificateGroups | Method | M | §7.9.7 | `gds.cm.groups` (pass), `gds.cm.groups_unknown` (pass) |
 | GetCertificates | Method | O | §7.9.8 | `gds.acc.get_certificates_other` (pass), `gds.cm.get_certificates` (pass), `gds.cm.get_certificates_bad_group` (pass), `gds.cm.get_certificates_unknown` (pass), `gds.cm.revoke` (pass) |
 | GetTrustList | Method | M | §7.9.9 | `gds.tl.get_trustlist` (pass) |
 | GetCertificateStatus | Method | M | §7.9.10 | `gds.cm.status_after_issue` (pass), `gds.cm.status_new` (pass) |
 | CheckRevocationStatus | Method | O | §7.9.11 | `gds.cm.check_bad_signature` (pass), `gds.cm.check_good` (pass), `gds.cm.check_revoked` (pass) |
-| CertificateRequestedAuditEventType | Event | M | §7.9.12 | `gds.ev.certificate_requested_delivered` (not_supported) |
-| CertificateDeliveredAuditEventType | Event | M | §7.9.13 | `gds.ev.certificate_requested_delivered` (not_supported) |
-| CertificateRevokedAuditEventType | Event | O | §7.9.14 | `gds.ev.certificate_revoked` (not_supported) |
+| CertificateRequestedAuditEventType | Event | M | §7.9.12 | `gds.ev.certificate_requested_delivered` (pass) |
+| CertificateDeliveredAuditEventType | Event | M | §7.9.13 | `gds.ev.certificate_requested_delivered` (pass) |
+| CertificateRevokedAuditEventType | Event | O | §7.9.14 | `gds.ev.certificate_revoked` (pass) |
 | CertificateManager roles | CertificateAuthorityAdmin, self-admin | M | §7.2 | `gds.acc.get_certificates_other` (pass), `gds.acc.revoke_needs_ca_admin` (pass), `gds.acc.sign_other` (pass), `gds.acc.tl_add_needs_ca_admin` (pass), `gds.sec.none_session` (pass) |
 | TrustListType | Object, LastUpdateTime, FileType | M | §7.8.2.1 | `gds.ev.trustlist_updated` (pass), `gds.model.certificate_group` (pass), `gds.tl.add_remove` (pass), `gds.tl.close_discards` (pass), `gds.tl.write_update` (pass) |
 | Open | Method (FileType) | M | §7.8.2.2 | `gds.tl.open_bad_mode` (pass), `gds.tl.write_anonymous` (pass) |
@@ -50,11 +50,11 @@ the service Object, which is itself Optional.
 | RemoveCertificate | Method | M | §7.8.2.7 | `gds.tl.add_remove` (pass), `gds.tl.remove_unknown` (pass) |
 | TrustListMasks | DataType | M | §7.8.2.9 | `gds.tl.open_with_masks` (pass) |
 | CertificateGroupType | TrustList, CertificateTypes, alarms | M | §7.8.3.1 | `gds.ev.group_alarms` (not_supported), `gds.model.certificate_group` (pass) |
-| KeyCredentialManagement / KeyCredentialServiceType | Object | O | §8.5.3 | `gds.kc.service` (not_supported) |
-| StartRequest (KeyCredential) | Method | M if service | §8.5.5 | `gds.kc.policy_without_key` (not_supported), `gds.kc.request_flow` (not_supported), `gds.kc.sign_only` (not_supported), `gds.kc.start_unknown_uri` (not_supported) |
-| FinishRequest (KeyCredential) | Method | M if service | §8.5.6 | `gds.kc.cancel` (not_supported), `gds.kc.finish_unknown` (not_supported), `gds.kc.request_flow` (not_supported) |
-| Revoke (KeyCredential) | Method | O | §8.5.7 | `gds.kc.revoke` (not_supported), `gds.kc.revoke_unknown` (not_supported) |
-| KeyCredential audit events | Events | M if service | §8.5.9 | **none** |
+| KeyCredentialManagement / KeyCredentialServiceType | Object | O | §8.5.3 | `gds.kc.service` (pass) |
+| StartRequest (KeyCredential) | Method | M if service | §8.5.5 | `gds.kc.policy_without_key` (pass), `gds.kc.request_flow` (pass), `gds.kc.sign_only` (pass), `gds.kc.start_unknown_uri` (pass) |
+| FinishRequest (KeyCredential) | Method | M if service | §8.5.6 | `gds.kc.cancel` (pass), `gds.kc.finish_unknown` (pass), `gds.kc.request_flow` (pass) |
+| Revoke (KeyCredential) | Method | O | §8.5.7 | `gds.ev.keycred_revoked` (pass), `gds.kc.revoke` (pass), `gds.kc.revoke_unknown` (pass) |
+| KeyCredential audit events | Events | M if service | §8.5.8 - §8.5.11 | `gds.ev.keycred_requested_delivered` (pass), `gds.ev.keycred_revoked` (pass) |
 | AuthorizationServices / AuthorizationServiceType | Object | O | §9.6.4 | `gds.az.service` (pass) |
 | RequestAccessToken | Method (deprecated) | O | §9.6.5 | **none** (not offered: deprecated) |
 | StartRequestToken | Method | O | §9.6.6 | `gds.az.sign_only` (pass), `gds.az.start_unknown_resource` (pass), `gds.az.token_flow` (pass) |
@@ -67,7 +67,7 @@ the service Object, which is itself Optional.
 Security of the channel and sessions: `gds.sec.endpoints` (pass; Part 4
 §5.4.4, Part 7), `gds.sec.none_session` (pass), `gds.sec.anonymous_register`
 (pass), and the sign-only tests `gds.acc.sign_sign_only` (pass),
-`gds.acc.keypair_sign_only` (pass), `gds.kc.sign_only` (not_supported) and
+`gds.acc.keypair_sign_only` (pass), `gds.kc.sign_only` (pass) and
 `gds.az.sign_only` (pass). FileType handles are per Session
 (Part 20 §4.2.2): `gds.tl.handle_other_session` (pass).
 
@@ -110,8 +110,6 @@ says why none applies, or names the open decision it waits on.
 
 These items have no test yet, and each needs work before it can have one:
 
-- KeyCredential audit events (§8.5.9 to §8.5.11). They need a running
-  KeyCredential service to trigger them.
 - AccessTokens for the UserName and X.509 UserTokenPolicies. The Auditor
   has no user credentials of the target, so `gds.az.token_flow` uses the
   Session's own identity (an Anonymous policy, §9.3 Implicit); opengdsd's

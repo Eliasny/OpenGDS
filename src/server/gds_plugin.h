@@ -45,7 +45,8 @@ extern "C" {
 #endif
 
 #define GDS_PLUGIN_ABI_MAJOR 1u
-#define GDS_PLUGIN_ABI_MINOR 2u /* 1: gds_caller.clientCertificate (A14); 2: push scheduling */
+#define GDS_PLUGIN_ABI_MINOR 3u /* 1: gds_caller.clientCertificate (A14); 2: push scheduling;
+                                  3: gds_keycred_source */
 
 /* The values of MessageSecurityMode (OPC 10000-4 §7.20). */
 typedef enum {
@@ -585,6 +586,59 @@ typedef bool (*gds_approve_fn)(void *ctx, const gds_caller *caller,
                                const UA_NodeId *applicationId);
 GDS_MUST_CHECK gds_status gds_server_set_approval_hook(struct gds_server *s, gds_approve_fn fn,
                                                        void *ctx);
+
+/* ---- KeyCredential source (OPC 10000-12 §8.5; Elias, 9 Nov 2026) ----
+ * By default the core makes each KeyCredential itself: a random
+ * CredentialId and secret, of which it keeps only a salted hash
+ * (docs/opengdsd.md, "KeyCredentials"). A source makes them instead, for
+ * example an embedder that provisions the broker account or holds the
+ * credentials in its own store.
+ *
+ * issue runs when FinishRequest delivers an approved request: it creates
+ * the credential for the application on the service's resource, writes
+ * its CredentialId (1 .. GDS_KEYCRED_ID_MAX printable ASCII bytes, unique
+ * across all services) to credentialId and its secret (1 ..
+ * GDS_KEYCRED_SECRET_MAX bytes, any content) to *secret, which the core
+ * frees (wiping it) with UA_ByteString_clear after encrypting it for the
+ * requester. `replaces`, when not NULL, is the CredentialId of the
+ * application's earlier credential for the service: the core forgets it
+ * once the new one is stored, so the source should drop it too. An error
+ * fails the FinishRequest with Bad_InternalError (GDS_EDENIED:
+ * Bad_RequestNotAllowed) and the request stays approved for a retry.
+ * revoke runs on Revoke: GDS_OK or GDS_ENOTFOUND deletes the credential
+ * from the core's store; any other error keeps it and fails the call.
+ * Both run on a plugin worker, the call completing asynchronously; they
+ * must not block for long. The core still decides access, approval and
+ * auditing, and stores each CredentialId (not the secret), so Revoke and
+ * replacement keep working. Set before gds_server_run; GDS_ESTATE after,
+ * GDS_EUNSUPPORTED without KeyCredential support in the store. */
+#define GDS_KEYCRED_ID_MAX 128
+#define GDS_KEYCRED_SECRET_MAX 4096
+
+typedef struct {
+    uint32_t abi_major;
+    uint32_t abi_minor;
+    size_t struct_size;
+    const char *service;            /* the KeyCredentialService's BrowseName */
+    const char *resourceUri;        /* its ResourceUri */
+    const UA_String *applicationUri;
+    const UA_NodeId *applicationId; /* the ApplicationRecord */
+    const char *replaces;           /* or NULL */
+} gds_keycred_issue_request;
+
+typedef struct {
+    uint32_t abi_major;
+    uint32_t abi_minor;
+    size_t struct_size;
+    void *ctx; /* borrowed: outlives the server */
+    gds_status (*issue)(void *ctx, const gds_keycred_issue_request *req,
+                        char credentialId[GDS_KEYCRED_ID_MAX + 1], UA_ByteString *secret);
+    gds_status (*revoke)(void *ctx, const char *service, const char *credentialId);
+} gds_keycred_source;
+
+/* source NULL: back to the core's own credentials. The struct is copied. */
+GDS_MUST_CHECK gds_status gds_server_set_keycred_source(struct gds_server *s,
+                                                        const gds_keycred_source *source);
 
 /* ---- revoking a serial the embedder reconciled (UASM ask A23) ----
  * Puts `serial` on the CRL of the CA that issued it. For an embedder
