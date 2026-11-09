@@ -1,6 +1,7 @@
 #!/bin/sh
 # Build the pinned open62541 v1.5.10 into a prefix, with only the features
 # OpenGDS uses and the OpenGDS hardening flags (docs/architecture.md, F2/F6).
+#   TARGET=musl     for musl-gcc (MUSL_KINC: kernel headers), packaging/static/
 #   TARGET=mingw64  cross-build for 64-bit Windows with MinGW-w64
 # SPDX-License-Identifier: MPL-2.0
 #
@@ -86,6 +87,12 @@ if [ "${TARGET:-}" = mingw64 ]; then
     CROSS="-DCMAKE_TOOLCHAIN_FILE=$(cd "$(dirname "$0")/.." && pwd)/packaging/windows/mingw64.cmake"
     HARDEN="-O2 -fstack-protector-strong"
     LDHARDEN="-Wl,--dynamicbase -Wl,--high-entropy-va -Wl,--nxcompat"
+elif [ "${TARGET:-}" = musl ]; then
+    # The static gdsaudit (packaging/static/build.sh): musl-gcc, with the
+    # kernel headers it lacks in MUSL_KINC; musl ignores _FORTIFY_SOURCE
+    BUILD="$SRC/build-opengds-musl"
+    CROSS="-DCMAKE_C_COMPILER=musl-gcc"
+    HARDEN="$HARDEN -isystem ${MUSL_KINC:?set MUSL_KINC}"
 fi
 # shellcheck disable=SC2086
 cmake -S "$SRC" -B "$BUILD" -G "${CMAKE_GENERATOR:-Ninja}" $CROSS \

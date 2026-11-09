@@ -60,7 +60,15 @@ if(WIN32)
     target_link_options(gds_hardening INTERFACE
         -Wl,--dynamicbase -Wl,--high-entropy-va -Wl,--nxcompat -static)
 else()
-target_link_options(gds_hardening INTERFACE
-    -pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack
-    -Wl,--as-needed -Wl,--no-copy-dt-needed-entries)
+    # OPENGDS_STATIC: one self-contained binary (packaging/static/, musl):
+    # a static PIE keeps ASLR
+    option(OPENGDS_STATIC "Link static PIE executables (the static gdsaudit)" OFF)
+    if(OPENGDS_STATIC)
+        set(_gds_pie -static-pie)
+    else()
+        set(_gds_pie -pie)
+    endif()
+    target_link_options(gds_hardening INTERFACE
+        ${_gds_pie} -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack
+        -Wl,--as-needed -Wl,--no-copy-dt-needed-entries)
 endif()
