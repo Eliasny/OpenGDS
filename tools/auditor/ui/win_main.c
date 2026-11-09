@@ -32,7 +32,8 @@ typedef struct {
     GtkLabel *presetDesc;
     GtkWidget *targetBox, *serverBox, *gdsBox, *clientBox;
     GtkEntry *url, *user, *passwordFile, *serverCert, *trust, *crl, *trigger, *clientUser, *work;
-    GtkEntry *adminCert, *adminKey, *adminUser, *adminPasswordFile;
+    GtkEntry *adminCert, *adminKey, *adminUser, *adminPasswordFile, *restartCmd;
+    GtkLabel *extra; /* plan keys the form has no field for */
     GtkCheckButton *tofu, *allowChanges;
     GtkSpinButton *port;
     /* run */
@@ -194,10 +195,18 @@ static void sync_visibility(Win *w) {
     gtk_widget_set_visible(GTK_WIDGET(w->allowChanges), p != AVM_PROFILE_CLIENT);
 }
 
+static void show_extra(Win *w);
+static GtkWidget *button(const char *label, const char *tooltip, GCallback cb, Win *w);
+static void on_open_plan(GtkButton *b, gpointer data);
+static void on_save_plan(GtkButton *b, gpointer data);
+
 static void on_profile(GObject *o, GParamSpec *ps, gpointer data) {
     (void)o;
     (void)ps;
-    sync_visibility(data);
+    Win *w = data;
+    sync_visibility(w);
+    w->plan.profile = (AvmProfile)gtk_drop_down_get_selected(w->profile);
+    show_extra(w); /* the kept plan keys of this profile */
 }
 
 static void on_preset(GObject *o, GParamSpec *ps, gpointer data) {
@@ -233,7 +242,8 @@ static void sync_plan(Win *w) {
                {&p->adminCert, w->adminCert},
                {&p->adminKey, w->adminKey},
                {&p->adminUser, w->adminUser},
-               {&p->adminPasswordFile, w->adminPasswordFile}};
+               {&p->adminPasswordFile, w->adminPasswordFile},
+               {&p->restartCmd, w->restartCmd}};
     for(size_t i = 0; i < G_N_ELEMENTS(map); i++) {
         char *v = g_strstrip(g_strdup(entry_text(map[i].entry)));
         avm_plan_set(map[i].field, v);
@@ -268,6 +278,8 @@ static void build_target_sections(Win *w, GtkWidget *form) {
     w->adminKey = add_path(w->serverBox, "Admin key", "key of the admin certificate", PICK_FILE);
     w->adminUser = add_entry(w->serverBox, "Admin user (instead of a certificate)", NULL);
     w->adminPasswordFile = add_path(w->serverBox, "Admin password file", NULL, PICK_FILE);
+    w->restartCmd = add_entry(w->serverBox, "Restart command (shell)",
+                              "restarts the target, for the persistence tests");
     gtk_box_append(GTK_BOX(form), w->serverBox);
 
     w->gdsBox = section();
@@ -308,6 +320,21 @@ static GtkWidget *build_form(Win *w) {
     gtk_label_set_xalign(w->presetDesc, 0);
     gtk_widget_add_css_class(GTK_WIDGET(w->presetDesc), "dim-label");
     gtk_box_append(GTK_BOX(top), GTK_WIDGET(w->presetDesc));
+    GtkWidget *planRow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_box_append(GTK_BOX(planRow), button("Open p_lan…", "Fill the form from a plan file (TOML)",
+                                            G_CALLBACK(on_open_plan), w));
+    gtk_box_append(GTK_BOX(planRow),
+                   button("Sa_ve plan…", "Save the form as a plan file: gdsaudit run PLAN.toml "
+                                         "runs it headless",
+                          G_CALLBACK(on_save_plan), w));
+    gtk_box_append(GTK_BOX(top), planRow);
+    w->extra = GTK_LABEL(gtk_label_new(NULL));
+    gtk_label_set_wrap(w->extra, TRUE);
+    gtk_label_set_xalign(w->extra, 0);
+    gtk_label_set_selectable(w->extra, TRUE);
+    gtk_widget_add_css_class(GTK_WIDGET(w->extra), "dim-label");
+    gtk_widget_set_visible(GTK_WIDGET(w->extra), FALSE);
+    gtk_box_append(GTK_BOX(top), GTK_WIDGET(w->extra));
     gtk_box_append(GTK_BOX(form), top);
 
     build_target_sections(w, form);
@@ -329,6 +356,15 @@ static GtkWidget *build_form(Win *w) {
     return sc;
 }
 
+static void show_extra(Win *w) {
+    char *x = avm_plan_extra_text(&w->plan);
+    char *t = x ? g_strdup_printf("Also from the plan file: %s", x) : NULL;
+    gtk_label_set_text(w->extra, t ? t : "");
+    gtk_widget_set_visible(GTK_WIDGET(w->extra), t != NULL);
+    g_free(t);
+    g_free(x);
+}
+
 static void load_plan_into_form(Win *w) {
     const AvmPlan *p = &w->plan;
     gtk_drop_down_set_selected(w->profile, (guint)p->profile);
@@ -346,6 +382,8 @@ static void load_plan_into_form(Win *w) {
     set_entry(w->adminKey, p->adminKey);
     set_entry(w->adminUser, p->adminUser);
     set_entry(w->adminPasswordFile, p->adminPasswordFile);
+    set_entry(w->restartCmd, p->restartCmd);
+    show_extra(w);
     gtk_spin_button_set_value(w->port, p->listenPort);
     gtk_check_button_set_active(w->tofu, p->tofu);
     gtk_check_button_set_active(w->allowChanges, p->allowChanges);
@@ -733,6 +771,99 @@ static void on_open_folder(GtkButton *b, gpointer data) {
     gtk_file_dialog_set_title(d, "Open a results folder (with events.jsonl)");
     gtk_file_dialog_set_modal(d, TRUE);
     gtk_file_dialog_select_folder(d, w->win, NULL, on_open_folder_chosen, w);
+    g_object_unref(d);
+}
+
+/* ---- plan files ---- */
+
+static GtkFileFilter *toml_filter(void) {
+    GtkFileFilter *f = gtk_file_filter_new();
+    gtk_file_filter_set_name(f, "Auditor plans (*.toml)");
+    gtk_file_filter_add_pattern(f, "*.toml");
+    return f;
+}
+
+static GtkFileDialog *plan_dialog(const char *title) {
+    GtkFileDialog *d = gtk_file_dialog_new();
+    gtk_file_dialog_set_title(d, title);
+    gtk_file_dialog_set_modal(d, TRUE);
+    GtkFileFilter *f = toml_filter();
+    gtk_file_dialog_set_default_filter(d, f);
+    g_object_unref(f);
+    return d;
+}
+
+static void on_plan_opened(GObject *src, GAsyncResult *res, gpointer data) {
+    Win *w = data;
+    GError *e = NULL;
+    GFile *f = gtk_file_dialog_open_finish(GTK_FILE_DIALOG(src), res, &e);
+    if(!f) {
+        g_clear_error(&e);
+        return;
+    }
+    char *path = g_file_get_path(f);
+    g_object_unref(f);
+    AvmPlan p;
+    avm_plan_init(&p);
+    if(path && avm_plan_load_file(&p, path, &e)) {
+        avm_plan_clear(&w->plan);
+        w->plan = p; /* the form takes the loaded plan whole */
+        load_plan_into_form(w);
+        char *m = g_strdup_printf("Plan %s opened%s%s.", path, *w->plan.name ? ": " : "",
+                                  w->plan.name);
+        set_status(w, m);
+        g_free(m);
+    } else {
+        avm_plan_clear(&p);
+        char *m = g_strdup_printf("Cannot open the plan: %s", e ? e->message : "no file");
+        set_status(w, m);
+        g_free(m);
+    }
+    g_clear_error(&e);
+    g_free(path);
+}
+
+static void on_open_plan(GtkButton *b, gpointer data) {
+    (void)b;
+    Win *w = data;
+    if(avm_run_is_running(w->run))
+        return;
+    GtkFileDialog *d = plan_dialog("Open a plan file");
+    gtk_file_dialog_open(d, w->win, NULL, on_plan_opened, w);
+    g_object_unref(d);
+}
+
+static void on_plan_saved(GObject *src, GAsyncResult *res, gpointer data) {
+    Win *w = data;
+    GError *e = NULL;
+    GFile *f = gtk_file_dialog_save_finish(GTK_FILE_DIALOG(src), res, &e);
+    if(!f) {
+        g_clear_error(&e);
+        return;
+    }
+    char *path = g_file_get_path(f);
+    g_object_unref(f);
+    char *m = NULL;
+    if(path && avm_plan_save_file(&w->plan, path, &e))
+        m = g_strdup_printf("Plan saved to %s. Run it headless with: gdsaudit run %s", path,
+                            path);
+    else
+        m = g_strdup_printf("Cannot save the plan: %s", e ? e->message : "no file");
+    set_status(w, m);
+    g_free(m);
+    g_clear_error(&e);
+    g_free(path);
+}
+
+static void on_save_plan(GtkButton *b, gpointer data) {
+    (void)b;
+    Win *w = data;
+    if(avm_run_is_running(w->run))
+        return;
+    sync_plan(w);
+    GtkFileDialog *d = plan_dialog("Save the form as a plan file");
+    gtk_file_dialog_set_initial_name(d, "plan.toml");
+    gtk_file_dialog_save(d, w->win, NULL, on_plan_saved, w);
     g_object_unref(d);
 }
 

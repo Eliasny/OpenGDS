@@ -61,6 +61,11 @@ size_t ga_plan_count(const ga_plan *p, const char *key);
 const char *ga_plan_get(const ga_plan *p, const char *key, size_t i);
 /* The key's type for profile; false if the profile has no such key. */
 bool ga_plan_key_type(const char *profile, const char *key, ga_plan_type *type);
+/* Every key of every profile, in the table's order: key i for i below
+ * ga_plan_key_count(), NULL past the end (for front ends that keep the keys
+ * they have no field for). */
+size_t ga_plan_key_count(void);
+const char *ga_plan_key_at(size_t i);
 /* The option a key gives for profile ("--url"); NULL if none. For
  * GA_PLAN_COMMAND it is "--". */
 const char *ga_plan_key_option(const char *profile, const char *key);

@@ -112,6 +112,14 @@ bool ga_plan_key_type(const char *profile, const char *key, ga_plan_type *type) 
     return true;
 }
 
+size_t ga_plan_key_count(void) {
+    return NKEYS;
+}
+
+const char *ga_plan_key_at(size_t i) {
+    return i < NKEYS ? keys[i].key : NULL;
+}
+
 const char *ga_plan_key_option(const char *profile, const char *key) {
     int p = profile_index(profile);
     int k = key_index(p, key);

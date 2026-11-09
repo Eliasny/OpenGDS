@@ -88,7 +88,7 @@ set_tests_properties(auditor_pause_resume PROPERTIES TIMEOUT 600 ENVIRONMENT "PU
 add_test(NAME auditor_discover
          COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/cli/test_discover.sh"
                  "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/discover-run")
-set_tests_properties(auditor_discover PROPERTIES TIMEOUT 120 ENVIRONMENT "PUSH_PORT=4995")
+set_tests_properties(auditor_discover PROPERTIES TIMEOUT 120 ENVIRONMENT "PUSH_PORT=4987")
 
 # The report folder: HTML, JUnit, JSON and TAP agree with the engine's run
 add_test(NAME auditor_report_formats

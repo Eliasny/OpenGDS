@@ -38,6 +38,13 @@ const char *avm_preset_description(AvmPreset p) {
     return (size_t)p < AVM_PRESET_COUNT ? presetDescriptions[p] : "";
 }
 
+void avm_plan_extra_free(gpointer x) {
+    AvmPlanExtra *e = x;
+    g_free(e->key);
+    g_strfreev(e->values);
+    g_free(e);
+}
+
 void avm_plan_set(char **field, const char *value) {
     char *c = g_strdup(value ? value : "");
     g_free(*field);
@@ -63,6 +70,9 @@ void avm_plan_init(AvmPlan *p) {
     p->listenPort = 4850;
     avm_plan_set(&p->triggerCmd, "");
     avm_plan_set(&p->clientUser, "registrar");
+    avm_plan_set(&p->restartCmd, "");
+    avm_plan_set(&p->name, "");
+    p->extra = g_ptr_array_new_with_free_func(avm_plan_extra_free);
     avm_plan_apply_preset(p, AVM_PRESET_QUICK);
 }
 
@@ -70,9 +80,10 @@ void avm_plan_clear(AvmPlan *p) {
     char **fields[] = {&p->workDir,    &p->url,        &p->user,    &p->passwordFile,
                        &p->serverCert, &p->trustFiles, &p->crlFile, &p->triggerCmd,
                        &p->clientUser, &p->adminCert, &p->adminKey, &p->adminUser,
-                       &p->adminPasswordFile};
+                       &p->adminPasswordFile, &p->restartCmd, &p->name};
     for(size_t i = 0; i < G_N_ELEMENTS(fields); i++)
         g_clear_pointer(fields[i], g_free);
+    g_clear_pointer(&p->extra, g_ptr_array_unref);
 }
 
 void avm_plan_apply_preset(AvmPlan *p, AvmPreset preset) {
@@ -97,6 +108,9 @@ static char *check_server(const AvmPlan *p) {
         return g_strdup("An admin user needs a password file.");
     if(set(p->adminUser) && set(p->adminCert))
         return g_strdup("Choose either an admin certificate or an admin user, not both.");
+    if(p->preset == AVM_PRESET_CERT && !set(p->restartCmd))
+        return g_strdup("Preparation for certification needs the restart command, so the "
+                        "persistence tests can run.");
     return NULL;
 }
 
@@ -136,88 +150,6 @@ char *avm_plan_check(const AvmPlan *p) {
     return check_target(p);
 }
 
-static void add(GPtrArray *a, const char *s) {
-    g_ptr_array_add(a, g_strdup(s));
-}
-
-static void add_opt(GPtrArray *a, const char *flag, const char *value) {
-    if(!set(value))
-        return;
-    add(a, flag);
-    add(a, value);
-}
-
-static void add_server_args(GPtrArray *a, const AvmPlan *p) {
-    if(p->slow)
-        add(a, "--slow");
-    if(p->tofu)
-        add(a, "--tofu");
-    else
-        add_opt(a, "--server-cert", p->serverCert);
-    if(set(p->adminCert)) {
-        add_opt(a, "--admin-cert", p->adminCert);
-        add_opt(a, "--admin-key", p->adminKey);
-    } else if(set(p->adminUser)) {
-        add_opt(a, "--admin-user", p->adminUser);
-        add_opt(a, "--admin-password-file", p->adminPasswordFile);
-    }
-    if(set(p->user)) {
-        add_opt(a, "--user", p->user);
-        add_opt(a, "--user-password-file", p->passwordFile);
-    }
-}
-
-static void add_target_args(GPtrArray *a, const AvmPlan *p) {
-    add_opt(a, "--url", p->url);
-    if(p->allowChanges)
-        add(a, "--allow-changes");
-    if(p->profile == AVM_PROFILE_SERVER) {
-        add_server_args(a, p);
-        return;
-    }
-    if(set(p->user)) {
-        add_opt(a, "--user", p->user);
-        add_opt(a, "--password-file", p->passwordFile);
-    }
-    char **trust = g_strsplit(p->trustFiles, ";", -1);
-    for(char **t = trust; *t; t++) {
-        char *s = g_strstrip(*t);
-        add_opt(a, "--trust", s);
-    }
-    g_strfreev(trust);
-    add_opt(a, "--crl", p->crlFile);
-}
-
-char **avm_plan_argv(const AvmPlan *p, const char *engine, const char *events,
-                     const char *reportDir, GError **error) {
-    char **trigger = NULL;
-    if(p->profile == AVM_PROFILE_CLIENT && set(p->triggerCmd) &&
-       !g_shell_parse_argv(p->triggerCmd, NULL, &trigger, error))
-        return NULL;
-    GPtrArray *a = g_ptr_array_new();
-    add(a, engine);
-    add(a, avm_profile_name(p->profile));
-    add_opt(a, "--events", events);
-    add_opt(a, "--report", reportDir);
-    add_opt(a, "--work", p->workDir);
-    if(p->profile == AVM_PROFILE_CLIENT) {
-        char port[16];
-        g_snprintf(port, sizeof(port), "%u", p->listenPort);
-        add_opt(a, "--listen", port);
-        add_opt(a, "--user", p->clientUser);
-        if(trigger) {
-            add(a, "--");
-            for(char **t = trigger; *t; t++)
-                add(a, *t);
-        }
-    } else {
-        add_target_args(a, p);
-    }
-    g_strfreev(trigger);
-    g_ptr_array_add(a, NULL);
-    return (char **)g_ptr_array_free(a, FALSE);
-}
-
 char *avm_plan_thumbprint(const AvmPlan *p) {
     if(p->profile != AVM_PROFILE_SERVER || p->tofu || !set(p->serverCert))
         return NULL;
@@ -254,7 +186,12 @@ char *avm_plan_thumbprint(const AvmPlan *p) {
     X("trust", trustFiles)                                                     \
     X("crl", crlFile)                                                          \
     X("trigger", triggerCmd)                                                   \
-    X("client_user", clientUser)
+    X("client_user", clientUser)                                               \
+    X("restart_cmd", restartCmd)                                               \
+    X("name", name)
+
+/* keys of the plan file the form has no field for: "x.tests.only" */
+#define EXTRA_PREFIX "x."
 
 void avm_plan_to_keyfile(const AvmPlan *p, GKeyFile *k, const char *group) {
     g_key_file_set_string(k, group, "profile", avm_profile_name(p->profile));
@@ -265,6 +202,13 @@ void avm_plan_to_keyfile(const AvmPlan *p, GKeyFile *k, const char *group) {
 #define SAVE(key, member) g_key_file_set_string(k, group, key, p->member ? p->member : "");
     PLAN_STRINGS(SAVE)
 #undef SAVE
+    for(guint i = 0; p->extra && i < p->extra->len; i++) {
+        const AvmPlanExtra *x = g_ptr_array_index(p->extra, i);
+        char *key = g_strconcat(EXTRA_PREFIX, x->key, NULL);
+        g_key_file_set_string_list(k, group, key, (const char *const *)x->values,
+                                   g_strv_length(x->values));
+        g_free(key);
+    }
 }
 
 gboolean avm_keyfile_save(GKeyFile *k, const char *path, GError **error) {
@@ -277,11 +221,7 @@ gboolean avm_keyfile_save(GKeyFile *k, const char *path, GError **error) {
 }
 
 gboolean avm_plan_save(const AvmPlan *p, const char *path, GError **error) {
-    GKeyFile *k = g_key_file_new();
-    avm_plan_to_keyfile(p, k, GROUP);
-    gboolean ok = avm_keyfile_save(k, path, error);
-    g_key_file_unref(k);
-    return ok;
+    return avm_plan_save_file(p, path, error);
 }
 
 static void load_numbers(AvmPlan *p, GKeyFile *k, const char *group) {
@@ -311,6 +251,27 @@ static void load_string(GKeyFile *k, const char *group, const char *key, char **
     g_free(v);
 }
 
+static void load_extra_key(AvmPlan *p, GKeyFile *k, const char *group, const char *key) {
+    if(!g_str_has_prefix(key, EXTRA_PREFIX))
+        return;
+    const char *name = key + strlen(EXTRA_PREFIX);
+    if(!ga_plan_key_type(avm_profile_name(p->profile), name, NULL))
+        return;
+    char **values = g_key_file_get_string_list(k, group, key, NULL, NULL);
+    if(values && *values)
+        avm_plan_extra_set(p, name, values);
+    else
+        g_strfreev(values);
+}
+
+static void load_extra(AvmPlan *p, GKeyFile *k, const char *group) {
+    g_ptr_array_set_size(p->extra, 0); /* the loaded plan's own, not the last one's */
+    char **keys = g_key_file_get_keys(k, group, NULL, NULL);
+    for(char **key = keys; key && *key; key++)
+        load_extra_key(p, k, group, *key);
+    g_strfreev(keys);
+}
+
 void avm_plan_from_keyfile(AvmPlan *p, GKeyFile *k, const char *group) {
     char *profile = g_key_file_get_string(k, group, "profile", NULL);
     for(int i = 0; profile && i < 3; i++)
@@ -321,17 +282,29 @@ void avm_plan_from_keyfile(AvmPlan *p, GKeyFile *k, const char *group) {
 #define LOAD(key, member) load_string(k, group, key, &p->member);
     PLAN_STRINGS(LOAD)
 #undef LOAD
+    load_extra(p, k, group);
 }
 
-gboolean avm_plan_load(AvmPlan *p, const char *path, GError **error) {
+/* Before plan files the form was kept in last-plan.ini, group [plan]. */
+static gboolean load_legacy(AvmPlan *p, const char *path, GError **error) {
+    char *dir = g_path_get_dirname(path);
+    char *ini = g_build_filename(dir, "last-plan.ini", NULL);
+    g_free(dir);
     GKeyFile *k = g_key_file_new();
-    gboolean ok = g_key_file_load_from_file(k, path, G_KEY_FILE_NONE, error);
+    gboolean ok = g_key_file_load_from_file(k, ini, G_KEY_FILE_NONE, error);
     if(ok)
         avm_plan_from_keyfile(p, k, GROUP);
     g_key_file_unref(k);
+    g_free(ini);
     return ok;
 }
 
+gboolean avm_plan_load(AvmPlan *p, const char *path, GError **error) {
+    if(!g_file_test(path, G_FILE_TEST_EXISTS) && g_str_has_suffix(path, "last-plan.toml"))
+        return load_legacy(p, path, error);
+    return avm_plan_load_file(p, path, error);
+}
+
 char *avm_plan_default_path(void) {
-    return g_build_filename(g_get_user_config_dir(), "gdsaudit", "last-plan.ini", NULL);
+    return g_build_filename(g_get_user_config_dir(), "gdsaudit", "last-plan.toml", NULL);
 }

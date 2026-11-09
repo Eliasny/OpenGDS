@@ -10,6 +10,12 @@ gdsaudit run plans/plc.toml                 # the plan as it is
 gdsaudit run plans/plc.toml --only SRV-TL   # options after the plan add to it
 ```
 
+The desktop UI opens and saves plans (Open plan…, Save plan…) and builds
+every run's command line from the plan of its form, so a plan saved there
+runs headless unchanged (CTest `avm_plan`, `avm_plan_vs_headless`). It keeps
+the keys its form has no field for; `report.*` and `hooks.prompts` belong to
+each UI run and are not taken from a plan.
+
 `gdsaudit run` prints the command line the plan stands for (`# plan ...:`)
 and then runs exactly that command line, so a plan run and a command-line run
 give the same verdicts (CTest `auditor_run_plan`). Options given after the
