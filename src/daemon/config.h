@@ -61,6 +61,8 @@
  *                      SecurityAdmin, CertificateAuthorityAdmin and
  *                      RegistrationAuthorityAdmin together (Part 18 AddIdentity;
  *                      separation of duties, docs/architecture.md)
+ *   max_sessions     = 500                          (default) concurrent Sessions, 1..1000;
+ *                      SecureChannels get a tenth more (docs/opengdsd.md)
  *
  * With `signer` or `signer_socket` the CA key never enters opengdsd
  * (decision G1). With `signer` the passphrase file path (not its content)
@@ -120,6 +122,7 @@ typedef struct {
     char mdnsServerName[GDSD_MAX_VALUE];
     char mdnsInterface[GDSD_MAX_VALUE];
     uint32_t passwordMinLength;
+    uint32_t maxSessions;          /* concurrent Sessions (plan: 500) */
 } gdsd_config;
 
 #define GDSD_PASSWORD_MIN_DEFAULT 15
