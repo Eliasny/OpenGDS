@@ -47,6 +47,7 @@ static const field fields[] = {
     F("push", push, T_BOOL, false),
     U("push_interval", pushIntervalS, 1, DAY),
     U("push_concurrency", pushConcurrency, 1, 64),
+    U("max_sessions", maxSessions, 1, 1000),
     U("push_jitter", pushJitterS, 0, DAY),
     U("push_backoff_min", pushBackoffMinS, 1, DAY),
     U("push_backoff_max", pushBackoffMaxS, 1, 30 * DAY),
@@ -162,6 +163,7 @@ static void defaults(gdsd_config *c) {
     c->approval = GDSD_APPROVE_RENEWALS;
     c->pushIntervalS = 60;
     c->pushConcurrency = 4;
+    c->maxSessions = 500;
     c->pushJitterS = 300;
     c->pushBackoffMinS = 60;
     c->pushBackoffMaxS = 6 * 3600;

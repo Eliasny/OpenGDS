@@ -61,7 +61,7 @@ the moment (Elias, 2026-11-09).
 |---|---|---|
 | 50,000 registered applications | 50,000 registered; store 16 MiB; FindApplications p50 0.07 ms, p99 0.3 ms | met; the 2 to 6 failed registrations per run are fixed (finding 3) |
 | RegisterApplication 1,000 per second | 1,780 to 2,140 per second from 16 sessions; p50 6.7 ms, p99 19 ms | met |
-| 500 concurrent sessions | **100**; the other 400 are refused (Bad_SecureChannelClosed) | **missed** (finding 1) |
+| 500 concurrent sessions | 500 open at once, then 500 pull workflows with every session held (before finding 1 was fixed: 100, the other 400 refused) | met (finding 1) |
 | RSA-2048 issuance within 10% of `openssl speed` | CA slot 760 certificates/s against 915 bare RSA-3072 signatures/s: **81 to 87%** | **missed** (finding 2) |
 | Push coverage 10,000 servers per 24 h with 64 parallel sessions | 256 pushes to 64 devices in 10 s: 25.5 per second, about 2.2 million per 24 h | met |
 | Daemon memory at 50,000 apps under 150 MB | `opengdsd` 26 MiB (31 MiB after the pull load), `opengds-signer` 8 MiB | met |
@@ -91,7 +91,16 @@ Other numbers from the same run:
    client gets its SecureChannel closed. The per-session tables in
    `gds_access.c` and `gds_audit.c` already hold 1,024. Raising the two
    limits (and choosing what happens under load, plan §6.3 "idle sessions are
-   closed first") is a product change for the MVP thread.
+   closed first") is a product change for the MVP thread. **Fixed:**
+   `max_sessions` in `opengds.conf` (default 500, at most 1,000) sets
+   `maxSessions`, and `maxSecureChannels` gets a tenth more. When a table is
+   full, open62541 closes the oldest SecureChannel without a Session, or the
+   oldest Session not yet activated, so a client that has not authenticated
+   cannot hold a slot (`docs/opengdsd.md`). Rerun 2026-11-09 on the same host
+   (`AGENTS=500`): 500 sessions open together, 500 certificates issued
+   (212/s), whole workflow p95 2.1 s. Opening 500 sessions at once takes
+   16.9 s on 4 CPUs (connect p50 6.3 s, p99 16.5 s): the RSA SecureChannel
+   and the PBKDF2 password check of every client compete for the CPUs.
 2. **CA issuance is 13 to 19% under the bare signature.** The CA's own
    private-key operation is RSA-3072 (`caKeyBits` default), so the bare
    baseline is `openssl speed rsa3072`, about 915 signatures/s on this host;

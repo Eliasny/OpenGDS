@@ -63,6 +63,8 @@ Give clients the CA certificate `ca_dir/ca.der` and the CRL `ca_dir/ca.crl` so t
 
 Sessions run only over SignAndEncrypt. SecurityPolicy None is open only for FindServers and GetEndpoints.
 
+`opengdsd` holds up to `max_sessions` Sessions at once (default 500, at most 1000), and a tenth more SecureChannels. When a table is full, the oldest SecureChannel without an activated Session, or the oldest Session that has not been activated, is closed to make room. A client that has not authenticated cannot hold a slot that an authenticated client needs. When every Session is activated, a new client gets Bad_TooManySessions.
+
 ## Announcing the GDS on the network (mDNS)
 
 With `mdns = true` opengdsd is its own LDS-ME (OPC 10000-12 §4.3.4, §5): it announces each endpoint URL on the local subnet as an mDNS service `_opcua-tcp._tcp` with `caps=GDS` (Annex C, Annex D), and answers FindServersOnNetwork with the servers it hears there, itself included. Clients that do not know where the GDS runs find it with any LDS-ME client, for example:

@@ -32,6 +32,9 @@ static void test_ok(void) {
     CHECK(parse(BASE, &c, &line) == GDS_OK && c.port == 58810 &&
           c.approval == GDSD_APPROVE_RENEWALS); /* default */
     CHECK(parse(BASE "approval = auto\n", &c, &line) == GDS_OK && c.approval == GDSD_APPROVE_AUTO);
+    /* the plan's 500 concurrent Sessions by default */
+    CHECK(parse(BASE, &c, &line) == GDS_OK && c.maxSessions == 500);
+    CHECK(parse(BASE "max_sessions = 1000\n", &c, &line) == GDS_OK && c.maxSessions == 1000);
     /* the AuthorizationService: off by default (Elias 2026-11-09), 1 h and
      * 24 h token lifetimes */
     CHECK(parse(BASE, &c, &line) == GDS_OK && !c.authorizationService &&
@@ -54,6 +57,8 @@ static void test_bad_values(void) {
     CHECK(parse(BASE "auto_approve = true\n", &c, &line) == GDS_EINVAL); /* the T1 key is gone */
     CHECK(parse(BASE "port = 12x\n", &c, &line) == GDS_EINVAL);
     CHECK(parse(BASE "loopback_only = yes\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "max_sessions = 0\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "max_sessions = 1001\n", &c, &line) == GDS_EINVAL);
     CHECK(parse(BASE "access_token_lifetime = 59\n", &c, &line) == GDS_EINVAL);
     CHECK(parse(BASE "access_token_lifetime = 86401\n", &c, &line) == GDS_EINVAL);
     CHECK(parse(BASE "access_token_lifetime = 0\n", &c, &line) == GDS_EINVAL);

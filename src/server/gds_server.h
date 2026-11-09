@@ -111,7 +111,17 @@ typedef struct {
      * that would give one identity SecurityAdmin, CertificateAuthorityAdmin
      * and RegistrationAuthorityAdmin together (docs/architecture.md). */
     bool singleAdmin;
+    /* Concurrent Sessions, 1 .. GDS_MAX_SESSIONS; 0: GDS_DEFAULT_SESSIONS.
+     * SecureChannels get a tenth more, so that a client without an
+     * activated Session can still connect; when either table is full,
+     * open62541 closes the oldest channel or Session that has not
+     * activated a Session first (an unauthenticated client cannot hold a
+     * slot an authenticated one needs). */
+    uint32_t maxSessions;
 } gds_server_config;
+
+#define GDS_DEFAULT_SESSIONS 500u
+#define GDS_MAX_SESSIONS 1000u /* the per-session tables hold 1,024 */
 
 typedef struct gds_server gds_server;
 

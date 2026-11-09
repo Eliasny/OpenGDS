@@ -253,6 +253,7 @@ static gds_status start(daemon_state *d) {
     sc.ca = d->ca;
     sc.users = &d->users;
     sc.approval = (gds_approval_policy)d->cfg.approval; /* same values, config.h */
+    sc.maxSessions = d->cfg.maxSessions;
     gds_keycred_service kc[GDSD_MAX_KC];
     const char *prof[GDSD_MAX_KC][GDSD_MAX_KC_PROFILES];
     for(uint8_t i = 0; i < d->cfg.nKeycred; i++) {

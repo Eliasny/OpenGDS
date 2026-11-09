@@ -259,7 +259,14 @@ int main(int argc, char **argv) {
     gds_server_config bad = cfg;
     bad.ca = NULL;
     CHECK(gds_server_new(&bad, &s) == GDS_EINVAL && !s);
+    bad = cfg;
+    bad.maxSessions = GDS_MAX_SESSIONS + 1;
+    CHECK(gds_server_new(&bad, &s) == GDS_EINVAL && !s);
     if(CHECK(gds_server_new(&cfg, &s) == GDS_OK) && s) {
+        /* the plan's 500 concurrent Sessions, not open62541's 100 */
+        const UA_ServerConfig *uc = UA_Server_getConfig(gds_server_ua(s));
+        CHECK_EQ_INT(uc->maxSessions, GDS_DEFAULT_SESSIONS);
+        CHECK_EQ_INT(uc->maxSecureChannels, GDS_DEFAULT_SESSIONS + GDS_DEFAULT_SESSIONS / 10);
         test_endpoints(s);
         test_service_level(s);
         test_read_only(s);
