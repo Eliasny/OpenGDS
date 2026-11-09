@@ -176,6 +176,43 @@ gds_status gds_store_tl_put(gds_store *s, uint32_t groupId, const gds_buf *data,
     return s->be.tl_put(s->ctx, groupId, data, lastUpdate);
 }
 
+static bool endpoint_ok(const char *e) {
+    if(!e)
+        return false;
+    size_t n = strnlen(e, GDS_MAX_PUSH_ENDPOINT);
+    if(n <= 10 || n >= GDS_MAX_PUSH_ENDPOINT || strncmp(e, "opc.tcp://", 10) != 0)
+        return false;
+    for(size_t i = 0; i < n; i++)
+        if((unsigned char)e[i] <= 0x20 || (unsigned char)e[i] == 0x7f)
+            return false;
+    return true;
+}
+
+gds_status gds_store_push_target_put(gds_store *s, const UA_Guid *appId, const char *endpoint,
+                                     bool enabled) {
+    if(!s->be.push_target_put)
+        return GDS_EUNSUPPORTED; /* a backend before minor 6 */
+    if(!appId || !endpoint_ok(endpoint))
+        return GDS_EINVAL;
+    return s->be.push_target_put(s->ctx, appId, endpoint, enabled);
+}
+
+gds_status gds_store_push_target_delete(gds_store *s, const UA_Guid *appId) {
+    if(!s->be.push_target_delete)
+        return GDS_EUNSUPPORTED;
+    if(!appId)
+        return GDS_EINVAL;
+    return s->be.push_target_delete(s->ctx, appId);
+}
+
+gds_status gds_store_push_target_scan(gds_store *s, gds_push_target_cb cb, void *ctx) {
+    if(!s->be.push_target_scan)
+        return GDS_EUNSUPPORTED;
+    if(!cb)
+        return GDS_EINVAL;
+    return s->be.push_target_scan(s->ctx, cb, ctx);
+}
+
 gds_status gds_store_audit_scan(gds_store *s, int64_t fromSeq, gds_audit_scan_cb cb, void *ctx) {
     if(!s->be.audit_scan)
         return GDS_EUNSUPPORTED;

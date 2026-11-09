@@ -28,6 +28,8 @@
 /* Requests waiting for an administrator (spike 1, decision D1) */
 #define GDS_MAX_PENDING_APPROVALS 10000u
 #define GDS_MAX_PATH              ((size_t)1024)
+/* Servers the push engine manages (store push_targets) */
+#define GDS_MAX_PUSH_TARGETS      ((size_t)100000)
 /* Encoded ApplicationRecordDataType: URI + names + 32 URLs + capabilities */
 #define GDS_MAX_RECORD_SIZE       ((size_t)256 * 1024)
 

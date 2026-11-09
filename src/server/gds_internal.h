@@ -142,6 +142,9 @@ struct gds_server {
     /* DefaultApplicationGroup TrustList LastUpdateTime (gds_trustlist.c);
      * server thread only */
     UA_DateTime tlLastUpdate;
+    /* push scheduler (gds_push_slot.c, OpenGDS W3); fixed before run */
+    gds_push_scheduler pushSched;
+    bool pushSchedSet;
     /* StartNewKeyPairRequest secrets (gds_keypair.c); kpLock is a leaf lock */
     pthread_mutex_t kpLock;
     gds_kp_entry kp[GDS_MAX_KEYPAIR_REQUESTS];

@@ -83,6 +83,10 @@ GDS_MUST_CHECK UA_StatusCode gdsc_session_open(const gdsc_session_cfg *cfg, gdsc
 UA_Client *gdsc_session_client(gdsc_session *s);
 /* SecurityPolicy URI of the open channel (borrowed) */
 const UA_String *gdsc_session_policy(const gdsc_session *s);
+/* The Server certificate the SecureChannel was opened with, as the client
+ * verified it (DER, a copy; free with gds_buf_free). GDS_ENOTFOUND if none
+ * was seen. */
+GDS_MUST_CHECK gds_status gdsc_session_server_cert(const gdsc_session *s, gds_buf *out);
 void gdsc_session_close(gdsc_session *s);
 
 /* After ApplyChanges: the Server's SignAndEncrypt endpoints whose

@@ -24,6 +24,15 @@
  *                      manual (none); the others wait for a
  *                      RegistrationAuthorityAdmin (Respond2 on their dialog)
  *
+ * The push engine (docs/push.md "Scheduled pushes"; off by default):
+ *   push             = true                         (manage the push targets)
+ *   push_interval    = 60       seconds between looks for due jobs (1..86400)
+ *   push_concurrency = 4        jobs at once (1..64)
+ *   push_jitter      = 300      random delay of every job, seconds (0..86400)
+ *   push_backoff_min = 60       first retry after a failure, seconds; doubles
+ *   push_backoff_max = 21600    up to this (1..2592000, >= push_backoff_min)
+ *   push_rejected_interval = 3600  GetRejectedList period, seconds; 0 = never
+ *
  * With `signer` or `signer_socket` the CA key never enters opengdsd
  * (decision G1). With `signer` the passphrase file path (not its content)
  * is passed to the child; with `signer_socket` the signer's own unit holds
@@ -56,6 +65,9 @@ typedef struct {
     uint16_t port;
     bool loopbackOnly;
     uint8_t approval; /* GDSD_APPROVE_* */
+    bool push;
+    uint32_t pushIntervalS, pushConcurrency, pushJitterS, pushBackoffMinS, pushBackoffMaxS,
+        pushRejectedS;
 } gdsd_config;
 
 /* The values of gds_approval_policy (gds_server.h). */

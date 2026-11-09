@@ -41,6 +41,7 @@
 #define LL_FS_TRUNCATE (1ULL << 14)    /* ABI 3 */
 #define LL_FS_IOCTL_DEV (1ULL << 15)   /* ABI 5 */
 #define LL_NET_ALL 3ULL                /* ABI 4: BIND_TCP | CONNECT_TCP */
+#define LL_NET_BIND 1ULL               /* ABI 4: BIND_TCP only (connect left open) */
 #define LL_SCOPE_ALL 3ULL              /* ABI 6: abstract UNIX sockets, signals */
 
 #define LL_READ (LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR)
@@ -106,7 +107,8 @@ static gds_status apply_landlock(const gds_sandbox *sb, int *abiOut) {
                         "restricted in the process\n");
         return GDS_OK;
     }
-    ll_ruleset_attr attr = {ll_handled_fs(abi), LL_NET_ALL, LL_SCOPE_ALL};
+    uint64_t net = sb->tcpConnect && sb->profile == GDS_SB_DAEMON ? LL_NET_BIND : LL_NET_ALL;
+    ll_ruleset_attr attr = {ll_handled_fs(abi), net, LL_SCOPE_ALL};
     size_t size = abi >= 6 ? sizeof(attr) : abi >= 4 ? 2 * sizeof(uint64_t) : sizeof(uint64_t);
     long rs = syscall(SYS_landlock_create_ruleset, &attr, size, 0);
     if(rs < 0) {

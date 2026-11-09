@@ -75,6 +75,15 @@ GDS_MUST_CHECK UA_StatusCode gdsc_update_certificate(UA_Client *c, const UA_Node
                                                      size_t issuersN,
                                                      bool *applyChangesRequired);
 
+/* GetRejectedList (12 §7.10.12): the certificates the Server refused,
+ * newest first as the Server orders them. At most
+ * GDS_MAX_TRUSTLIST_ENTRIES entries of at most GDS_MAX_CERT_SIZE bytes each
+ * (Bad_EncodingLimitsExceeded beyond); *certs is an array of *n, free with
+ * UA_Array_delete(..., &UA_TYPES[UA_TYPES_BYTESTRING]). Entries are not
+ * parsed here: the caller checks each. */
+GDS_MUST_CHECK UA_StatusCode gdsc_get_rejected_list(UA_Client *c, UA_ByteString **certs,
+                                                    size_t *n);
+
 /* ApplyChanges (12 §7.10.9) and CancelChanges (§7.10.2) */
 GDS_MUST_CHECK UA_StatusCode gdsc_apply_changes(UA_Client *c);
 GDS_MUST_CHECK UA_StatusCode gdsc_cancel_changes(UA_Client *c);
