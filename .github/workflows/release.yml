@@ -106,14 +106,23 @@ jobs:
         run: |
           set -eu
           bad=0
+          # The build products must match. buildenv.txt records the installed
+          # distribution packages; a mirror can publish an update between the
+          # two passes (seen on Fedora), so a difference there is shown but
+          # only fails the check if the products differ too.
           for a in pkg/*-a; do
             b=${a%-a}-b
-            if cmp -s "$a/SHA256SUMS" "$b/SHA256SUMS"; then
-              echo "${a#pkg/pkg-}: identical ($(wc -l < "$a/SHA256SUMS") files)"
+            n=${a#pkg/pkg-}; n=${n%-a}
+            if cmp -s <(grep -v 'buildenv\.txt$' "$a/SHA256SUMS") <(grep -v 'buildenv\.txt$' "$b/SHA256SUMS"); then
+              echo "$n: identical ($(grep -vc 'buildenv\.txt$' "$a/SHA256SUMS") files)"
             else
-              echo "::error::${a#pkg/pkg-} is not reproducible"
+              echo "::error::$n is not reproducible"
               diff "$a/SHA256SUMS" "$b/SHA256SUMS" || true
               bad=1
+            fi
+            if ! cmp -s "$a"/*.buildenv.txt "$b"/*.buildenv.txt; then
+              echo "::warning::$n: the two passes installed different distribution packages"
+              diff "$a"/*.buildenv.txt "$b"/*.buildenv.txt || true
             fi
           done
           exit "$bad"
