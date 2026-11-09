@@ -277,6 +277,8 @@ static gds_status start(daemon_state *d) {
     sc.mdns.enabled = d->cfg.mdns;
     sc.mdns.serverName = d->cfg.mdnsServerName[0] ? d->cfg.mdnsServerName : NULL;
     sc.mdns.interfaceIp = d->cfg.mdnsInterface[0] ? d->cfg.mdnsInterface : NULL;
+    sc.passwordMinLength = d->cfg.passwordMinLength;
+    sc.singleAdmin = d->cfg.singleAdmin;
     return gds_server_new(&sc, &d->server);
 }
 

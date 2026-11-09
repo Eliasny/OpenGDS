@@ -76,6 +76,7 @@
  * SPDX-License-Identifier: MPL-2.0 */
 #include "gdsadm_push.h"
 
+#include <open62541/client_highlevel.h>
 #include <open62541/nodeids_gds.h>
 
 #include <stdio.h>
@@ -870,6 +871,7 @@ static const char *state_name(UA_ServerState s) {
     case UA_SERVERSTATE_TEST: return "Test";
     case UA_SERVERSTATE_COMMUNICATIONFAULT: return "CommunicationFault";
     case UA_SERVERSTATE_UNKNOWN: return "Unknown";
+    case __UA_SERVERSTATE_FORCE32BIT:
     default: return "?";
     }
 }
@@ -1019,5 +1021,233 @@ int gdsadm_certs_revoke(int argc, char **argv) {
     gdsc_session_close(gds);
     files_clear(&f);
     gds_buf_free(&cert);
+    return rc;
+}
+
+/* ---- roles (OPC 10000-18 §4.4) ----
+ * gdsadm roles list CONNECTION
+ * gdsadm roles add-identity|remove-identity ROLE TYPE CRITERIA CONNECTION
+ * gdsadm roles add-app|remove-app ROLE APPLICATION_URI CONNECTION
+ * The Roles are the Objects under Server.ServerCapabilities.RoleSet, found
+ * by BrowseName; the methods are those of the RoleType (§4.4.5 - §4.4.8),
+ * which the GDS lets only a SecurityAdmin over SignAndEncrypt call. */
+
+static const char *const criteriaNames[] = {
+    NULL, "UserName", "Thumbprint", "Role", "GroupId", "Anonymous",
+    "AuthenticatedUser", "Application", "X509Subject", "TrustedApplication"};
+
+static bool parse_criteria_type(const char *t, UA_IdentityCriteriaType *out) {
+    for(size_t i = 1; i < GDS_ARRAY_SIZE(criteriaNames); i++) {
+        if(strcmp(t, criteriaNames[i]) == 0) {
+            *out = (UA_IdentityCriteriaType)i;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The forward hierarchical child of parent whose BrowseName name is name */
+static UA_StatusCode child_by_name(UA_Client *c, const UA_NodeId *parent, const char *name,
+                                   UA_NodeId *out) {
+    UA_BrowseRequest req;
+    UA_BrowseRequest_init(&req);
+    UA_BrowseDescription d;
+    UA_BrowseDescription_init(&d);
+    d.nodeId = *parent;
+    d.browseDirection = UA_BROWSEDIRECTION_FORWARD;
+    d.referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HIERARCHICALREFERENCES);
+    d.includeSubtypes = true;
+    d.resultMask = UA_BROWSERESULTMASK_BROWSENAME;
+    req.nodesToBrowse = &d;
+    req.nodesToBrowseSize = 1;
+    UA_BrowseResponse resp = UA_Client_Service_browse(c, req);
+    UA_StatusCode r = resp.responseHeader.serviceResult;
+    if(r == UA_STATUSCODE_GOOD && resp.resultsSize == 1)
+        r = resp.results[0].statusCode;
+    if(r == UA_STATUSCODE_GOOD) {
+        r = UA_STATUSCODE_BADNOTFOUND;
+        size_t len = strlen(name);
+        for(size_t i = 0; i < resp.results[0].referencesSize; i++) {
+            const UA_ReferenceDescription *rd = &resp.results[0].references[i];
+            if(rd->browseName.name.length == len &&
+               memcmp(rd->browseName.name.data, name, len) == 0) {
+                r = UA_NodeId_copy(&rd->nodeId.nodeId, out);
+                break;
+            }
+        }
+    }
+    UA_BrowseResponse_clear(&resp);
+    return r;
+}
+
+static void print_text(const UA_String *s) {
+    printf("%.*s", (int)s->length, s->data ? (const char *)s->data : "");
+}
+
+static UA_StatusCode print_rules(UA_Client *c, const UA_NodeId *role, const char *prop) {
+    UA_NodeId id = UA_NODEID_NULL;
+    UA_StatusCode r = child_by_name(c, role, prop, &id);
+    if(r == UA_STATUSCODE_BADNOTFOUND)
+        return UA_STATUSCODE_GOOD; /* Applications and Endpoints are Optional */
+    UA_Variant v;
+    UA_Variant_init(&v);
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Client_readValueAttribute(c, id, &v);
+    UA_NodeId_clear(&id);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    if(UA_Variant_hasArrayType(&v, &UA_TYPES[UA_TYPES_IDENTITYMAPPINGRULETYPE])) {
+        const UA_IdentityMappingRuleType *a = v.data;
+        for(size_t i = 0; i < v.arrayLength; i++) {
+            int t = (int)a[i].criteriaType;
+            printf("  identity %s ", t > 0 && t < (int)GDS_ARRAY_SIZE(criteriaNames)
+                                         ? criteriaNames[t] : "?");
+            print_text(&a[i].criteria);
+            printf("\n");
+        }
+    } else if(UA_Variant_hasArrayType(&v, &UA_TYPES[UA_TYPES_STRING])) {
+        const UA_String *a = v.data;
+        for(size_t i = 0; i < v.arrayLength; i++) {
+            printf("  application ");
+            print_text(&a[i]);
+            printf("\n");
+        }
+    } else if(UA_Variant_hasArrayType(&v, &UA_TYPES[UA_TYPES_ENDPOINTTYPE])) {
+        const UA_EndpointType *a = v.data;
+        for(size_t i = 0; i < v.arrayLength; i++) {
+            printf("  endpoint ");
+            print_text(&a[i].endpointUrl);
+            printf(" %d ", (int)a[i].securityMode);
+            print_text(&a[i].securityPolicyUri);
+            printf(" ");
+            print_text(&a[i].transportProfileUri);
+            printf("\n");
+        }
+    }
+    UA_Variant_clear(&v);
+    return UA_STATUSCODE_GOOD;
+}
+
+static int roles_list(UA_Client *c) {
+    const UA_NodeId roleSet = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
+    UA_BrowseRequest req;
+    UA_BrowseRequest_init(&req);
+    UA_BrowseDescription d;
+    UA_BrowseDescription_init(&d);
+    d.nodeId = roleSet;
+    d.browseDirection = UA_BROWSEDIRECTION_FORWARD;
+    d.referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT);
+    d.includeSubtypes = true;
+    d.nodeClassMask = UA_NODECLASS_OBJECT;
+    d.resultMask = UA_BROWSERESULTMASK_BROWSENAME;
+    req.nodesToBrowse = &d;
+    req.nodesToBrowseSize = 1;
+    UA_BrowseResponse resp = UA_Client_Service_browse(c, req);
+    UA_StatusCode r = resp.responseHeader.serviceResult;
+    if(r == UA_STATUSCODE_GOOD && resp.resultsSize == 1)
+        r = resp.results[0].statusCode;
+    int rc = 0;
+    if(r != UA_STATUSCODE_GOOD) {
+        rc = report("browse RoleSet", r);
+    } else {
+        static const char *const props[] = {"Identities", "Applications", "Endpoints"};
+        for(size_t i = 0; i < resp.results[0].referencesSize; i++) {
+            const UA_ReferenceDescription *rd = &resp.results[0].references[i];
+            print_text(&rd->browseName.name);
+            printf("\n");
+            for(size_t p = 0; p < GDS_ARRAY_SIZE(props); p++) {
+                r = print_rules(c, &rd->nodeId.nodeId, props[p]);
+                if(r != UA_STATUSCODE_GOOD) {
+                    rc = report(props[p], r);
+                    break;
+                }
+            }
+            if(rc != 0)
+                break;
+        }
+    }
+    UA_BrowseResponse_clear(&resp);
+    return rc;
+}
+
+static int roles_usage(void) {
+    fprintf(stderr, "usage: gdsadm roles list CONNECTION\n"
+                    "       gdsadm roles add-identity|remove-identity ROLE TYPE CRITERIA "
+                    "CONNECTION\n"
+                    "       gdsadm roles add-app|remove-app ROLE APPLICATION_URI CONNECTION\n"
+                    "  TYPE: UserName Thumbprint Role GroupId Anonymous AuthenticatedUser\n"
+                    "        Application X509Subject TrustedApplication\n");
+    return 2;
+}
+
+int gdsadm_roles(int argc, char **argv) {
+    /* argv: gdsadm roles VERB ... */
+    if(argc < 3)
+        return roles_usage();
+    const char *verb = argv[2];
+    bool identity = strcmp(verb, "add-identity") == 0 || strcmp(verb, "remove-identity") == 0;
+    bool app = strcmp(verb, "add-app") == 0 || strcmp(verb, "remove-app") == 0;
+    bool list = strcmp(verb, "list") == 0;
+    int first = list ? 3 : identity ? 6 : app ? 5 : -1;
+    if(first < 0 || argc < first)
+        return roles_usage();
+    for(int i = 3; i < first; i++)
+        if(argv[i][0] == '-')
+            return roles_usage();
+    UA_IdentityMappingRuleType rule;
+    UA_IdentityMappingRuleType_init(&rule);
+    if(identity) {
+        if(!parse_criteria_type(argv[4], &rule.criteriaType)) {
+            fprintf(stderr, "gdsadm: unknown identity type %s\n", argv[4]);
+            return roles_usage();
+        }
+        rule.criteria = UA_STRING(argv[5]);
+    }
+    adm_args a;
+    if(!parse_args(argc, argv, first, &a))
+        return roles_usage();
+    adm_files f;
+    memset(&f, 0, sizeof(f));
+    gdsc_session *gds = NULL;
+    UA_UInt16 ns = 0;
+    int rc = open_gds(&a, &f, &gds, &ns);
+    UA_Client *c = rc == 0 ? gdsc_session_client(gds) : NULL;
+    if(rc == 0 && list) {
+        rc = roles_list(c);
+    } else if(rc == 0) {
+        const UA_NodeId roleSet =
+            UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
+        const char *method = strcmp(verb, "add-identity") == 0      ? "AddIdentity"
+                             : strcmp(verb, "remove-identity") == 0 ? "RemoveIdentity"
+                             : strcmp(verb, "add-app") == 0         ? "AddApplication"
+                                                                    : "RemoveApplication";
+        UA_NodeId role = UA_NODEID_NULL, m = UA_NODEID_NULL;
+        UA_StatusCode r = child_by_name(c, &roleSet, argv[3], &role);
+        if(r != UA_STATUSCODE_GOOD) {
+            rc = report(argv[3], r);
+        } else if((r = child_by_name(c, &role, method, &m)) != UA_STATUSCODE_GOOD) {
+            rc = report(method, r);
+        } else {
+            UA_Variant in;
+            UA_String uri = UA_STRING(argv[4]);
+            if(identity)
+                UA_Variant_setScalar(&in, &rule,
+                                     &UA_TYPES[UA_TYPES_IDENTITYMAPPINGRULETYPE]);
+            else
+                UA_Variant_setScalar(&in, &uri, &UA_TYPES[UA_TYPES_STRING]);
+            size_t outN = 0;
+            UA_Variant *out = NULL;
+            r = UA_Client_call(c, role, m, 1, &in, &outN, &out);
+            UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
+            if(r == UA_STATUSCODE_GOOD)
+                printf("%s %s: done\n", argv[3], method);
+            else
+                rc = report(method, r);
+        }
+        UA_NodeId_clear(&role);
+        UA_NodeId_clear(&m);
+    }
+    gdsc_session_close(gds);
+    files_clear(&f);
     return rc;
 }

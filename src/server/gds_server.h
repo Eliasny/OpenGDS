@@ -104,6 +104,13 @@ typedef struct {
      * disc_mdns.h). Zeroed: off. With loopbackOnly it is refused: nothing
      * on the subnet could reach the announced DiscoveryUrl. */
     gds_mdns_config mdns;
+    /* OPC 10000-18 §5.2.1 PasswordLength low for managed users; 0 = the
+     * default, GDS_PASSWORD_DEFAULT_MIN_LENGTH (15). */
+    unsigned passwordMinLength;
+    /* Separation of duties: false (the default) refuses an identity rule
+     * that would give one identity SecurityAdmin, CertificateAuthorityAdmin
+     * and RegistrationAuthorityAdmin together (docs/architecture.md). */
+    bool singleAdmin;
 } gds_server_config;
 
 typedef struct gds_server gds_server;

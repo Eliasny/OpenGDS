@@ -138,6 +138,7 @@ static const gds_store_backend refusingBackend = {
     NULL, NULL, NULL, /* no push targets */
     NULL,             /* no cert_issue */
     NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, /* no KeyCredentials */
+    NULL, NULL, NULL, NULL, NULL, NULL, /* no OPC 10000-18 rules and users */
 };
 
 static void test_open_backend(void) {
@@ -173,6 +174,14 @@ static void test_open_backend(void) {
         CHECK(gds_store_tl_get(s, 615, &b, &lu) == GDS_EUNSUPPORTED && b.len == 0);
         b = (gds_buf){(uint8_t *)"x", 1};
         CHECK(gds_store_tl_put(s, 615, &b, 1) == GDS_EUNSUPPORTED);
+        /* nor role rules and managed users (minor 6) */
+        gds_role_rule rule;
+        memset(&rule, 0, sizeof(rule));
+        memcpy(rule.role, "SecurityAdmin", sizeof("SecurityAdmin"));
+        rule.kind = GDS_RULE_APPLICATION;
+        memcpy(rule.criteria, "urn:x", sizeof("urn:x"));
+        CHECK(gds_store_rule_add(s, &rule) == GDS_EUNSUPPORTED);
+        CHECK(gds_store_user_delete(s, "u") == GDS_EUNSUPPORTED);
     }
     gds_store_close(s);
     CHECK_EQ_INT(r.closed, 5);

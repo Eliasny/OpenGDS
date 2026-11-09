@@ -97,7 +97,9 @@ static void test_roles(gds_server *s) {
     plain.securityMode = UA_MESSAGESECURITYMODE_SIGNANDENCRYPT;
     memcpy(plain.user, "admin", sizeof("admin"));
     anon.anonymous = true;
-    anon.roles = bit; /* an anonymous session holds no granted Roles */
+    /* an anonymous session holds only what OPC 10000-18 Application rules
+     * grant it (gds_roles.c): none here */
+    anon.roles = 0;
 
     CHECK_EQ_INT(read_as(s, &holder, WRITABLE), 1);
     CHECK_EQ_INT(read_as(s, &plain, WRITABLE), 0);
