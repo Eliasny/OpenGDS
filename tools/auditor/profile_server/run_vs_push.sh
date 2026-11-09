@@ -56,10 +56,23 @@ hook_cmd() {
     echo "$win.bat"
 }
 
+# port_busy <port>: something already listens on it (Linux /proc). open62541
+# binds with SO_REUSEPORT, so a leftover server on the same port would get
+# part of the connections and fail the run with certificate errors.
+port_busy() {
+    h=$(printf ':%04X' "$1")
+    cat /proc/net/tcp /proc/net/tcp6 2>/dev/null |
+        awk -v h="$h" '$4 == "0A" && substr($2, length($2) - 4) == h { f = 1 } END { exit !f }'
+}
+
 start_server() {
     name=$1
     shift
     PORT=$((PORT + 1))
+    while port_busy "$PORT"; do
+        echo "# port $PORT is in use: skipped"
+        PORT=$((PORT + 1))
+    done
     NAME=$name
     # restart-<name>.sh stops the server and starts it again on the same PKI
     {
