@@ -1,15 +1,15 @@
 # OpenGDS releases (docs/packaging.md): packages for every distribution and
 # architecture, built twice on separate runners and compared byte for byte,
-# a systemd install test, the container image, Sigstore and OpenPGP
-# signatures, and a draft GitHub release.
+# a systemd install test, the container image, Sigstore keyless signatures,
+# and a draft GitHub release.
 #
 #   tag v*            full release; signs and publishes (environment `release`)
 #   pull request      dry run when packaging files change: build, compare,
 #                     smoke test and image build; nothing is signed or pushed
 #   workflow_dispatch the same dry run on any branch
 #
-# Decisions (Elias, 2026-11-06): P1 sign with Sigstore keyless AND the OpenGDS
-# OpenPGP key; P2 RPMs for EL 9 and Fedora; P3 image on ghcr.io/eliasny/opengds;
+# Decisions (Elias): P1 sign with Sigstore keyless only (2026-11-09; no
+# OpenPGP key); P2 RPMs for EL 9 and Fedora; P3 image on ghcr.io/eliasny/opengds;
 # P4 Debian 13, Ubuntu 24.04, EL 9 (and Fedora) on amd64 and arm64.
 # SPDX-License-Identifier: MPL-2.0
 name: release
@@ -202,7 +202,7 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [compare, smoke, image]
     runs-on: ubuntu-24.04
-    # The OpenPGP key lives only in this environment, limited to v* tags.
+    # Publishing is limited to v* tags through this environment.
     environment: release
     permissions:
       contents: write       # the draft release
@@ -240,39 +240,16 @@ jobs:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.index.outputs.digest }}
           push-to-registry: true
-      - name: OpenPGP signatures
-        env:
-          GPG_KEY: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}
-          GPG_PASS: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
+      - name: Checksums
         run: |
           set -eu
-          if [ -z "$GPG_KEY" ] || [ -z "$GPG_PASS" ]; then
-            echo "::error::RELEASE_GPG_PRIVATE_KEY / RELEASE_GPG_PASSPHRASE missing in the release environment (docs/packaging.md)"
-            exit 1
-          fi
-          sudo apt-get update -q && sudo apt-get install -y -q rpm
-          export GNUPGHOME=$(mktemp -d)
-          pass=$(mktemp) && printf '%s' "$GPG_PASS" > "$pass"
-          printf '%s\n' "$GPG_KEY" | gpg --batch --import
-          fpr=$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
-          sign="gpg --batch --yes --pinentry-mode loopback --passphrase-file $pass --local-user $fpr"
           cd release
-          # RPMs carry their signature inside (dnf gpgcheck).
-          for f in *.rpm; do
-            rpmsign --addsign --define "_gpg_name $fpr" \
-              --define "__gpg_sign_cmd %{__gpg} gpg --batch --no-armor --pinentry-mode loopback --passphrase-file $pass -u $fpr -sbo %{__signature_filename} --digest-algo sha256 %{__plaintext_filename}" "$f"
-          done
           sha256sum $(ls | grep -v '^SHA256SUMS$') > SHA256SUMS
-          for f in $(ls | grep -v -e '^SHA256SUMS$' -e '\.rpm$'); do
-            $sign --armor --detach-sign -o "$f.asc" "$f"
-          done
-          $sign --clearsign -o SHA256SUMS.asc SHA256SUMS
-          rm -f "$pass"
       - name: Sigstore signatures
         run: |
           set -eu
           cd release
-          for f in $(ls | grep -v -e '\.asc$'); do
+          for f in *; do
             cosign sign-blob --yes --bundle "$f.sigstore.json" "$f" > /dev/null
           done
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
