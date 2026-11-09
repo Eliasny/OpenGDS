@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<component type="desktop-application">
+  <id>org.opengds.Auditor</id>
+  <name>OpenGDS Auditor</name>
+  <summary>Test OPC UA certificate management against OPC 10000-12</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MPL-2.0</project_license>
+  <developer id="org.opengds">
+    <name>OpenGDS project</name>
+  </developer>
+  <description>
+    <p>
+      The OpenGDS Auditor tests Global Discovery Servers, push-managed OPC UA
+      Servers and pull clients against OPC 10000-12. Every test cites the
+      clause it checks and gives a verdict with its evidence. Reports come as
+      HTML, JUnit XML, TAP and JSON.
+    </p>
+    <p>
+      Runs are read-only unless changes to the target are allowed, and the
+      Auditor restores the target's trust list and certificates at the end.
+      Its results are a self-test, not OPC Foundation certification.
+    </p>
+  </description>
+  <launchable type="desktop-id">org.opengds.Auditor.desktop</launchable>
+  <url type="homepage">https://github.com/Eliasny/OpenGDS</url>
+  <url type="bugtracker">https://github.com/Eliasny/OpenGDS/issues</url>
+  <provides>
+    <binary>gdsaudit-gui</binary>
+    <binary>gdsaudit</binary>
+  </provides>
+  <categories>
+    <category>Development</category>
+    <category>Network</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>
