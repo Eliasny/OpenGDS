@@ -57,6 +57,21 @@ typedef struct {
     uint64_t fs, net, scoped;
 } ll_ruleset_attr; /* struct landlock_ruleset_attr of ABI 6, sized per ABI */
 
+/* struct landlock_net_port_attr, LANDLOCK_RULE_NET_PORT and
+ * LANDLOCK_ACCESS_NET_BIND_TCP (ABI 4) first appear in the Linux 6.7 headers;
+ * the same layout and values here, so older headers (the Flatpak SDK) build. */
+typedef struct {
+    uint64_t allowed_access, port;
+} ll_net_port_attr;
+#define LL_RULE_NET_PORT 2
+#define LL_NET_BIND_TCP 1ULL
+#ifdef LANDLOCK_ACCESS_NET_BIND_TCP
+_Static_assert(sizeof(ll_net_port_attr) == sizeof(struct landlock_net_port_attr) &&
+                   LL_RULE_NET_PORT == LANDLOCK_RULE_NET_PORT &&
+                   LL_NET_BIND_TCP == LANDLOCK_ACCESS_NET_BIND_TCP,
+               "ll_net_port_attr matches the kernel's");
+#endif
+
 static int ll_abi(void) {
     long v = syscall(SYS_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
     return v > 0 ? (int)v : 0;
@@ -119,9 +134,8 @@ static gds_status apply_landlock(const gds_sandbox *sb, int *abiOut) {
     for(size_t i = 0; r == GDS_OK && i < sb->nPaths; i++)
         r = ll_add((int)rs, &sb->paths[i], attr.fs);
     if(r == GDS_OK && abi >= 4 && sb->tcpBindPort) {
-        struct landlock_net_port_attr np = {.allowed_access = LANDLOCK_ACCESS_NET_BIND_TCP,
-                                            .port = sb->tcpBindPort};
-        if(syscall(SYS_landlock_add_rule, rs, LANDLOCK_RULE_NET_PORT, &np, 0) != 0) {
+        ll_net_port_attr np = {.allowed_access = LL_NET_BIND_TCP, .port = sb->tcpBindPort};
+        if(syscall(SYS_landlock_add_rule, rs, LL_RULE_NET_PORT, &np, 0) != 0) {
             fprintf(stderr, "opengds: sandbox: Landlock TCP port %u: %s\n", sb->tcpBindPort,
                     strerror(errno));
             r = GDS_EIO;
