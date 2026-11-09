@@ -28,6 +28,11 @@
 #      GetServiceDescription returns, are empty ByteStrings. §9.6.4: it "contains the
 #      Certificate required to check any Signature that is included with the
 #      AccessTokens".
+#   R7 gds.p18.* (OPC 10000-18 roles and users, phase W4): pinned without a
+#      reference run, because CI was unusable when they were added (2026-11-09).
+#      The lines copy the mock GDS (a stack whose RoleType methods have no
+#      handlers and which has no UserManagement Object). Re-pin them from the
+#      next reference-gds.yml run and explain any deviation here.
 #   Not supported: the sample has no KeyCredentialService (§8.5, Optional), sets
 #   Server.Auditing FALSE and raises no audit events (gds.ev.*), and has neither
 #   Optional CertificateGroup alarm.
@@ -130,3 +135,18 @@ gds.acc.sign_sign_only,pass
 gds.acc.keypair_sign_only,pass
 gds.model.directory,pass
 gds.model.certificate_group,pass
+gds.p18.identities_read,pass
+gds.p18.add_remove_identity,fail
+gds.p18.identity_needs_admin,pass
+gds.p18.anonymous_admin,warn
+gds.p18.fixed_roles,pass
+gds.p18.add_remove_application,fail
+gds.p18.add_remove_endpoint,fail
+gds.p18.audit_rule_changed,not_tested
+gds.p18.add_remove_user,not_supported
+gds.p18.short_password,not_supported
+gds.p18.user_mgmt_needs_admin,pass
+gds.p18.user_rule_grants_role,not_supported
+gds.p18.change_password,not_supported
+gds.p18.disable_user,not_supported
+gds.p18.remove_self,not_supported

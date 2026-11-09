@@ -169,6 +169,9 @@ struct gds_server {
     size_t nKc;
     /* the AuthorizationService (gds_authz.c); NULL when not configured */
     struct gds_authz *authz;
+    /* OPC 10000-18 (gds_roles.c, gds_users.c); fixed at gds_server_new */
+    unsigned passwordMinLength;
+    bool singleAdmin;
 };
 
 /* ---- caller views (gds_caller.c, issue #17) ---- */
@@ -445,6 +448,29 @@ void gds_ptl_free(gds_server *s);
  * by sessionContext. Takes storeLock. */
 GDS_MUST_CHECK gds_status gds_policy_initial_state(gds_server *s, const void *sessionContext,
                                                    const gds_request *q, gds_req_state *out);
+
+/* OPC 10000-18 Roles and users (gds_roles.c, gds_users.c). install: binds
+ * the RoleType methods and Properties of every Role node and the
+ * UserManagement Object, then loads the rules and users; before the server
+ * runs. add_role_node: the same for an embedder Role. reload: the rules and
+ * users again from the store (a new PRIMARY). */
+GDS_MUST_CHECK UA_StatusCode gds_roles_install(gds_server *s, const gds_users *users);
+GDS_MUST_CHECK UA_StatusCode gds_roles_add_role_node(gds_server *s, const UA_NodeId *id,
+                                                     unsigned bit);
+void gds_roles_reload(gds_server *s);
+GDS_MUST_CHECK UA_StatusCode gds_users_install(gds_server *s);
+void gds_users_reload(gds_server *s);
+void gds_users_reset(void);
+void gds_users_set_file(const gds_users *u);
+/* Shared by both: bound nodes, the SecurityAdmin check (security mode,
+ * Role, standby), store errors as result codes, and the audit event. */
+void gds_roles_mark_method(const UA_NodeId *id);
+void gds_roles_mark_secret(const UA_NodeId *id);
+GDS_MUST_CHECK UA_StatusCode gds_roles_check_admin(gds_server *s, const void *sessionContext);
+UA_StatusCode gds_roles_store_status(gds_status st);
+void gds_roles_audit(gds_server *s, const void *sessionContext, UA_UInt32 type,
+                     const UA_NodeId *source, const UA_NodeId *method, const UA_Variant *args,
+                     size_t nArgs, UA_StatusCode result);
 
 /* Signing worker (gds_certmgr.c). */
 GDS_MUST_CHECK gds_status gds_worker_start(gds_server *s);

@@ -32,6 +32,9 @@ static void test_ok(void) {
     CHECK(parse(BASE, &c, &line) == GDS_OK && c.port == 58810 &&
           c.approval == GDSD_APPROVE_RENEWALS); /* default */
     CHECK(parse(BASE "approval = auto\n", &c, &line) == GDS_OK && c.approval == GDSD_APPROVE_AUTO);
+    /* the plan's 500 concurrent Sessions by default */
+    CHECK(parse(BASE, &c, &line) == GDS_OK && c.maxSessions == 500);
+    CHECK(parse(BASE "max_sessions = 1000\n", &c, &line) == GDS_OK && c.maxSessions == 1000);
     /* the AuthorizationService: off by default (Elias 2026-11-09), 1 h and
      * 24 h token lifetimes */
     CHECK(parse(BASE, &c, &line) == GDS_OK && !c.authorizationService &&
@@ -54,6 +57,8 @@ static void test_bad_values(void) {
     CHECK(parse(BASE "auto_approve = true\n", &c, &line) == GDS_EINVAL); /* the T1 key is gone */
     CHECK(parse(BASE "port = 12x\n", &c, &line) == GDS_EINVAL);
     CHECK(parse(BASE "loopback_only = yes\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "max_sessions = 0\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "max_sessions = 1001\n", &c, &line) == GDS_EINVAL);
     CHECK(parse(BASE "access_token_lifetime = 59\n", &c, &line) == GDS_EINVAL);
     CHECK(parse(BASE "access_token_lifetime = 86401\n", &c, &line) == GDS_EINVAL);
     CHECK(parse(BASE "access_token_lifetime = 0\n", &c, &line) == GDS_EINVAL);
@@ -127,9 +132,40 @@ static void test_keycred(void) {
     CHECK(parse(many, &c, &line) == GDS_EINVAL && line == 5 + GDSD_MAX_KC); /* 9th line */
 }
 
+/* mDNS announce keys (src/disc/disc_mdns.h) */
+static void test_mdns(void) {
+    gdsd_config c;
+    unsigned line = 0;
+    CHECK(parse(BASE, &c, &line) == GDS_OK && !c.mdns && !c.mdnsServerName[0] &&
+          !c.mdnsInterface[0]); /* off by default (Part 12 §5.2) */
+    CHECK(parse(BASE "mdns = true\nmdns_server_name = Plant GDS\nmdns_interface = 192.0.2.10\n",
+                &c, &line) == GDS_OK);
+    CHECK(c.mdns && strcmp(c.mdnsServerName, "Plant GDS") == 0 &&
+          strcmp(c.mdnsInterface, "192.0.2.10") == 0);
+    CHECK(parse(BASE "mdns_server_name = Kontrollhalle \xc3\xa4\n", &c, &line) == GDS_OK);
+    /* nothing on the subnet could reach a loopback-only GDS */
+    CHECK(parse(BASE "mdns = true\nloopback_only = true\n", &c, &line) == GDS_EINVAL &&
+          line == 0);
+    CHECK(parse(BASE "mdns = yes\n", &c, &line) == GDS_EINVAL && line == 5);
+    CHECK(parse(BASE "mdns_server_name = gds.example.com\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "mdns_interface = eth0\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "mdns_interface = 2001:db8::1\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "mdns_server_name = bad \xc3\n", &c, &line) == GDS_EINVAL); /* UTF-8 */
+    char name[80];
+    memset(name, 'n', 64);
+    name[64] = '\0'; /* one byte above a DNS label */
+    char text[1024];
+    CHECK(gds_path(text, sizeof(text), "%smdns_server_name = %s\n", BASE, name) == GDS_OK);
+    CHECK(parse(text, &c, &line) == GDS_EINVAL);
+    name[63] = '\0';
+    CHECK(gds_path(text, sizeof(text), "%smdns_server_name = %s\n", BASE, name) == GDS_OK);
+    CHECK(parse(text, &c, &line) == GDS_OK);
+}
+
 int main(void) {
     test_ok();
     test_keycred();
+    test_mdns();
     test_bad_values();
     test_refused();
     return CHECK_DONE();

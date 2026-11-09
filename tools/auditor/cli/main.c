@@ -151,6 +151,7 @@ static size_t collect(ga_test *all) {
                 {spec_authz_tests, spec_authz_count},
                 {spec_events_tests, spec_events_count},
                 {spec_roles_tests, spec_roles_count},
+                {spec_part18_tests, spec_part18_count},
                 {spec_model_tests, spec_model_count}};
     size_t n = 0;
     for(size_t s = 0; s < GDS_ARRAY_SIZE(sets); s++)
@@ -251,6 +252,7 @@ static size_t collect_server(ga_test *all) {
                 {srv_rejected_tests, srv_rejected_count},
                 {srv_persistence_tests, srv_persistence_count},
                 {srv_audit_tests, srv_audit_count},
+                {srv_keycred_tests, srv_keycred_count},
                 {srv_setup_tests, srv_setup_count}, /* only with --only SRV-SET */
                 {srv_restore_tests, srv_restore_count}}; /* restore stays last */
     size_t n = 0;

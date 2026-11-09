@@ -124,7 +124,12 @@ static gds_status sq_open(const char *path, sq_store **out) {
     char *err = NULL;
     rc = sqlite3_exec(s->db,
                       "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; "
-                      "PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;",
+                      "PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; "
+                      /* temporary files (statement journals, sorts) in
+                       * memory: the Landlock sandbox allows only the data
+                       * directory, so /var/tmp and /tmp fail with
+                       * SQLITE_CANTOPEN (docs/perf.md finding 3) */
+                      "PRAGMA temp_store=MEMORY;",
                       NULL, NULL, &err);
     if(rc != SQLITE_OK) {
         fprintf(stderr, "store: pragmas: %s\n", err ? err : "?");
@@ -543,21 +548,15 @@ static gds_status sq_cert_add(void *ctx_, const UA_Guid *appId, uint32_t groupId
     return r;
 }
 
-/* A24: the certificate and the request's Received -> Issued in one
- * transaction. */
-static gds_status sq_cert_issue(void *ctx_, const UA_Guid *reqId, const UA_Guid *appId,
-                                uint32_t groupId, uint32_t certType, const gds_buf *serial,
-                                const gds_buf *der, int64_t notBefore, int64_t notAfter) {
-    sq_store *s = ctx_;
-    sqlite3_stmt *up = NULL, *ex = NULL;
-    gds_status r = GDS_OK;
-    int rc = sqlite3_exec(s->db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
-    if(rc != SQLITE_OK)
-        return db_err(s, "begin", rc);
-    rc = sqlite3_prepare_v2(s->db,
-                            "UPDATE requests SET state = ?2, cert = ?3, error = 0, updated = ?4 "
-                            "WHERE id = ?1 AND state = ?5",
-                            -1, &up, NULL);
+/* The request Received -> Issued with its certificate; *changed is the
+ * number of rows updated (0 when the request is not Received) */
+static int mark_issued(sq_store *s, const UA_Guid *reqId, const gds_buf *der, int *changed) {
+    sqlite3_stmt *up = NULL;
+    *changed = 0;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "UPDATE requests SET state = ?2, cert = ?3, error = 0, updated = ?4 "
+                                "WHERE id = ?1 AND state = ?5",
+                                -1, &up, NULL);
     if(rc == SQLITE_OK)
         rc = bind_guid(up, 1, reqId);
     if(rc == SQLITE_OK)
@@ -568,19 +567,44 @@ static gds_status sq_cert_issue(void *ctx_, const UA_Guid *reqId, const UA_Guid 
         rc = sqlite3_bind_int64(up, 4, now_s());
     if(rc == SQLITE_OK)
         rc = sqlite3_bind_int(up, 5, (int)GDS_REQ_RECEIVED);
-    if(rc == SQLITE_OK && (rc = sqlite3_step(up)) == SQLITE_DONE)
+    if(rc == SQLITE_OK && (rc = sqlite3_step(up)) == SQLITE_DONE) {
         rc = SQLITE_OK;
-    if(rc == SQLITE_OK && sqlite3_changes(s->db) != 1) {
-        /* Not Received: issued already, failed, or no such request. */
-        rc = sqlite3_prepare_v2(s->db, "SELECT 1 FROM requests WHERE id = ?1", -1, &ex, NULL);
-        if(rc == SQLITE_OK)
-            rc = bind_guid(ex, 1, reqId);
-        if(rc == SQLITE_OK) {
-            rc = sqlite3_step(ex);
-            r = rc == SQLITE_ROW ? GDS_ESTATE : rc == SQLITE_DONE ? GDS_ENOTFOUND : GDS_OK;
-            rc = r != GDS_OK ? SQLITE_OK : rc;
-        }
+        *changed = sqlite3_changes(s->db);
     }
+    sqlite3_finalize(up);
+    return rc;
+}
+
+/* Why a request is not Received: issued already or failed (GDS_ESTATE),
+ * or no such request (GDS_ENOTFOUND), into *r */
+static int why_not_received(sq_store *s, const UA_Guid *reqId, gds_status *r) {
+    sqlite3_stmt *ex = NULL;
+    int rc = sqlite3_prepare_v2(s->db, "SELECT 1 FROM requests WHERE id = ?1", -1, &ex, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(ex, 1, reqId);
+    if(rc == SQLITE_OK) {
+        rc = sqlite3_step(ex);
+        *r = rc == SQLITE_ROW ? GDS_ESTATE : rc == SQLITE_DONE ? GDS_ENOTFOUND : GDS_OK;
+        rc = *r != GDS_OK ? SQLITE_OK : rc;
+    }
+    sqlite3_finalize(ex);
+    return rc;
+}
+
+/* A24: the certificate and the request's Received -> Issued in one
+ * transaction. */
+static gds_status sq_cert_issue(void *ctx_, const UA_Guid *reqId, const UA_Guid *appId,
+                                uint32_t groupId, uint32_t certType, const gds_buf *serial,
+                                const gds_buf *der, int64_t notBefore, int64_t notAfter) {
+    sq_store *s = ctx_;
+    gds_status r = GDS_OK;
+    int rc = sqlite3_exec(s->db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+    if(rc != SQLITE_OK)
+        return db_err(s, "begin", rc);
+    int changed = 0;
+    rc = mark_issued(s, reqId, der, &changed);
+    if(rc == SQLITE_OK && changed != 1)
+        rc = why_not_received(s, reqId, &r);
     if(rc == SQLITE_OK && r == GDS_OK) {
         r = sq_cert_add(s, appId, groupId, certType, serial, der, notBefore, notAfter);
         if(r == GDS_OK)
@@ -590,8 +614,6 @@ static gds_status sq_cert_issue(void *ctx_, const UA_Guid *reqId, const UA_Guid 
         r = db_err(s, "issue certificate", rc);
     if(r != GDS_OK)
         (void)sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL);
-    sqlite3_finalize(up);
-    sqlite3_finalize(ex);
     return r;
 }
 
@@ -1417,6 +1439,185 @@ static gds_status sq_kc_cred_scan(void *ctx_, gds_store_kc_cred_cb cb, void *cbC
 
 /* --- the built-in backend ---------------------------------------------- */
 
+/* --- OPC 10000-18 rules and users (schema 6) --------------------------- */
+
+static int bind_c(sqlite3_stmt *st, int i, const char *v) {
+    return sqlite3_bind_text(st, i, v, -1, SQLITE_STATIC);
+}
+
+/* Copy a text column into a fixed buffer of max characters (+ NUL);
+ * false when it does not fit. */
+static bool column_c(sqlite3_stmt *st, int i, char *out, size_t max) {
+    const unsigned char *v = sqlite3_column_text(st, i);
+    int n = sqlite3_column_bytes(st, i);
+    if(n < 0 || (size_t)n > max)
+        return false;
+    if(n > 0 && v)
+        memcpy(out, v, (size_t)n);
+    out[n] = '\0';
+    return true;
+}
+
+static int bind_rule(sqlite3_stmt *st, const gds_role_rule *r) {
+    int rc = bind_c(st, 1, r->role);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(st, 2, r->kind);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(st, 3, r->criteriaType);
+    if(rc == SQLITE_OK)
+        rc = bind_c(st, 4, r->criteria);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(st, 5, r->securityMode);
+    if(rc == SQLITE_OK)
+        rc = bind_c(st, 6, r->securityPolicyUri);
+    if(rc == SQLITE_OK)
+        rc = bind_c(st, 7, r->transportProfileUri);
+    return rc;
+}
+
+static gds_status rule_exec(sq_store *s, const char *sql, const gds_role_rule *r, int *changed) {
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db, sql, -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_rule(st, r);
+    if(rc == SQLITE_OK && (rc = sqlite3_step(st)) == SQLITE_DONE)
+        rc = SQLITE_OK;
+    *changed = rc == SQLITE_OK ? sqlite3_changes(s->db) : 0;
+    gds_status res = rc == SQLITE_OK ? GDS_OK : db_err(s, "role rule", rc);
+    sqlite3_finalize(st);
+    return res;
+}
+
+static gds_status sq_rule_add(void *ctx_, const gds_role_rule *r) {
+    int changed = 0;
+    return rule_exec(ctx_,
+                     "INSERT INTO role_rules (role, kind, ctype, criteria, mode, policy, "
+                     "transport) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                     r, &changed);
+}
+
+static gds_status sq_rule_remove(void *ctx_, const gds_role_rule *r) {
+    int changed = 0;
+    gds_status res = rule_exec(ctx_,
+                               "DELETE FROM role_rules WHERE role = ?1 AND kind = ?2 AND "
+                               "ctype = ?3 AND criteria = ?4 AND mode = ?5 AND policy = ?6 "
+                               "AND transport = ?7",
+                               r, &changed);
+    return res == GDS_OK && changed == 0 ? GDS_ENOTFOUND : res;
+}
+
+static gds_status sq_rule_scan(void *ctx_, gds_rule_scan_cb cb, void *cbCtx) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "SELECT role, kind, ctype, criteria, mode, policy, transport "
+                                "FROM role_rules ORDER BY rowid",
+                                -1, &st, NULL);
+    gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "scan role rules", rc);
+    gds_role_rule *row = r == GDS_OK ? malloc(sizeof(*row)) : NULL;
+    if(r == GDS_OK && !row)
+        r = GDS_ENOMEM;
+    while(r == GDS_OK && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+        memset(row, 0, sizeof(*row));
+        int64_t kind = sqlite3_column_int64(st, 1);
+        if(!column_c(st, 0, row->role, sizeof(row->role) - 1) || kind < GDS_RULE_IDENTITY ||
+           kind > GDS_RULE_ENDPOINT || !column_c(st, 3, row->criteria, GDS_MAX_RULE_TEXT) ||
+           !column_c(st, 5, row->securityPolicyUri, GDS_MAX_RULE_URI) ||
+           !column_c(st, 6, row->transportProfileUri, GDS_MAX_RULE_URI)) {
+            r = GDS_ESTATE;
+            break;
+        }
+        row->kind = (uint8_t)kind;
+        row->criteriaType = (int32_t)sqlite3_column_int64(st, 2);
+        row->securityMode = (int32_t)sqlite3_column_int64(st, 4);
+        if(!cb(cbCtx, row)) {
+            rc = SQLITE_DONE;
+            break;
+        }
+    }
+    if(r == GDS_OK && rc != SQLITE_DONE)
+        r = db_err(s, "scan role rules", rc);
+    free(row);
+    sqlite3_finalize(st);
+    return r;
+}
+
+static gds_status sq_user_put(void *ctx_, const gds_store_user *u, bool create) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    const char *sql = create ? "INSERT INTO users (name, credential, config, description) "
+                               "VALUES (?1, ?2, ?3, ?4)"
+                             : "UPDATE users SET credential = ?2, config = ?3, "
+                               "description = ?4 WHERE name = ?1";
+    int rc = sqlite3_prepare_v2(s->db, sql, -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_c(st, 1, u->name);
+    if(rc == SQLITE_OK)
+        rc = bind_c(st, 2, u->credential);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(st, 3, u->config);
+    if(rc == SQLITE_OK)
+        rc = bind_c(st, 4, u->description);
+    if(rc == SQLITE_OK && (rc = sqlite3_step(st)) == SQLITE_DONE)
+        rc = SQLITE_OK;
+    int changed = rc == SQLITE_OK ? sqlite3_changes(s->db) : 0;
+    gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "write user", rc);
+    sqlite3_finalize(st);
+    return r == GDS_OK && changed == 0 ? GDS_ENOTFOUND : r;
+}
+
+static gds_status sq_user_delete(void *ctx_, const char *name) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db, "DELETE FROM users WHERE name = ?1", -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_c(st, 1, name);
+    if(rc == SQLITE_OK && (rc = sqlite3_step(st)) == SQLITE_DONE)
+        rc = SQLITE_OK;
+    int changed = rc == SQLITE_OK ? sqlite3_changes(s->db) : 0;
+    gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "delete user", rc);
+    sqlite3_finalize(st);
+    return r == GDS_OK && changed == 0 ? GDS_ENOTFOUND : r;
+}
+
+static gds_status sq_user_scan(void *ctx_, gds_user_scan_cb cb, void *cbCtx) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "SELECT name, credential, config, description FROM users "
+                                "ORDER BY name",
+                                -1, &st, NULL);
+    gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "scan users", rc);
+    gds_store_user *row = r == GDS_OK ? malloc(sizeof(*row)) : NULL;
+    if(r == GDS_OK && !row)
+        r = GDS_ENOMEM;
+    while(r == GDS_OK && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+        memset(row, 0, sizeof(*row));
+        int64_t config = sqlite3_column_int64(st, 2);
+        if(!column_c(st, 0, row->name, GDS_MAX_STORE_USER_NAME) ||
+           !column_c(st, 1, row->credential, GDS_MAX_USER_CREDENTIAL) ||
+           !column_c(st, 3, row->description, GDS_MAX_USER_DESCRIPTION) || config < 0 ||
+           config > UINT32_MAX) {
+            r = GDS_ESTATE;
+            break;
+        }
+        row->config = (uint32_t)config;
+        if(!cb(cbCtx, row)) {
+            rc = SQLITE_DONE;
+            break;
+        }
+    }
+    if(r == GDS_OK && rc != SQLITE_DONE)
+        r = db_err(s, "scan users", rc);
+    if(row)
+        memset(row, 0, sizeof(*row));
+    free(row);
+    sqlite3_finalize(st);
+    return r;
+}
+
+/* --- the built-in backend ---------------------------------------------- */
+
 const gds_store_backend gds_store_sqlite_backend = {
     .abi_major = GDS_STORE_ABI_MAJOR,
     .abi_minor = GDS_STORE_ABI_MINOR,
@@ -1456,6 +1657,12 @@ const gds_store_backend gds_store_sqlite_backend = {
     .kc_cred_get = sq_kc_cred_get,
     .kc_cred_delete = sq_kc_cred_delete,
     .kc_cred_scan = sq_kc_cred_scan,
+    .rule_add = sq_rule_add,
+    .rule_remove = sq_rule_remove,
+    .rule_scan = sq_rule_scan,
+    .user_put = sq_user_put,
+    .user_delete = sq_user_delete,
+    .user_scan = sq_user_scan,
 };
 
 gds_status gds_store_sqlite_open(const char *path, bool readonly, void **ctx) {

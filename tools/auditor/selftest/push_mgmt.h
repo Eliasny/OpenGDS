@@ -45,6 +45,9 @@ void pm_on_list_installed(void (*fn)(void));
  * lock held. */
 void pm_on_applied(void (*fn)(void));
 void pm_clear(void);
+/* The private key of the certificate in use (DER), for KeyCredential
+ * secrets encrypted to it (push_kc.c). Borrowed. */
+const UA_ByteString *pm_own_key(void);
 
 bool pm_mutant_known(const char *name);
 void pm_mutant_list(void);

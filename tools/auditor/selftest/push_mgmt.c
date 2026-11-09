@@ -173,6 +173,17 @@ static const struct {
     {"setup-open-after", "SRV-SET-05",
      "after application setup every client certificate is still accepted"},
     {"reset-no-shutdown", "SRV-SET-06", "ResetToServerDefaults returns Good and does nothing"},
+    /* push_kc.c (KeyCredential push, 12 §8.6) */
+    {"kc-create-noop", "SRV-KC-01", "CreateCredential returns a NodeId and creates nothing"},
+    {"kc-no-uri-check", "SRV-KC-02", "CreateCredential accepts any ResourceUri, ProfileUri and URL"},
+    {"kc-no-secadmin", "SRV-KC-03", "the KeyCredential methods need no SecurityAdmin"},
+    {"kc-empty-key", "SRV-KC-04", "GetEncryptingKey returns an empty PublicKey"},
+    {"kc-update-refuse", "SRV-KC-05", "UpdateCredential refuses every secret"},
+    {"kc-any-policy", "SRV-KC-06", "UpdateCredential accepts any SecurityPolicyUri"},
+    {"kc-any-thumbprint", "SRV-KC-07", "UpdateCredential accepts any CertificateThumbprint"},
+    {"kc-accept-plaintext", "SRV-KC-08", "UpdateCredential accepts a plaintext secret"},
+    {"kc-delete-noop", "SRV-KC-09", "DeleteCredential returns Good and keeps the Object"},
+    {"kc-status-stale", "SRV-KC-10", "ServiceStatus never changes"},
 };
 
 bool pm_mutant_known(const char *name) {
@@ -240,6 +251,10 @@ static bool hasStartupPki;
 
 void pm_accept_keys(bool on) {
     acceptKeys = on;
+}
+
+const UA_ByteString *pm_own_key(void) {
+    return &P.ownKey;
 }
 
 bool pm_breaking(const char *name) {

@@ -115,6 +115,36 @@ static bool verify_rs256(const UA_ByteString *certDer, const char *tok, size_t s
     return ok;
 }
 
+static void check_es256_parts(const gds_buf parts[3]) {
+    CHECK(has(&parts[0], "\"alg\":\"ES256\""));
+    CHECK(has(&parts[1], "\"roles\":[\"Operator\",\"a\\\"b\\\\c\\u000a\"]"));
+    CHECK(has(&parts[1], "\"exp\":70"));
+    CHECK(!has(&parts[1], "\"cnf\""));
+}
+
+/* A JWS ES256 signature (R || S) over msg, checked as DER */
+static bool es256_verifies(EVP_PKEY *pk, const gds_buf *rs, const uint8_t *msg, size_t len) {
+    if(rs->len != 64)
+        return false;
+    ECDSA_SIG *es = ECDSA_SIG_new();
+    BIGNUM *r = BN_bin2bn(rs->data, 32, NULL), *s = BN_bin2bn(rs->data + 32, 32, NULL);
+    unsigned char *sd = NULL;
+    int sdl = -1;
+    if(es && r && s && ECDSA_SIG_set0(es, r, s) == 1)
+        sdl = i2d_ECDSA_SIG(es, &sd);
+    else {
+        BN_free(r);
+        BN_free(s);
+    }
+    EVP_MD_CTX *mc = EVP_MD_CTX_new();
+    bool ok = sdl > 0 && mc && EVP_DigestVerifyInit(mc, NULL, EVP_sha256(), NULL, pk) == 1 &&
+              EVP_DigestVerify(mc, sd, (size_t)sdl, msg, len) == 1;
+    EVP_MD_CTX_free(mc);
+    OPENSSL_free(sd);
+    ECDSA_SIG_free(es);
+    return ok;
+}
+
 static void test_jwt_es256(void) {
     EVP_PKEY *pk = EVP_PKEY_Q_keygen(NULL, NULL, "EC", "P-256");
     unsigned char *der = NULL;
@@ -131,23 +161,9 @@ static void test_jwt_es256(void) {
         size_t sl = 0;
         if(CHECK(gds_jwt_make(alg, x5t, &c, gds_jwt_key_sign, k, &t) == GDS_OK) &&
            CHECK(jwt_split((const char *)t.data, t.len, parts, &sl))) {
-            CHECK(has(&parts[0], "\"alg\":\"ES256\""));
-            CHECK(has(&parts[1], "\"roles\":[\"Operator\",\"a\\\"b\\\\c\\u000a\"]"));
-            CHECK(has(&parts[1], "\"exp\":70"));
-            CHECK(!has(&parts[1], "\"cnf\""));
+            check_es256_parts(parts);
             /* R || S, 64 bytes, verifies once turned back into DER */
-            if(CHECK(parts[2].len == 64)) {
-                ECDSA_SIG *es = ECDSA_SIG_new();
-                BIGNUM *r = BN_bin2bn(parts[2].data, 32, NULL), *s = BN_bin2bn(parts[2].data + 32, 32, NULL);
-                unsigned char *sd = NULL;
-                int sdl = es && r && s && ECDSA_SIG_set0(es, r, s) == 1 ? i2d_ECDSA_SIG(es, &sd) : -1;
-                EVP_MD_CTX *mc = EVP_MD_CTX_new();
-                CHECK(sdl > 0 && mc && EVP_DigestVerifyInit(mc, NULL, EVP_sha256(), NULL, pk) == 1 &&
-                      EVP_DigestVerify(mc, sd, (size_t)sdl, t.data, sl) == 1);
-                EVP_MD_CTX_free(mc);
-                OPENSSL_free(sd);
-                ECDSA_SIG_free(es);
-            }
+            CHECK(es256_verifies(pk, &parts[2], t.data, sl));
         }
         /* exp must follow nbf; no empty subject */
         c.exp = c.nbf;
@@ -384,8 +400,33 @@ static UA_StatusCode refresh(fixture *f, UA_Client *c, const char *res, const UA
 }
 
 /* The token verifies with the ServiceCertificate and carries these claims. */
+/* The RS256 token's header and claims */
+static bool claims_ok(const gds_buf parts[3], const char *sub, const char *roles,
+                      const pair *client) {
+    char want[512];
+    uint8_t ct[32];
+    gds_buf cnf = {0};
+    bool ok = CHECK(has(&parts[0], "\"alg\":\"RS256\"")) &&
+              CHECK(has(&parts[1], "\"iss\":\"" TEST_URI "/AuthorizationService\"")) &&
+              CHECK(has(&parts[1], "\"aud\":\"" RESOURCE "\""));
+    (void)snprintf(want, sizeof(want), "\"sub\":\"%s\"", sub);
+    ok = ok && CHECK(has(&parts[1], want));
+    (void)snprintf(want, sizeof(want), "\"roles\":[%s]", roles);
+    ok = ok && CHECK(has(&parts[1], want));
+    ok = ok && CHECK(thumb(&client->cert, ct)) && CHECK(gds_b64url(ct, 32, &cnf) == GDS_OK);
+    (void)snprintf(want, sizeof(want), "\"cnf\":{\"x5t#S256\":\"%s\"}",
+                   cnf.data ? (const char *)cnf.data : "");
+    ok = ok && CHECK(has(&parts[1], want));
+    gds_buf_free(&cnf);
+    return ok;
+}
+
 static bool token_ok(fixture *f, const UA_String *tok, const char *sub, const char *roles,
                      const pair *client) {
+    if(tok->length == 0 || !tok->data) {
+        CHECK(tok->length > 0 && tok->data); /* reports the empty token */
+        return false;
+    }
     gds_buf parts[3] = {{0}, {0}, {0}};
     size_t sl = 0;
     char *s = malloc(tok->length + 1);
@@ -394,24 +435,8 @@ static bool token_ok(fixture *f, const UA_String *tok, const char *sub, const ch
     memcpy(s, tok->data, tok->length);
     s[tok->length] = 0;
     bool ok = CHECK(jwt_split(s, tok->length, parts, &sl)) &&
-              CHECK(verify_rs256(&f->svc.cert, s, sl, &parts[2]));
-    char want[512];
-    uint8_t ct[32];
-    gds_buf cnf = {0};
-    if(ok) {
-        ok = CHECK(has(&parts[0], "\"alg\":\"RS256\"")) &&
-             CHECK(has(&parts[1], "\"iss\":\"" TEST_URI "/AuthorizationService\"")) &&
-             CHECK(has(&parts[1], "\"aud\":\"" RESOURCE "\""));
-        (void)snprintf(want, sizeof(want), "\"sub\":\"%s\"", sub);
-        ok = ok && CHECK(has(&parts[1], want));
-        (void)snprintf(want, sizeof(want), "\"roles\":[%s]", roles);
-        ok = ok && CHECK(has(&parts[1], want));
-        ok = ok && CHECK(thumb(&client->cert, ct)) && CHECK(gds_b64url(ct, 32, &cnf) == GDS_OK);
-        (void)snprintf(want, sizeof(want), "\"cnf\":{\"x5t#S256\":\"%s\"}",
-                       cnf.data ? (const char *)cnf.data : "");
-        ok = ok && CHECK(has(&parts[1], want));
-    }
-    gds_buf_free(&cnf);
+              CHECK(verify_rs256(&f->svc.cert, s, sl, &parts[2])) &&
+              claims_ok(parts, sub, roles, client);
     for(size_t i = 0; i < 3; i++)
         gds_buf_free(&parts[i]);
     free(s);

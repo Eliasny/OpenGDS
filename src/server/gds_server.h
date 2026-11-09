@@ -10,6 +10,7 @@
 #include <stdbool.h>
 
 #include "ca.h"
+#include "disc_mdns.h"
 #include "common/buf.h"
 #include "gds_access.h"
 #include "gds_jwt.h"
@@ -99,7 +100,28 @@ typedef struct {
     size_t keyCredServicesSize;
     /* NULL: no AuthorizationService (§9.6 is Optional) */
     const gds_authz_config *authz;
+    /* Announce the GDS on the MulticastSubnet (OPC 10000-12 Annex C,
+     * disc_mdns.h). Zeroed: off. With loopbackOnly it is refused: nothing
+     * on the subnet could reach the announced DiscoveryUrl. */
+    gds_mdns_config mdns;
+    /* OPC 10000-18 §5.2.1 PasswordLength low for managed users; 0 = the
+     * default, GDS_PASSWORD_DEFAULT_MIN_LENGTH (15). */
+    unsigned passwordMinLength;
+    /* Separation of duties: false (the default) refuses an identity rule
+     * that would give one identity SecurityAdmin, CertificateAuthorityAdmin
+     * and RegistrationAuthorityAdmin together (docs/architecture.md). */
+    bool singleAdmin;
+    /* Concurrent Sessions, 1 .. GDS_MAX_SESSIONS; 0: GDS_DEFAULT_SESSIONS.
+     * SecureChannels get a tenth more, so that a client without an
+     * activated Session can still connect; when either table is full,
+     * open62541 closes the oldest channel or Session that has not
+     * activated a Session first (an unauthenticated client cannot hold a
+     * slot an authenticated one needs). */
+    uint32_t maxSessions;
 } gds_server_config;
+
+#define GDS_DEFAULT_SESSIONS 500u
+#define GDS_MAX_SESSIONS 1000u /* the per-session tables hold 1,024 */
 
 typedef struct gds_server gds_server;
 

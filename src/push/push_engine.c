@@ -446,30 +446,37 @@ static bool list_cb(void *ctx, const UA_NodeId *id, const char *uri, const char 
     return true;
 }
 
+/* A new target, NULL when out of memory */
+static target *add_target(push_engine *e, const UA_NodeId *id, UA_DateTime now) {
+    if(e->n == e->cap) {
+        size_t cap = e->cap ? 2 * e->cap : 32;
+        target **v = (target **)realloc((void *)e->targets, cap * sizeof(target *));
+        if(!v)
+            return NULL;
+        e->targets = v;
+        e->cap = cap;
+    }
+    target *t = calloc(1, sizeof(*t));
+    if(!t || UA_NodeId_copy(id, &t->appId) != UA_STATUSCODE_GOOD) {
+        free(t);
+        return NULL;
+    }
+    /* the first look at each Server spreads over the jitter */
+    t->st.notBefore = now + push_jitter(&e->timing, rnd64());
+    e->targets[e->n++] = t;
+    return t;
+}
+
 static void merge(push_engine *e, listing *l, UA_DateTime now) {
     for(size_t i = 0; i < e->n; i++)
         e->targets[i]->seen = false;
     for(size_t i = 0; i < l->n; i++) {
         listed *x = &l->v[i];
         target *t = find_target(e, &x->id);
-        if(!t) {
-            if(e->n == e->cap) {
-                size_t cap = e->cap ? 2 * e->cap : 32;
-                target **v = realloc(e->targets, cap * sizeof(*v));
-                if(!v)
-                    continue;
-                e->targets = v;
-                e->cap = cap;
-            }
-            t = calloc(1, sizeof(*t));
-            if(!t || UA_NodeId_copy(&x->id, &t->appId) != UA_STATUSCODE_GOOD) {
-                free(t);
-                continue;
-            }
-            /* the first look at each Server spreads over the jitter */
-            t->st.notBefore = now + push_jitter(&e->timing, rnd64());
-            e->targets[e->n++] = t;
-        }
+        if(!t)
+            t = add_target(e, &x->id, now);
+        if(!t)
+            continue;
         if(!t->running) {
             if(strcmp(t->endpoint, x->endpoint) != 0)
                 t->st.known = false; /* another endpoint: look again */
@@ -502,14 +509,11 @@ static int by_due(const void *a, const void *b) {
     return x->job.due < y->job.due ? -1 : x->job.due > y->job.due;
 }
 
-static void pick(push_engine *e, const uint8_t cur[PUSH_HASH_LEN], UA_DateTime now) {
-    size_t budget = e->cfg.concurrency - e->running - e->queued;
-    if(budget == 0 || e->n == 0)
-        return;
-    due_job *due = calloc(e->n, sizeof(*due));
-    size_t *picked = calloc(budget, sizeof(*picked));
+/* The targets that are due now, into due (e->n entries) */
+static size_t collect_due(push_engine *e, const uint8_t cur[PUSH_HASH_LEN], UA_DateTime now,
+                          due_job *due) {
     size_t nDue = 0;
-    for(size_t i = 0; due && picked && i < e->n; i++) {
+    for(size_t i = 0; i < e->n; i++) {
         target *t = e->targets[i];
         if(!t->enabled || t->running)
             continue;
@@ -530,6 +534,16 @@ static void pick(push_engine *e, const uint8_t cur[PUSH_HASH_LEN], UA_DateTime n
         j->failures = t->st.failures;
         due[nDue++].t = t;
     }
+    return nDue;
+}
+
+static void pick(push_engine *e, const uint8_t cur[PUSH_HASH_LEN], UA_DateTime now) {
+    size_t budget = e->cfg.concurrency - e->running - e->queued;
+    if(budget == 0 || e->n == 0)
+        return;
+    due_job *due = calloc(e->n, sizeof(*due));
+    size_t *picked = calloc(budget, sizeof(*picked));
+    size_t nDue = due && picked ? collect_due(e, cur, now, due) : 0;
     if(nDue > 0) {
         qsort(due, nDue, sizeof(*due), by_due);
         gds_push_job *jobs = calloc(nDue, sizeof(*jobs));
@@ -652,7 +666,8 @@ static void *worker_main(void *p) {
         if(e->stop)
             break;
         target *t = e->queue[0];
-        memmove(&e->queue[0], &e->queue[1], (--e->queued) * sizeof(e->queue[0]));
+        memmove((void *)&e->queue[0], (const void *)&e->queue[1],
+                (--e->queued) * sizeof(target *)); // NOLINT(bugprone-sizeof-expression): an array of pointers
         e->running++;
         job_in in;
         memset(&in, 0, sizeof(in));
@@ -787,7 +802,7 @@ void push_engine_stop(push_engine *e) {
         pthread_join(e->workers[i], NULL);
     for(size_t i = 0; i < e->n; i++)
         target_free(e->targets[i]); /* nothing runs now */
-    free(e->targets);
+    free((void *)e->targets);
     push_rejected_free(e->rejected);
     pthread_cond_destroy(&e->workCond);
     pthread_cond_destroy(&e->tickCond);

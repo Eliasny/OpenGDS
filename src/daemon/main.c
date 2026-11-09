@@ -253,6 +253,7 @@ static gds_status start(daemon_state *d) {
     sc.ca = d->ca;
     sc.users = &d->users;
     sc.approval = (gds_approval_policy)d->cfg.approval; /* same values, config.h */
+    sc.maxSessions = d->cfg.maxSessions;
     gds_keycred_service kc[GDSD_MAX_KC];
     const char *prof[GDSD_MAX_KC][GDSD_MAX_KC_PROFILES];
     for(uint8_t i = 0; i < d->cfg.nKeycred; i++) {
@@ -274,6 +275,11 @@ static gds_status start(daemon_state *d) {
         az.refreshLifetime = d->cfg.refreshTokenLifetime;
         sc.authz = &az;
     }
+    sc.mdns.enabled = d->cfg.mdns;
+    sc.mdns.serverName = d->cfg.mdnsServerName[0] ? d->cfg.mdnsServerName : NULL;
+    sc.mdns.interfaceIp = d->cfg.mdnsInterface[0] ? d->cfg.mdnsInterface : NULL;
+    sc.passwordMinLength = d->cfg.passwordMinLength;
+    sc.singleAdmin = d->cfg.singleAdmin;
     return gds_server_new(&sc, &d->server);
 }
 
@@ -368,7 +374,8 @@ int main(int argc, char **argv) {
             fprintf(stderr, "opengdsd: %s:%u: invalid line\n", argv[2], line);
         else
             fprintf(stderr, "opengdsd: %s: %s (application_uri, data_dir, users_file and "
-                            "ca_dir are required)\n", argv[2], gds_status_name(r));
+                            "ca_dir are required; signer and signer_socket exclude each "
+                            "other, so do mdns and loopback_only)\n", argv[2], gds_status_name(r));
         return 2;
     }
     r = start(&d);

@@ -18,6 +18,7 @@ static const struct {
     {3, (const char *)gds_sql_003_record_ids},
     {4, (const char *)gds_sql_004_trust_lists},
     {5, (const char *)gds_sql_005_key_credentials},
+    {6, (const char *)gds_sql_006_roles_users},
 };
 
 int gds_migrate_latest(void) {

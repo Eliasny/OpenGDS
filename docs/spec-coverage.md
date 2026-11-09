@@ -63,6 +63,8 @@ the service Object, which is itself Optional.
 | GetServiceDescription | Method | M if service | §9.6.9 | `gds.az.description` (pass) |
 | AccessTokenRequestedAuditEventType | Event | M if service | §9.6.10 | `gds.az.audit_requested` (pass) |
 | AccessTokenIssuedAuditEventType | Event | M if service | §9.6.11 | `gds.az.audit_issued` (pass) |
+| mDNS announce, FindServersOnNetwork (LDS-ME) | SRV and TXT records, capability `GDS` | O | §4.3.4, §5, Annex C, Annex D | `unit_disc_mdns`, `integration_mdns_watch` step 3 (pass; not Auditor tests: the GDS profile does not cover discovery) |
+| MulticastDnsEnabled (the GDS's own ServerConfiguration) | Property | M | §7.10.3 | `unit_disc_mdns` (reads TRUE with `mdns = true`); writing it is refused, see Known gaps |
 
 Security of the channel and sessions: `gds.sec.endpoints` (pass; Part 4
 §5.4.4, Part 7), `gds.sec.none_session` (pass), `gds.sec.anonymous_register`
@@ -70,6 +72,24 @@ Security of the channel and sessions: `gds.sec.endpoints` (pass; Part 4
 `gds.acc.keypair_sign_only` (pass), `gds.kc.sign_only` (pass) and
 `gds.az.sign_only` (pass). FileType handles are per Session
 (Part 20 §4.2.2): `gds.tl.handle_other_session` (pass).
+
+## Roles and users (OPC 10000-18, phase W4)
+
+Part 18 v1.05 applies to the GDS through §6.2 and §7.2 of Part 12, which name
+the Roles; opengdsd lets a SecurityAdmin configure them over SignAndEncrypt.
+
+| Spec item | Kind | Rule | Clause | Tests (opengdsd verdict) |
+|---|---|---|---|---|
+| RoleType Identities | Property | M | §4.4.1 | `gds.p18.identities_read` (pass) |
+| AddIdentity / RemoveIdentity | Method | O | §4.4.5, §4.4.6 | `gds.p18.add_remove_identity` (pass), `gds.p18.identity_needs_admin` (pass), `gds.p18.anonymous_admin` (pass), `gds.p18.user_rule_grants_role` (pass) |
+| AddApplication / RemoveApplication | Method | O | §4.4.7, §4.4.8 | `gds.p18.add_remove_application` (pass) |
+| AddEndpoint / RemoveEndpoint | Method | O | §4.4.9, §4.4.10 | `gds.p18.add_remove_endpoint` (pass) |
+| Fixed Roles (Anonymous, AuthenticatedUser, TrustedApplication) | Objects | M | §4.3 | `gds.p18.fixed_roles` (pass) |
+| RoleMappingRuleChangedAuditEventType | Event | M | §4.5 | `gds.p18.audit_rule_changed` (pass) |
+| UserManagement Users, PasswordLength | Properties | M | §5.2.1 | `gds.p18.add_remove_user` (pass), `gds.p18.short_password` (pass), `gds.p18.user_mgmt_needs_admin` (pass) |
+| AddUser / RemoveUser | Method | M | §5.2.5, §5.2.7 | `gds.p18.add_remove_user` (pass), `gds.p18.remove_self` (pass) |
+| ModifyUser (Disabled) | Method | M | §5.2.3, §5.2.6 | `gds.p18.disable_user` (pass) |
+| ChangePassword | Method | M | §5.2.8 | `gds.p18.change_password` (pass) |
 
 ## Push side (Auditor server profile, `docs/auditor/server-profile.md`)
 
@@ -79,6 +99,18 @@ KeyCredentialConfiguration (§8.6) of a server under test are covered by the
 (CreateSigningRequest), SRV-UPD (UpdateCertificate), SRV-TXN (transactions,
 ApplyChanges, CancelChanges), SRV-WIRE, SRV-PER, SRV-REJ (GetRejectedList),
 SRV-SET (Annex G.2 setup), SRV-KC (KeyCredentialConfiguration) and SRV-AUD.
+
+KeyCredential push (§8.6), against `push_test_server` with a mutant per test:
+
+| Spec item | Clause | Tests (verdict) |
+|---|---|---|
+| CreateCredential, KeyCredentialConfigurationType Object | 12 §8.6.3, §8.6.5 | `SRV-KC-01` (pass), `SRV-KC-02` (pass) |
+| SecurityAdmin for Create-, Update- and DeleteCredential | 12 §8.6.3, §8.6.7, §8.6.8 | `SRV-KC-03` (pass) |
+| GetEncryptingKey | 12 §8.6.6 | `SRV-KC-04` (pass) |
+| UpdateCredential: RsaEncryptedSecret, SecurityPolicy, thumbprint, plaintext | 12 §8.6.7 | `SRV-KC-05` .. `SRV-KC-08` (pass) |
+| DeleteCredential | 12 §8.6.8 | `SRV-KC-09` (pass) |
+| ServiceStatus | 12 §8.6.5 | `SRV-KC-10` (pass, slow) |
+| OpenGDS as the administration component (§8.4): `gdsadm push keycred` and `keycred-delete` | 12 §8.4, §8.5.5 - §8.5.7, §8.6.3 - §8.6.8 | `integration_push_vs_opengdsd` step 7b |
 
 ## Application setup (Annex G) and Reverse Connect (`tests/spec/`)
 
@@ -116,6 +148,11 @@ These items have no test yet, and each needs work before it can have one:
   unit test `unit_authz` covers the other two policies and the lockout.
 - RequestAccessToken (§9.6.5), which the spec deprecates; opengdsd does not
   offer it.
+- Writing MulticastDnsEnabled on the GDS's own ServerConfiguration
+  (§7.10.3: "It can be changed by writing to the Variable"). opengdsd
+  reads it from `mdns` in its configuration and refuses the write (every
+  Variable is read-only to sessions): open62541 v1.5.10 has no public call
+  to start or stop the announce at run time.
 - GetRejectedList (§7.8.3.1, Optional) on GDS certificate groups. The push
   side covers it as SRV-REJ, and the push engine calls it on devices
   (`tests/integration/test_push_engine.c`, `docs/push.md`).
@@ -123,3 +160,6 @@ These items have no test yet, and each needs work before it can have one:
   ConfigurationFile, the ServerConfiguration ProductUri, ApplicationNames and
   ApplicationType, the CertificateExpired and TrustListOutOfDate alarms, and
   AuthorizationServiceConfigurationType (§9.7) have no SRV-* test yet.
+- KeyCredentialUpdatedAuditEventType and KeyCredentialDeletedAuditEventType
+  (§8.6.9, §8.6.10) on a managed Server: no SRV-* test yet, and
+  `push_test_server` does not raise them.

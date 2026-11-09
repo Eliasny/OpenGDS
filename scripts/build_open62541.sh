@@ -16,6 +16,11 @@
 #                               10000-100 SoftwareUpdate AddIn; open62541
 #                               knows DI, Onboarding and the other models in
 #                               deps/ua-nodeset (UASM ask A12).
+#   MDNS=MDNSD|OFF              mDNS for the LDS-ME announce (OPC 10000-12
+#                               Annex C, OpenGDS's OPENGDS_WITH_MDNS). Default
+#                               MDNSD; OFF for TARGET=mingw64 and musl, which
+#                               build only the Auditor (a client needs no mDNS
+#                               to call FindServersOnNetwork).
 set -eu
 
 TAG=v1.5.10
@@ -26,6 +31,14 @@ SRC=${2:-$PREFIX/src/open62541}
 SANITIZE=${SANITIZE:-}
 OPENSSL_ROOT=${OPENSSL_ROOT:?set OPENSSL_ROOT to an OpenSSL 3.5 prefix (scripts/build_openssl.sh)}
 MODELS=${MODELS:-GDS}
+case "${TARGET:-}" in
+    mingw64|musl) MDNS=${MDNS:-OFF} ;;
+    *) MDNS=${MDNS:-MDNSD} ;;
+esac
+case "$MDNS" in
+    MDNSD|OFF) ;;
+    *) echo "MDNS must be MDNSD or OFF: $MDNS" >&2; exit 1 ;;
+esac
 case ";$MODELS;" in
     *";GDS;"*) ;;
     *) echo "MODELS must include GDS: $MODELS" >&2; exit 1 ;;
@@ -46,7 +59,8 @@ fi
 # discovery in the secure-only config, GDS headers installed with AUTOLOAD,
 # ConditionRefresh keeping the original EventId (Part 9, 5.5.7), FindServers
 # peers (Part 4, 6.6.2.4.5.1), access control for receiving events (Part 3, 8.55),
-# DER CRLs shorter than 256 bytes (ECC CAs).
+# DER CRLs shorter than 256 bytes (ECC CAs),
+# ConditionRefresh before the first Condition (Part 9, 5.5.7).
 # A cached source tree may already have them; apply each patch only once.
 PATCHES="$(cd "$(dirname "$0")/.." && pwd)/docs/upstream/patches/v1.5.10"
 for p in "$PATCHES"/*.patch; do
@@ -109,6 +123,8 @@ cmake -S "$SRC" -B "$BUILD" -G "${CMAKE_GENERATOR:-Ninja}" $CROSS \
     -DOPENSSL_ROOT_DIR="$OPENSSL_ROOT" \
     -DOPENSSL_USE_STATIC_LIBS=TRUE \
     -DUA_ENABLE_GDS_PUSHMANAGEMENT=ON \
+    -DUA_ENABLE_DISCOVERY=ON \
+    -DUA_ENABLE_DISCOVERY_MULTICAST="$MDNS" \
     -DUA_INFORMATION_MODEL_AUTOLOAD="$MODELS" \
     -DUA_ENABLE_SUBSCRIPTIONS_EVENTS=ON \
     -DUA_ENABLE_SUBSCRIPTIONS_ALARMS_CONDITIONS=ON \

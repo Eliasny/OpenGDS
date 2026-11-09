@@ -38,6 +38,21 @@
  *       Without --setup-user the device must give SecurityAdmin to gdsadm's
  *       certificate while in setup.
  *
+ *   gdsadm push keycred URI --service NAME [--endpoint-url URL]...
+ *                           [device options as in push now] CONNECTION
+ *       a KeyCredential for the device (12 §8.4, push_keycred.h): find the
+ *       service NAME under the GDS's KeyCredentialManagement; connect to
+ *       the device and find its KeyCredentialConfiguration Object for the
+ *       service's ResourceUri, or CreateCredential (§8.6.3) with the
+ *       --endpoint-url URLs; StartRequest and FinishRequest on the GDS as
+ *       KeyCredentialAdmin for the device's ApplicationUri (§8.5.5,
+ *       §8.5.6); GetEncryptingKey and UpdateCredential with the secret
+ *       encrypted for the device's certificate (§8.6.6, §8.6.7)
+ *
+ *   gdsadm push keycred-delete URI --service NAME [device options] CONNECTION
+ *       DeleteCredential on the device's Object for the service (§8.6.8),
+ *       then Revoke of its CredentialId on the GDS (§8.5.7)
+ *
  *   gdsadm apps import FILE [--dry-run] [CONNECTION]
  *       one RegisterApplication per record of a CSV or JSON file
  *       (gdsadm_import.h), with a report line per record. A record whose
@@ -61,6 +76,7 @@
  * SPDX-License-Identifier: MPL-2.0 */
 #include "gdsadm_push.h"
 
+#include <open62541/client_highlevel.h>
 #include <open62541/nodeids_gds.h>
 
 #include <stdio.h>
@@ -73,6 +89,7 @@
 #include "client/gdsc_session.h"
 #include "common/limits.h"
 #include "common/safeint.h"
+#include "push/push_keycred.h"
 #include "push/push_setup.h"
 #include "push/push_workflows.h"
 #include "common/banned.h"
@@ -97,6 +114,10 @@ typedef struct {
     const char *serverUri, *setupUser, *setupPasswordFile;
     /* certs revoke */
     const char *revokeCertFile;
+    /* push keycred */
+    const char *service;
+    const char *kcUrls[MAX_URLS];
+    size_t kcUrlN;
 } adm_args;
 
 typedef struct {
@@ -147,6 +168,7 @@ static bool parse_opt(adm_args *a, const char *opt, const char *v) {
         {"--server-uri", &a->serverUri},
         {"--setup-user", &a->setupUser},
         {"--setup-password-file", &a->setupPasswordFile},
+        {"--service", &a->service},
     };
     for(size_t i = 0; i < GDS_ARRAY_SIZE(single); i++) {
         if(strcmp(opt, single[i].name) == 0) {
@@ -162,6 +184,10 @@ static bool parse_opt(adm_args *a, const char *opt, const char *v) {
         return add_file(a->crlFiles, &a->crlN, v);
     if(strcmp(opt, "--discovery-url") == 0 && a->urlN < MAX_URLS) {
         a->urls[a->urlN++] = v;
+        return true;
+    }
+    if(strcmp(opt, "--endpoint-url") == 0 && a->kcUrlN < MAX_URLS) {
+        a->kcUrls[a->kcUrlN++] = v;
         return true;
     }
     if(strcmp(opt, "--poll-seconds") == 0)
@@ -518,9 +544,10 @@ static UA_StatusCode reverse_presents(const gdsc_session_cfg *dev, const adm_fil
     return r;
 }
 
-/* Steps 3-5 with the device's record and trust list in hand */
-static int push_to_device(const adm_args *a, adm_files *f, sign_ctx *sc, const char *url,
-                          const UA_TrustListDataType *tl) {
+/* The device's session: trusted through the GDS CA or its pinned
+ * certificate, with SecurityAdmin from gdsadm's certificate (Annex G.3) or
+ * from --device-user (12 §7.4) */
+static gdsc_session_cfg device_cfg(const adm_args *a, adm_files *f, const char *url) {
     /* The device is trusted through the GDS CA, or its pinned certificate */
     if(f->serverCert.data) {
         f->serverCertPinned = f->serverCert.data;
@@ -543,6 +570,13 @@ static int push_to_device(const adm_args *a, adm_files *f, sign_ctx *sc, const c
         c.userName = NULL;
         c.password = NULL;
     }
+    return c;
+}
+
+/* Steps 3-5 with the device's record and trust list in hand */
+static int push_to_device(const adm_args *a, adm_files *f, sign_ctx *sc, const char *url,
+                          const UA_TrustListDataType *tl) {
+    gdsc_session_cfg c = device_cfg(a, f, url);
     gdsc_session *dev = NULL;
     UA_StatusCode r = gdsc_session_open(&c, &dev);
     if(r != UA_STATUSCODE_GOOD)
@@ -617,6 +651,135 @@ int gdsadm_push_now(int argc, char **argv) {
     gdsc_session_close(gds);
     files_clear(&f);
     return rc;
+}
+
+/* ---- push keycred (12 §8.4, §8.6) ---- */
+
+typedef struct {
+    UA_Client *gds;
+    const gdsc_kc_service *svc;
+    const char *appUri;
+    unsigned pollSeconds;
+} kc_ctx;
+
+/* The credential comes from the GDS, which keeps only its hash */
+static gds_status issue_via_gds(void *ctx, char credentialId[GDSC_KC_ID_MAX + 1],
+                                gds_buf *secret) {
+    kc_ctx *k = ctx;
+    UA_StatusCode r =
+        gdsc_kc_request(k->gds, k->svc, k->appUri, k->pollSeconds, credentialId, secret);
+    if(r != UA_STATUSCODE_GOOD) {
+        report("KeyCredential StartRequest/FinishRequest on the GDS", r);
+        return GDS_EREMOTE;
+    }
+    return GDS_OK;
+}
+
+static void print_kc_report(const push_kc_report *rep, const char *url, bool del) {
+    if(rep->failedStep != PUSH_KC_STEP_NONE)
+        printf("failed at %s: %s\n", push_kc_step_name(rep->failedStep),
+               UA_StatusCode_name(rep->failedCode));
+    else if(del)
+        printf("credential %s deleted on %s\n", rep->credentialId[0] ? rep->credentialId : "(no id)",
+               url);
+    else
+        printf("credential %s pushed to %s (%s, %s)\n", rep->credentialId, url,
+               rep->created ? "new Object" : "existing Object", rep->policy);
+}
+
+/* After DeleteCredential: Revoke the CredentialId the device held */
+static int revoke_deleted(const kc_ctx *k, const push_kc_report *rep) {
+    if(!rep->credentialId[0]) {
+        printf("the device held no CredentialId; nothing to revoke on the GDS\n");
+        return 0;
+    }
+    UA_StatusCode r = gdsc_kc_revoke(k->gds, k->svc, rep->credentialId);
+    if(r != UA_STATUSCODE_GOOD)
+        return report("Revoke on the GDS", r);
+    printf("credential %s revoked on the GDS\n", rep->credentialId);
+    return 0;
+}
+
+static int kc_to_device(const adm_args *a, adm_files *f, kc_ctx *k, const char *url, bool del) {
+    gdsc_session_cfg c = device_cfg(a, f, url);
+    gdsc_session *dev = NULL;
+    UA_StatusCode r = gdsc_session_open(&c, &dev);
+    if(r != UA_STATUSCODE_GOOD)
+        return report("connect to the device", r);
+    gds_buf seen = {0};
+    if(gdsc_session_server_cert(dev, &seen) != GDS_OK)
+        gds_buf_free(&seen); /* GetEncryptingKey must then return the certificate */
+    push_kc_report rep;
+    gds_status s;
+    if(del) {
+        s = push_keycred_delete(gdsc_session_client(dev), k->svc->resourceUri, &rep);
+    } else {
+        push_kc_job job;
+        memset(&job, 0, sizeof(job));
+        job.name = a->service;
+        job.resourceUri = k->svc->resourceUri;
+        job.profileUri = k->svc->profileUri;
+        job.endpointUrls = a->kcUrls;
+        job.endpointUrlsN = a->kcUrlN;
+        job.issue = issue_via_gds;
+        job.issueCtx = k;
+        job.serverCert = seen.len ? &seen : NULL;
+        s = push_keycred_run(gdsc_session_client(dev), &job, &rep);
+    }
+    gdsc_session_close(dev);
+    gds_buf_free(&seen);
+    print_kc_report(&rep, url, del);
+    if(s != GDS_OK)
+        return 1;
+    return del ? revoke_deleted(k, &rep) : 0;
+}
+
+static int keycred_cmd(int argc, char **argv, bool del) {
+    adm_args a;
+    if(argc < 4 || argv[3][0] == '-' || !parse_args(argc, argv, 4, &a) || !a.service ||
+       !a.deviceUser != !a.devicePasswordFile || a.setupUser || a.setupPasswordFile ||
+       a.serverUri || (a.reversePort && a.serverUrl) || (del && a.kcUrlN)) {
+        fprintf(stderr, "usage: gdsadm push %s URI --service NAME%s "
+                        "[--server-url URL | --reverse-port PORT] [--server-cert DER] "
+                        "[--device-user NAME --device-password-file FILE] "
+                        "[--poll-seconds N] CONNECTION\n",
+                del ? "keycred-delete" : "keycred", del ? "" : " [--endpoint-url URL]...");
+        return 2;
+    }
+    a.uri = argv[3];
+    adm_files f;
+    memset(&f, 0, sizeof(f));
+    gdsc_session *gds = NULL;
+    UA_UInt16 ns = 0;
+    UA_ApplicationRecordDataType rec;
+    UA_ApplicationRecordDataType_init(&rec);
+    gdsc_kc_service svc;
+    memset(&svc, 0, sizeof(svc));
+    char url[GDS_MAX_PATH];
+    int rc = open_gds(&a, &f, &gds, &ns);
+    if(rc == 0)
+        rc = find_device(gdsc_session_client(gds), ns, &a, &rec, url, sizeof(url));
+    if(rc == 0) {
+        UA_StatusCode r = gdsc_kc_service_find(gdsc_session_client(gds), ns, a.service, &svc);
+        rc = r == UA_STATUSCODE_GOOD ? 0 : report("KeyCredentialService on the GDS", r);
+    }
+    if(rc == 0) {
+        kc_ctx k = {gdsc_session_client(gds), &svc, a.uri, (unsigned)a.pollSeconds};
+        rc = kc_to_device(&a, &f, &k, url, del);
+    }
+    gdsc_kc_service_clear(&svc);
+    UA_ApplicationRecordDataType_clear(&rec);
+    gdsc_session_close(gds);
+    files_clear(&f);
+    return rc;
+}
+
+int gdsadm_push_keycred(int argc, char **argv) {
+    return keycred_cmd(argc, argv, false);
+}
+
+int gdsadm_push_keycred_delete(int argc, char **argv) {
+    return keycred_cmd(argc, argv, true);
 }
 
 /* ---- push setup (Annex G.2) ---- */
@@ -708,6 +871,7 @@ static const char *state_name(UA_ServerState s) {
     case UA_SERVERSTATE_TEST: return "Test";
     case UA_SERVERSTATE_COMMUNICATIONFAULT: return "CommunicationFault";
     case UA_SERVERSTATE_UNKNOWN: return "Unknown";
+    case __UA_SERVERSTATE_FORCE32BIT:
     default: return "?";
     }
 }
@@ -857,5 +1021,243 @@ int gdsadm_certs_revoke(int argc, char **argv) {
     gdsc_session_close(gds);
     files_clear(&f);
     gds_buf_free(&cert);
+    return rc;
+}
+
+/* ---- roles (OPC 10000-18 §4.4) ----
+ * gdsadm roles list CONNECTION
+ * gdsadm roles add-identity|remove-identity ROLE TYPE CRITERIA CONNECTION
+ * gdsadm roles add-app|remove-app ROLE APPLICATION_URI CONNECTION
+ * The Roles are the Objects under Server.ServerCapabilities.RoleSet, found
+ * by BrowseName; the methods are those of the RoleType (§4.4.5 - §4.4.8),
+ * which the GDS lets only a SecurityAdmin over SignAndEncrypt call. */
+
+static const char *const criteriaNames[] = {
+    NULL, "UserName", "Thumbprint", "Role", "GroupId", "Anonymous",
+    "AuthenticatedUser", "Application", "X509Subject", "TrustedApplication"};
+
+static bool parse_criteria_type(const char *t, UA_IdentityCriteriaType *out) {
+    for(size_t i = 1; i < GDS_ARRAY_SIZE(criteriaNames); i++) {
+        if(strcmp(t, criteriaNames[i]) == 0) {
+            *out = (UA_IdentityCriteriaType)i;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The forward hierarchical child of parent whose BrowseName name is name */
+static UA_StatusCode child_by_name(UA_Client *c, const UA_NodeId *parent, const char *name,
+                                   UA_NodeId *out) {
+    UA_BrowseRequest req;
+    UA_BrowseRequest_init(&req);
+    UA_BrowseDescription d;
+    UA_BrowseDescription_init(&d);
+    d.nodeId = *parent;
+    d.browseDirection = UA_BROWSEDIRECTION_FORWARD;
+    d.referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HIERARCHICALREFERENCES);
+    d.includeSubtypes = true;
+    d.resultMask = UA_BROWSERESULTMASK_BROWSENAME;
+    req.nodesToBrowse = &d;
+    req.nodesToBrowseSize = 1;
+    UA_BrowseResponse resp = UA_Client_Service_browse(c, req);
+    UA_StatusCode r = resp.responseHeader.serviceResult;
+    if(r == UA_STATUSCODE_GOOD && resp.resultsSize == 1)
+        r = resp.results[0].statusCode;
+    if(r == UA_STATUSCODE_GOOD) {
+        r = UA_STATUSCODE_BADNOTFOUND;
+        size_t len = strlen(name);
+        for(size_t i = 0; i < resp.results[0].referencesSize; i++) {
+            const UA_ReferenceDescription *rd = &resp.results[0].references[i];
+            if(rd->browseName.name.length == len &&
+               memcmp(rd->browseName.name.data, name, len) == 0) {
+                r = UA_NodeId_copy(&rd->nodeId.nodeId, out);
+                break;
+            }
+        }
+    }
+    UA_BrowseResponse_clear(&resp);
+    return r;
+}
+
+static void print_text(const UA_String *s) {
+    printf("%.*s", (int)s->length, s->data ? (const char *)s->data : "");
+}
+
+static UA_StatusCode print_rules(UA_Client *c, const UA_NodeId *role, const char *prop) {
+    UA_NodeId id = UA_NODEID_NULL;
+    UA_StatusCode r = child_by_name(c, role, prop, &id);
+    if(r == UA_STATUSCODE_BADNOTFOUND)
+        return UA_STATUSCODE_GOOD; /* Applications and Endpoints are Optional */
+    UA_Variant v;
+    UA_Variant_init(&v);
+    if(r == UA_STATUSCODE_GOOD)
+        r = UA_Client_readValueAttribute(c, id, &v);
+    UA_NodeId_clear(&id);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    if(UA_Variant_hasArrayType(&v, &UA_TYPES[UA_TYPES_IDENTITYMAPPINGRULETYPE])) {
+        const UA_IdentityMappingRuleType *a = v.data;
+        for(size_t i = 0; i < v.arrayLength; i++) {
+            int t = (int)a[i].criteriaType;
+            printf("  identity %s ", t > 0 && t < (int)GDS_ARRAY_SIZE(criteriaNames)
+                                         ? criteriaNames[t] : "?");
+            print_text(&a[i].criteria);
+            printf("\n");
+        }
+    } else if(UA_Variant_hasArrayType(&v, &UA_TYPES[UA_TYPES_STRING])) {
+        const UA_String *a = v.data;
+        for(size_t i = 0; i < v.arrayLength; i++) {
+            printf("  application ");
+            print_text(&a[i]);
+            printf("\n");
+        }
+    } else if(UA_Variant_hasArrayType(&v, &UA_TYPES[UA_TYPES_ENDPOINTTYPE])) {
+        const UA_EndpointType *a = v.data;
+        for(size_t i = 0; i < v.arrayLength; i++) {
+            printf("  endpoint ");
+            print_text(&a[i].endpointUrl);
+            printf(" %d ", (int)a[i].securityMode);
+            print_text(&a[i].securityPolicyUri);
+            printf(" ");
+            print_text(&a[i].transportProfileUri);
+            printf("\n");
+        }
+    }
+    UA_Variant_clear(&v);
+    return UA_STATUSCODE_GOOD;
+}
+
+static int roles_list(UA_Client *c) {
+    const UA_NodeId roleSet = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
+    UA_BrowseRequest req;
+    UA_BrowseRequest_init(&req);
+    UA_BrowseDescription d;
+    UA_BrowseDescription_init(&d);
+    d.nodeId = roleSet;
+    d.browseDirection = UA_BROWSEDIRECTION_FORWARD;
+    d.referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT);
+    d.includeSubtypes = true;
+    d.nodeClassMask = UA_NODECLASS_OBJECT;
+    d.resultMask = UA_BROWSERESULTMASK_BROWSENAME;
+    req.nodesToBrowse = &d;
+    req.nodesToBrowseSize = 1;
+    UA_BrowseResponse resp = UA_Client_Service_browse(c, req);
+    UA_StatusCode r = resp.responseHeader.serviceResult;
+    if(r == UA_STATUSCODE_GOOD && resp.resultsSize == 1)
+        r = resp.results[0].statusCode;
+    int rc = 0;
+    if(r != UA_STATUSCODE_GOOD) {
+        rc = report("browse RoleSet", r);
+    } else {
+        static const char *const props[] = {"Identities", "Applications", "Endpoints"};
+        for(size_t i = 0; i < resp.results[0].referencesSize; i++) {
+            const UA_ReferenceDescription *rd = &resp.results[0].references[i];
+            print_text(&rd->browseName.name);
+            printf("\n");
+            for(size_t p = 0; p < GDS_ARRAY_SIZE(props); p++) {
+                r = print_rules(c, &rd->nodeId.nodeId, props[p]);
+                if(r != UA_STATUSCODE_GOOD) {
+                    rc = report(props[p], r);
+                    break;
+                }
+            }
+            if(rc != 0)
+                break;
+        }
+    }
+    UA_BrowseResponse_clear(&resp);
+    return rc;
+}
+
+static int roles_usage(void) {
+    fprintf(stderr, "usage: gdsadm roles list CONNECTION\n"
+                    "       gdsadm roles add-identity|remove-identity ROLE TYPE CRITERIA "
+                    "CONNECTION\n"
+                    "       gdsadm roles add-app|remove-app ROLE APPLICATION_URI CONNECTION\n"
+                    "  TYPE: UserName Thumbprint Role GroupId Anonymous AuthenticatedUser\n"
+                    "        Application X509Subject TrustedApplication\n");
+    return 2;
+}
+
+/* gdsadm roles add-identity|remove-identity|add-app|remove-app: argv[3]
+ * names the role; rule is the identity rule, NULL for an ApplicationUri
+ * in argv[4]. */
+static int roles_change(UA_Client *c, const char *verb, char **argv,
+                        UA_IdentityMappingRuleType *rule) {
+    int rc = 0;
+    const UA_NodeId roleSet =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
+    const char *method = strcmp(verb, "add-identity") == 0      ? "AddIdentity"
+                         : strcmp(verb, "remove-identity") == 0 ? "RemoveIdentity"
+                         : strcmp(verb, "add-app") == 0         ? "AddApplication"
+                                                                : "RemoveApplication";
+    UA_NodeId role = UA_NODEID_NULL, m = UA_NODEID_NULL;
+    UA_StatusCode r = child_by_name(c, &roleSet, argv[3], &role);
+    if(r != UA_STATUSCODE_GOOD) {
+        rc = report(argv[3], r);
+    } else if((r = child_by_name(c, &role, method, &m)) != UA_STATUSCODE_GOOD) {
+        rc = report(method, r);
+    } else {
+        UA_Variant in;
+        UA_String uri = UA_STRING(argv[4]);
+        if(rule)
+            UA_Variant_setScalar(&in, rule,
+                                 &UA_TYPES[UA_TYPES_IDENTITYMAPPINGRULETYPE]);
+        else
+            UA_Variant_setScalar(&in, &uri, &UA_TYPES[UA_TYPES_STRING]);
+        size_t outN = 0;
+        UA_Variant *out = NULL;
+        r = UA_Client_call(c, role, m, 1, &in, &outN, &out);
+        UA_Array_delete(out, outN, &UA_TYPES[UA_TYPES_VARIANT]);
+        if(r == UA_STATUSCODE_GOOD)
+            printf("%s %s: done\n", argv[3], method);
+        else
+            rc = report(method, r);
+    }
+    UA_NodeId_clear(&role);
+    UA_NodeId_clear(&m);
+    return rc;
+}
+
+int gdsadm_roles(int argc, char **argv) {
+    /* argv: gdsadm roles VERB ... */
+    if(argc < 3)
+        return roles_usage();
+    const char *verb = argv[2];
+    bool identity = strcmp(verb, "add-identity") == 0 || strcmp(verb, "remove-identity") == 0;
+    bool app = strcmp(verb, "add-app") == 0 || strcmp(verb, "remove-app") == 0;
+    bool list = strcmp(verb, "list") == 0;
+    int first = list ? 3 : identity ? 6 : app ? 5 : -1;
+    if(first < 0 || argc < first)
+        return roles_usage();
+    for(int i = 3; i < first; i++)
+        if(argv[i][0] == '-')
+            return roles_usage();
+    UA_IdentityMappingRuleType rule;
+    UA_IdentityMappingRuleType_init(&rule);
+    if(identity) {
+        if(!parse_criteria_type(argv[4], &rule.criteriaType)) {
+            fprintf(stderr, "gdsadm: unknown identity type %s\n", argv[4]);
+            return roles_usage();
+        }
+        rule.criteria = UA_STRING(argv[5]);
+    }
+    adm_args a;
+    if(!parse_args(argc, argv, first, &a))
+        return roles_usage();
+    adm_files f;
+    memset(&f, 0, sizeof(f));
+    gdsc_session *gds = NULL;
+    UA_UInt16 ns = 0;
+    int rc = open_gds(&a, &f, &gds, &ns);
+    UA_Client *c = rc == 0 ? gdsc_session_client(gds) : NULL;
+    if(rc == 0 && list) {
+        rc = roles_list(c);
+    } else if(rc == 0) {
+        rc = roles_change(c, verb, argv, identity ? &rule : NULL);
+    }
+    gdsc_session_close(gds);
+    files_clear(&f);
     return rc;
 }

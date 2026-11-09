@@ -63,6 +63,20 @@ Give clients the CA certificate `ca_dir/ca.der` and the CRL `ca_dir/ca.crl` so t
 
 Sessions run only over SignAndEncrypt. SecurityPolicy None is open only for FindServers and GetEndpoints.
 
+`opengdsd` holds up to `max_sessions` Sessions at once (default 500, at most 1000), and a tenth more SecureChannels. When a table is full, the oldest SecureChannel without an activated Session, or the oldest Session that has not been activated, is closed to make room. A client that has not authenticated cannot hold a slot that an authenticated client needs. When every Session is activated, a new client gets Bad_TooManySessions.
+
+## Announcing the GDS on the network (mDNS)
+
+With `mdns = true` opengdsd is its own LDS-ME (OPC 10000-12 §4.3.4, §5): it announces each endpoint URL on the local subnet as an mDNS service `_opcua-tcp._tcp` with `caps=GDS` (Annex C, Annex D), and answers FindServersOnNetwork with the servers it hears there, itself included. Clients that do not know where the GDS runs find it with any LDS-ME client, for example:
+
+```sh
+gdsaudit discover --url opc.tcp://gds.example.com:58810 --network
+```
+
+The service instance name is `mdns_server_name` (default: `application_name`, which must then be a valid DNS label: at most 63 bytes, no `.`); open62541 appends the host name to it. `mdns_interface` limits the announce to the interface with that IPv4 address. `mdns` cannot be combined with `loopback_only`. The announce needs UDP port 5353 and multicast group 224.0.0.251 open on the host firewall.
+
+mDNS is off by default. Part 12 §5.2: multicast DNS is insecure by nature and should be disabled where an attacker could impersonate another host. A client still checks the GDS certificate against its trust list (the CA certificate, see Clients), so a forged announce can redirect a client but not make it trust a forged GDS. The announce is built in with `OPENGDS_WITH_MDNS` (CMake, on by default), which needs open62541 built with multicast discovery (`scripts/build_open62541.sh`, `MDNS=MDNSD`, the default).
+
 ## Approving certificate requests
 
 `approval` in the configuration decides which requests are approved on arrival:
@@ -204,6 +218,48 @@ A JSON file is `{"Applications": [...]}` with each element an ApplicationRecordD
 
 The report has one tab-separated line per record: the line number in the file (or the element number in JSON), the ApplicationUri, and `registered` with the new ApplicationId, `exists`, `invalid` or `failed` with the status code. A record whose ApplicationUri is registered already is left as it is, so an import can be run again after fixing the failed rows. The exit code is 1 when any record was invalid or failed. The file may hold at most 100,000 records and 16 MiB.
 
+## Roles and users
+
+The users file grants Roles to fixed users. On top of it, a **SecurityAdmin**
+over SignAndEncrypt can change Roles and users at run time with the standard
+OPC 10000-18 methods. The changes are stored in the store (schema 6) and
+apply at once to every open session.
+
+- **Role mapping rules** (§4.4): AddIdentity, RemoveIdentity, AddApplication,
+  RemoveApplication, AddEndpoint, RemoveEndpoint on each Role under
+  `Server.ServerCapabilities.RoleSet`. Users-file grants are listed as fixed
+  rules and cannot be removed. Applications and Endpoints are include lists:
+  once a Role has entries, it is granted only to those clients or Endpoints.
+  The Anonymous, AuthenticatedUser and TrustedApplication Roles cannot be
+  changed (§4.3). Anonymous rules are refused on every Role, and
+  AuthenticatedUser and TrustedApplication rules on the administrator Roles.
+  Role and GroupId criteria answer Bad_NotSupported (no access tokens yet).
+- **Users** (§5): AddUser, ModifyUser, RemoveUser and ChangePassword on
+  `Server.ServerConfiguration.UserManagement`. Passwords are hashed with the
+  same PBKDF2 as the users file. `password_min_length` (default 15, after
+  NIST SP 800-63B-4) sets the minimum; the maximum is 256 characters.
+  Disabling or removing a user closes its sessions. Users-file users are
+  listed but cannot be changed there. MustChangePassword is not supported.
+- **Separation of duties**: one identity may not hold SecurityAdmin,
+  CertificateAuthorityAdmin and RegistrationAuthorityAdmin at once
+  (Bad_RequestNotAllowed). Set `single_admin = true` only on a one-person
+  installation.
+- Every change raises an audit event (RoleMappingRuleChangedAuditEventType,
+  or AuditUpdateMethodEventType for users; passwords are blanked).
+
+```sh
+gdsadm roles list CONNECTION
+gdsadm roles add-identity DiscoveryAdmin UserName alice CONNECTION
+gdsadm roles remove-identity DiscoveryAdmin UserName alice CONNECTION
+gdsadm roles add-app Observer urn:example:hmi CONNECTION
+gdsadm roles remove-app Observer urn:example:hmi CONNECTION
+```
+
+CONNECTION is the same as for `gdsadm apps register`; `--user` must be a
+SecurityAdmin. Identity types: UserName, Thumbprint (SHA-256 of the user
+certificate, upper-case hex), X509Subject, Application, AuthenticatedUser,
+TrustedApplication.
+
 ## Inspecting a running GDS
 
 ```sh
@@ -212,6 +268,21 @@ gdsadm certs status --store /var/lib/opengds/opengds.db
 ```
 
 `gdsadm` opens the store read-only and can be used while `opengdsd` runs.
+
+### Watching events live
+
+```sh
+gdsadm watch --url opc.tcp://gds.example.com:58810 --user admin \
+    --password-file admin.pw --trust ca.der --crl ca.crl [--json] [--count N] [--seconds N]
+```
+
+`gdsadm watch` subscribes to every event of the Server object over SignAndEncrypt and prints one line per event: audit events (AuditEventType and its subtypes), alarms, and the DialogConditions of certificate requests that wait for approval. Right after it subscribes it calls ConditionRefresh (OPC 10000-9 §5.5.7), so Conditions that were active before the watch started are shown too, marked `(refresh)`. The user's Roles decide which events the GDS sends: approval dialogs reach RegistrationAuthorityAdmin, for example.
+
+Each text line holds the UTC time, the severity, the EventType, the source and the message, then the Condition state (`[condition NAME enabled active acked retained]`) and, for audit events, `user=` and `status=`. Control characters are printed as `\xNN`. With `--json` each event is one JSON object on its own line (JSON Lines) with the fields `time`, `eventType`, `eventTypeId`, `severity`, `sourceName`, `sourceNode`, `message`, `eventId` (hex), `conditionId`, `conditionName`, `retain`, `enabled`, `active`, `acked`, `clientUserId`, `status` and `refresh`; a field the event does not have is left out.
+
+`gdsadm watch` runs until SIGINT or SIGTERM, `--count` events or `--seconds` seconds, then exits 0; it exits 1 if it cannot connect or loses the connection.
+
+If ConditionRefresh fails, `gdsadm watch` says so on stderr and shows new events only.
 
 ## Redundancy
 

@@ -58,8 +58,23 @@ static bool row_cb(void *ctx, const gds_push_target_row *r) {
     return true;
 }
 
+static void test_store_refused(gds_store *st, const UA_Guid *dev1) {
+    UA_Guid nobody = UA_Guid_random();
+    CHECK(gds_store_push_target_put(st, &nobody, "opc.tcp://x:1", true) == GDS_ENOTFOUND);
+    CHECK(gds_store_push_target_put(st, dev1, "http://press1", true) == GDS_EINVAL);
+    CHECK(gds_store_push_target_put(st, dev1, "opc.tcp://", true) == GDS_EINVAL);
+    CHECK(gds_store_push_target_put(st, dev1, "opc.tcp://a b:1", true) == GDS_EINVAL);
+    CHECK(gds_store_push_target_put(st, dev1, NULL, true) == GDS_EINVAL);
+    char longUrl[GDS_MAX_PUSH_ENDPOINT + 8];
+    memset(longUrl, 'a', sizeof(longUrl) - 1);
+    memcpy(longUrl, "opc.tcp://", 10);
+    longUrl[sizeof(longUrl) - 1] = '\0';
+    CHECK(gds_store_push_target_put(st, dev1, longUrl, true) == GDS_EINVAL);
+    CHECK(gds_store_push_target_delete(st, &nobody) == GDS_ENOTFOUND);
+}
+
 static void test_store(gds_store *st, UA_Guid *dev1, UA_Guid *dev2) {
-    CHECK_EQ_INT(gds_store_schema_version(st), 5); /* the latest; the table is in schema 1 */
+    CHECK_EQ_INT(gds_store_schema_version(st), 6); /* the latest; the table is in schema 1 */
     *dev1 = add_app(st, DEV1, UA_APPLICATIONTYPE_SERVER);
     *dev2 = add_app(st, DEV2, UA_APPLICATIONTYPE_SERVER);
     rows r = {0};
@@ -80,19 +95,7 @@ static void test_store(gds_store *st, UA_Guid *dev1, UA_Guid *dev2) {
             CHECK(UA_Guid_equal(&r.ids[i], dev2) && !r.enabled[i]);
     }
 
-    /* refused */
-    UA_Guid nobody = UA_Guid_random();
-    CHECK(gds_store_push_target_put(st, &nobody, "opc.tcp://x:1", true) == GDS_ENOTFOUND);
-    CHECK(gds_store_push_target_put(st, dev1, "http://press1", true) == GDS_EINVAL);
-    CHECK(gds_store_push_target_put(st, dev1, "opc.tcp://", true) == GDS_EINVAL);
-    CHECK(gds_store_push_target_put(st, dev1, "opc.tcp://a b:1", true) == GDS_EINVAL);
-    CHECK(gds_store_push_target_put(st, dev1, NULL, true) == GDS_EINVAL);
-    char longUrl[GDS_MAX_PUSH_ENDPOINT + 8];
-    memset(longUrl, 'a', sizeof(longUrl) - 1);
-    memcpy(longUrl, "opc.tcp://", 10);
-    longUrl[sizeof(longUrl) - 1] = '\0';
-    CHECK(gds_store_push_target_put(st, dev1, longUrl, true) == GDS_EINVAL);
-    CHECK(gds_store_push_target_delete(st, &nobody) == GDS_ENOTFOUND);
+    test_store_refused(st, dev1);
 
     /* the row goes with its application */
     UA_Guid gone = add_app(st, "urn:opengds:test:push-targets:gone", UA_APPLICATIONTYPE_SERVER);

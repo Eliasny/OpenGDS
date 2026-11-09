@@ -4,6 +4,7 @@
 
 #include <string.h>
 
+#include "disc_mdns.h"
 #include "common/buf.h"
 #include "common/safeint.h"
 #include "common/banned.h"
@@ -46,6 +47,7 @@ static const field fields[] = {
     F("push", push, T_BOOL, false),
     U("push_interval", pushIntervalS, 1, DAY),
     U("push_concurrency", pushConcurrency, 1, 64),
+    U("max_sessions", maxSessions, 1, 1000),
     U("push_jitter", pushJitterS, 0, DAY),
     U("push_backoff_min", pushBackoffMinS, 1, DAY),
     U("push_backoff_max", pushBackoffMaxS, 1, 30 * DAY),
@@ -54,6 +56,11 @@ static const field fields[] = {
     F("authorization_service_uri", authorizationServiceUri, T_STR, false),
     U("access_token_lifetime", accessTokenLifetime, 60, DAY),
     U("refresh_token_lifetime", refreshTokenLifetime, 0, 30 * DAY),
+    F("mdns", mdns, T_BOOL, false),
+    F("mdns_server_name", mdnsServerName, T_STR, false),
+    F("mdns_interface", mdnsInterface, T_STR, false),
+    U("password_min_length", passwordMinLength, GDSD_PASSWORD_MIN_FLOOR, GDSD_PASSWORD_MIN_CEIL),
+    F("single_admin", singleAdmin, T_BOOL, false),
 };
 #define NFIELDS (sizeof(fields) / sizeof(fields[0]))
 
@@ -156,12 +163,14 @@ static void defaults(gdsd_config *c) {
     c->approval = GDSD_APPROVE_RENEWALS;
     c->pushIntervalS = 60;
     c->pushConcurrency = 4;
+    c->maxSessions = 500;
     c->pushJitterS = 300;
     c->pushBackoffMinS = 60;
     c->pushBackoffMaxS = 6 * 3600;
     c->pushRejectedS = 3600;
     c->accessTokenLifetime = 3600;   /* Elias 2026-11-09 */
     c->refreshTokenLifetime = 86400; /* Elias 2026-11-09 */
+    c->passwordMinLength = GDSD_PASSWORD_MIN_DEFAULT;
 }
 
 static bool is_name_char(char c) {
@@ -271,7 +280,12 @@ gds_status gdsd_config_parse(const char *text, size_t len, gdsd_config *out, uns
         return GDS_EINVAL; /* one way to reach the signer */
     if(out->pushBackoffMaxS < out->pushBackoffMinS)
         return GDS_EINVAL;
-    return GDS_OK;
+    if(out->mdns && out->loopbackOnly)
+        return GDS_EINVAL; /* the subnet cannot reach 127.0.0.1 */
+    /* name and address syntax; whether this build has mDNS is checked at start */
+    gds_mdns_config m = {false, out->mdnsServerName[0] ? out->mdnsServerName : NULL,
+                         out->mdnsInterface[0] ? out->mdnsInterface : NULL};
+    return gds_disc_mdns_check(&m);
 }
 
 gds_status gdsd_config_load(const char *path, gdsd_config *out, unsigned *errLine) {

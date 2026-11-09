@@ -48,7 +48,10 @@ MemoryDenyWriteExecute=yes
 RemoveIPC=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# AF_NETLINK: getifaddrs, which the mDNS announce (mdns = true, OPC 10000-12
+# Annex C) uses for the host's addresses; without it no A records go out.
+# An unprivileged netlink socket can only read the interface list.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
 # @sandbox (landlock_*, seccomp): the process sandboxes itself further
 # (src/common/sandbox.c); without it libseccomp cannot probe the kernel and

@@ -739,9 +739,11 @@ typedef struct {
     const char *applicationUri; /* borrowed for the call */
     const char *endpointUrl;    /* borrowed for the call */
     uint32_t reasons;           /* GDS_PUSH_* */
+    uint32_t reserved0;         /* explicit padding, always 0: the layout */
     UA_DateTime due;            /* when it became due, jitter and back-off included */
     UA_DateTime certNotAfter;   /* of the certificate the Server presents; 0: unknown */
     uint32_t failures;          /* consecutive failed attempts */
+    uint32_t reserved1;         /* of plugin ABI 1.2 is unchanged */
 } gds_push_job;
 
 /* due: the nDue due jobs, earliest first; write the indexes of the jobs to

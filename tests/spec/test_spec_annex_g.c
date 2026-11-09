@@ -322,6 +322,7 @@ static void describe(char *d, size_t len, const push_setup_report *rep, gds_stat
 
 static void case_g2_state(void) {
     push_setup_state st;
+    memset(&st, 0, sizeof(st));
     UA_StatusCode r = probe(F.urlSetup, &F.setupDeviceCert, GDSC_IDENTITY_USERNAME, &st);
     char d[96];
     snprintf(d, sizeof(d), "%s state=%d hasInSetup=%d inSetup=%d", UA_StatusCode_name(r),
