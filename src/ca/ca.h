@@ -5,7 +5,8 @@
  * Rules every backend keeps (decision G5, OPC 10000-12 §7.9.3):
  * - every certificate field comes from the registered record; the CSR gives
  *   only its public key, after its signature (proof of possession) checks;
- * - the CA private key never leaves the backend.
+ * - the CA private key never leaves the backend, except sealed to backup
+ *   recipients that only the signer chooses (export_keys, ABI 6).
  *
  * Ownership: inputs are borrowed for the duration of the call. Output
  * buffers are owned by the caller (gds_buf_free).
@@ -22,7 +23,8 @@
 #include "common/buf.h"
 #include "common/compiler.h"
 
-#define GDS_CA_ABI_VERSION 5u /* 2: revoke; 3: new_key_pair; 4: issuers; 5: token key */
+#define GDS_CA_ABI_VERSION 6u /* 2: revoke; 3: new_key_pair; 4: issuers; 5: token key;
+                                 6: key export */
 /* Backends of an older version are accepted; the fields they lack are NULL. */
 #define GDS_CA_ABI_MIN_VERSION 2u
 
@@ -126,6 +128,14 @@ typedef struct {
      * it) with that key, RS256, and returns the signature. */
     gds_status (*token_chain)(void *ctx, const char *serviceUri, gds_buf *out);
     gds_status (*token_sign)(void *ctx, const gds_buf *input, gds_buf *sig);
+    /* ABI 6, optional (NULL: GDS_EUNSUPPORTED). Every issuer's certificate,
+     * private key and CRL, sealed to the X25519 recipients (ca_seal.h, the
+     * "OGKX" format) for a backup (UASM, Elias 2026-11-09). In the signer
+     * the recipients are the ones of its own --export-recipients file;
+     * ca_ipc, in opengdsd, is called with none and forwards the request,
+     * so opengdsd never picks them. */
+    gds_status (*export_keys)(void *ctx, const uint8_t (*recipients)[32], size_t nRecipients,
+                              gds_buf *out);
 } gds_ca_backend;
 
 /* Settings for the built-in OpenSSL backend (ca_openssl.c). Defaults are set
@@ -183,6 +193,9 @@ GDS_MUST_CHECK gds_status gds_ca_token_chain(gds_ca *ca, const char *serviceUri,
  * {"alg":"RS256". So the key signs nothing but AccessTokens. */
 GDS_MUST_CHECK gds_status gds_ca_token_sign(gds_ca *ca, const gds_buf *input, gds_buf *sig);
 bool gds_ca_jws_input_ok(const uint8_t *in, size_t len);
+/* The backend's export_keys (GDS_EUNSUPPORTED without one). */
+GDS_MUST_CHECK gds_status gds_ca_export_keys(gds_ca *ca, const uint8_t (*recipients)[32],
+                                             size_t nRecipients, gds_buf *out);
 /* Revoke the certificate with this serial (OPC 10000-12 §7.9.6). The caller
  * has checked that this CA issued it. */
 GDS_MUST_CHECK gds_status gds_ca_revoke(gds_ca *ca, const gds_buf *serial);

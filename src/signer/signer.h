@@ -22,6 +22,10 @@ typedef struct {
      * service, A21): gds_signer_serve sends that reply, then ends with
      * GDS_EIO so the signer exits and is restarted. */
     bool storeFailed;
+    /* EXPORT_KEYS seals to these X25519 keys (--export-recipients, read
+     * before the sandbox); none: the op is refused with GDS_EDENIED. */
+    const uint8_t (*exportRecipients)[32];
+    size_t nExportRecipients;
 } gds_signer;
 
 /* Every SIGN_CSR answer is journalled before it is returned. When the

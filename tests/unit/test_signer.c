@@ -17,6 +17,7 @@
 
 #include "ca.h"
 #include "ca_ipc.h"
+#include "ca_seal.h"
 #include "check.h"
 #include "common/buf.h"
 #include "common/ids.h"
@@ -400,6 +401,38 @@ static void test_ipc_get(gds_ca *ipc, gds_ca *direct) {
     }
 }
 
+/* EXPORT_KEYS: refused until the signer has recipients; then sealed to
+ * them only (opengdsd names none), and the keys inside are the CA's. */
+static void test_ipc_export(gds_ca *ipc, gds_signer *s) {
+    gds_buf blob = {0};
+    CHECK(gds_ca_export_keys(ipc, NULL, 0, &blob) == GDS_EDENIED);
+    uint8_t pub[1][32], priv[32], other[1][32];
+    EVP_PKEY *k = EVP_PKEY_Q_keygen(NULL, NULL, "X25519");
+    size_t a = 32, b = 32;
+    CHECK(k && EVP_PKEY_get_raw_private_key(k, priv, &a) == 1 &&
+          EVP_PKEY_get_raw_public_key(k, pub[0], &b) == 1);
+    EVP_PKEY_free(k);
+    memset(other, 7, sizeof(other));
+    /* opengdsd cannot pick its own recipients */
+    CHECK(gds_ca_export_keys(ipc, (const uint8_t (*)[32])other, 1, &blob) == GDS_EINVAL);
+    s->exportRecipients = (const uint8_t (*)[32])pub;
+    s->nExportRecipients = 1;
+    CHECK(gds_ca_export_keys(ipc, NULL, 0, &blob) == GDS_OK && blob.len > 0);
+    gds_seal_contents o;
+    memset(&o, 0, sizeof(o));
+    CHECK(blob.data && gds_seal_open(blob.data, blob.len, priv, &o) == GDS_OK);
+    CHECK_EQ_INT(o.n, GDS_CA_ISSUERS);
+    gds_buf want = {0};
+    CHECK(gds_ca_get_ca_cert(s->ca, &want) == GDS_OK);
+    CHECK(o.n > 0 && o.items[0].issuer == GDS_CA_ISSUER_RSA && want.len == o.items[0].cert.len &&
+          memcmp(want.data, o.items[0].cert.data, want.len) == 0);
+    gds_buf_free(&want);
+    gds_seal_contents_clear(&o);
+    gds_buf_free(&blob);
+    s->exportRecipients = NULL;
+    s->nExportRecipients = 0;
+}
+
 /* Issuer bytes: RSA is never explicit, unknown issuers are refused. */
 static void test_issuer_proto(void) {
     gds_buf msg = {0};
@@ -640,7 +673,7 @@ int main(int argc, char **argv) {
     char jpath[1100];
     CHECK(gds_path(jpath, sizeof(jpath), "%s/" GDS_JOURNAL_FILE, caDir) == GDS_OK);
     (void)unlink(jpath);
-    gds_signer s = {NULL, open_direct_ca(caDir), NULL, false};
+    gds_signer s = {NULL, open_direct_ca(caDir), NULL, false, NULL, 0};
     CHECK(gds_store_open_readonly(db, &s.store) == GDS_OK);
     CHECK(gds_journal_open(jpath, &s.journal) == GDS_OK);
     gds_journal *second = NULL;
@@ -663,6 +696,7 @@ int main(int argc, char **argv) {
         gds_ca_issued_clear(&issued);
         test_ipc_key_pair(ipc, w, &appId);
         test_ipc_token(ipc, s.ca, &s, caDir);
+        test_ipc_export(ipc, &s);
     }
     gds_ca_close(ipc); /* closes sv[0]: the signer sees EOF */
     CHECK(pthread_join(th, NULL) == 0);

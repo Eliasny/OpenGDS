@@ -69,6 +69,17 @@ The AuthorizationService (docs/opengdsd.md, "AccessTokens") signs its JWTs with 
 - **Certificate:** issued by the RSA CA. CN is the CA's CN followed by " AuthorizationService", O as configured, subjectAltName URI = the ServiceUri, keyUsage digitalSignature only, basicConstraints cA false, the leaf lifetime of the CA. It is not stored in the directory. It is issued again with the same key when the ServiceUri changes, the RSA CA changes, or fewer than 30 days remain.
 - **Signer operations:** TOKEN_CHAIN (6) carries the ServiceUri and returns the token certificate followed by the RSA CA certificate. TOKEN_SIGN (7) carries a JWS signing input and returns the RS256 signature. The signer refuses any input that is not base64url header, '.', base64url payload with a header that starts `{"alg":"RS256"`, so the key cannot be used to sign certificates, CRLs or anything else.
 
+## Sealed key export
+
+An embedder's backups contain the CA private keys, encrypted by the signer itself to a backup key that only a quorum of people can open (UASM decision, Elias 2026-11-09). The key still never leaves the signer in a form that opengdsd or the embedder can read.
+
+- **Recipients:** `opengds-signer --export-recipients FILE` names the X25519 public keys that can open an export, one per line as 64 hex digits, optionally after one word and a space (`uasm-backup-recipient <hex>`); blank lines and `#` comments are skipped, at most 16 keys. The file must be a regular file owned by root and not writable by group or others. The signer reads it once at start, before the sandbox, and stops with an error when it is missing or wrong. opengdsd never names recipients, so a compromised opengdsd can ask for an export but cannot choose who opens it.
+- **Signer operation:** EXPORT_KEYS (8) has an empty body. Without `--export-recipients` it is refused with `GDS_EDENIED`. Otherwise the reply is the sealed export, and the signer logs each export with the number of recipients.
+- **Format "OGKX" version 1** (`src/ca/ca_seal.h`): a random content key encrypts the certificate, the unencrypted PKCS#8 private key and the CRL of every issuer (RSA, P-256, P-384) with AES-256-GCM. Each recipient gets a copy of the content key sealed with HPKE (RFC 9180) base mode: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, AES-256-GCM. Any altered byte, or a key that is not a recipient, is refused (`GDS_EDENIED`).
+- **Not included:** the AccessToken key. `ca_dir/token/` is made again on first use after a restore, so AccessTokens and RefreshTokens issued before the restore stop verifying and clients request new ones.
+- **CA backends:** ABI 6 adds `export_keys`. The OpenSSL backend seals to the recipients it is given; `ca_ipc` passes none and the signer uses its own. Older backends answer `GDS_EUNSUPPORTED`.
+- **Plugin API:** `gds_server_export_ca_keys` (`gds_plugin.h`, plugin ABI minor 4) returns the sealed bytes through the signer. With the CA in process (no signer) it answers `GDS_EUNSUPPORTED`.
+
 ## Plugin hooks (UASM asks)
 
 - `pre_sign` (issue #13): optional. It is called right before every signature with the operation, the store's request id and a borrowed view of the record. A refusal leaves no certificate and no store change, and `GDS_ESTATE` maps to Bad_InvalidState.

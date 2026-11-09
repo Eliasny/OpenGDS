@@ -106,6 +106,8 @@ static gds_status reencode(const gds_sigp_request *q, gds_buf *out) {
     case GDS_SIGP_TOKEN_CHAIN:
     case GDS_SIGP_TOKEN_SIGN:
         return gds_sigp_encode_token(q->op, &q->data, out);
+    case GDS_SIGP_EXPORT_KEYS:
+        return gds_sigp_encode_request(q->op, NULL, out);
     case GDS_SIGP_SIGN_CSR:
     default:
         return gds_sigp_encode_request(q->op, &q->requestId, out);
@@ -166,7 +168,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     static const gds_sigp_op ops[] = {GDS_SIGP_SIGN_CSR,   GDS_SIGP_GET_CHAIN,
                                       GDS_SIGP_ISSUE_CRL,  GDS_SIGP_REVOKE,
                                       GDS_SIGP_TOKEN_CHAIN, GDS_SIGP_TOKEN_SIGN,
-                                      GDS_SIGP_SIGN_CSR,   GDS_SIGP_GET_CHAIN};
+                                      GDS_SIGP_SIGN_CSR,   GDS_SIGP_EXPORT_KEYS};
     if(data[0] & 1u)
         fuzz_reply(ops[(data[0] >> 1) & 7u], data + 1, size - 1);
     else

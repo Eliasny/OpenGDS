@@ -443,6 +443,16 @@ static void test_method_audit(gds_server *s, const UA_NodeId *app) {
     UA_NodeId_clear(&other);
 }
 
+/* gds_server_export_ca_keys: only through a signer, which picks the
+ * recipients; this server's CA is in process. */
+static void test_export_in_process(gds_server *s) {
+    UA_ByteString out = UA_BYTESTRING_NULL;
+    CHECK_EQ_INT(gds_server_export_ca_keys(NULL, &out), GDS_EINVAL);
+    CHECK_EQ_INT(gds_server_export_ca_keys(s, NULL), GDS_EINVAL);
+    CHECK_EQ_INT(gds_server_export_ca_keys(s, &out), GDS_EUNSUPPORTED);
+    CHECK(out.data == NULL && out.length == 0);
+}
+
 /* A23: the store marks the serial revoked, then gds_server_revoke_serial
  * puts it on the issuing CA's CRL: by the certificate's issuer, by the
  * certificate type, or, with neither, on every issuer's CRL. */
@@ -604,6 +614,7 @@ int main(int argc, char **argv) {
             test_ecc(s, ca, &d);
             test_method_audit(s, &c);
             test_revoke_serial(s, ca, &e);
+            test_export_in_process(s);
         }
         UA_NodeId_clear(&e);
         UA_NodeId_clear(&d);

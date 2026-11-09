@@ -50,6 +50,8 @@ gds_status gds_ca_wrap(const gds_ca_backend *backend, void *ctx, gds_ca **out) {
         n = offsetof(gds_ca_backend, get_issuer_cert);
     else if(backend->abiVersion < 5)
         n = offsetof(gds_ca_backend, token_chain);
+    else if(backend->abiVersion < 6)
+        n = offsetof(gds_ca_backend, export_keys);
     memcpy(&ca->b, backend, n);
     if(!ca->b.get_issuer_cert || !ca->b.get_issuer_crl || !ca->b.revoke_issuer) {
         ca->b.get_issuer_cert = NULL; /* all three or none */
@@ -362,4 +364,15 @@ gds_status gds_ca_new_key_pair(gds_ca *ca, const gds_ca_subject *subj, const gds
         gds_buf_free_secret(key);
     }
     return r;
+}
+
+gds_status gds_ca_export_keys(gds_ca *ca, const uint8_t (*recipients)[32], size_t nRecipients,
+                              gds_buf *out) {
+    out->data = NULL;
+    out->len = 0;
+    if(!ca)
+        return GDS_EINVAL;
+    if(!ca->b.export_keys)
+        return GDS_EUNSUPPORTED;
+    return ca->b.export_keys(ca->ctx, recipients, nRecipients, out);
 }

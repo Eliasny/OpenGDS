@@ -45,8 +45,8 @@ extern "C" {
 #endif
 
 #define GDS_PLUGIN_ABI_MAJOR 1u
-#define GDS_PLUGIN_ABI_MINOR 3u /* 1: gds_caller.clientCertificate (A14); 2: push scheduling;
-                                  3: gds_keycred_source */
+#define GDS_PLUGIN_ABI_MINOR 4u /* 1: gds_caller.clientCertificate (A14); 2: push scheduling;
+                                  3: gds_keycred_source; 4: gds_server_export_ca_keys */
 
 /* The values of MessageSecurityMode (OPC 10000-4 §7.20). */
 typedef enum {
@@ -663,6 +663,20 @@ GDS_MUST_CHECK gds_status gds_server_set_keycred_source(struct gds_server *s,
 GDS_MUST_CHECK gds_status gds_server_revoke_serial(struct gds_server *s, const UA_ByteString *serial,
                                                    const UA_ByteString *certificate,
                                                    const UA_NodeId *certificateType);
+
+/* ---- the CA keys for a backup (UASM backups, docs/ca.md "Sealed key
+ * export") ----
+ * Asks the signer for its CA certificates, private keys and CRLs sealed to
+ * the recipients of its own --export-recipients file (format "OGKX",
+ * src/ca/ca_seal.h). The caller names no recipients and never sees a key:
+ * only a holder of a recipient's private key opens the result. *out gets
+ * the sealed bytes (free with UA_ByteString_clear). GDS_EDENIED when the
+ * signer has no recipients file, GDS_EUNSUPPORTED when the CA is in
+ * process (no signer) or cannot export, GDS_EINVAL for a NULL argument.
+ * Works on a STANDBY node too (it only reads). It blocks while the signer
+ * answers; call it from a thread of the embedder's own or a method
+ * callback. No audit event: the embedder raises its own. */
+GDS_MUST_CHECK gds_status gds_server_export_ca_keys(struct gds_server *s, UA_ByteString *out);
 
 /* ---- plugin trust lists (UASM ask A18) ----
  * A CertificateGroup of the plugin's own (OPC 10000-12 §7.8.3.1), for

@@ -6,6 +6,10 @@ add_test(NAME unit_store COMMAND test_store "${CMAKE_CURRENT_BINARY_DIR}/store-r
 add_executable(test_ca test_ca.c)
 target_link_libraries(test_ca PRIVATE gds_ca)
 add_test(NAME unit_ca COMMAND test_ca "${CMAKE_CURRENT_BINARY_DIR}/ca-run")
+# the CA keys sealed for backups (src/ca/ca_seal.h)
+add_executable(test_ca_seal test_ca_seal.c)
+target_link_libraries(test_ca_seal PRIVATE gds_ca)
+add_test(NAME unit_ca_seal COMMAND test_ca_seal "${CMAKE_CURRENT_BINARY_DIR}/ca-seal-run")
 
 # the certificate's subjectPublicKeyInfo copied from the CSR (src/ca/ca_x509.c)
 add_executable(test_ca_pubkey test_ca_pubkey.c)
@@ -21,6 +25,11 @@ add_test(NAME signer_refuses_fd_and_listen
          COMMAND opengds-signer --fd 0 --listen /tmp/x.sock --store /x --ca-dir /x)
 add_test(NAME signer_refuses_relative_listen
          COMMAND opengds-signer --listen x.sock --store /x --ca-dir /x)
+# a recipients file that does not exist stops the signer before it serves
+add_test(NAME signer_refuses_missing_recipients
+         COMMAND opengds-signer --fd 0 --store /x --ca-dir /x --export-recipients /nonexistent)
+set_tests_properties(signer_refuses_missing_recipients PROPERTIES PASS_REGULAR_EXPRESSION
+                     "--export-recipients /nonexistent")
 set_tests_properties(signer_refuses_fd_and_listen signer_refuses_relative_listen
                      PROPERTIES PASS_REGULAR_EXPRESSION "usage: opengds-signer")
 
