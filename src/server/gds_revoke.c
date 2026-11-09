@@ -188,6 +188,41 @@ static GDS_METHOD(revoke_certificate) {
     return UA_STATUSCODE_GOOD;
 }
 
+gds_status gds_server_revoke_serial(gds_server *s, const UA_ByteString *serial,
+                                    const UA_ByteString *certificate,
+                                    const UA_NodeId *certificateType) {
+    if(!s || !serial || !serial->data || serial->length == 0 ||
+       serial->length > GDS_MAX_SERIAL_SIZE)
+        return GDS_EINVAL;
+    if(certificate && (!certificate->data || certificate->length == 0 ||
+                       certificate->length > GDS_MAX_CERT_SIZE))
+        return GDS_EINVAL;
+    if(gds_server_role(s) == GDS_NODE_STANDBY)
+        return GDS_ESTATE;
+    gds_buf sn = {serial->data, serial->length};
+    if(certificate) {
+        gds_buf der = {certificate->data, certificate->length};
+        return gds_ca_revoke_issuer(s->ca, issuer_of_cert(s, &der), &sn);
+    }
+    if(certificateType) {
+        gds_ca_issuer issuer;
+        if(certificateType->namespaceIndex != 0 ||
+           certificateType->identifierType != UA_NODEIDTYPE_NUMERIC ||
+           !gds_ca_issuer_of(certificateType->identifier.numeric, &issuer))
+            return GDS_EINVAL;
+        return gds_ca_revoke_issuer(s->ca, issuer, &sn);
+    }
+    gds_status st = GDS_OK;
+    bool any = false;
+    for(unsigned i = 0; st == GDS_OK && i < GDS_CA_ISSUERS; i++) {
+        if(s->issuerCert[i].len == 0)
+            continue;
+        any = true;
+        st = gds_ca_revoke_issuer(s->ca, (gds_ca_issuer)i, &sn); // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange): i < GDS_CA_ISSUERS
+    }
+    return any ? st : gds_ca_revoke(s->ca, &sn);
+}
+
 UA_StatusCode gds_revoke_install(gds_server *s) {
     static const gds_method_entry m[] = {
         {UA_GDSID_DIRECTORY_REVOKECERTIFICATE, revoke_certificate},
