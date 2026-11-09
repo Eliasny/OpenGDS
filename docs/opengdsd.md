@@ -216,6 +216,48 @@ A JSON file is `{"Applications": [...]}` with each element an ApplicationRecordD
 
 The report has one tab-separated line per record: the line number in the file (or the element number in JSON), the ApplicationUri, and `registered` with the new ApplicationId, `exists`, `invalid` or `failed` with the status code. A record whose ApplicationUri is registered already is left as it is, so an import can be run again after fixing the failed rows. The exit code is 1 when any record was invalid or failed. The file may hold at most 100,000 records and 16 MiB.
 
+## Roles and users
+
+The users file grants Roles to fixed users. On top of it, a **SecurityAdmin**
+over SignAndEncrypt can change Roles and users at run time with the standard
+OPC 10000-18 methods. The changes are stored in the store (schema 5) and
+apply at once to every open session.
+
+- **Role mapping rules** (§4.4): AddIdentity, RemoveIdentity, AddApplication,
+  RemoveApplication, AddEndpoint, RemoveEndpoint on each Role under
+  `Server.ServerCapabilities.RoleSet`. Users-file grants are listed as fixed
+  rules and cannot be removed. Applications and Endpoints are include lists:
+  once a Role has entries, it is granted only to those clients or Endpoints.
+  The Anonymous, AuthenticatedUser and TrustedApplication Roles cannot be
+  changed (§4.3). Anonymous rules are refused on every Role, and
+  AuthenticatedUser and TrustedApplication rules on the administrator Roles.
+  Role and GroupId criteria answer Bad_NotSupported (no access tokens yet).
+- **Users** (§5): AddUser, ModifyUser, RemoveUser and ChangePassword on
+  `Server.ServerConfiguration.UserManagement`. Passwords are hashed with the
+  same PBKDF2 as the users file. `password_min_length` (default 15, after
+  NIST SP 800-63B-4) sets the minimum; the maximum is 256 characters.
+  Disabling or removing a user closes its sessions. Users-file users are
+  listed but cannot be changed there. MustChangePassword is not supported.
+- **Separation of duties**: one identity may not hold SecurityAdmin,
+  CertificateAuthorityAdmin and RegistrationAuthorityAdmin at once
+  (Bad_RequestNotAllowed). Set `single_admin = true` only on a one-person
+  installation.
+- Every change raises an audit event (RoleMappingRuleChangedAuditEventType,
+  or AuditUpdateMethodEventType for users; passwords are blanked).
+
+```sh
+gdsadm roles list CONNECTION
+gdsadm roles add-identity DiscoveryAdmin UserName alice CONNECTION
+gdsadm roles remove-identity DiscoveryAdmin UserName alice CONNECTION
+gdsadm roles add-app Observer urn:example:hmi CONNECTION
+gdsadm roles remove-app Observer urn:example:hmi CONNECTION
+```
+
+CONNECTION is the same as for `gdsadm apps register`; `--user` must be a
+SecurityAdmin. Identity types: UserName, Thumbprint (SHA-256 of the user
+certificate, upper-case hex), X509Subject, Application, AuthenticatedUser,
+TrustedApplication.
+
 ## Inspecting a running GDS
 
 ```sh
