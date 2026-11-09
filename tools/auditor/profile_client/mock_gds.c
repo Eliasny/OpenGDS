@@ -14,7 +14,10 @@
  * loopback interface unless --listen-any is given.
  *
  * Usage: mock_gds [--port 4850] [--ca-dir ./demo-ca] [--user registrar:secret]
- *                 [--approve-after 2] [--listen-any]
+ *                 [--approve-after 2] [--listen-any] [--anonymous]
+ * --anonymous also accepts Anonymous sessions, as a GDS does for an
+ * application that renews with its issued certificate (ApplicationSelfAdmin,
+ * 12 §7.6 "Connect"); the mock has no roles, so it checks nothing more.
  */
 #include <open62541/nodeids_gds.h>
 #include <open62541/plugin/accesscontrol_default.h>
@@ -357,7 +360,7 @@ METHOD(tlClose) {
 }
 
 static int usage(const char *argv0) {
-    fprintf(stderr, "usage: %s [--port N] [--ca-dir DIR] [--user u:p] [--approve-after N] [--listen-any]\n",
+    fprintf(stderr, "usage: %s [--port N] [--ca-dir DIR] [--user u:p] [--approve-after N] [--listen-any] [--anonymous]\n",
             argv0);
     return 2;
 }
@@ -368,11 +371,15 @@ int main(int argc, char **argv) {
     long port = 4850;
     const char *caDir = "./demo-ca";
     char userSpec[160] = "registrar:secret";
-    bool listenAny = false;
+    bool listenAny = false, anonymous = false;
     for(int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if(!strcmp(a, "--listen-any")) {
             listenAny = true;
+            continue;
+        }
+        if(!strcmp(a, "--anonymous")) {
+            anonymous = true;
             continue;
         }
         const char *v = i + 1 < argc ? argv[++i] : NULL;
@@ -468,7 +475,7 @@ int main(int argc, char **argv) {
     UA_UsernamePasswordLogin login = {UA_STRING(userSpec), UA_STRING(colon + 1)};
     config->accessControl.clear(&config->accessControl);
     UA_String policyUri = UA_STRING("http://opcfoundation.org/UA/SecurityPolicy#Aes256_Sha256_RsaPss");
-    if(UA_AccessControl_default(config, false, &policyUri, 1, &login) != UA_STATUSCODE_GOOD)
+    if(UA_AccessControl_default(config, anonymous, &policyUri, 1, &login) != UA_STATUSCODE_GOOD)
         return 1;
 
     ns = UA_Server_addNamespace(server, GDS_NS_URI); /* returns the existing index */
