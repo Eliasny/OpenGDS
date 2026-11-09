@@ -36,7 +36,7 @@ jobs:
       BRANCH: ${{ github.event.workflow_run.head_branch }}
       # Every job of every CI workflow. A workflow that is still queued has no
       # check runs yet, so the gate must name each job, not only count pending ones.
-      REQUIRED: "gcc release|gcc asan-ubsan|clang release|clang asan-ubsan|clang tsan|static analysis|spec tests vs .NET reference GDS"
+      REQUIRED: "gcc release|gcc asan-ubsan|clang release|clang asan-ubsan|clang tsan|static analysis|spec tests vs .NET reference GDS|push tracer vs .NET reference Server"
     steps:
       - name: Merge if every check on the head commit passed
         run: |
