@@ -100,6 +100,7 @@ static gboolean on_timeout(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): flat checks
 int main(int argc, char **argv) {
     if(argc != 3) {
         g_printerr("usage: %s ENGINE RUN_DIR\n", argv[0]);

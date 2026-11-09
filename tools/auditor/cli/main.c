@@ -455,6 +455,21 @@ typedef struct {
     ga_results results;
 } front_end;
 
+/* Where the value of front-end option a goes, or NULL if a is not one */
+static const char **front_end_slot(front_end *fe, const char *a) {
+    if(!strcmp(a, "--events"))
+        return &fe->events;
+    if(!strcmp(a, "--report"))
+        return &fe->report;
+    if(!strcmp(a, "--prompts"))
+        return &fe->prompts;
+#ifdef _WIN32
+    if(!strcmp(a, "--control"))
+        return &fe->control;
+#endif
+    return NULL;
+}
+
 static bool take_front_end_options(int *argc, char **argv, front_end *fe) {
     int out = 1;
     bool ok = true, rest = false;
@@ -465,20 +480,14 @@ static bool take_front_end_options(int *argc, char **argv, front_end *fe) {
             argv[out++] = argv[i];
             continue;
         }
-        bool ev = !strcmp(a, "--events"), rep = !strcmp(a, "--report");
-        bool pr = !strcmp(a, "--prompts");
-#ifdef _WIN32
-        bool ctl = !strcmp(a, "--control");
-#else
-        bool ctl = false;
-#endif
-        if(ev || rep || pr || ctl) {
+        const char **slot = front_end_slot(fe, a);
+        if(slot) {
             if(i + 1 >= *argc) {
                 fprintf(stderr, "%s needs a value\n", a);
                 ok = false;
                 break;
             }
-            *(ev ? &fe->events : rep ? &fe->report : pr ? &fe->prompts : &fe->control) = argv[++i];
+            *slot = argv[++i];
             continue;
         }
         if((!strcmp(a, "--url") || !strcmp(a, "--listen")) && i + 1 < *argc)
