@@ -127,6 +127,16 @@ const gds_user *gds_users_check(const gds_users *u, const UA_String *name, const
 /* The x509 user of this DER certificate; NULL if none. */
 const gds_user *gds_users_check_cert(const gds_users *u, const UA_ByteString *certDer);
 
+/* Every Role bit of a user: the built-in Roles and the embedder Roles its
+ * names resolve to. */
+unsigned gds_user_roles(const gds_user *u);
+/* The installed users table (gds_access_install), NULL before. */
+const gds_users *gds_access_users(void);
+/* The user of this name, password or x509; NULL if none. */
+const gds_user *gds_users_find(const gds_users *u, const char *name);
+/* Are X509IdentityTokens accepted (a DefaultUserTokenGroup is set)? */
+bool gds_access_x509_users(void);
+
 /* Per-session state, the open62541 session context. */
 #define GDS_SESSION_TL_HANDLES GDS_MAX_TL_HANDLES
 typedef struct gds_tl_handle {

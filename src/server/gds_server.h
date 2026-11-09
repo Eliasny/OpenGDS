@@ -12,6 +12,7 @@
 #include "ca.h"
 #include "common/buf.h"
 #include "gds_access.h"
+#include "gds_jwt.h"
 #include "gds_plugin.h"
 #include "store.h"
 
@@ -24,6 +25,33 @@ typedef enum {
     GDS_APPROVE_RENEWALS = 2,
     GDS_APPROVE_MANUAL = 3
 } gds_approval_policy;
+
+/* The AuthorizationService (OPC 10000-12 §9.6, gds_authz.c): a GDS
+ * object under AuthorizationServices that issues JWT AccessTokens (OPC
+ * 10000-6 §6.5.2). The signer is a callback, so the key may live outside
+ * opengdsd. Every buffer and string is copied by gds_server_new. */
+typedef struct {
+    /* the ServiceUri (§9.6.4), globally unique; NULL or "": the GDS's
+     * ApplicationUri followed by "/AuthorizationService" */
+    const char *serviceUri;
+    /* the ServiceCertificate (§9.6.4): DER certificates back to back, the
+     * one whose key signs the tokens first, then its issuers */
+    gds_buf serviceCertificate;
+    /* signs the JWS signing input with that key, for alg (RS256, ES256 or
+     * ES384; gds_jwt.h) */
+    gds_jwt_sign_fn sign;
+    void *signCtx;
+    const char *alg;
+    /* Optional, in place of serviceCertificate: fetches the chain for the
+     * ServiceUri (signCtx as ctx), at start and again when fewer than 30
+     * days remain on the certificate (at most once an hour), so a renewed
+     * certificate takes over without a restart (gds_ca_token_chain). */
+    gds_status (*chain)(void *ctx, const char *serviceUri, gds_buf *out);
+    /* AccessToken and RefreshToken lifetimes in seconds; refresh 0: no
+     * RefreshTokens are issued */
+    uint32_t accessLifetime;
+    uint32_t refreshLifetime;
+} gds_authz_config;
 
 typedef struct {
     UA_UInt16 port;
@@ -49,6 +77,8 @@ typedef struct {
     /* Which certificate requests are approved on arrival; the others wait
      * for a RegistrationAuthorityAdmin (gds_approvals.c). */
     gds_approval_policy approval;
+    /* NULL: no AuthorizationService (§9.6 is Optional) */
+    const gds_authz_config *authz;
 } gds_server_config;
 
 typedef struct gds_server gds_server;
