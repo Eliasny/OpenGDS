@@ -27,10 +27,6 @@ typedef struct {
     {name, offsetof(gdsd_config, member), sizeof(((gdsd_config *)0)->member), T_U32, false, \
      lo, hi}
 #define DAY 86400L
-    F("authorization_service", authorizationService, T_BOOL, false),
-    F("authorization_service_uri", authorizationServiceUri, T_STR, false),
-    U("access_token_lifetime", accessTokenLifetime, 60, DAY),
-    U("refresh_token_lifetime", refreshTokenLifetime, 0, 30 * DAY),
 
 static const field fields[] = {
     F("application_uri", applicationUri, T_STR, true),
@@ -54,6 +50,10 @@ static const field fields[] = {
     U("push_backoff_min", pushBackoffMinS, 1, DAY),
     U("push_backoff_max", pushBackoffMaxS, 1, 30 * DAY),
     U("push_rejected_interval", pushRejectedS, 0, 30 * DAY),
+    F("authorization_service", authorizationService, T_BOOL, false),
+    F("authorization_service_uri", authorizationServiceUri, T_STR, false),
+    U("access_token_lifetime", accessTokenLifetime, 60, DAY),
+    U("refresh_token_lifetime", refreshTokenLifetime, 0, 30 * DAY),
 };
 #define NFIELDS (sizeof(fields) / sizeof(fields[0]))
 
@@ -139,15 +139,6 @@ static bool set_value(const field *f, const char *v, size_t n, gdsd_config *c) {
     case T_U32:
         GDS_ASSERT(f->size == sizeof(uint32_t));
         return set_u32(f, tmp, dst);
-    case T_SECONDS: {
-        GDS_ASSERT(f->size == sizeof(uint32_t));
-        long secs = 0;
-        if(!gds_parse_long(tmp, f->min, f->max, &secs))
-            return false;
-        uint32_t u = (uint32_t)secs;
-        memcpy(dst, &u, sizeof(u));
-        return true;
-    }
     default:
         return false;
     }
@@ -165,6 +156,8 @@ static void defaults(gdsd_config *c) {
     c->pushBackoffMinS = 60;
     c->pushBackoffMaxS = 6 * 3600;
     c->pushRejectedS = 3600;
+    c->accessTokenLifetime = 3600;   /* Elias 2026-11-09 */
+    c->refreshTokenLifetime = 86400; /* Elias 2026-11-09 */
 }
 
 /* One line; false on error. */
