@@ -43,8 +43,17 @@ gds_status gds_ca_wrap(const gds_ca_backend *backend, void *ctx, gds_ca **out) {
     }
     /* only the fields the backend's version has (ABI 2 ends before
      * new_key_pair); later ones stay NULL */
-    memcpy(&ca->b, backend,
-           backend->abiVersion < 3 ? offsetof(gds_ca_backend, new_key_pair) : sizeof(ca->b));
+    size_t n = sizeof(ca->b);
+    if(backend->abiVersion < 3)
+        n = offsetof(gds_ca_backend, new_key_pair);
+    else if(backend->abiVersion < 4)
+        n = offsetof(gds_ca_backend, get_issuer_cert);
+    memcpy(&ca->b, backend, n);
+    if(!ca->b.get_issuer_cert || !ca->b.get_issuer_crl || !ca->b.revoke_issuer) {
+        ca->b.get_issuer_cert = NULL; /* all three or none */
+        ca->b.get_issuer_crl = NULL;
+        ca->b.revoke_issuer = NULL;
+    }
     ca->ctx = ctx;
     *out = ca;
     return GDS_OK;
@@ -83,6 +92,56 @@ gds_status gds_ca_get_crl(gds_ca *ca, gds_buf *out) {
     return ca->b.get_crl(ca->ctx, out);
 }
 
+bool gds_ca_issuer_of(UA_UInt32 certType, gds_ca_issuer *out) {
+    switch(certType) {
+    case UA_NS0ID_APPLICATIONCERTIFICATETYPE:
+    case UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE:
+        *out = GDS_CA_ISSUER_RSA;
+        return true;
+    case UA_NS0ID_ECCNISTP256APPLICATIONCERTIFICATETYPE:
+        *out = GDS_CA_ISSUER_P256;
+        return true;
+    case UA_NS0ID_ECCNISTP384APPLICATIONCERTIFICATETYPE:
+        *out = GDS_CA_ISSUER_P384;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool issuer_valid(gds_ca_issuer issuer) {
+    return (unsigned)issuer < GDS_CA_ISSUERS;
+}
+
+gds_status gds_ca_get_issuer_cert(gds_ca *ca, gds_ca_issuer issuer, gds_buf *out) {
+    memset(out, 0, sizeof(*out));
+    if(!issuer_valid(issuer))
+        return GDS_EINVAL;
+    if(ca->b.get_issuer_cert)
+        return ca->b.get_issuer_cert(ca->ctx, issuer, out);
+    return issuer == GDS_CA_ISSUER_RSA ? ca->b.get_ca_cert(ca->ctx, out) : GDS_ENOTFOUND;
+}
+
+gds_status gds_ca_get_issuer_crl(gds_ca *ca, gds_ca_issuer issuer, gds_buf *out) {
+    memset(out, 0, sizeof(*out));
+    if(!issuer_valid(issuer))
+        return GDS_EINVAL;
+    if(ca->b.get_issuer_crl)
+        return ca->b.get_issuer_crl(ca->ctx, issuer, out);
+    return issuer == GDS_CA_ISSUER_RSA ? ca->b.get_crl(ca->ctx, out) : GDS_ENOTFOUND;
+}
+
+gds_status gds_ca_revoke_issuer(gds_ca *ca, gds_ca_issuer issuer, const gds_buf *serial) {
+    if(!issuer_valid(issuer) || !serial || !serial->data || serial->len == 0 ||
+       serial->len > GDS_MAX_SERIAL_SIZE)
+        return GDS_EINVAL;
+    if(ca->b.revoke_issuer)
+        return ca->b.revoke_issuer(ca->ctx, issuer, serial);
+    if(issuer != GDS_CA_ISSUER_RSA)
+        return GDS_ENOTFOUND;
+    return ca->b.revoke ? ca->b.revoke(ca->ctx, serial) : GDS_EUNSUPPORTED;
+}
+
 gds_status gds_ca_revoke(gds_ca *ca, const gds_buf *serial) {
     if(!serial || !serial->data || serial->len == 0 || serial->len > GDS_MAX_SERIAL_SIZE)
         return GDS_EINVAL;
@@ -96,13 +155,17 @@ gds_status gds_ca_revoke(gds_ca *ca, const gds_buf *serial) {
 #define NEW_KEY_BITS 2048 /* RsaSha256ApplicationCertificateType minimum */
 #define PFX_ITER 600000   /* PBKDF2 iterations of the PKCS #12 key bag */
 
-/* The key for the CertificateType; only the RSA types are issued. */
+/* The key for the CertificateType: RSA 2048, or the type's curve
+ * (OPC 10000-12 §7.8.4.11, §7.8.4.12). */
 static gds_status new_key(UA_UInt32 certType, EVP_PKEY **out) {
     *out = NULL;
-    if(certType != UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE &&
-       certType != UA_NS0ID_APPLICATIONCERTIFICATETYPE)
+    gds_ca_issuer issuer;
+    if(!gds_ca_issuer_of(certType, &issuer))
         return GDS_EUNSUPPORTED;
-    *out = EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)NEW_KEY_BITS);
+    if(issuer == GDS_CA_ISSUER_RSA)
+        *out = EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)NEW_KEY_BITS);
+    else
+        *out = EVP_PKEY_Q_keygen(NULL, NULL, "EC", issuer == GDS_CA_ISSUER_P256 ? "P-256" : "P-384");
     return *out ? GDS_OK : GDS_ECRYPTO;
 }
 
@@ -153,14 +216,14 @@ static gds_status encode_pem(EVP_PKEY *key, const gds_buf *pw, gds_buf *out) {
 /* PFX: PKCS #12 with key, certificate and the CA certificate (§7.9.4 "the
  * packet shall include the Certificate and the PrivateKey"); AES-256 and a
  * SHA-256 MAC under the password. Without a password nothing is encrypted. */
-static gds_status encode_pfx(gds_ca *ca, EVP_PKEY *key, const gds_buf *certDer,
-                             const gds_buf *pw, gds_buf *out) {
+static gds_status encode_pfx(gds_ca *ca, gds_ca_issuer issuer, EVP_PKEY *key,
+                             const gds_buf *certDer, const gds_buf *pw, gds_buf *out) {
     const unsigned char *p = certDer->data;
     X509 *cert = d2i_X509(NULL, &p, (long)certDer->len);
     gds_buf caDer = {0};
     X509 *caCert = NULL;
     STACK_OF(X509) *chain = sk_X509_new_null();
-    if(ca->b.get_ca_cert(ca->ctx, &caDer) == GDS_OK) {
+    if(gds_ca_get_issuer_cert(ca, issuer, &caDer) == GDS_OK) {
         p = caDer.data;
         caCert = d2i_X509(NULL, &p, (long)caDer.len);
     }
@@ -207,8 +270,11 @@ static gds_status issue_new_key(gds_ca *ca, const gds_ca_subject *subj, const gd
         r = ca->b.pre_sign(ca->ctx, GDS_CA_OP_NEW_KEY_PAIR, subj);
     if(r == GDS_OK)
         r = ca->b.sign_csr(ca->ctx, subj, &csr, out);
+    gds_ca_issuer issuer = GDS_CA_ISSUER_RSA;
+    if(r == GDS_OK && !gds_ca_issuer_of(subj->certificateType, &issuer))
+        r = GDS_EUNSUPPORTED;
     if(r == GDS_OK)
-        r = kr->format == GDS_CA_KEY_PFX ? encode_pfx(ca, k, &out->der, kr->password, key)
+        r = kr->format == GDS_CA_KEY_PFX ? encode_pfx(ca, issuer, k, &out->der, kr->password, key)
                                          : encode_pem(k, kr->password, key);
     gds_buf_free(&csr);
     EVP_PKEY_free(k);

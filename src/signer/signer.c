@@ -86,15 +86,16 @@ static gds_status journal(gds_signer *s, const UA_Guid *reqId, gds_status r,
 
 /* REVOKE: only a serial the store marks revoked, so opengdsd cannot put an
  * arbitrary serial on the CRL. Replies with the new CRL. */
-static gds_status revoke_from_store(gds_signer *s, const gds_buf *serial, gds_buf *crl) {
+static gds_status revoke_from_store(gds_signer *s, gds_ca_issuer issuer, const gds_buf *serial,
+                                    gds_buf *crl) {
     bool revoked = false;
     gds_status r = store_result(s, gds_store_cert_is_revoked(s->store, serial, &revoked));
     if(r != GDS_OK)
         return r;
     if(!revoked)
         return GDS_EDENIED;
-    r = gds_ca_revoke(s->ca, serial);
-    return r == GDS_OK ? gds_ca_get_crl(s->ca, crl) : r;
+    r = gds_ca_revoke_issuer(s->ca, issuer, serial);
+    return r == GDS_OK ? gds_ca_get_issuer_crl(s->ca, issuer, crl) : r;
 }
 
 gds_status gds_signer_handle(gds_signer *s, const uint8_t *msg, size_t len, gds_buf *reply) {
@@ -114,13 +115,13 @@ gds_status gds_signer_handle(gds_signer *s, const uint8_t *msg, size_t len, gds_
         r = journal(s, &m.requestId, key_pair_from_store(s, &m, &issued, &key), &issued);
         break;
     case GDS_SIGP_REVOKE:
-        r = revoke_from_store(s, &m.serial, &der);
+        r = revoke_from_store(s, m.issuer, &m.serial, &der);
         break;
     case GDS_SIGP_GET_CHAIN:
-        r = gds_ca_get_ca_cert(s->ca, &der);
+        r = gds_ca_get_issuer_cert(s->ca, m.issuer, &der);
         break;
     case GDS_SIGP_ISSUE_CRL:
-        r = gds_ca_get_crl(s->ca, &der);
+        r = gds_ca_get_issuer_crl(s->ca, m.issuer, &der);
         break;
     default:
         r = GDS_EUNSUPPORTED;

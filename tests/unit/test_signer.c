@@ -384,6 +384,42 @@ static void test_ipc_get(gds_ca *ipc, gds_ca *direct) {
     gds_buf_free(&b);
     CHECK(gds_ca_get_crl(ipc, &a) == GDS_OK && a.len > 0);
     gds_buf_free(&a);
+    /* each ECC issuer over IPC is the signer's own, and differs from RSA */
+    for(unsigned i = GDS_CA_ISSUER_P256; i < GDS_CA_ISSUERS; i++) {
+        gds_buf rsa = {0};
+        CHECK(gds_ca_get_issuer_cert(ipc, (gds_ca_issuer)i, &a) == GDS_OK);
+        CHECK(gds_ca_get_issuer_cert(direct, (gds_ca_issuer)i, &b) == GDS_OK);
+        CHECK(gds_ca_get_ca_cert(direct, &rsa) == GDS_OK);
+        CHECK(a.data && b.data && a.len == b.len && memcmp(a.data, b.data, a.len) == 0);
+        CHECK(a.data && rsa.data && (a.len != rsa.len || memcmp(a.data, rsa.data, a.len) != 0));
+        gds_buf_free(&a);
+        gds_buf_free(&b);
+        gds_buf_free(&rsa);
+        CHECK(gds_ca_get_issuer_crl(ipc, (gds_ca_issuer)i, &a) == GDS_OK && a.len > 0);
+        gds_buf_free(&a);
+    }
+}
+
+/* Issuer bytes: RSA is never explicit, unknown issuers are refused. */
+static void test_issuer_proto(void) {
+    gds_buf msg = {0};
+    gds_sigp_request m;
+    CHECK(gds_sigp_encode_issuer_request(GDS_SIGP_ISSUE_CRL, GDS_CA_ISSUER_P384, &msg) == GDS_OK);
+    CHECK(gds_sigp_decode(msg.data, msg.len, &m) == GDS_OK && m.issuer == GDS_CA_ISSUER_P384);
+    gds_sigp_request_clear(&m);
+    msg.data[msg.len - 1] = 0; /* explicit RSA */
+    CHECK(gds_sigp_decode(msg.data, msg.len, &m) == GDS_EINVAL);
+    msg.data[msg.len - 1] = (uint8_t)GDS_CA_ISSUERS;
+    CHECK(gds_sigp_decode(msg.data, msg.len, &m) == GDS_EINVAL);
+    gds_buf_free(&msg);
+    CHECK(gds_sigp_encode_issuer_request(GDS_SIGP_SIGN_CSR, GDS_CA_ISSUER_P256, &msg) == GDS_EINVAL);
+    uint8_t one = 1;
+    gds_buf serial = {&one, 1};
+    CHECK(gds_sigp_encode_revoke_issuer(GDS_CA_ISSUER_P256, &serial, &msg) == GDS_OK);
+    CHECK(gds_sigp_decode(msg.data, msg.len, &m) == GDS_OK && m.issuer == GDS_CA_ISSUER_P256 &&
+          m.serial.len == 1);
+    gds_sigp_request_clear(&m);
+    gds_buf_free(&msg);
 }
 
 /* Malformed and mutated datagrams: always a well-formed refusal, no crash. */
@@ -491,6 +527,7 @@ int main(int argc, char **argv) {
     test_malformed(&s, &reqId);
     test_revoke_proto();
     test_key_pair_proto();
+    test_issuer_proto();
     gds_journal_close(s.journal);
     gds_ca_close(s.ca);
     gds_store_close(s.store);

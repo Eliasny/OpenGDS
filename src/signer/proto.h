@@ -7,14 +7,15 @@
  * Request bodies:
  *   SIGN_CSR   requestId (16 bytes). The signer reads the CSR, the record
  *              and the request state from the store itself.
- *   REVOKE     serialLen u16 | serial. The signer revokes only a serial
- *              that the store holds and marks revoked.
+ *   REVOKE     serialLen u16 | serial [| issuer u8]. The signer revokes
+ *              only a serial that the store holds and marks revoked.
  *   NEW_KEY_PAIR  requestId (16 bytes) | format u8 (gds_ca_key_format) |
  *              passwordLen u16 | password. The signer reads the request
  *              (a key pair request has no CSR) and the record itself; only
  *              the key's format and password come from opengdsd.
- *   GET_CHAIN  empty
- *   ISSUE_CRL  empty
+ *   GET_CHAIN  [issuer u8]
+ *   ISSUE_CRL  [issuer u8]
+ *              issuer is a gds_ca_issuer other than RSA; absent = RSA.
  * Reply body: status u32, then on GDS_OK:
  *   SIGN_CSR   notBefore i64 | notAfter i64 | serialLen u16 | serial |
  *              derLen u32 | der
@@ -53,6 +54,11 @@ typedef enum {
 GDS_MUST_CHECK gds_status gds_sigp_encode_request(gds_sigp_op op, const UA_Guid *requestId,
                                                   gds_buf *out);
 GDS_MUST_CHECK gds_status gds_sigp_encode_revoke(const gds_buf *serial, gds_buf *out);
+GDS_MUST_CHECK gds_status gds_sigp_encode_revoke_issuer(gds_ca_issuer issuer,
+                                                       const gds_buf *serial, gds_buf *out);
+/* GET_CHAIN or ISSUE_CRL of one issuer. */
+GDS_MUST_CHECK gds_status gds_sigp_encode_issuer_request(gds_sigp_op op, gds_ca_issuer issuer,
+                                                        gds_buf *out);
 /* Decodes any request. serial (may be NULL) receives the REVOKE serial,
  * owned by the caller. */
 GDS_MUST_CHECK gds_status gds_sigp_decode_request_ex(const uint8_t *msg, size_t len,
@@ -70,6 +76,7 @@ typedef struct {
     gds_buf serial;   /* REVOKE */
     gds_ca_key_format format; /* NEW_KEY_PAIR */
     gds_buf password;         /* NEW_KEY_PAIR, may be empty */
+    gds_ca_issuer issuer;     /* REVOKE, GET_CHAIN, ISSUE_CRL */
 } gds_sigp_request;
 GDS_MUST_CHECK gds_status gds_sigp_decode(const uint8_t *msg, size_t len, gds_sigp_request *out);
 void gds_sigp_request_clear(gds_sigp_request *r);

@@ -116,6 +116,31 @@ static gds_status ipc_revoke(void *ctx, const gds_buf *serial) {
     return r;
 }
 
+static gds_status ipc_issuer_get(void *ctx, gds_sigp_op op, gds_ca_issuer issuer, gds_buf *out) {
+    gds_buf req = {0};
+    gds_status r = gds_sigp_encode_issuer_request(op, issuer, &req);
+    return r == GDS_OK ? exchange(ctx, op, req, NULL, out) : r;
+}
+
+static gds_status ipc_get_issuer_cert(void *ctx, gds_ca_issuer issuer, gds_buf *out) {
+    return ipc_issuer_get(ctx, GDS_SIGP_GET_CHAIN, issuer, out);
+}
+
+static gds_status ipc_get_issuer_crl(void *ctx, gds_ca_issuer issuer, gds_buf *out) {
+    return ipc_issuer_get(ctx, GDS_SIGP_ISSUE_CRL, issuer, out);
+}
+
+static gds_status ipc_revoke_issuer(void *ctx, gds_ca_issuer issuer, const gds_buf *serial) {
+    gds_buf req = {0};
+    gds_status r = gds_sigp_encode_revoke_issuer(issuer, serial, &req);
+    if(r != GDS_OK)
+        return r;
+    gds_buf crl = {0}; /* the new CRL; trust lists fetch it again */
+    r = exchange(ctx, GDS_SIGP_REVOKE, req, NULL, &crl);
+    gds_buf_free(&crl);
+    return r;
+}
+
 static void ipc_destroy(void *ctx) {
     ipc_ca *c = ctx;
     if(!c)
@@ -136,6 +161,9 @@ static const gds_ca_backend ipc_backend = {
     .destroy = ipc_destroy,
     .revoke = ipc_revoke,
     .new_key_pair = ipc_new_key_pair,
+    .get_issuer_cert = ipc_get_issuer_cert,
+    .get_issuer_crl = ipc_get_issuer_crl,
+    .revoke_issuer = ipc_revoke_issuer,
 };
 
 gds_status gds_ca_ipc_open(int fd, int timeoutMs, gds_ca **out) {

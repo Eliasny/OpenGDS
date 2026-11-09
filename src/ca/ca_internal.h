@@ -7,10 +7,14 @@
 #include <openssl/evp.h>
 #include <openssl/x509.h>
 
+#include "ca.h"
 #include "common/buf.h"
 #include "common/limits.h"
 
+/* One issuing CA (one key, certificate and CRL). */
 typedef struct {
+    gds_ca_issuer issuer;
+    const EVP_MD *md; /* SHA-256; SHA-384 for P-384 (ECC-nistP384 profile) */
     EVP_PKEY *key;
     X509 *cert;
     X509_CRL *crl;
