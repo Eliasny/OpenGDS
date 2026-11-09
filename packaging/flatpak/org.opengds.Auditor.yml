@@ -85,6 +85,9 @@ modules:
       - type: file
         path: ../../docs/upstream/patches/v1.5.10/0006-access-control-receive-event.patch
         dest: opengds-patches
+      - type: file
+        path: ../../docs/upstream/patches/v1.5.10/0007-load-short-der-crl.patch
+        dest: opengds-patches
 
   - name: gdsaudit
     buildsystem: simple
