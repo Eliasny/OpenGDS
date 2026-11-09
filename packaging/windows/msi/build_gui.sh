@@ -19,6 +19,10 @@ ENGINE=${2:?usage: build_gui.sh <out-dir> <engine-dir>}
 : "${MINGW_PREFIX:?run in an MSYS2 UCRT64 shell}"
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
+# the zip's folder itself, or a folder holding it (a downloaded CI artifact)
+exe=$(find "$ENGINE" -maxdepth 3 -name gdsaudit.exe | head -1)
+[ -n "$exe" ] || { echo "no gdsaudit.exe under $ENGINE" >&2; exit 1; }
+ENGINE=$(dirname "$exe")
 BUILD="$OUT/build"
 STAGE="$OUT/stage"
 
