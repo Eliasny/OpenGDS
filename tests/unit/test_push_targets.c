@@ -51,7 +51,7 @@ static bool row_cb(void *ctx, const gds_push_target_row *r) {
     if(x->n < 4) {
         x->ids[x->n] = r->appId;
         if(gds_path(x->endpoints[x->n], GDS_MAX_PUSH_ENDPOINT, "%s", r->endpoint) != GDS_OK)
-            x->endpoints[x->n][0] = '\0';
+            x->endpoints[x->n][0] = 0;
         x->enabled[x->n] = r->enabled;
     }
     x->n++;

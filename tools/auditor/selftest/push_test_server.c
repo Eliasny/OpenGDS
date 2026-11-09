@@ -25,9 +25,13 @@
  *       [--trust ca.der]... [--crl ca.crl]... \
  *       [--admin user:password]... [--user user:password]...
  *       [--admin-cert gds.der]... [--no-anonymous] [--accept-keys] [--setup]
+ *       [--reverse-connect opc.tcp://host:port]...
  *       [--break <mutant>] [--list-mutants]
  * --setup: start in the application setup state until the SecurityAdmin
  * Role has an identity (push_setup.h).
+ * --reverse-connect: also open connections to a Client that listens for
+ * Reverse Connect (OPC 10000-6 §7.1.3), as a device behind a firewall does;
+ * retried every second while no connection is open.
  */
 #include <open62541/plugin/accesscontrol_default.h>
 #include <open62541/plugin/create_certificate.h>
@@ -446,7 +450,7 @@ static int usage(const char *argv0) {
             "usage: %s [--port N] [--pki DIR] [--trust cert.der]... [--crl x.crl]...\n"
             "          [--admin user:password]... [--user user:password]...\n"
             "          [--admin-cert gds.der]... [--no-anonymous] [--accept-keys] [--setup]\n"
-            "          [--break MUTANT] [--list-mutants]\n",
+            "          [--reverse-connect URL]... [--break MUTANT] [--list-mutants]\n",
             argv0);
     return 2;
 }
@@ -456,8 +460,8 @@ static int usage(const char *argv0) {
 int main(int argc, char **argv) {
     long port = 4841;
     const char *pki = "./pki-push";
-    const char *trust[MAX_SEED], *crls[MAX_SEED];
-    size_t trustN = 0, crlN = 0;
+    const char *trust[MAX_SEED], *crls[MAX_SEED], *reverse[MAX_SEED];
+    size_t trustN = 0, crlN = 0, reverseN = 0;
     bool allowAnonymous = true; /* anonymous sessions are non-admin; used by refusal tests */
 
     for(int i = 1; i < argc; i++) {
@@ -497,6 +501,9 @@ int main(int argc, char **argv) {
             trust[trustN++] = v;
         } else if(!strcmp(a, "--crl") && crlN < MAX_SEED) {
             crls[crlN++] = v;
+        } else if(!strcmp(a, "--reverse-connect") && reverseN < MAX_SEED &&
+                  !strncmp(v, "opc.tcp://", 10)) {
+            reverse[reverseN++] = v;
         } else if((!strcmp(a, "--admin") || !strcmp(a, "--user")) && adminUsersSize < MAX_ADMINS) {
             const char *c = strchr(v, ':');
             AdminUser *u = &adminUsers[adminUsersSize];
@@ -651,6 +658,20 @@ int main(int argc, char **argv) {
     config->accessControl.getUserExecutableOnObject = getUserExecutableOnObject;
     origAccessLevel = config->accessControl.getUserAccessLevel;
     config->accessControl.getUserAccessLevel = getUserAccessLevel;
+
+    /* Reverse Connect (OPC 10000-6 §7.1.3): the server opens the TCP
+     * connection and sends ReverseHello; a short retry for the tests */
+    config->reverseReconnectInterval = 1000;
+    for(size_t i = 0; i < reverseN; i++) {
+        res = UA_Server_addReverseConnect(server, UA_STRING((char *)(uintptr_t)reverse[i]), NULL,
+                                          NULL, NULL);
+        if(res != UA_STATUSCODE_GOOD) {
+            fprintf(stderr, "reverse connect to %s: %s\n", reverse[i], UA_StatusCode_name(res));
+            UA_Server_delete(server);
+            return 1;
+        }
+        UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "Reverse Connect to %s", reverse[i]);
+    }
 
     UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND,
                 "Push test server on opc.tcp://localhost:%ld  (pki=%s, %zu admin users, %zu admin certs)",

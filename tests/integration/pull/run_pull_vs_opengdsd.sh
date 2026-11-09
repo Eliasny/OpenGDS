@@ -76,6 +76,7 @@ signer = $SIGNER
 ca_passphrase_file = $W/ca.pw
 organization = OpenGDS pull tracer
 approval = auto
+authorization_service = true
 CONF
 
 cp "$W/opengds.conf" "$W/base.conf"

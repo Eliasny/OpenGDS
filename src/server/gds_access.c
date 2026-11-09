@@ -235,6 +235,21 @@ static unsigned embed_bits(const gds_user *u) {
     return bits;
 }
 
+unsigned gds_user_roles(const gds_user *u) {
+    return u ? u->roles | embed_bits(u) : 0u;
+}
+
+const gds_users *gds_access_users(void) {
+    return installedUsers;
+}
+
+const gds_user *gds_users_find(const gds_users *u, const char *name) {
+    for(size_t i = 0; u && name && i < u->n; i++)
+        if(strcmp(u->users[i].name, name) == 0)
+            return &u->users[i];
+    return NULL;
+}
+
 gds_status gds_access_check_users(void) {
     const gds_users *users = installedUsers;
     for(size_t i = 0; users && i < users->n; i++) {
@@ -763,6 +778,10 @@ static bool server_configuration_method(UA_UInt32 id) {
         if(ids[i] == id)
             return true;
     return false;
+}
+
+bool gds_access_x509_users(void) {
+    return x509Enabled;
 }
 
 bool gds_method_executable(const struct gds_server *s, const void *sessionContext,

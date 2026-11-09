@@ -600,7 +600,7 @@ static bool target(const char *uri, const char *url) {
 static void *server_main(void *p) {
     (void)p;
     if(gds_server_run(F.server, &F.running) != GDS_OK)
-        fprintf(stderr, "test_push_engine: the server stopped with an error\n");
+        fprintf(stderr, "gds_server_run failed\n");
     return NULL;
 }
 
