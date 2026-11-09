@@ -368,6 +368,11 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
     s->serviceLevel = 255;
 
     gds_status st = gds_ca_get_ca_cert(s->ca, &s->caCert);
+    for(unsigned i = 0; st == GDS_OK && i < GDS_CA_ISSUERS; i++) {
+        st = gds_ca_get_issuer_cert(s->ca, (gds_ca_issuer)i, &s->issuerCert[i]);
+        if(st == GDS_ENOTFOUND && i != GDS_CA_ISSUER_RSA)
+            st = GDS_OK; /* a CA slot without this issuer: its types are not offered */
+    }
     if(st != GDS_OK) {
         fprintf(stderr, "opengds: reading the CA certificate failed: %s\n", gds_status_name(st));
         gds_server_delete(s);
@@ -471,6 +476,8 @@ void gds_server_delete(gds_server *s) {
     gds_ptl_free(s);
     gds_access_uninstall();
     gds_buf_free(&s->caCert);
+    for(size_t i = 0; i < GDS_CA_ISSUERS; i++)
+        gds_buf_free(&s->issuerCert[i]);
     pthread_cond_destroy(&s->plugCond);
     pthread_mutex_destroy(&s->plugLock);
     pthread_mutex_destroy(&s->bindLock);

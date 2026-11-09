@@ -8,6 +8,7 @@
  * the CA, so they carry the new entry from the next read on.
  * SPDX-License-Identifier: MPL-2.0 */
 #include <open62541/server.h>
+#include <openssl/x509.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,34 +21,98 @@
 
 typedef struct {
     gds_buf *serials;
+    gds_ca_issuer *issuers; /* the CA that issued serials[i] */
     size_t n, cap;
     gds_status err;
+    UA_Guid app; /* the scan's filter */
 } serial_list;
 
-static bool collect_serial(void *ctx, const gds_buf *serial) {
-    serial_list *l = ctx;
+static bool add_serial(serial_list *l, const gds_buf *serial, gds_ca_issuer issuer) {
     if(l->n == l->cap) {
         size_t cap = l->cap ? l->cap * 2 : 4;
         gds_buf *p = realloc(l->serials, cap * sizeof(*p));
-        if(!p) {
+        if(p)
+            l->serials = p;
+        gds_ca_issuer *q = p ? realloc(l->issuers, cap * sizeof(*q)) : NULL;
+        if(!q) {
             l->err = GDS_ENOMEM;
             return false;
         }
-        l->serials = p;
+        l->issuers = q;
         l->cap = cap;
     }
     l->err = gds_buf_dup(serial->data, serial->len, &l->serials[l->n]);
     if(l->err != GDS_OK)
         return false;
-    l->n++;
+    l->issuers[l->n++] = issuer;
     return true;
+}
+
+/* revoke_app's visit: the serials alone, for a store without cert_scan;
+ * every certificate issued then was RSA. */
+static bool collect_serial(void *ctx, const gds_buf *serial) {
+    return add_serial(ctx, serial, GDS_CA_ISSUER_RSA);
+}
+
+/* With cert_scan: the revoked certificates of the application and the CA
+ * of each one's CertificateType. */
+static bool collect_row(void *ctx, const gds_cert_row *row) {
+    serial_list *l = ctx;
+    gds_ca_issuer issuer = GDS_CA_ISSUER_RSA;
+    if(!row->revoked || !UA_Guid_equal(&row->appId, &l->app))
+        return true;
+    (void)gds_ca_issuer_of(row->certType, &issuer);
+    return add_serial(l, &row->serial, issuer);
 }
 
 static void serial_list_clear(serial_list *l) {
     for(size_t i = 0; i < l->n; i++)
         gds_buf_free(&l->serials[i]);
     free(l->serials);
+    free(l->issuers);
     memset(l, 0, sizeof(*l));
+}
+
+/* Every revoked certificate of appId with its issuer. */
+static gds_status revoked_of(gds_server *s, const UA_Guid *appId, serial_list *l) {
+    gds_lock(s);
+    gds_status st = gds_store_cert_revoke_app(s->store, appId, collect_serial, l);
+    if(st == GDS_OK)
+        st = l->err;
+    if(st == GDS_OK) {
+        serial_list scan;
+        memset(&scan, 0, sizeof(scan));
+        scan.app = *appId;
+        gds_status sc = gds_store_cert_scan(s->store, collect_row, &scan);
+        if(sc == GDS_OK)
+            sc = scan.err;
+        if(sc == GDS_OK) {
+            serial_list_clear(l);
+            *l = scan;
+        } else {
+            serial_list_clear(&scan);
+            if(sc != GDS_EUNSUPPORTED)
+                st = sc;
+        }
+    }
+    gds_unlock(s);
+    return st;
+}
+
+/* The CA that issued `der`, by its issuer name; RSA if none matches. */
+static gds_ca_issuer issuer_of_cert(const gds_server *s, const gds_buf *der) {
+    const unsigned char *p = der->data;
+    X509 *x = d2i_X509(NULL, &p, (long)der->len);
+    gds_ca_issuer r = GDS_CA_ISSUER_RSA;
+    for(unsigned i = 0; x && i < GDS_CA_ISSUERS; i++) {
+        const unsigned char *q = s->issuerCert[i].data;
+        X509 *ca = s->issuerCert[i].len ? d2i_X509(NULL, &q, (long)s->issuerCert[i].len) : NULL;
+        if(ca && X509_NAME_cmp(X509_get_issuer_name(x), X509_get_subject_name(ca)) == 0)
+            r = (gds_ca_issuer)i; // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange): i < GDS_CA_ISSUERS
+        X509_free(ca);
+    }
+    X509_free(x);
+    return r;
 }
 
 /* A CA refusal is never the caller's fault: the store has already checked
@@ -63,18 +128,14 @@ static UA_StatusCode ca_status(gds_status st) {
 UA_StatusCode gds_revoke_app_certs(gds_server *s, const UA_Guid *appId) {
     serial_list l;
     memset(&l, 0, sizeof(l));
-    gds_lock(s);
-    gds_status st = gds_store_cert_revoke_app(s->store, appId, collect_serial, &l);
-    gds_unlock(s);
-    if(st == GDS_OK)
-        st = l.err;
+    gds_status st = revoked_of(s, appId, &l);
     if(st != GDS_OK) {
         serial_list_clear(&l);
         return gds_status_to_ua(st);
     }
     /* outside storeLock: the signer reads the store */
     for(size_t i = 0; st == GDS_OK && i < l.n; i++)
-        st = gds_ca_revoke(s->ca, &l.serials[i]);
+        st = gds_ca_revoke_issuer(s->ca, l.issuers[i], &l.serials[i]);
     serial_list_clear(&l);
     if(st != GDS_OK) {
         fprintf(stderr, "opengds: revoking the certificates of an application: %s\n",
@@ -118,7 +179,7 @@ static GDS_METHOD(revoke_certificate) {
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     if(st != GDS_OK)
         return gds_status_to_ua(st);
-    st = gds_ca_revoke(s->ca, &serial); /* outside storeLock */
+    st = gds_ca_revoke_issuer(s->ca, issuer_of_cert(s, &der), &serial); /* outside storeLock */
     gds_buf_free(&serial);
     if(st != GDS_OK) {
         fprintf(stderr, "opengds: RevokeCertificate: %s\n", gds_status_name(st));

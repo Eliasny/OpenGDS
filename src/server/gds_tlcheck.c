@@ -9,7 +9,7 @@
  *     (Bad_CertificateInvalid);
  *   - Build Certificate Chain / Signature: a certificate is self-signed
  *     (its own signature verifies) or signed by a CA certificate of the
- *     list or by the GDS CA (Bad_CertificateChainIncomplete if no CA of
+ *     list or by one of the GDS's issuing CAs (RSA, P-256, P-384) (Bad_CertificateChainIncomplete if no CA of
  *     the issuer's name is there, Bad_CertificateInvalid if the signature
  *     does not verify); a CRL likewise;
  *   - Validity Period: now within notBefore..notAfter
@@ -93,17 +93,21 @@ static UA_StatusCode add_crls(parsed *p, const UA_ByteString *list, size_t n) {
     return UA_STATUSCODE_GOOD;
 }
 
-static UA_StatusCode parse_all(const UA_TrustListDataType *tl, X509 *gdsCa, parsed *p) {
-    size_t nc = tl->trustedCertificatesSize + tl->issuerCertificatesSize + 1;
+static UA_StatusCode parse_all(const UA_TrustListDataType *tl, X509 *const *gdsCas, size_t nGds,
+                               parsed *p) {
+    size_t nc = tl->trustedCertificatesSize + tl->issuerCertificatesSize + nGds;
     size_t nl = tl->trustedCrlsSize + tl->issuerCrlsSize;
     p->certs = (X509 **)calloc(nc, sizeof(X509 *)); // NOLINT(bugprone-sizeof-expression): an array of pointers
     p->issuer = calloc(nc, sizeof(*p->issuer));
     p->crls = (X509_CRL **)calloc(nl ? nl : 1, sizeof(X509_CRL *)); // NOLINT(bugprone-sizeof-expression): an array of pointers
-    if(!p->certs || !p->issuer || !p->crls || !X509_up_ref(gdsCa))
+    if(!p->certs || !p->issuer || !p->crls)
         return UA_STATUSCODE_BADOUTOFMEMORY;
-    p->certs[0] = gdsCa;
-    p->issuer[0] = true;
-    p->nCerts = 1;
+    for(size_t i = 0; i < nGds; i++) { /* trusted as they are: they issue the group */
+        if(!X509_up_ref(gdsCas[i]))
+            return UA_STATUSCODE_BADOUTOFMEMORY;
+        p->certs[p->nCerts] = gdsCas[i];
+        p->issuer[p->nCerts++] = true;
+    }
     UA_StatusCode r = add_certs(p, tl->trustedCertificates, tl->trustedCertificatesSize, false);
     if(r == UA_STATUSCODE_GOOD)
         r = add_certs(p, tl->issuerCertificates, tl->issuerCertificatesSize, true);
@@ -160,13 +164,13 @@ static bool revoked(const parsed *p, X509 *x) {
     return false;
 }
 
-static UA_StatusCode check_all(const parsed *p) {
+static UA_StatusCode check_all(const parsed *p, size_t nGds) {
     for(size_t i = 0; i < p->nCrls; i++) {
         UA_StatusCode r = find_signer(p, X509_CRL_get_issuer(p->crls[i]), NULL, p->crls[i]);
         if(r != UA_STATUSCODE_GOOD)
             return r;
     }
-    for(size_t i = 1; i < p->nCerts; i++) { /* [0] is the GDS CA */
+    for(size_t i = nGds; i < p->nCerts; i++) { /* [0, nGds) are the GDS CAs */
         X509 *x = p->certs[i];
         UA_StatusCode r = check_time(x, p->issuer[i]);
         if(r == UA_STATUSCODE_GOOD)
@@ -179,13 +183,17 @@ static UA_StatusCode check_all(const parsed *p) {
     return UA_STATUSCODE_GOOD;
 }
 
-UA_StatusCode gds_tl_validate(const UA_TrustListDataType *tl, X509 *gdsCa) {
-    if(!gdsCa)
+UA_StatusCode gds_tl_validate(const UA_TrustListDataType *tl, X509 *const *gdsCas,
+                              size_t nGdsCas) {
+    if(!gdsCas || nGdsCas == 0)
         return UA_STATUSCODE_BADINTERNALERROR;
+    for(size_t i = 0; i < nGdsCas; i++)
+        if(!gdsCas[i])
+            return UA_STATUSCODE_BADINTERNALERROR;
     parsed p = {0};
-    UA_StatusCode r = parse_all(tl, gdsCa, &p);
+    UA_StatusCode r = parse_all(tl, gdsCas, nGdsCas, &p);
     if(r == UA_STATUSCODE_GOOD)
-        r = check_all(&p);
+        r = check_all(&p, nGdsCas);
     parsed_free(&p);
     return r;
 }

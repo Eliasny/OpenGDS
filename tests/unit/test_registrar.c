@@ -3,7 +3,9 @@
  * Registration is idempotent per ApplicationUri; a held application gets
  * no certificate, neither from gds_server_sign_request nor from
  * StartSigningRequest, until it is released; a signed CSR comes back with
- * the issuer chain; the trust list is the CA certificate and its CRL;
+ * the issuer chain; the trust list starts with the certificate and CRL of
+ * every issuing CA (RSA, P-256, P-384), which are also the group's
+ * CertificateTypes;
  * every change is in the audit log with the actor as ClientUserId; a
  * STANDBY node refuses with GDS_ENOTLEADER.
  * SPDX-License-Identifier: MPL-2.0 */
@@ -125,10 +127,29 @@ static void test_trust_list(gds_server *s) {
     UA_TrustListDataType tl;
     if(CHECK(gds_server_get_trust_list(s, NULL, &tl) == GDS_OK)) {
         CHECK_EQ_INT(tl.specifiedLists, UA_TRUSTLISTMASKS_ALL);
-        CHECK(tl.trustedCertificatesSize == 1 && tl.trustedCertificates[0].length == s->caCert.len &&
+        CHECK(tl.trustedCertificatesSize == GDS_CA_ISSUERS &&
+              tl.trustedCertificates[0].length == s->caCert.len &&
               memcmp(tl.trustedCertificates[0].data, s->caCert.data, s->caCert.len) == 0);
-        CHECK_EQ_INT(tl.trustedCrlsSize, 1);
+        for(size_t i = 0; i < tl.trustedCertificatesSize && i < GDS_CA_ISSUERS; i++)
+            CHECK(tl.trustedCertificates[i].length == s->issuerCert[i].len &&
+                  memcmp(tl.trustedCertificates[i].data, s->issuerCert[i].data,
+                         s->issuerCert[i].len) == 0);
+        CHECK_EQ_INT(tl.trustedCrlsSize, GDS_CA_ISSUERS);
     }
+    /* DefaultApplicationGroup.CertificateTypes: RSA first, then the curves */
+    UA_Variant v;
+    UA_Variant_init(&v);
+    UA_NodeId types = UA_NODEID_NUMERIC(
+        s->ns, UA_GDSID_DIRECTORY_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_CERTIFICATETYPES);
+    if(CHECK(UA_Server_readValue(gds_server_ua(s), types, &v) == UA_STATUSCODE_GOOD) &&
+       CHECK(UA_Variant_hasArrayType(&v, &UA_TYPES[UA_TYPES_NODEID])) &&
+       CHECK_EQ_INT(v.arrayLength, 3)) {
+        const UA_NodeId *t = v.data;
+        CHECK(t[0].identifier.numeric == UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE &&
+              t[1].identifier.numeric == UA_NS0ID_ECCNISTP256APPLICATIONCERTIFICATETYPE &&
+              t[2].identifier.numeric == UA_NS0ID_ECCNISTP384APPLICATIONCERTIFICATETYPE);
+    }
+    UA_Variant_clear(&v);
     UA_TrustListDataType_clear(&tl);
     UA_NodeId def =
         UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
