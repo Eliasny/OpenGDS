@@ -151,6 +151,10 @@ typedef struct {
      * hook (A14) allowed this ApplicationId. */
     bool managedGranted;
     UA_Guid managedApp;
+    /* Set only on a job's copy: the embedder's approval hook (A22) was
+     * asked about a request of approvalApp and approved it or not. */
+    bool approvalAsked, approvalGranted;
+    UA_Guid approvalApp;
     UA_MessageSecurityMode securityMode; /* of the session's endpoint */
     UA_String securityPolicyUri;
     gds_tl_handle tl[GDS_SESSION_TL_HANDLES];

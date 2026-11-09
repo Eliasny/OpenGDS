@@ -567,6 +567,25 @@ typedef bool (*gds_may_manage_fn)(void *ctx, const gds_caller *caller,
 GDS_MUST_CHECK gds_status gds_server_set_application_rights_hook(struct gds_server *s,
                                                                  gds_may_manage_fn fn, void *ctx);
 
+/* ---- approvals for embedders (UASM ask A22) ----
+ * approve answers one question: may this caller's StartSigningRequest
+ * (OPC 10000-12 §7.9.3) for this ApplicationId skip the administrator?
+ * For example a device's DCA asking for its own certificates, which OPC
+ * 10000-21 §4.3.3 lets it do "without the need for additional approvals"
+ * because the Registrar already accepted the device. The core asks only
+ * for a request that passed every check and that its own approval policy
+ * (gds_server_config.approval) would leave Pending, so the hook can only
+ * add approvals. With true the request is approved on arrival and signed
+ * as usual, and a CertificateRequestedAuditEventType records that the
+ * embedder approved it; with false it waits for an administrator as
+ * before. It runs on a plugin worker, the call completing
+ * asynchronously; it must not block for long. Set it before
+ * gds_server_run; GDS_ESTATE after. */
+typedef bool (*gds_approve_fn)(void *ctx, const gds_caller *caller,
+                               const UA_NodeId *applicationId);
+GDS_MUST_CHECK gds_status gds_server_set_approval_hook(struct gds_server *s, gds_approve_fn fn,
+                                                       void *ctx);
+
 /* ---- plugin trust lists (UASM ask A18) ----
  * A CertificateGroup of the plugin's own (OPC 10000-12 §7.8.3.1), for
  * example the SKS's push targets: a CertificateGroupType object `name`

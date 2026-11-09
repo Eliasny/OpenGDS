@@ -147,9 +147,71 @@ static UA_StatusCode signing_args(gds_server *s, void *sessionContext, size_t in
     return r;
 }
 
+/* The method call a request came in on, so that the approval hook (A22)
+ * can run it again on a worker. */
+typedef struct {
+    UA_MethodCallback fn;
+    const UA_NodeId *sessionId;
+    void *sessionContext;
+    const UA_NodeId *methodId;
+    const UA_NodeId *objectId;
+    size_t inputSize;
+    const UA_Variant *input;
+    size_t outputSize;
+    UA_Variant *output;
+} method_call;
+
+#define METHOD_CALL(f)                                                                     \
+    {(f), sessionId, sessionContext, methodId, objectId, inputSize, input, outputSize, output}
+
+/* A22: a request the policy leaves Pending goes to the embedder's approval
+ * hook once (on a worker; Good_CompletesAsynchronously, then the method
+ * runs again); its yes makes the request Received. */
+static UA_StatusCode approval_hook(gds_server *s, const method_call *mc, gds_request *q,
+                                   bool *byHook) {
+    const gds_session *ss = mc->sessionContext;
+    if(q->state != GDS_REQ_PENDING || !s->approve || !ss)
+        return UA_STATUSCODE_GOOD;
+    if(ss->approvalAsked) {
+        if(ss->approvalGranted && UA_Guid_equal(&ss->approvalApp, &q->appId)) {
+            q->state = GDS_REQ_RECEIVED;
+            *byHook = true;
+        }
+        return UA_STATUSCODE_GOOD;
+    }
+    UA_StatusCode r = gds_embed_defer_approval(s, mc->fn, mc->sessionId, mc->sessionContext,
+                                               mc->methodId, mc->objectId, &q->appId,
+                                               mc->inputSize, mc->input, mc->outputSize,
+                                               mc->output);
+    if(r == UA_STATUSCODE_GOODCOMPLETESASYNCHRONOUSLY || r == UA_STATUSCODE_BADSERVERTOOBUSY)
+        return r;
+    return UA_STATUSCODE_GOOD; /* no worker: it waits for an administrator */
+}
+
+/* The embedder approved it: recorded with the embedder as the approver.
+ * A key pair request has no CSR, and its password is never audited. */
+static void audit_hook_approval(gds_server *s, const gds_request *q) {
+    bool keyPair = q->csr.len == 0;
+    UA_NodeId app = UA_NODEID_GUID(s->ns, q->appId);
+    UA_NodeId group = UA_NODEID_NUMERIC(s->ns, q->groupId), type = UA_NODEID_NUMERIC(0, q->certType);
+    UA_ByteString csr = {q->csr.len, (UA_Byte *)(uintptr_t)q->csr.data};
+    UA_Variant args[4];
+    UA_Variant_setScalar(&args[0], &app, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&args[1], &group, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&args[2], &type, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&args[3], &csr, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    gds_status a = gds_cert_audit(
+        s, "embedder", UA_GDSID_CERTIFICATEREQUESTEDAUDITEVENTTYPE,
+        keyPair ? UA_GDSID_DIRECTORY_STARTNEWKEYPAIRREQUEST : UA_GDSID_DIRECTORY_STARTSIGNINGREQUEST,
+        q->certType, args, keyPair ? 3 : 4, true,
+        "approved on arrival by the embedder's approval hook");
+    if(a != GDS_OK)
+        fprintf(stderr, "opengds: audit of an approval: %s\n", gds_status_name(a));
+}
+
 /* Store a request (approved or Pending) and raise its dialog or kick the
  * worker. Shared by StartSigningRequest and StartNewKeyPairRequest. */
-static UA_StatusCode submit_request(gds_server *s, void *sessionContext, gds_request *q);
+static UA_StatusCode submit_request(gds_server *s, const method_call *mc, gds_request *q);
 
 static GDS_METHOD(start_signing_request) {
     GDS_METHOD_UNUSED;
@@ -172,17 +234,22 @@ static GDS_METHOD(start_signing_request) {
     q.certType = type;
     q.csr.data = csr->data; /* borrowed for the insert */
     q.csr.len = csr->length;
-    r = submit_request(s, sessionContext, &q);
+    const method_call mc = METHOD_CALL(start_signing_request);
+    r = submit_request(s, &mc, &q);
     if(r != UA_STATUSCODE_GOOD)
         return r;
     UA_NodeId rid = UA_NODEID_GUID(s->ns, q.id);
     return UA_Variant_setScalarCopy(&output[0], &rid, &UA_TYPES[UA_TYPES_NODEID]);
 }
 
-static UA_StatusCode submit_request(gds_server *s, void *sessionContext, gds_request *q) {
-    gds_status st = gds_policy_initial_state(s, sessionContext, q, &q->state);
+static UA_StatusCode submit_request(gds_server *s, const method_call *mc, gds_request *q) {
+    gds_status st = gds_policy_initial_state(s, mc->sessionContext, q, &q->state);
     if(st != GDS_OK)
         return gds_status_to_ua(st);
+    bool byHook = false;
+    UA_StatusCode r = approval_hook(s, mc, q, &byHook);
+    if(r != UA_STATUSCODE_GOOD)
+        return r; /* asynchronous: asked on a worker, the method runs again */
     if(q->state == GDS_REQ_PENDING && s->pendingApprovals >= GDS_MAX_PENDING_APPROVALS)
         return UA_STATUSCODE_BADSERVERTOOBUSY; /* decision D1 */
     gds_lock(s);
@@ -191,12 +258,14 @@ static UA_StatusCode submit_request(gds_server *s, void *sessionContext, gds_req
     if(st != GDS_OK)
         return gds_status_to_ua(st);
     if(q->state != GDS_REQ_PENDING) {
+        if(byHook)
+            audit_hook_approval(s, q);
         gds_worker_kick(s);
         return UA_STATUSCODE_GOOD;
     }
     UA_ApplicationRecordDataType rec;
     UA_ApplicationRecordDataType_init(&rec);
-    UA_StatusCode r = gds_load_app(s, &q->appId, &rec);
+    r = gds_load_app(s, &q->appId, &rec);
     if(r == UA_STATUSCODE_GOOD)
         r = gds_approvals_raise(s, q, &rec.applicationUri);
     UA_ApplicationRecordDataType_clear(&rec);
@@ -289,8 +358,9 @@ static GDS_METHOD(start_new_key_pair_request) {
         return UA_STATUSCODE_BADSERVERTOOBUSY;
     if(st != GDS_OK)
         return gds_status_to_ua(st);
-    r = submit_request(s, sessionContext, &q);
-    if(r != UA_STATUSCODE_GOOD) {
+    const method_call mc = METHOD_CALL(start_new_key_pair_request);
+    r = submit_request(s, &mc, &q);
+    if(r != UA_STATUSCODE_GOOD) { /* also when the hook runs it again */
         gds_kp_drop(s, &q.id);
         return r;
     }

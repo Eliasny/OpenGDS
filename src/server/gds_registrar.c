@@ -237,8 +237,9 @@ static gds_status wait_signed(gds_server *s, const UA_Guid *id, uint32_t timeout
     }
 }
 
-static gds_status cert_event(gds_server *s, const char *actor, UA_UInt32 type, UA_UInt32 method,
-                             UA_UInt32 certType, const UA_Variant *args, size_t nArgs, bool ok) {
+gds_status gds_cert_audit(gds_server *s, const char *actor, UA_UInt32 type, UA_UInt32 method,
+                          UA_UInt32 certType, const UA_Variant *args, size_t nArgs, bool ok,
+                          const char *msg) {
     UA_NodeId group =
         UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
     UA_NodeId ct = UA_NODEID_NUMERIC(0, certType);
@@ -250,7 +251,7 @@ static gds_status cert_event(gds_server *s, const char *actor, UA_UInt32 type, U
     f[1].name = "CertificateType";
     UA_Variant_setScalar(&f[1].value, &ct, &UA_TYPES[UA_TYPES_NODEID]);
     return audit(s, actor, type, method, UA_GDSID_WELLKNOWNROLE_CERTIFICATEAUTHORITYADMIN, f, 2,
-                 args, nArgs, ok, NULL);
+                 args, nArgs, ok, msg);
 }
 
 typedef struct {
@@ -332,9 +333,9 @@ gds_status gds_server_sign_request(gds_server *s, const char *actor, const UA_No
     UA_Variant_setScalar(&args[1], &group, &UA_TYPES[UA_TYPES_NODEID]);
     UA_Variant_setScalar(&args[2], &type, &UA_TYPES[UA_TYPES_NODEID]);
     UA_Variant_setScalar(&args[3], (void *)(uintptr_t)csr, &UA_TYPES[UA_TYPES_BYTESTRING]);
-    gds_status a = cert_event(s, actor, UA_GDSID_CERTIFICATEREQUESTEDAUDITEVENTTYPE,
+    gds_status a = gds_cert_audit(s, actor, UA_GDSID_CERTIFICATEREQUESTEDAUDITEVENTTYPE,
                               UA_GDSID_DIRECTORY_STARTSIGNINGREQUEST, q.certType, args, 4,
-                              st == GDS_OK);
+                              st == GDS_OK, NULL);
     if(a != GDS_OK)
         fprintf(stderr, "opengds: audit of a signing request: %s\n", gds_status_name(a));
     if(st != GDS_OK)
@@ -352,8 +353,8 @@ gds_status gds_server_sign_request(gds_server *s, const char *actor, const UA_No
     UA_Variant_setScalar(&fin[0], (void *)(uintptr_t)appId, &UA_TYPES[UA_TYPES_NODEID]);
     UA_Variant_setScalar(&fin[1], &rid, &UA_TYPES[UA_TYPES_NODEID]);
     if(st != GDS_EREMOTE) {
-        a = cert_event(s, actor, UA_GDSID_CERTIFICATEDELIVEREDAUDITEVENTTYPE,
-                       UA_GDSID_DIRECTORY_FINISHREQUEST, q.certType, fin, 2, st == GDS_OK);
+        a = gds_cert_audit(s, actor, UA_GDSID_CERTIFICATEDELIVEREDAUDITEVENTTYPE,
+                       UA_GDSID_DIRECTORY_FINISHREQUEST, q.certType, fin, 2, st == GDS_OK, NULL);
         if(a != GDS_OK)
             fprintf(stderr, "opengds: audit of a delivery: %s\n", gds_status_name(a));
     }
