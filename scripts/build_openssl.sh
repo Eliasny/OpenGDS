@@ -19,7 +19,7 @@ mkdir -p "$WORK"
 cd "$WORK"
 TARBALL=openssl-$VERSION.tar.gz
 if [ ! -f "$TARBALL" ]; then
-    curl -fsSL --proto '=https' --tlsv1.2 -o "$TARBALL.part" \
+    curl -fsSL --proto '=https' --tlsv1.2 --retry 5 -o "$TARBALL.part" \
         "https://github.com/openssl/openssl/releases/download/openssl-$VERSION/$TARBALL"
     mv "$TARBALL.part" "$TARBALL"
 fi
