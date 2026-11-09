@@ -17,6 +17,9 @@ add_library(gdsaudit_profile_server STATIC
     srv_restore.c)
 target_include_directories(gdsaudit_profile_server PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(gdsaudit_profile_server PUBLIC gdsaudit_core)
+if(NOT GDSAUDIT_SELFTESTS) # tests and self-test targets: full Linux builds only
+    return()
+endif()
 
 # The server profile against push_test_server: every test against the good
 # target with pinned verdicts, then each --break mutant must be caught by

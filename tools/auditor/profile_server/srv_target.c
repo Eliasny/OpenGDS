@@ -4,9 +4,13 @@
 
 #include <errno.h>
 #include <stdio.h>
-#include <sys/wait.h>
 #include <time.h>
+#ifdef _WIN32
+#include "common/platform.h" /* windows.h */
+#else
+#include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include <open62541/client_config_default.h>
 #include <open62541/client_highlevel.h>
@@ -1017,6 +1021,31 @@ bool st_cert_refusal(UA_StatusCode r) {
     return false;
 }
 
+#ifdef _WIN32
+/* Windows: the command goes to cmd.exe (/s: it strips the outer quotes and
+ * runs the rest as typed). No handles are inherited, the counterpart of
+ * closing every descriptor above stderr. */
+static UA_StatusCode run_restart_cmd(const char *cmd) {
+    fflush(NULL);
+    char line[4096];
+    int n = snprintf(line, sizeof(line), "cmd.exe /d /s /c \"%s\"", cmd);
+    if(n < 0 || (size_t)n >= sizeof(line))
+        return UA_STATUSCODE_BADINTERNALERROR;
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    if(!CreateProcessA(NULL, line, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+        return UA_STATUSCODE_BADINTERNALERROR;
+    CloseHandle(pi.hThread);
+    DWORD code = 1;
+    if(WaitForSingleObject(pi.hProcess, INFINITE) != WAIT_OBJECT_0 ||
+       !GetExitCodeProcess(pi.hProcess, &code))
+        code = 1;
+    CloseHandle(pi.hProcess);
+    return code == 0 ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADINTERNALERROR;
+}
+#else
 static UA_StatusCode run_restart_cmd(const char *cmd) {
     fflush(NULL);
     pid_t pid = fork();
@@ -1038,6 +1067,7 @@ static UA_StatusCode run_restart_cmd(const char *cmd) {
     return WIFEXITED(st) && WEXITSTATUS(st) == 0 ? UA_STATUSCODE_GOOD
                                                   : UA_STATUSCODE_BADINTERNALERROR;
 }
+#endif
 
 /* Run cmd (or, without one, ask the operator at a terminal to do what
  * prompt says), then wait for GetEndpoints within the settle timeout. */

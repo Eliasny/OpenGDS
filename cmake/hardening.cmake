@@ -49,10 +49,18 @@ endif()
 
 # _FORTIFY_SOURCE needs optimisation and conflicts with ASan; set it only
 # for optimised, non-sanitized builds.
-if(NOT OPENGDS_SANITIZE AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+# MinGW: its fortify wrappers need libssp and check snprintf as MSVCRT
+# printf (no %zu), so Windows builds go without.
+if(NOT WIN32 AND NOT OPENGDS_SANITIZE AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(gds_hardening INTERFACE -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3)
 endif()
 
+if(WIN32)
+    # PE: ASLR (64-bit), DEP; static so the .exe needs no MinGW DLLs
+    target_link_options(gds_hardening INTERFACE
+        -Wl,--dynamicbase -Wl,--high-entropy-va -Wl,--nxcompat -static)
+else()
 target_link_options(gds_hardening INTERFACE
     -pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack
     -Wl,--as-needed -Wl,--no-copy-dt-needed-entries)
+endif()

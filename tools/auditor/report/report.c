@@ -14,6 +14,7 @@
 
 #include "cu.h"
 #include "results.h"
+#include "common/platform.h"
 
 #include "common/banned.h"
 
@@ -300,7 +301,7 @@ static bool write_one(const char *dir, const char *name, writer_fn fn, const ga_
     }
     bool ok = fn(f, r);
     ok = (fclose(f) == 0) && ok;
-    if(!ok || rename(tmp, path) != 0) {
+    if(!ok || gds_rename_replace(tmp, path) != 0) {
         snprintf(err, errLen, "%s: %s", path, ok ? strerror(errno) : "write failed");
         unlink(tmp);
         return false;
@@ -309,7 +310,7 @@ static bool write_one(const char *dir, const char *name, writer_fn fn, const ga_
 }
 
 bool ga_report_write_dir(const char *dir, const ga_results *r, char *err, size_t errLen) {
-    if(mkdir(dir, 0755) != 0 && errno != EEXIST) {
+    if(gds_mkdir(dir, 0755) != 0 && errno != EEXIST) {
         snprintf(err, errLen, "%s: %s", dir, strerror(errno));
         return false;
     }
