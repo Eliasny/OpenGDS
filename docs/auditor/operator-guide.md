@@ -54,7 +54,11 @@ the pass rule and every other verdict's rule.
    | `w/ca/` | The Auditor TEST CA. Every certificate it issues says "OpenGDS Auditor TEST" and lives at most 30 days |
 
 4. **Get the target's certificate** (DER) and pin it with `--server-cert`.
-   Most devices export it from their configuration tool or web page.
+   Most devices export it from their configuration tool or web page, or
+   `gdsaudit discover --url opc.tcp://plc:4840 --certs certs/` lists the
+   endpoints (policy, mode, user tokens, thumbprint) and writes each server
+   certificate as `<SHA-1 thumbprint>.der`; check the thumbprint against the
+   device before you pin it. The UI's Targets window does the same.
    `--tofu` (trust on first use) exists for test setups only.
 5. **CA-issued targets.** When a GDS already pushed the target's certificate,
    give its issuer and CRL too, or every session fails with
@@ -108,6 +112,28 @@ Rules for live targets:
   second Ctrl-C kills the Auditor without a restore.
 - Pausing: SIGUSR1 (or Pause in the UI) waits before the next test; SIGUSR2
   resumes.
+
+### Restarts, the setup state and operator steps
+
+Some tests need something done to the target between steps:
+
+| Tests | Need | Give |
+| --- | --- | --- |
+| SRV-PER-* (changes survive a restart) | The target restarted | `--restart-cmd CMD`: a command that starts the restart and returns |
+| SRV-SET-* (application setup state, Annex G.2) | The target reset to its setup state | `--only SRV-SET --setup-cmd CMD`; ResetToServerDefaults (SRV-SET-06) only with `--allow-reset` |
+| Any test marked O in the catalogue | A manual step by a person | An operator (below) |
+
+Without the command or an operator, those tests are Not tested. The setup
+tests run only when selected by name and are in no preset, because a reset
+removes the target's configuration.
+
+An operator answers manual steps. At a terminal, `--prompts /dev/stdin`
+lets you answer as the run goes: the Auditor prints the step and waits for
+`<n> done`, `<n> skip` or `<n> fail <note>`. Skip leaves the test Not
+tested; fail fails it with your note. To repeat a run unattended, keep the
+answers in a file and give it with `--prompts FILE` (or `hooks.prompts` in a
+plan). Without `--prompts`, every manual step is skipped. In the desktop UI
+an Operator step window asks instead.
 
 Optional identities widen the run: `--user U --user-password-file F` (an
 authenticated user without SecurityAdmin; tests that need it are Not tested
@@ -182,7 +208,29 @@ says what the Auditor did, the evidence line gives the status code or
 thumbprint it saw. To repeat one test, use `--only SRV-TL-02` (a prefix
 selects a group: `--only SRV-TL`).
 
-## 9. Troubleshooting
+## 9. Windows
+
+The headless `gdsaudit.exe` is one static program in a zip with its
+licences; it needs no DLLs beyond Windows' own. It runs the same tests and
+gives the same verdicts, with these differences:
+
+- **File protection.** Windows has no Unix mode bits. Keep the work folder
+  (it holds private keys) and password files in your own profile, such as
+  `%LOCALAPPDATA%\gdsaudit`, where NTFS permissions keep other users out.
+- **Pausing.** There is no SIGUSR1. Ctrl-C and Ctrl-Break abort and restore
+  as on Linux; to pause, use the desktop UI.
+- **Client triggers.** The program after `--` can be an `.exe`, or a `.bat`
+  or `.cmd` script (run through `cmd /c`). It gets the same `GDSAUDIT_*`
+  variables plus the Windows basics (`SystemRoot`, `PATHEXT`, `TEMP`,
+  profile folders).
+- **Hooks and prompts.** `--restart-cmd` and `--setup-cmd` run through
+  `cmd.exe /c`, so give a Windows command (a `.bat`, or `ssh` to the
+  device). `--prompts` reads a file of answers prepared before the run.
+- Paths in plan files can use `/`, or `\` inside single-quoted TOML strings
+  (`dir = 'C:\audits\plc'`); a relative path is taken from the plan file's
+  folder as on Linux.
+
+## 10. Troubleshooting
 
 | Symptom | Likely cause and fix |
 | --- | --- |
@@ -190,6 +238,7 @@ selects a group: `--only SRV-TL`).
 | Every session fails with Bad_CertificateChainIncomplete | The target's certificate is CA-issued: add `--target-trust` and `--target-crl` |
 | `BadCertificateUntrusted` on the plain identity | Trust `<work>/own/cert.der` on the target |
 | Tests needing `user` are Not tested | Give `--user` and `--user-password-file` |
+| SRV-PER tests are Not tested | Give `--restart-cmd`, or answer the restart prompt (`--prompts`) |
 | Client tests are all Not tested | No trigger after `--`, or the trigger exits nonzero; see `<work>/trigger.log` |
 | A wire test warns after 30 s | The target took longer than 30 s to re-key; it fails only past `--settle-timeout` |
 | The run ends with `restore FAILED` | Check and fix the target's trust list and certificate by hand before reuse |
