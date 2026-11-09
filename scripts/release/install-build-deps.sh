@@ -66,21 +66,23 @@ case "$ID:$ID_LIKE" in
             done
             return 1
         }
-        toolset=
+        extra=
         case "$ID" in
-            fedora) ;;
+            # GTK 4 for gdsaudit-gui; Xvfb, GLES and Mesa's software
+            # renderer for its smoke test. Not on EL 9: its GLib (2.68) is
+            # older than the 2.76 the UI needs; EL users take the Flatpak.
+            fedora) extra="gtk4-devel xorg-x11-server-Xvfb xorg-x11-xauth libglvnd-gles mesa-dri-drivers" ;;
             *) dnf_retry install -y dnf-plugins-core && dnf config-manager --set-enabled crb
-               toolset="gcc-toolset-13-gcc gcc-toolset-13-binutils" ;;
+               extra="gcc-toolset-13-gcc gcc-toolset-13-binutils" ;;
         esac
         # OpenSSL's Configure needs these perl modules; EL ships them split.
-        # GTK 4 (EL 9: 4.12) for gdsaudit-gui, Xvfb for its smoke test.
         # --allowerasing: the base images carry curl-minimal.
-        dnf_retry install -y --allowerasing --setopt=install_weak_deps=False $toolset \
+        dnf_retry install -y --allowerasing --setopt=install_weak_deps=False $extra \
             gcc make cmake ninja-build git curl ca-certificates python3 \
             perl-interpreter perl-FindBin perl-IPC-Cmd perl-File-Compare perl-File-Copy \
             perl-Time-Piece perl-lib \
             sqlite-devel libseccomp-devel pkgconf-pkg-config rpm-build file findutils diffutils \
-            openssl gtk4-devel xorg-x11-server-Xvfb xorg-x11-xauth
+            openssl
         dnf clean all
         ;;
     *)

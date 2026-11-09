@@ -7,7 +7,7 @@ OpenGDS ships as:
 | `opengds_<ver>-1~deb13_<arch>.deb`, `…~ubuntu24.04…` | Debian 13, Ubuntu 24.04 | server: `opengdsd`, `opengds-signer`, `gdsadm`, systemd units |
 | `opengds-<ver>-1.el9.<arch>.rpm`, `…fc<N>…` | RHEL, Alma and Rocky 9; Fedora | the same |
 | `gdsaudit_…deb`, `gdsaudit-…rpm` | the same distributions | the OpenGDS Auditor command-line tool |
-| `gdsaudit-gui_…deb`, `gdsaudit-gui-…rpm` | the same distributions (GTK 4.12 or newer; EL 9 has 4.12) | the Auditor's desktop UI (`gdsaudit-gui`, desktop entry `org.opengds.Auditor`); needs `gdsaudit` of the same version |
+| `gdsaudit-gui_…deb`, `gdsaudit-gui-…rpm` | Debian 13, Ubuntu 24.04, Fedora (GTK 4.12 and GLib 2.76 or newer; EL 9's GLib is older: use the Flatpak) | the Auditor's desktop UI (`gdsaudit-gui`, desktop entry `org.opengds.Auditor`); needs `gdsaudit` of the same version |
 | `gdsaudit-gui-<ver>-<arch>.flatpak`, app `org.opengds.Auditor` (`packaging/flatpak/org.opengds.Auditor.yml`) | any distribution with Flatpak (`flatpak install gdsaudit-gui-….flatpak`; the GNOME runtime comes from Flathub) | `gdsaudit-gui` and `gdsaudit` on the GNOME runtime; a client profile trigger runs inside the sandbox, so use the headless `gdsaudit` to start host programs |
 | `opengds-<ver>-deb13-<arch>.tar.gz` | other glibc distributions | every component under `usr/` |
 | `gdsaudit-<ver>-linux-<arch>-static.tar.gz` | any Linux (`packaging/static/`) | the Auditor as one static program (musl), licences, README |

@@ -9,6 +9,7 @@
 #   opengds-<ver>-<dist>-<arch>.tar.gz      binaries under usr/             [WITH_TGZ=1]
 #   opengds_<ver>-<rel>_<arch>.deb, gdsaudit_..., gdsaudit-gui_...deb  on Debian and Ubuntu
 #   opengds-<ver>-<rel>.<arch>.rpm, gdsaudit-..., gdsaudit-gui-...rpm  on EL and Fedora
+#                                                   (no gdsaudit-gui on EL 9)
 #   <artifact>.spdx.json                    SPDX 2.3 SBOM for each binary artifact
 #
 # Reproducible: the same commit, built in the same build environment (the
@@ -102,6 +103,10 @@ if [ "${sqlite_have:-0}" -lt 3037000 ]; then
     SQLITE_SBOM="--sqlite-prefix $SQLITE_PREFIX"
 fi
 
+# gdsaudit-gui needs GTK 4.12 and GLib 2.76: not on EL 9 (GLib 2.68), whose
+# users take the Flatpak
+case "$DIST" in el*) GUI=OFF ;; *) GUI=ON ;; esac
+
 BUILD=$WORK/build
 rm -rf "$BUILD"
 MAP="-ffile-prefix-map=$SRC=/usr/src/opengds-$VERSION -ffile-prefix-map=$BUILD=/usr/src/opengds-$VERSION/build"
@@ -110,7 +115,7 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
     -DCMAKE_C_FLAGS="$MAP" \
     -DCMAKE_EXE_LINKER_FLAGS="-Wl,--build-id=sha1" \
     -DOPEN62541_PREFIX="$OPEN62541_PREFIX" -DOPENSSL_ROOT_DIR="$OPENSSL_PREFIX" \
-    -DOPENGDS_PACKAGE_RELEASE="$PKGREL" -DOPENGDS_SECCOMP=ON -DOPENGDS_BUILD_AUDITOR_GUI=ON \
+    -DOPENGDS_PACKAGE_RELEASE="$PKGREL" -DOPENGDS_SECCOMP=ON -DOPENGDS_BUILD_AUDITOR_GUI="$GUI" \
     -DCMAKE_C_STANDARD_LIBRARIES="-lpthread -lm" $SQLITE_ARGS \
     -DCPACK_PACKAGE_FILE_NAME="opengds-$VERSION-$DIST-$ARCH"
 cmake --build "$BUILD"
