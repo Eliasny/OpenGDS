@@ -5,6 +5,10 @@
  * headless give identical verdicts (Auditor plan, "Shared rules").
  *
  *   avm_selftest EXPECT.csv RUNDIR -- ENGINE PROFILE [ARGS...]
+ *   avm_selftest EXPECT.csv RUNDIR --plan PLAN.toml ENGINE
+ *
+ * --plan opens the plan file as the UI's "Open plan…" does and runs the
+ * command line the UI builds from it (avm_plan_argv).
  *
  * --events /dev/fd/3 is added after PROFILE. Exit 0 if every verdict
  * matches EXPECT.csv (id,verdict lines), the reports exist and the engine
@@ -14,6 +18,7 @@
 #include <stdbool.h>
 #include <string.h>
 
+#include "avm_plan.h"
 #include "avm_run.h"
 
 #include "common/banned.h"
@@ -81,21 +86,54 @@ static int compare(const ga_results *r, const char *expectPath) {
     return bad ? 1 : 0;
 }
 
+/* The UI's command line for a plan file; NULL (and a message) if the plan
+ * cannot be opened. */
+static char **plan_argv(const char *plan, const char *engine, const char *reportDir) {
+    AvmPlan p;
+    avm_plan_init(&p);
+    GError *e = NULL;
+    char **argv = NULL;
+    if(avm_plan_load_file(&p, plan, &e))
+        argv = avm_plan_argv(&p, engine, AVM_EVENTS_FD, reportDir, &e);
+    if(!argv)
+        g_printerr("%s: %s\n", plan, e ? e->message : "?");
+    g_clear_error(&e);
+    avm_plan_clear(&p);
+    return argv;
+}
+
+static int usage(void) {
+    g_printerr("usage: avm_selftest EXPECT.csv RUNDIR -- ENGINE PROFILE [ARGS...]\n"
+               "       avm_selftest EXPECT.csv RUNDIR --plan PLAN.toml ENGINE\n");
+    return 2;
+}
+
 int main(int argc, char **argv) {
-    if(argc < 6 || strcmp(argv[3], "--") != 0) {
-        g_printerr("usage: avm_selftest EXPECT.csv RUNDIR -- ENGINE PROFILE [ARGS...]\n");
-        return 2;
-    }
-    GPtrArray *a = g_ptr_array_new();
-    g_ptr_array_add(a, argv[4]);
-    g_ptr_array_add(a, argv[5]);
-    g_ptr_array_add(a, (char *)"--events");
-    g_ptr_array_add(a, (char *)AVM_EVENTS_FD);
+    gboolean planMode = argc == 6 && strcmp(argv[3], "--plan") == 0;
+    if(!planMode && (argc < 6 || strcmp(argv[3], "--") != 0))
+        return usage();
+    GPtrArray *a = g_ptr_array_new_with_free_func(g_free);
     char *reportDir = g_build_filename(argv[2], "report", NULL);
-    g_ptr_array_add(a, (char *)"--report");
-    g_ptr_array_add(a, reportDir);
-    for(int i = 6; i < argc; i++)
-        g_ptr_array_add(a, argv[i]);
+    if(planMode) {
+        char **pa = plan_argv(argv[4], argv[5], reportDir);
+        if(!pa)
+            return 1;
+        char *line = g_strjoinv(" ", pa);
+        g_print("# UI command line: %s\n", line);
+        g_free(line);
+        for(char **s = pa; *s; s++)
+            g_ptr_array_add(a, g_strdup(*s));
+        g_strfreev(pa);
+    } else {
+        g_ptr_array_add(a, g_strdup(argv[4]));
+        g_ptr_array_add(a, g_strdup(argv[5]));
+        g_ptr_array_add(a, g_strdup("--events"));
+        g_ptr_array_add(a, g_strdup(AVM_EVENTS_FD));
+        g_ptr_array_add(a, g_strdup("--report"));
+        g_ptr_array_add(a, g_strdup(reportDir));
+        for(int i = 6; i < argc; i++)
+            g_ptr_array_add(a, g_strdup(argv[i]));
+    }
     g_ptr_array_add(a, NULL);
     state s = {g_main_loop_new(NULL, FALSE), -1, FALSE, 0};
     AvmRunCallbacks cb = {on_event, NULL, on_finished};

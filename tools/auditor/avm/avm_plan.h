@@ -8,6 +8,8 @@
 
 #include <glib.h>
 
+#include "gdsaudit/plan.h"
+
 typedef enum { AVM_PROFILE_SERVER = 0, AVM_PROFILE_CLIENT, AVM_PROFILE_GDS } AvmProfile;
 
 typedef enum {
@@ -49,9 +51,23 @@ typedef struct {
     guint listenPort;
     char *triggerCmd; /* argv in shell syntax, run without a shell */
     char *clientUser;
+    /* server: shell command that restarts the target (SRV-PER-*) */
+    char *restartCmd;
+    /* plan file: its name for people, and the keys the form has no field
+     * for (AvmPlanExtra*), kept so a loaded plan runs and saves unchanged */
+    char *name;
+    GPtrArray *extra;
 } AvmPlan;
 
+typedef struct {
+    char *key;     /* "tests.only" */
+    char **values; /* NULL-terminated; one item unless the key is an array */
+} AvmPlanExtra;
+
 void avm_plan_init(AvmPlan *p);
+void avm_plan_extra_free(gpointer x);
+/* Keep key with values (takes the vector) in p->extra, replacing it. */
+void avm_plan_extra_set(AvmPlan *p, const char *key, char **values);
 void avm_plan_clear(AvmPlan *p);
 /* Choose a preset: sets allowChanges from it. */
 void avm_plan_apply_preset(AvmPlan *p, AvmPreset preset);
@@ -68,9 +84,24 @@ char *avm_plan_check(const AvmPlan *p);
 char **avm_plan_argv(const AvmPlan *p, const char *engine, const char *events,
                      const char *reportDir, GError **error);
 
-/* The form between sessions: a key file holding only the fields above
- * (paths, never passwords). load keeps the defaults for missing keys and
- * returns FALSE if the file cannot be read. */
+/* Plan files (gdsaudit/plan.h, docs/auditor/plan-files.md): the form as
+ * the plan `gdsaudit run` runs. avm_plan_argv is built from the same plan,
+ * so a plan saved here runs headless with the same command line.
+ * to_ga gives absolute paths (relative ones are taken from the current
+ * folder); NULL and *error if a value is refused. from_ga replaces the form;
+ * relative paths in g are joined to baseDir. The report and events paths
+ * and hooks.prompts belong to each UI run and are not taken. */
+ga_plan *avm_plan_to_ga(const AvmPlan *p, GError **error);
+gboolean avm_plan_from_ga(AvmPlan *p, const ga_plan *g, const char *baseDir, GError **error);
+/* The kept plan keys that apply to the profile, for people
+ * ("tests.only = SRV-TL; ..."); NULL if none. g_free it. */
+char *avm_plan_extra_text(const AvmPlan *p);
+gboolean avm_plan_save_file(const AvmPlan *p, const char *path, GError **error);
+gboolean avm_plan_load_file(AvmPlan *p, const char *path, GError **error);
+
+/* The form between sessions: the plan file avm_plan_default_path (paths,
+ * never passwords). load reads the older last-plan.ini when there is no
+ * plan file yet, and returns FALSE if neither can be read. */
 gboolean avm_plan_save(const AvmPlan *p, const char *path, GError **error);
 gboolean avm_plan_load(AvmPlan *p, const char *path, GError **error);
 /* The same fields in one group of a key file (saved targets keep one plan
@@ -79,7 +110,7 @@ void avm_plan_to_keyfile(const AvmPlan *p, GKeyFile *k, const char *group);
 void avm_plan_from_keyfile(AvmPlan *p, GKeyFile *k, const char *group);
 /* Save a key file, creating its folder (0700). */
 gboolean avm_keyfile_save(GKeyFile *k, const char *path, GError **error);
-/* <user config>/gdsaudit/last-plan.ini; g_free it. */
+/* <user config>/gdsaudit/last-plan.toml; g_free it. */
 char *avm_plan_default_path(void);
 
 /* SHA-1 thumbprint of the pinned server certificate as hex, as the target

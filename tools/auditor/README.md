@@ -61,8 +61,15 @@ window shows it and the run waits: Done, Skip this step, or Report failure
 (which needs a note); Pause and Abort still work meanwhile. History lists
 the kept runs, opens one (or any folder with an `events.jsonl` from a headless
 `--events` run) and compares two runs test by test. The form is kept between
-sessions in `~/.config/gdsaudit/last-plan.ini` (no passwords: only the paths
-of password files).
+sessions in `~/.config/gdsaudit/last-plan.toml` (no passwords: only the paths
+of password files). Open plan… and Save plan… read and write plan files
+([docs/auditor/plan-files.md](../../docs/auditor/plan-files.md)): a plan
+saved in the UI runs headless with `gdsaudit run PLAN.toml` with the same
+command line, and every UI run's command line is built from the plan. Keys
+the form has no field for (such as `tests.only`) are kept, shown under the
+plan buttons, and used. For the server profile, the restart command
+(`--restart-cmd`) lets the persistence tests restart the target;
+preparation for certification needs it.
 Targets finds a device's endpoints (`gdsaudit discover`, below), shows each
 endpoint's policy, mode, security level, user tokens and certificate
 thumbprint, and puts the chosen one in the form with its certificate pinned.
