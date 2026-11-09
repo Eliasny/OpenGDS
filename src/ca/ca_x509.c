@@ -272,7 +272,7 @@ static bool rsa_bits_der(const unsigned char *bits, int len) {
     int n = seq && p == bits + len && sk_ASN1_TYPE_num(seq) == 2
                 ? i2d_ASN1_SEQUENCE_ANY(seq, &again)
                 : -1;
-    bool ok = n == len && memcmp(again, bits, (size_t)len) == 0;
+    bool ok = n == len && again && memcmp(again, bits, (size_t)len) == 0;
     OPENSSL_free(again);
     sk_ASN1_TYPE_pop_free(seq, ASN1_TYPE_free);
     return ok;

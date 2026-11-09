@@ -151,8 +151,10 @@ typedef struct {
  * ratios. False when a measure failed. */
 static bool measure(gds_ca *ca, const issuer_bench *b, unsigned rounds) {
     double *ratio = calloc(rounds, sizeof(double));
+    if(!ratio)
+        return false;
     double raw = 0, issued = 0;
-    bool ok = ratio != NULL;
+    bool ok = true;
     for(unsigned i = 0; ok && i < rounds; i++) {
         double r = raw_rate(b->caKey, b->rsa, ROUND_NS);
         double c = ca_rate(ca, b->certType, b->leaf, ROUND_NS);
