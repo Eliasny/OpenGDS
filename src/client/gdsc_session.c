@@ -179,7 +179,12 @@ static UA_StatusCode config_username(UA_ClientConfig *cfg, const char *user,
 }
 
 static UA_StatusCode config_identity(UA_ClientConfig *cfg, const gdsc_session_cfg *pc) {
-    UA_ByteString uc = {pc->cert->len, pc->cert->data}, uk = {pc->key->len, pc->key->data};
+    if((pc->identityCert != NULL) != (pc->identityKey != NULL) ||
+       (pc->identityCert && pc->identity != GDSC_IDENTITY_X509))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    const gds_buf *ic = pc->identityCert ? pc->identityCert : pc->cert;
+    const gds_buf *ik = pc->identityKey ? pc->identityKey : pc->key;
+    UA_ByteString uc = {ic->len, ic->data}, uk = {ik->len, ik->data};
     switch(pc->identity) {
     case GDSC_IDENTITY_APP_CERT:
         return UA_STATUSCODE_GOOD; /* Anonymous token is the default */
@@ -353,7 +358,11 @@ gds_status gdsc_cert_uri(const gds_buf *certDer, char *out, size_t outLen) {
 static bool cfg_valid(const gdsc_session_cfg *pc) {
     return pc && pc->endpointUrl && pc->cert && pc->cert->data && pc->key && pc->key->data &&
            (pc->trustN == 0 || pc->trust) && (pc->crlN == 0 || pc->crls) &&
-           (!pc->applicationUri || strlen(pc->applicationUri) < GDS_MAX_APPLICATION_URI);
+           (!pc->applicationUri || strlen(pc->applicationUri) < GDS_MAX_APPLICATION_URI) &&
+           (pc->identityCert != NULL) == (pc->identityKey != NULL) &&
+           (!pc->identityCert ||
+            (pc->identity == GDSC_IDENTITY_X509 && pc->identityCert->data &&
+             pc->identityKey->data));
 }
 
 static bool server_uri_matches(const UA_EndpointDescription *e, const char *serverUri) {
