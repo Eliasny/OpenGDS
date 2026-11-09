@@ -118,7 +118,21 @@ Every application that pulls its trust list from the GDS (GetTrustList, OPC 1000
 - `RemoveCertificate` takes the SHA-1 thumbprint. Removing a CA removes its CRLs, and is refused while another entry still needs it.
 - `Open` with Write+EraseExisting (0x06), `Write`, then `CloseAndUpdate` replaces the lists named in SpecifiedLists. `Close` without `CloseAndUpdate` discards what was written.
 
-Every change is validated first (structure, signatures, validity period, revocation) and refused as a whole if one entry fails. Copies of the GDS CA certificate and its CRL in a written list are ignored, and the CA certificate cannot be removed. The entries are kept in the store, so they survive a restart and replicate with it. Each change moves `LastUpdateTime` and raises a TrustListUpdatedAuditEventType. Only one client can have the list open for writing, and a file handle unused for 60 seconds (`ActivityTimeout`) is closed. A store backend without trust list support (before store ABI minor 5) answers Bad_NotSupported.
+Every change is validated first (structure, signatures, validity period, revocation) and refused as a whole if one entry fails. Copies of the GDS issuing CA certificates (RSA, P-256, P-384) and their CRLs in a written list are ignored, and those certificates cannot be removed. The entries are kept in the store, so they survive a restart and replicate with it. Each change moves `LastUpdateTime` and raises a TrustListUpdatedAuditEventType. Only one client can have the list open for writing, and a file handle unused for 60 seconds (`ActivityTimeout`) is closed. A store backend without trust list support (before store ABI minor 5) answers Bad_NotSupported.
+
+## Audit events
+
+`Server.Auditing` is TRUE: opengdsd raises the Part 12 audit events, each an AuditUpdateMethodEventType with MethodId, InputArguments, Status and the caller's user name as ClientUserId:
+
+| Event | Raised by |
+|---|---|
+| ApplicationRegistrationChangedAuditEventType (§6.5.12) | RegisterApplication, UpdateApplication, UnregisterApplication |
+| CertificateRequestedAuditEventType (§7.9.12) | StartSigningRequest, StartNewKeyPairRequest, accepted or refused; never with the PrivateKeyPassword |
+| CertificateDeliveredAuditEventType (§7.9.13) | FinishRequest that returns a certificate |
+| CertificateRevokedAuditEventType (§7.9.14) | RevokeCertificate |
+| TrustListUpdatedAuditEventType (§7.8.2.1) | CloseAndUpdate, AddCertificate, RemoveCertificate |
+
+Each event is written to the store's hash-chained audit log before it is raised, so every event a client sees is in the log. Only calls the session was allowed to make are audited: a call refused for its roles or security mode, or on a standby, leaves no record, so an unauthorised client cannot fill the log. Events are visible to SecurityAdmin and to the GDS role of the method (DiscoveryAdmin for the directory, CertificateAuthorityAdmin for certificates). A store backend without the audit log (before store ABI minor 1) raises none and `Server.Auditing` reads FALSE.
 
 ## Importing applications
 

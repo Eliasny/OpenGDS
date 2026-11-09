@@ -312,6 +312,38 @@ static bool config_ok(const gds_server_config *cfg) {
            cfg->approval >= GDS_APPROVE_ALL && cfg->approval <= GDS_APPROVE_MANUAL;
 }
 
+/* Server.Auditing (OPC 10000-5 §6.3.1, "currently generating audit
+ * events"): TRUE with a store that keeps the audit log, which every audit
+ * event goes through first. open62541's own source answers FALSE. */
+static UA_StatusCode read_auditing(UA_Server *server, const UA_NodeId *sessionId,
+                                   void *sessionContext, const UA_NodeId *nodeId,
+                                   void *nodeContext, UA_Boolean includeSourceTimeStamp,
+                                   const UA_NumericRange *range, UA_DataValue *value) {
+    (void)server, (void)sessionId, (void)sessionContext, (void)nodeId;
+    const gds_server *s = nodeContext;
+    if(range) {
+        value->hasStatus = true;
+        value->status = UA_STATUSCODE_BADINDEXRANGEINVALID;
+        return UA_STATUSCODE_GOOD;
+    }
+    UA_Boolean on = s && gds_store_has_audit(s->store);
+    UA_StatusCode r = UA_Variant_setScalarCopy(&value->value, &on, &UA_TYPES[UA_TYPES_BOOLEAN]);
+    value->hasValue = r == UA_STATUSCODE_GOOD;
+    if(includeSourceTimeStamp) {
+        value->hasSourceTimestamp = true;
+        value->sourceTimestamp = UA_DateTime_now();
+    }
+    return r;
+}
+
+static UA_StatusCode install_auditing(gds_server *s) {
+    UA_NodeId n = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_AUDITING);
+    UA_CallbackValueSource src = {read_auditing, NULL};
+    UA_StatusCode r = UA_Server_setNodeContext(s->ua, n, s);
+    return r == UA_STATUSCODE_GOOD ? UA_Server_setVariableNode_callbackValueSource(s->ua, n, src)
+                                   : r;
+}
+
 static gds_status install(gds_server *s) {
     size_t ns = 0;
     UA_String uri = UA_STRING(GDS_NS_URI);
@@ -333,6 +365,8 @@ static gds_status install(gds_server *s) {
         r = gds_approvals_install(s);
     if(r == UA_STATUSCODE_GOOD)
         r = gds_alarms_install(s);
+    if(r == UA_STATUSCODE_GOOD)
+        r = install_auditing(s);
     if(r != UA_STATUSCODE_GOOD) {
         fprintf(stderr, "opengds: installing the GDS methods failed: %s\n", UA_StatusCode_name(r));
         return GDS_ENOTFOUND;

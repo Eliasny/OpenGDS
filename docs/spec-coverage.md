@@ -25,21 +25,21 @@ the service Object, which is itself Optional.
 | GetApplication | Method | M | §6.5.9 | `gds.dir.get_application` (pass), `gds.dir.get_unknown` (pass) |
 | QueryApplications | Method | M | §6.5.10 | `gds.dir.query_by_uri` (pass), `gds.qry.capabilities` (pass), `gds.qry.na_excluded` (pass), `gds.qry.name` (pass), `gds.qry.paging` (pass), `gds.qry.product_uri` (pass), `gds.qry.type_mask` (pass), `gds.qry.uri_pattern` (pass) |
 | QueryServers | Method (deprecated) | M | §6.5.11 | `gds.qry.servers` (pass) |
-| ApplicationRegistrationChangedAuditEventType | Event | M | §6.5.12 | `gds.ev.auditing_flag` (not_supported), `gds.ev.registration_changed` (not_supported) |
+| ApplicationRegistrationChangedAuditEventType | Event | M | §6.5.12 | `gds.ev.auditing_flag` (pass), `gds.ev.registration_changed` (pass) |
 | Directory roles | DiscoveryAdmin, self-admin | M | §6.2 | `gds.acc.unregister_other` (pass), `gds.acc.update_other` (pass), `gds.sec.anonymous_register` (pass) |
 | CertificateDirectoryType | member list | M | §7.9.2 | `gds.model.directory` (pass) |
 | StartSigningRequest | Method | M | §7.9.3 | `gds.acc.sign_other` (pass), `gds.acc.sign_sign_only` (pass), `gds.cm.bad_csr` (pass), `gds.cm.csr_wrong_uri` (pass), `gds.cm.sign_bad_group` (pass), `gds.cm.sign_bad_type` (pass), `gds.cm.sign_null_group` (pass), `gds.cm.sign_unknown_app` (pass), `gds.cm.signing_flow` (pass) |
 | StartNewKeyPairRequest | Method | M | §7.9.4 | `gds.acc.keypair_sign_only` (pass), `gds.cm.keypair_bad_format` (pass), `gds.cm.keypair_pem` (pass), `gds.cm.keypair_pfx` (pass), `gds.cm.keypair_unknown_app` (pass) |
 | FinishRequest | Method | M | §7.9.5 | `gds.cm.finish_unknown` (pass), `gds.cm.keypair_pem` (pass), `gds.cm.keypair_pfx` (pass), `gds.cm.signing_flow` (pass) |
-| RevokeCertificate | Method | O | §7.9.6 | `gds.acc.revoke_needs_ca_admin` (pass), `gds.cm.revoke` (pass), `gds.cm.revoke_foreign` (pass), `gds.cm.revoke_unknown_app` (pass), `gds.ev.certificate_revoked` (not_supported) |
+| RevokeCertificate | Method | O | §7.9.6 | `gds.acc.revoke_needs_ca_admin` (pass), `gds.cm.revoke` (pass), `gds.cm.revoke_foreign` (pass), `gds.cm.revoke_unknown_app` (pass), `gds.ev.certificate_revoked` (pass) |
 | GetCertificateGroups | Method | M | §7.9.7 | `gds.cm.groups` (pass), `gds.cm.groups_unknown` (pass) |
 | GetCertificates | Method | O | §7.9.8 | `gds.acc.get_certificates_other` (pass), `gds.cm.get_certificates` (pass), `gds.cm.get_certificates_bad_group` (pass), `gds.cm.get_certificates_unknown` (pass), `gds.cm.revoke` (pass) |
 | GetTrustList | Method | M | §7.9.9 | `gds.tl.get_trustlist` (pass) |
 | GetCertificateStatus | Method | M | §7.9.10 | `gds.cm.status_after_issue` (pass), `gds.cm.status_new` (pass) |
 | CheckRevocationStatus | Method | O | §7.9.11 | `gds.cm.check_bad_signature` (pass), `gds.cm.check_good` (pass), `gds.cm.check_revoked` (pass) |
-| CertificateRequestedAuditEventType | Event | M | §7.9.12 | `gds.ev.certificate_requested_delivered` (not_supported) |
-| CertificateDeliveredAuditEventType | Event | M | §7.9.13 | `gds.ev.certificate_requested_delivered` (not_supported) |
-| CertificateRevokedAuditEventType | Event | O | §7.9.14 | `gds.ev.certificate_revoked` (not_supported) |
+| CertificateRequestedAuditEventType | Event | M | §7.9.12 | `gds.ev.certificate_requested_delivered` (pass) |
+| CertificateDeliveredAuditEventType | Event | M | §7.9.13 | `gds.ev.certificate_requested_delivered` (pass) |
+| CertificateRevokedAuditEventType | Event | O | §7.9.14 | `gds.ev.certificate_revoked` (pass) |
 | CertificateManager roles | CertificateAuthorityAdmin, self-admin | M | §7.2 | `gds.acc.get_certificates_other` (pass), `gds.acc.revoke_needs_ca_admin` (pass), `gds.acc.sign_other` (pass), `gds.acc.tl_add_needs_ca_admin` (pass), `gds.sec.none_session` (pass) |
 | TrustListType | Object, LastUpdateTime, FileType | M | §7.8.2.1 | `gds.ev.trustlist_updated` (pass), `gds.model.certificate_group` (pass), `gds.tl.add_remove` (pass), `gds.tl.close_discards` (pass), `gds.tl.write_update` (pass) |
 | Open | Method (FileType) | M | §7.8.2.2 | `gds.tl.open_bad_mode` (pass), `gds.tl.write_anonymous` (pass) |

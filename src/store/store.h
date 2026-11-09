@@ -181,6 +181,8 @@ GDS_MUST_CHECK gds_status gds_audit_hash(const uint8_t prev[GDS_AUDIT_HASH], int
 
 /* Appends a row (one transaction); *seq gets its number. GDS_ETOOBIG above
  * GDS_MAX_AUDIT_BODY. May return GDS_ENOTLEADER like every write. */
+/* Does the backend keep the audit log (minor 1)? */
+bool gds_store_has_audit(const gds_store *s);
 GDS_MUST_CHECK gds_status gds_store_audit_append(gds_store *s, int64_t time, const gds_buf *body,
                                                  int64_t *seq);
 /* Visits rows from fromSeq in order; the callback borrows the row and

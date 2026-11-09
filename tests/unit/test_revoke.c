@@ -355,6 +355,73 @@ static void test_ecc(gds_server *s, gds_ca *ca, const UA_NodeId *app) {
     UA_ByteString_clear(&p384);
 }
 
+/* ---- the Part 12 audit events of the methods ---- */
+
+typedef struct {
+    int64_t rows;
+    bool secret; /* the needle was found in a body */
+    const char *needle;
+} audit_scan;
+
+static bool scan_cb(void *ctx, const gds_audit_row *row) {
+    audit_scan *c = ctx;
+    c->rows++;
+    size_t n = c->needle ? strlen(c->needle) : 0;
+    for(size_t i = 0; n && i + n <= row->body.len && !c->secret; i++)
+        c->secret = memcmp(row->body.data + i, c->needle, n) == 0;
+    return true;
+}
+
+static audit_scan audit_log(gds_server *s, const char *needle) {
+    audit_scan c = {0, false, needle};
+    gds_lock(s);
+    CHECK(gds_store_audit_scan(s->store, 0, scan_cb, &c) == GDS_OK);
+    gds_unlock(s);
+    return c;
+}
+
+#define KEY_PASSWORD "audit-must-never-see-this-password"
+
+/* One record per allowed call, success or failure; none for a refused
+ * session; never the key password. Server.Auditing reads TRUE. */
+static void test_method_audit(gds_server *s, const UA_NodeId *app) {
+    UA_Variant v;
+    UA_Variant_init(&v);
+    if(CHECK(UA_Server_readValue(gds_server_ua(s), UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_AUDITING),
+                                 &v) == UA_STATUSCODE_GOOD) &&
+       CHECK(UA_Variant_hasScalarType(&v, &UA_TYPES[UA_TYPES_BOOLEAN])))
+        CHECK(*(UA_Boolean *)v.data);
+    UA_Variant_clear(&v);
+
+    int64_t n0 = audit_log(s, NULL).rows;
+    UA_NodeId other = UA_NODEID_NULL;
+    if(CHECK(register_app(s, TEST_URI ":audit", &other))) /* ApplicationRegistrationChanged */
+        CHECK_EQ_INT(audit_log(s, NULL).rows, n0 + 1);
+    UA_ByteString junk = UA_BYTESTRING("not a certificate");
+    CHECK_EQ_INT(revoke_cert(s, &registrar, app, &junk), UA_STATUSCODE_BADUSERACCESSDENIED);
+    CHECK_EQ_INT(audit_log(s, NULL).rows, n0 + 1); /* refused session: no record */
+    CHECK_EQ_INT(revoke_cert(s, &admin, app, &junk), UA_STATUSCODE_BADINVALIDARGUMENT);
+    CHECK_EQ_INT(audit_log(s, NULL).rows, n0 + 2); /* CertificateRevoked, Status FALSE */
+
+    /* StartNewKeyPairRequest: CertificateRequested without the password */
+    UA_NodeId group = UA_NODEID_NULL, type = UA_NODEID_NULL;
+    UA_String subject = UA_STRING_NULL, fmt = UA_STRING("PEM"), pw = UA_STRING(KEY_PASSWORD);
+    UA_Variant in[7];
+    UA_Variant_setScalar(&in[0], (void *)(uintptr_t)app, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[1], &group, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[2], &type, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[3], &subject, &UA_TYPES[UA_TYPES_STRING]);
+    UA_Variant_setArray(&in[4], NULL, 0, &UA_TYPES[UA_TYPES_STRING]);
+    UA_Variant_setScalar(&in[5], &fmt, &UA_TYPES[UA_TYPES_STRING]);
+    UA_Variant_setScalar(&in[6], &pw, &UA_TYPES[UA_TYPES_STRING]);
+    CHECK_EQ_INT(call_status(s, &admin, UA_GDSID_DIRECTORY_STARTNEWKEYPAIRREQUEST, in, 7),
+                 UA_STATUSCODE_GOOD);
+    audit_scan after = audit_log(s, KEY_PASSWORD);
+    CHECK_EQ_INT(after.rows, n0 + 3);
+    CHECK(!after.secret);
+    UA_NodeId_clear(&other);
+}
+
 static void test_unregister(gds_server *s, gds_ca *ca, const UA_NodeId *b) {
     UA_ByteString c1 = UA_BYTESTRING_NULL, c2 = UA_BYTESTRING_NULL;
     if(!issue(s, b, &c1) || !issue(s, b, &c2)) {
@@ -434,6 +501,7 @@ int main(int argc, char **argv) {
             test_get_and_check(s, &c, &cert);
             test_unregister(s, ca, &b);
             test_ecc(s, ca, &d);
+            test_method_audit(s, &c);
         }
         UA_NodeId_clear(&d);
         UA_NodeId_clear(&c);

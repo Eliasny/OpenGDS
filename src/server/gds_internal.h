@@ -203,6 +203,21 @@ GDS_MUST_CHECK UA_StatusCode gds_embed_defer_approval(gds_server *s, UA_MethodCa
                                                       const UA_NodeId *objectId, const UA_Guid *app,
                                                       size_t inputSize, const UA_Variant *input,
                                                       size_t outputSize, UA_Variant *output);
+/* The AuditUpdateMethodEvent of a GDS method (gds_registrar.c): MethodId,
+ * InputArguments and the extra fields, visible to SecurityAdmin and the
+ * GDS role gdsRole (a UA_GDSID_WELLKNOWNROLE_*), logged before it is raised. */
+GDS_MUST_CHECK gds_status gds_method_audit(gds_server *s, const char *actor, UA_UInt32 type,
+                                           UA_UInt32 method, unsigned gdsRole,
+                                           const gds_event_field *extra, size_t nExtra,
+                                           const UA_Variant *args, size_t nArgs, bool ok,
+                                           const char *msg);
+/* The ClientUserId of a session's audit events: its user, NULL if anonymous. */
+const char *gds_session_actor(const void *sessionContext);
+/* Should a method call's result be audited? Not while it completes
+ * asynchronously (it runs again), and not when the session was refused
+ * (access denied, insufficient security): only callers allowed to make the
+ * change leave a record, so the log cannot be flooded by anyone. */
+bool gds_audit_result(UA_StatusCode r);
 /* The audit event of a certificate method (gds_registrar.c): type is
  * CertificateRequested or CertificateDelivered, actor the ClientUserId,
  * msg NULL or a note. */

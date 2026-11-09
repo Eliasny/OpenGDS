@@ -137,6 +137,10 @@ gds_status gds_store_cert_latest(gds_store *s, const UA_Guid *appId, uint32_t gr
     return s->be.cert_latest(s->ctx, appId, groupId, certType, der, notAfter);
 }
 
+bool gds_store_has_audit(const gds_store *s) {
+    return s && s->be.audit_append != NULL;
+}
+
 gds_status gds_store_audit_append(gds_store *s, int64_t time, const gds_buf *body, int64_t *seq) {
     if(!s->be.audit_append)
         return GDS_EUNSUPPORTED;
