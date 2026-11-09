@@ -220,7 +220,7 @@ The report has one tab-separated line per record: the line number in the file (o
 
 The users file grants Roles to fixed users. On top of it, a **SecurityAdmin**
 over SignAndEncrypt can change Roles and users at run time with the standard
-OPC 10000-18 methods. The changes are stored in the store (schema 5) and
+OPC 10000-18 methods. The changes are stored in the store (schema 6) and
 apply at once to every open session.
 
 - **Role mapping rules** (§4.4): AddIdentity, RemoveIdentity, AddApplication,
