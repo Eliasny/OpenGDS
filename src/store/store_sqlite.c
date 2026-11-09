@@ -653,6 +653,80 @@ static gds_status sq_tl_put(void *ctx_, uint32_t groupId, const gds_buf *data,
     return r;
 }
 
+/* --- push targets (schema 1 table push_targets) ----------------------- */
+
+static gds_status sq_push_target_put(void *ctx_, const UA_Guid *appId, const char *endpoint,
+                                     bool enabled) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "INSERT INTO push_targets (app_id, endpoint, enabled) "
+                                "SELECT ?1, ?2, ?3 WHERE EXISTS "
+                                "(SELECT 1 FROM applications WHERE id = ?1) "
+                                "ON CONFLICT(app_id) DO UPDATE SET "
+                                "endpoint = excluded.endpoint, enabled = excluded.enabled",
+                                -1, &st, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(st, 1, appId);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_text(st, 2, endpoint, -1, SQLITE_TRANSIENT);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int(st, 3, enabled ? 1 : 0);
+    if(rc == SQLITE_OK && (rc = sqlite3_step(st)) == SQLITE_DONE)
+        rc = SQLITE_OK;
+    gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "write push target", rc);
+    if(r == GDS_OK && sqlite3_changes(s->db) == 0)
+        r = GDS_ENOTFOUND;
+    sqlite3_finalize(st);
+    return r;
+}
+
+static gds_status sq_push_target_delete(void *ctx_, const UA_Guid *appId) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db, "DELETE FROM push_targets WHERE app_id = ?1", -1, &st,
+                                NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(st, 1, appId);
+    if(rc == SQLITE_OK && (rc = sqlite3_step(st)) == SQLITE_DONE)
+        rc = SQLITE_OK;
+    gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "delete push target", rc);
+    if(r == GDS_OK && sqlite3_changes(s->db) == 0)
+        r = GDS_ENOTFOUND;
+    sqlite3_finalize(st);
+    return r;
+}
+
+static gds_status sq_push_target_scan(void *ctx_, gds_push_target_cb cb, void *cbCtx) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(s->db,
+                                "SELECT app_id, endpoint, enabled FROM push_targets "
+                                "ORDER BY app_id",
+                                -1, &st, NULL);
+    gds_status r = rc == SQLITE_OK ? GDS_OK : db_err(s, "scan push targets", rc);
+    while(r == GDS_OK && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+        gds_push_target_row row;
+        memset(&row, 0, sizeof(row));
+        const unsigned char *e = sqlite3_column_text(st, 1);
+        if(!column_guid(st, 0, &row.appId) || !e ||
+           (size_t)sqlite3_column_bytes(st, 1) >= GDS_MAX_PUSH_ENDPOINT) {
+            r = GDS_EINVAL; /* a damaged row */
+            break;
+        }
+        row.endpoint = (const char *)e;
+        row.enabled = sqlite3_column_int(st, 2) != 0;
+        if(!cb(cbCtx, &row)) {
+            rc = SQLITE_DONE;
+            break;
+        }
+    }
+    if(r == GDS_OK && rc != SQLITE_DONE)
+        r = db_err(s, "scan push targets", rc);
+    sqlite3_finalize(st);
+    return r;
+}
+
 /* One UPDATE binding the application id as ?1 and optionally der as ?2. */
 static gds_status mark_revoked(sq_store *s, const char *sql, const UA_Guid *appId,
                                const gds_buf *der, int *changed) {
@@ -980,6 +1054,9 @@ const gds_store_backend gds_store_sqlite_backend = {
     .cert_scan = sq_cert_scan,
     .tl_get = sq_tl_get,
     .tl_put = sq_tl_put,
+    .push_target_put = sq_push_target_put,
+    .push_target_delete = sq_push_target_delete,
+    .push_target_scan = sq_push_target_scan,
 };
 
 gds_status gds_store_sqlite_open(const char *path, bool readonly, void **ctx) {

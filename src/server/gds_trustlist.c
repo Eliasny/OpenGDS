@@ -25,8 +25,11 @@
 #include <open62541/nodeids.h>
 #include <openssl/evp.h>
 
+#include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "common/ids.h"
 #include "common/limits.h"
@@ -304,9 +307,8 @@ static UA_StatusCode may_change(gds_server *s, const void *sessionContext) {
     return gds_refuse_on_standby(s);
 }
 
-static void audit(gds_server *s, const void *sessionContext, UA_UInt32 method,
-                  const UA_Variant *input, size_t inputSize, bool ok) {
-    const gds_session *sess = gds_session_get(sessionContext);
+static void audit_as(gds_server *s, const char *user, UA_UInt32 method, const UA_Variant *input,
+                     size_t inputSize, bool ok) {
     UA_NodeId methodId = UA_NODEID_NUMERIC(s->ns, method);
     gds_event_field f[2];
     f[0].nsIndex = 0;
@@ -333,10 +335,16 @@ static void audit(gds_server *s, const void *sessionContext, UA_UInt32 method,
     ev.fieldsSize = 2;
     ev.visibleTo = visible;
     ev.visibleToSize = 2;
-    const char *user = sess && !gds_session_anonymous(sess) ? sess->user : NULL;
     gds_status a = gds_audit_raise(s, user, &ev, NULL);
     if(a != GDS_OK && a != GDS_EUNSUPPORTED)
         fprintf(stderr, "opengds: audit of a trust list update: %s\n", gds_status_name(a));
+}
+
+static void audit(gds_server *s, const void *sessionContext, UA_UInt32 method,
+                  const UA_Variant *input, size_t inputSize, bool ok) {
+    const gds_session *sess = gds_session_get(sessionContext);
+    audit_as(s, sess && !gds_session_anonymous(sess) ? sess->user : NULL, method, input,
+             inputSize, ok);
 }
 
 /* ---- changing the list ---- */
@@ -834,4 +842,110 @@ UA_StatusCode gds_trustlist_install(gds_server *s) {
     gds_access_on_session_free(on_session_free);
     init_variables(s);
     return gds_install_methods(s, m, GDS_ARRAY_SIZE(m));
+}
+
+/* ---- gds_server_trust_certificate (OpenGDS W3, push_rejected.c) ----
+ * The list and its open handles belong to the server thread, so the change
+ * runs there, from a timed callback; the caller waits. The job is shared
+ * until both sides let go (refs), so a caller that timed out never frees
+ * it under the callback. */
+
+#define MAX_ACTOR 256
+
+typedef struct {
+    gds_server *s;
+    UA_ByteString cert;
+    char actor[MAX_ACTOR];
+    UA_StatusCode result;
+    bool done;
+    int refs;
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+} trust_job;
+
+static void trust_job_release(trust_job *j) {
+    pthread_mutex_lock(&j->lock);
+    bool last = --j->refs == 0;
+    pthread_mutex_unlock(&j->lock);
+    if(!last)
+        return;
+    UA_ByteString_clear(&j->cert);
+    pthread_mutex_destroy(&j->lock);
+    pthread_cond_destroy(&j->cond);
+    free(j);
+}
+
+static void trust_cb(UA_Server *ua, void *data) {
+    (void)ua;
+    trust_job *j = data;
+    gds_server *s = j->s;
+    UA_StatusCode r = gds_refuse_on_standby(s);
+    if(r == UA_STATUSCODE_GOOD)
+        r = is_open(true) ? UA_STATUSCODE_BADINVALIDSTATE : add_certificate(s, &j->cert);
+    UA_Variant in[2];
+    UA_Boolean trusted = true;
+    UA_Variant_setScalar(&in[0], &j->cert, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    UA_Variant_setScalar(&in[1], &trusted, &UA_TYPES[UA_TYPES_BOOLEAN]);
+    audit_as(s, j->actor, TL_NODE(ADDCERTIFICATE), in, 2, r == UA_STATUSCODE_GOOD);
+    pthread_mutex_lock(&j->lock);
+    j->result = r;
+    j->done = true;
+    pthread_cond_signal(&j->cond);
+    pthread_mutex_unlock(&j->lock);
+    trust_job_release(j);
+}
+
+static gds_status trust_status(UA_StatusCode r) {
+    if(r == UA_STATUSCODE_GOOD)
+        return GDS_OK;
+    if(r == UA_STATUSCODE_BADINVALIDSTATE)
+        return GDS_ESTATE;
+    if(r == UA_STATUSCODE_BADCERTIFICATEINVALID || r == UA_STATUSCODE_BADINVALIDARGUMENT ||
+       r == UA_STATUSCODE_BADREQUESTTOOLARGE)
+        return GDS_EINVAL;
+    return GDS_EIO;
+}
+
+gds_status gds_server_trust_certificate(gds_server *s, const char *actor,
+                                        const UA_ByteString *cert, uint32_t timeoutMs) {
+    if(!s || !actor || !actor[0] || strnlen(actor, MAX_ACTOR) >= MAX_ACTOR || !cert ||
+       cert->length == 0 || cert->length > GDS_MAX_CERT_SIZE)
+        return GDS_EINVAL;
+    if(gds_server_role(s) == GDS_NODE_STANDBY)
+        return GDS_ENOTLEADER;
+    trust_job *j = calloc(1, sizeof(*j));
+    if(!j)
+        return GDS_ENOMEM;
+    j->s = s;
+    memcpy(j->actor, actor, strlen(actor) + 1);
+    j->refs = 2;
+    pthread_mutex_init(&j->lock, NULL);
+    pthread_cond_init(&j->cond, NULL);
+    if(UA_ByteString_copy(cert, &j->cert) != UA_STATUSCODE_GOOD ||
+       UA_Server_addTimedCallback(s->ua, trust_cb, j, UA_DateTime_nowMonotonic(), NULL) !=
+           UA_STATUSCODE_GOOD) {
+        j->refs = 1;
+        trust_job_release(j);
+        return GDS_ENOMEM;
+    }
+    struct timespec until;
+    clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_sec += (time_t)(timeoutMs / 1000);
+    until.tv_nsec += (long)(timeoutMs % 1000) * 1000000L;
+    if(until.tv_nsec >= 1000000000L) {
+        until.tv_sec++;
+        until.tv_nsec -= 1000000000L;
+    }
+    pthread_mutex_lock(&j->lock);
+    while(!j->done && pthread_cond_timedwait(&j->cond, &j->lock, &until) == 0) {
+    }
+    bool done = j->done;
+    UA_StatusCode r = j->result;
+    pthread_mutex_unlock(&j->lock);
+    trust_job_release(j);
+    if(!done)
+        return GDS_EREMOTE;
+    if(r == UA_STATUSCODE_BADINVALIDSTATE && gds_server_role(s) == GDS_NODE_STANDBY)
+        return GDS_ENOTLEADER;
+    return trust_status(r);
 }
