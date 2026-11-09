@@ -132,6 +132,30 @@ gds_status gds_store_cert_add(gds_store *s, const UA_Guid *appId, uint32_t group
     return s->be.cert_add(s->ctx, appId, groupId, certType, serial, der, notBefore, notAfter);
 }
 
+gds_status gds_store_cert_issue(gds_store *s, const UA_Guid *reqId, const UA_Guid *appId,
+                                uint32_t groupId, uint32_t certType, const gds_buf *serial,
+                                const gds_buf *der, int64_t notBefore, int64_t notAfter) {
+    if(!reqId || !appId || !serial || !der)
+        return GDS_EINVAL;
+    if(s->be.cert_issue)
+        return s->be.cert_issue(s->ctx, reqId, appId, groupId, certType, serial, der, notBefore,
+                                notAfter);
+    /* A backend before minor 7: two transactions, as before A24. */
+    gds_request q;
+    memset(&q, 0, sizeof(q));
+    gds_status r = s->be.req_get(s->ctx, reqId, &q);
+    if(r != GDS_OK)
+        return r;
+    bool received = q.state == GDS_REQ_RECEIVED;
+    gds_request_clear(&q);
+    if(!received)
+        return GDS_ESTATE;
+    r = s->be.cert_add(s->ctx, appId, groupId, certType, serial, der, notBefore, notAfter);
+    if(r == GDS_OK)
+        r = s->be.req_set_state(s->ctx, reqId, GDS_REQ_ISSUED, der, UA_STATUSCODE_GOOD);
+    return r;
+}
+
 gds_status gds_store_cert_latest(gds_store *s, const UA_Guid *appId, uint32_t groupId,
                                  uint32_t certType, gds_buf *der, int64_t *notAfter) {
     return s->be.cert_latest(s->ctx, appId, groupId, certType, der, notAfter);
