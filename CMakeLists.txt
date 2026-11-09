@@ -105,7 +105,18 @@ if(NOT OPENGDS_SECCOMP STREQUAL "OFF")
     endif()
 endif()
 
+# The mDNS announce of the GDS (OPC 10000-12 Annex C, src/disc/). On by
+# default (OpenGDS plan W5: mDNS ships); it needs an open62541 built with
+# UA_ENABLE_DISCOVERY_MULTICAST (scripts/build_open62541.sh, MDNS=MDNSD).
+# opengdsd announces only when its config says `mdns = true`.
+option(OPENGDS_WITH_MDNS "Build the mDNS announce (needs open62541 with multicast discovery)" ON)
+if(OPENGDS_WITH_MDNS AND NOT OPEN62541_HAS_MULTICAST)
+    message(FATAL_ERROR "OPENGDS_WITH_MDNS needs open62541 built with UA_ENABLE_DISCOVERY_MULTICAST: "
+                        "rebuild it with scripts/build_open62541.sh, or set -DOPENGDS_WITH_MDNS=OFF")
+endif()
+
 add_subdirectory(src/store)
+add_subdirectory(src/disc)
 add_subdirectory(src/ca)
 add_subdirectory(src/signer)
 add_subdirectory(src/server)
@@ -126,6 +137,12 @@ if(OPENGDS_BUILD_AUDITOR)
     add_subdirectory(tests/integration)
     # Spec tests that drive the Auditor's test targets (Annex G setup)
     add_subdirectory(tests/spec)
+    # Performance targets (OpenGDS plan "Performance design and targets",
+    # docs/perf.md): built with the tests, run by hand with
+    # `cmake --build . --target perf`, never part of ctest
+    if(OPENGDS_BUILD_TESTS)
+        add_subdirectory(tests/perf)
+    endif()
 endif()
 
 # Install rules and packages (.deb, .rpm, .tar.gz; docs/packaging.md), only

@@ -25,4 +25,4 @@ add_library(gds_server STATIC
     gds_trustlist.c
     gds_validate.c)
 target_include_directories(gds_server PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(gds_server PUBLIC gds_ca gds_store gds_common Threads::Threads)
+target_link_libraries(gds_server PUBLIC gds_ca gds_store gds_disc gds_common Threads::Threads)

@@ -10,6 +10,7 @@
 #include <stdbool.h>
 
 #include "ca.h"
+#include "disc_mdns.h"
 #include "common/buf.h"
 #include "gds_access.h"
 #include "gds_jwt.h"
@@ -99,6 +100,10 @@ typedef struct {
     size_t keyCredServicesSize;
     /* NULL: no AuthorizationService (§9.6 is Optional) */
     const gds_authz_config *authz;
+    /* Announce the GDS on the MulticastSubnet (OPC 10000-12 Annex C,
+     * disc_mdns.h). Zeroed: off. With loopbackOnly it is refused: nothing
+     * on the subnet could reach the announced DiscoveryUrl. */
+    gds_mdns_config mdns;
 } gds_server_config;
 
 typedef struct gds_server gds_server;

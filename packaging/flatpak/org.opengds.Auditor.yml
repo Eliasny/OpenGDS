@@ -95,6 +95,7 @@ modules:
       - cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
         -DOPEN62541_PREFIX=/app/deps -DOPENSSL_ROOT_DIR=/app/deps
         -DOPENGDS_BUILD_TESTS=OFF -DOPENGDS_BUILD_AUDITOR_GUI=ON -DOPENGDS_SECCOMP=OFF
+        -DOPENGDS_WITH_MDNS=OFF
       - cmake --build build --target gdsaudit gdsaudit-gui
       # the UI runs the gdsaudit next to it
       - install -Dm755 build/tools/auditor/gdsaudit /app/bin/gdsaudit

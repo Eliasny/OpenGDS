@@ -19,3 +19,6 @@ approval = renewals
 # scheduled pushes to the targets set with "gdsctl push-targets" (docs/push.md)
 # push = true
 # push_jitter = 300
+# announce the GDS on the local subnet by mDNS (OPC 10000-12 Annex C); off by
+# default, as Part 12 §5.2 advises where hosts can be impersonated
+# mdns = true

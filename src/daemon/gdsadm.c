@@ -16,6 +16,7 @@
  *   gdsadm push setup ...                   Annex G.2 setup of a device in setup state
  *   gdsadm push keycred URI --service NAME  push a KeyCredential to a device (§8.6)
  *   gdsadm push keycred-delete URI ...      delete it there and Revoke it on the GDS
+ *   gdsadm watch --url URL ... [--json]     live audit events and alarms (gdsadm_watch.h)
  *
  * Passwords are read from stdin or a file, never argv. The store is opened read-only
  * and may be read while opengdsd runs. approve and reject answer the request's
@@ -39,6 +40,7 @@
 #include "client/gdsc_connect.h"
 #include "gds_access.h"
 #include "gdsadm_push.h"
+#include "gdsadm_watch.h"
 #include "store.h"
 #include "common/banned.h"
 
@@ -64,6 +66,8 @@ static int usage(void) {
                     "                       [--setup-user NAME --setup-password-file FILE] CONNECTION\n"
                     "       gdsadm push keycred URI --service NAME [--endpoint-url URL]... [device options] CONNECTION\n"
                     "       gdsadm push keycred-delete URI --service NAME [device options] CONNECTION\n"
+                    "       gdsadm watch --url URL --user NAME --password-file F --trust CA.der\n"
+                    "                    [--crl CA.crl] [--json] [--count N] [--seconds N]\n"
                     "  CONNECTION: --gds URL --cert DER --key DER --trust DER... [--crl DER]...\n"
                     "              --user NAME --password-file FILE\n");
     return 2;
@@ -330,16 +334,19 @@ static int approvals_reject(int argc, char **argv) {
     return approvals_respond(argc, argv, 1);
 }
 
+/* gdsadm VERB [SUB] ...; sub NULL: a one-word command */
 static const struct {
-    const char *noun, *verb;
+    const char *verb, *sub;
     int (*run)(int argc, char **argv);
 } commands[] = {
+    {"hash-password", NULL, hash_password},
+    {"watch", NULL, gdsadm_watch},
     {"apps", "list", apps_list},
     {"apps", "register", gdsadm_apps_register},
     {"apps", "import", gdsadm_apps_import},
     {"apps", "unregister", gdsadm_apps_unregister},
-    {"certs", "revoke", gdsadm_certs_revoke},
     {"certs", "status", certs_status},
+    {"certs", "revoke", gdsadm_certs_revoke},
     {"push", "now", gdsadm_push_now},
     {"push", "setup", gdsadm_push_setup},
     {"push", "keycred", gdsadm_push_keycred},
@@ -350,10 +357,11 @@ static const struct {
 };
 
 int main(int argc, char **argv) {
-    if(argc >= 2 && strcmp(argv[1], "hash-password") == 0)
-        return hash_password(argc, argv);
-    for(size_t i = 0; argc >= 3 && i < sizeof(commands) / sizeof(commands[0]); i++)
-        if(strcmp(argv[1], commands[i].noun) == 0 && strcmp(argv[2], commands[i].verb) == 0)
+    for(size_t i = 0; argc >= 2 && i < GDS_ARRAY_SIZE(commands); i++) {
+        if(strcmp(argv[1], commands[i].verb) != 0)
+            continue;
+        if(!commands[i].sub || (argc >= 3 && strcmp(argv[2], commands[i].sub) == 0))
             return commands[i].run(argc, argv);
+    }
     return usage();
 }
