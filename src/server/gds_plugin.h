@@ -586,6 +586,30 @@ typedef bool (*gds_approve_fn)(void *ctx, const gds_caller *caller,
 GDS_MUST_CHECK gds_status gds_server_set_approval_hook(struct gds_server *s, gds_approve_fn fn,
                                                        void *ctx);
 
+/* ---- revoking a serial the embedder reconciled (UASM ask A23) ----
+ * Puts `serial` on the CRL of the CA that issued it. For an embedder
+ * whose store learns of certificates the core never saw: UASM, after a
+ * forced new primary, finds certificates that cut-off old nodes issued
+ * and the new primary never recorded, and must put them on its CRL. The
+ * store must already answer cert_is_revoked true for the serial (a
+ * signer revokes nothing else; GDS_EDENIED otherwise), so the embedder
+ * records the revocation in its store first, exactly as RevokeCertificate
+ * (OPC 10000-12 §7.9.6) does. The issuing CA: the one whose subject is
+ * `certificate`'s issuer name when certificate is not NULL; else the
+ * issuer of certificateType (an ns0 ApplicationCertificateType); else,
+ * with both NULL, every issuer this server has, so a serial whose
+ * certificate is lost (a signer journal entry that never reached the
+ * store) is on every CRL. Idempotent: a serial already on a CRL stays
+ * there once. GDS_ESTATE on a STANDBY node (gds_server_set_role),
+ * GDS_EINVAL for an empty or oversized serial or an unknown
+ * certificateType, otherwise the CA's status. It blocks while the CA
+ * answers; call it from a method callback or a thread of the embedder's
+ * own, after gds_server_new. No audit event: the embedder raises its
+ * own (gds_server_raise_audit_event). */
+GDS_MUST_CHECK gds_status gds_server_revoke_serial(struct gds_server *s, const UA_ByteString *serial,
+                                                   const UA_ByteString *certificate,
+                                                   const UA_NodeId *certificateType);
+
 /* ---- plugin trust lists (UASM ask A18) ----
  * A CertificateGroup of the plugin's own (OPC 10000-12 §7.8.3.1), for
  * example the SKS's push targets: a CertificateGroupType object `name`
