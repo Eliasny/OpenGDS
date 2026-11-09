@@ -2,6 +2,8 @@
 
 Status: proposal, 6 Nov 2026. These catalogues are the designs of the Auditor's server and client profiles: every test that `gdsaudit server` and `gdsaudit client` will run, the clause it checks, its verdict rules and the mutant that proves it can fail. The C code in `tools/auditor/profile_server/` and `profile_client/` is written from them, test by test, so a test ID in a report always points back to a row here. They refine the test catalogue in the Auditor plan (03); the changes are listed under [Changes to the plan](#changes-to-the-plan).
 
+To run the Auditor against a device, start with the [operator guide](operator-guide.md).
+
 The GDS profile is not catalogued here. It is OpenGDS's T0 spec test programs (`tools/auditor/profile_gds/`), which have their own catalogue.
 
 | Catalogue | Profile | Auditor plays | Tests | Self-test target |
