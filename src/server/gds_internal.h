@@ -40,6 +40,15 @@ typedef struct {
 
 typedef struct gds_ptl gds_ptl;
 
+/* A KeyCredentialService (gds_keycred.c); fixed before the server runs. */
+typedef struct {
+    char name[GDS_MAX_KC_SERVICE + 1];
+    char *resourceUri;
+    char *profileUris[GDS_MAX_KC_PROFILES];
+    size_t nProfiles;
+    UA_NodeId node; /* the Object under KeyCredentialManagement */
+} gds_kc_service;
+
 /* One StartNewKeyPairRequest's secrets (gds_keypair.c), never stored. */
 typedef struct {
     bool used, ready; /* ready: key holds the generated key, password is gone */
@@ -80,6 +89,9 @@ struct gds_server {
     bool workPending, workStop;
     bool plugStop; /* plugin workers stop (plugLock); here for packing */
     bool started;  /* gds_server_run was called (__atomic); here for packing */
+    bool stopping; /* gds_server_delete began (__atomic): queued callbacks
+                    * that run while UA_Server_delete drains the event loop
+                    * must not touch the server's nodes or namespaces */
     bool ptlBound;            /* ptlLock; here for packing */
     bool alarmDrainScheduled; /* alarmLock; here for packing */
     /* plugin privilege providers, fixed before the server runs */
@@ -139,12 +151,24 @@ struct gds_server {
     /* Approval hook (UASM ask A22); fixed before run */
     gds_approve_fn approve;
     void *approveCtx;
+    /* KeyCredentials from a source instead of the core (gds_keycred.c);
+     * hasKcSource is below, next to pushSchedSet (padding) */
+    gds_keycred_source kcSource;
     /* DefaultApplicationGroup TrustList LastUpdateTime (gds_trustlist.c);
      * server thread only */
     UA_DateTime tlLastUpdate;
+    /* push scheduler (gds_push_slot.c, OpenGDS W3); fixed before run */
+    gds_push_scheduler pushSched;
+    bool pushSchedSet;
+    bool hasKcSource;
     /* StartNewKeyPairRequest secrets (gds_keypair.c); kpLock is a leaf lock */
     pthread_mutex_t kpLock;
     gds_kp_entry kp[GDS_MAX_KEYPAIR_REQUESTS];
+    /* KeyCredentialServices (gds_keycred.c); fixed before the server runs */
+    gds_kc_service kc[GDS_MAX_KC_SERVICES];
+    size_t nKc;
+    /* the AuthorizationService (gds_authz.c); NULL when not configured */
+    struct gds_authz *authz;
 };
 
 /* ---- caller views (gds_caller.c, issue #17) ---- */
@@ -203,6 +227,21 @@ GDS_MUST_CHECK UA_StatusCode gds_embed_defer_approval(gds_server *s, UA_MethodCa
                                                       const UA_NodeId *objectId, const UA_Guid *app,
                                                       size_t inputSize, const UA_Variant *input,
                                                       size_t outputSize, UA_Variant *output);
+/* The AuditUpdateMethodEvent of a GDS method (gds_registrar.c): MethodId,
+ * InputArguments and the extra fields, visible to SecurityAdmin and the
+ * GDS role gdsRole (a UA_GDSID_WELLKNOWNROLE_*), logged before it is raised. */
+GDS_MUST_CHECK gds_status gds_method_audit(gds_server *s, const char *actor, UA_UInt32 type,
+                                           UA_UInt32 method, unsigned gdsRole,
+                                           const gds_event_field *extra, size_t nExtra,
+                                           const UA_Variant *args, size_t nArgs, bool ok,
+                                           const char *msg);
+/* The ClientUserId of a session's audit events: its user, NULL if anonymous. */
+const char *gds_session_actor(const void *sessionContext);
+/* Should a method call's result be audited? Not while it completes
+ * asynchronously (it runs again), and not when the session was refused
+ * (access denied, insufficient security): only callers allowed to make the
+ * change leave a record, so the log cannot be flooded by anyone. */
+bool gds_audit_result(UA_StatusCode r);
 /* The audit event of a certificate method (gds_registrar.c): type is
  * CertificateRequested or CertificateDelivered, actor the ClientUserId,
  * msg NULL or a note. */
@@ -211,14 +250,16 @@ GDS_MUST_CHECK gds_status gds_cert_audit(gds_server *s, const char *actor, UA_UI
                                          const UA_Variant *args, size_t nArgs, bool ok,
                                          const char *msg);
 /* A core method that runs part of its work on a plugin worker (A19):
- * run(ctx, caller, inputs) on a worker, then done(s, ctx, run's status) on
- * the server thread, whose status completes the call (also when the call
- * was cancelled; done then frees ctx). Good_CompletesAsynchronously, or an
+ * run(ctx, caller, inputs) on a worker, then done(s, ctx, run's status,
+ * output) on the server thread, whose status completes the call (also
+ * when the call was cancelled: output is then NULL; done frees ctx). done
+ * may fill output, the method's output arguments. Good_CompletesAsynchronously, or an
  * error and ctx stays the caller's. ctxFree frees ctx if the server stops
  * before done ran. */
 typedef UA_StatusCode (*gds_defer_run_fn)(void *ctx, const gds_caller *caller, size_t nIn,
                                           const UA_Variant *in);
-typedef UA_StatusCode (*gds_defer_done_fn)(gds_server *s, void *ctx, UA_StatusCode status);
+typedef UA_StatusCode (*gds_defer_done_fn)(gds_server *s, void *ctx, UA_StatusCode status,
+                                           UA_Variant *output);
 typedef void (*gds_defer_free_fn)(void *ctx);
 /* Starts the plugin workers if they are not running yet. */
 GDS_MUST_CHECK gds_status gds_embed_pool_start(gds_server *s);
@@ -333,12 +374,24 @@ GDS_MUST_CHECK UA_StatusCode gds_revoke_install(gds_server *s);
 /* Revoke every certificate of appId: store first, then the CA's CRL.
  * Server thread; takes storeLock for the store part only. */
 GDS_MUST_CHECK UA_StatusCode gds_revoke_app_certs(gds_server *s, const UA_Guid *appId);
+/* KeyCredentials (gds_keycred.c, OPC 10000-12 §8.5). copy: the services
+ * of the config (GDS_EINVAL for a bad one); install: their Objects and
+ * methods, before the server runs; free: after UA_Server_delete. */
+GDS_MUST_CHECK gds_status gds_keycred_copy(gds_server *s, const gds_keycred_service *svc,
+                                           size_t n);
+GDS_MUST_CHECK UA_StatusCode gds_keycred_install(gds_server *s);
+void gds_keycred_free(gds_server *s);
 /* Approvals (gds_approvals.c): the source object, Respond/Respond2 and a
  * dialog for every Pending request in the store. Before the server runs. */
 GDS_MUST_CHECK UA_StatusCode gds_approvals_install(gds_server *s);
 /* A dialog for a request just stored as Pending. Server thread. */
 GDS_MUST_CHECK UA_StatusCode gds_approvals_raise(gds_server *s, const gds_request *q,
                                                  const UA_String *appUri);
+/* A dialog for a KeyCredential request just stored as Pending, and the
+ * removal of one (a cancelled request). Server thread. */
+GDS_MUST_CHECK UA_StatusCode gds_approvals_raise_kc(gds_server *s, const gds_kc_request *q,
+                                                    const UA_String *appUri);
+void gds_approvals_drop(gds_server *s, const UA_Guid *reqId);
 /* The node role changed: re-synchronise the dialogs with the store on the
  * server thread (none on a STANDBY). Any thread. */
 void gds_approvals_role_changed(gds_server *s);
@@ -416,5 +469,18 @@ typedef struct {
 GDS_MUST_CHECK UA_StatusCode gds_add_directory_method(gds_server *s, UA_UInt32 id, const char *name,
                                                       const gds_method_arg *in, size_t nIn,
                                                       const gds_method_arg *out, size_t nOut);
+/* AuthorizationService (gds_authz.c, OPC 10000-12 §9.6): its object,
+ * methods and token tables. install: before the server runs; free: after
+ * UA_Server_delete. */
+GDS_MUST_CHECK UA_StatusCode gds_authz_install(gds_server *s, const gds_authz_config *cfg,
+                                               const gds_buf *ownCert);
+void gds_authz_free(gds_server *s);
+/* Add a method node under parent with these arguments; the
+ * InputArguments and OutputArguments get inId / outId when not null. */
+GDS_MUST_CHECK UA_StatusCode gds_add_method(gds_server *s, UA_NodeId node, UA_NodeId parent,
+                                            const char *name, const gds_method_arg *in,
+                                            size_t nIn, UA_NodeId inId,
+                                            const gds_method_arg *out, size_t nOut,
+                                            UA_NodeId outId);
 
 #endif

@@ -48,11 +48,17 @@ gds_status gds_ca_wrap(const gds_ca_backend *backend, void *ctx, gds_ca **out) {
         n = offsetof(gds_ca_backend, new_key_pair);
     else if(backend->abiVersion < 4)
         n = offsetof(gds_ca_backend, get_issuer_cert);
+    else if(backend->abiVersion < 5)
+        n = offsetof(gds_ca_backend, token_chain);
     memcpy(&ca->b, backend, n);
     if(!ca->b.get_issuer_cert || !ca->b.get_issuer_crl || !ca->b.revoke_issuer) {
         ca->b.get_issuer_cert = NULL; /* all three or none */
         ca->b.get_issuer_crl = NULL;
         ca->b.revoke_issuer = NULL;
+    }
+    if(!ca->b.token_chain || !ca->b.token_sign) {
+        ca->b.token_chain = NULL; /* both or none */
+        ca->b.token_sign = NULL;
     }
     ca->ctx = ctx;
     *out = ca;
@@ -148,6 +154,66 @@ gds_status gds_ca_revoke(gds_ca *ca, const gds_buf *serial) {
     if(!ca->b.revoke)
         return GDS_EUNSUPPORTED;
     return ca->b.revoke(ca->ctx, serial);
+}
+
+/* ---- the AccessToken key ---- */
+
+static bool b64url_char(uint8_t c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+           c == '-' || c == '_';
+}
+
+static int b64url_val(uint8_t c) {
+    if(c >= 'A' && c <= 'Z')
+        return c - 'A';
+    if(c >= 'a' && c <= 'z')
+        return c - 'a' + 26;
+    if(c >= '0' && c <= '9')
+        return c - '0' + 52;
+    return c == '-' ? 62 : 63;
+}
+
+bool gds_ca_jws_input_ok(const uint8_t *in, size_t len) {
+    static const char prefix[] = "{\"alg\":\"RS256\"";
+    if(!in || len == 0 || len > GDS_CA_MAX_JWS_INPUT)
+        return false;
+    size_t dot = len;
+    for(size_t i = 0; i < len; i++) {
+        if(in[i] == '.') {
+            if(dot != len)
+                return false; /* one dot: header.payload */
+            dot = i;
+        } else if(!b64url_char(in[i])) {
+            return false;
+        }
+    }
+    if(dot == len || dot == 0 || dot == len - 1)
+        return false;
+    /* the header's first bytes, decoded (4 characters give 3 bytes) */
+    size_t need = sizeof(prefix) - 1, got = 0;
+    uint8_t head[sizeof(prefix) + 2];
+    for(size_t i = 0; i + 4 <= dot && got < need; i += 4) {
+        uint32_t v = (uint32_t)b64url_val(in[i]) << 18 | (uint32_t)b64url_val(in[i + 1]) << 12 |
+                     (uint32_t)b64url_val(in[i + 2]) << 6 | (uint32_t)b64url_val(in[i + 3]);
+        head[got++] = (uint8_t)(v >> 16);
+        head[got++] = (uint8_t)(v >> 8);
+        head[got++] = (uint8_t)v;
+    }
+    return got >= need && memcmp(head, prefix, need) == 0;
+}
+
+gds_status gds_ca_token_chain(gds_ca *ca, const char *serviceUri, gds_buf *out) {
+    memset(out, 0, sizeof(*out));
+    if(!serviceUri || !*serviceUri || strlen(serviceUri) > GDS_MAX_APPLICATION_URI)
+        return GDS_EINVAL;
+    return ca->b.token_chain ? ca->b.token_chain(ca->ctx, serviceUri, out) : GDS_EUNSUPPORTED;
+}
+
+gds_status gds_ca_token_sign(gds_ca *ca, const gds_buf *input, gds_buf *sig) {
+    memset(sig, 0, sizeof(*sig));
+    if(!input || !gds_ca_jws_input_ok(input->data, input->len))
+        return GDS_EINVAL;
+    return ca->b.token_sign ? ca->b.token_sign(ca->ctx, input, sig) : GDS_EUNSUPPORTED;
 }
 
 /* ---- StartNewKeyPairRequest ---- */

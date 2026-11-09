@@ -24,6 +24,7 @@
 #include "config.h"
 #include "gds_server.h"
 #include "own_cert.h"
+#include "push_engine.h"
 #include "store.h"
 #include "common/sandbox.h"
 #include "common/banned.h"
@@ -188,7 +189,21 @@ typedef struct {
     pid_t signer;
     gds_buf cert, key;
     gds_server *server;
+    push_engine *push;
+    gds_buf issuers[GDS_CA_ISSUERS];
+    size_t issuersN;
 } daemon_state;
+
+/* The AccessToken key lives with the CA keys (the signer, or the
+ * in-process CA in development). */
+static gds_status token_sign(void *ctx, const uint8_t *data, size_t len, gds_buf *sig) {
+    gds_buf in = {(uint8_t *)(uintptr_t)data, len};
+    return gds_ca_token_sign(ctx, &in, sig);
+}
+
+static gds_status token_chain(void *ctx, const char *serviceUri, gds_buf *out) {
+    return gds_ca_token_chain(ctx, serviceUri, out);
+}
 
 static gds_status start(daemon_state *d) {
     char storePath[GDS_MAX_PATH];
@@ -238,10 +253,60 @@ static gds_status start(daemon_state *d) {
     sc.ca = d->ca;
     sc.users = &d->users;
     sc.approval = (gds_approval_policy)d->cfg.approval; /* same values, config.h */
+    gds_keycred_service kc[GDSD_MAX_KC];
+    const char *prof[GDSD_MAX_KC][GDSD_MAX_KC_PROFILES];
+    for(uint8_t i = 0; i < d->cfg.nKeycred; i++) {
+        const gdsd_keycred *k = &d->cfg.keycred[i];
+        for(uint8_t j = 0; j < k->nProfiles; j++)
+            prof[i][j] = k->profiles + k->profile[j];
+        kc[i] = (gds_keycred_service){k->name, k->resourceUri, prof[i], k->nProfiles};
+    }
+    sc.keyCredServices = kc;
+    sc.keyCredServicesSize = d->cfg.nKeycred;
+    gds_authz_config az = {0};
+    if(d->cfg.authorizationService) {
+        az.serviceUri = d->cfg.authorizationServiceUri[0] ? d->cfg.authorizationServiceUri : NULL;
+        az.sign = token_sign;
+        az.chain = token_chain;
+        az.signCtx = d->ca;
+        az.alg = "RS256";
+        az.accessLifetime = d->cfg.accessTokenLifetime;
+        az.refreshLifetime = d->cfg.refreshTokenLifetime;
+        sc.authz = &az;
+    }
     return gds_server_new(&sc, &d->server);
 }
 
+/* The push engine (docs/push.md "Scheduled pushes"), after the sandbox */
+static gds_status start_push(daemon_state *d) {
+    if(!d->cfg.push)
+        return GDS_OK;
+    push_engine_cfg pc;
+    memset(&pc, 0, sizeof(pc));
+    pc.server = d->server;
+    pc.cert = d->cert;
+    pc.key = d->key;
+    for(unsigned i = 0; i < GDS_CA_ISSUERS; i++)
+        if(gds_ca_get_issuer_cert(d->ca, (gds_ca_issuer)i, &d->issuers[d->issuersN]) == GDS_OK)
+            d->issuersN++;
+    pc.issuers = d->issuers;
+    pc.issuersN = d->issuersN;
+    pc.tickMs = d->cfg.pushIntervalS * 1000u;
+    pc.concurrency = d->cfg.pushConcurrency;
+    pc.jitterS = d->cfg.pushJitterS;
+    pc.backoffMinS = d->cfg.pushBackoffMinS;
+    pc.backoffMaxS = d->cfg.pushBackoffMaxS;
+    pc.rejectedS = d->cfg.pushRejectedS;
+    gds_status r = push_engine_start(&pc, &d->push);
+    if(r != GDS_OK)
+        fprintf(stderr, "opengdsd: push engine: %s\n", gds_status_name(r));
+    return r;
+}
+
 static void stop(daemon_state *d) {
+    push_engine_stop(d->push); /* before the server it uses */
+    for(size_t i = 0; i < d->issuersN; i++)
+        gds_buf_free(&d->issuers[i]);
     gds_server_delete(d->server);
     gds_ca_close(d->ca); /* closes the signer socket: the signer exits */
     if(d->signer > 0)
@@ -262,7 +327,8 @@ static const char *const systemFiles[] = {
 
 /* After start-up: the data directory, the CA directory (in-process CA
  * only), the configuration and users files, and the system files above.
- * TCP: bind on the configured port only. */
+ * TCP: bind on the configured port only; connect to any port only when
+ * the push engine runs (it connects to the managed Servers). */
 static gds_status sandbox(const daemon_state *d, const char *configPath) {
     gds_sb_path paths[MAX_SB_PATHS];
     size_t n = 0;
@@ -275,7 +341,7 @@ static gds_status sandbox(const daemon_state *d, const char *configPath) {
         if(access(systemFiles[i], F_OK) == 0)
             paths[n++] = (gds_sb_path){systemFiles[i], GDS_SB_READ};
     gds_sandbox sb = {.profile = GDS_SB_DAEMON, .paths = paths, .nPaths = n,
-                      .tcpBindPort = d->cfg.port};
+                      .tcpBindPort = d->cfg.port, .tcpConnect = d->cfg.push};
     gds_sandbox_report rep;
     gds_status r = gds_sandbox_apply(&sb, &rep);
     if(r != GDS_OK)
@@ -308,6 +374,8 @@ int main(int argc, char **argv) {
     r = start(&d);
     if(r == GDS_OK)
         r = sandbox(&d, argv[2]);
+    if(r == GDS_OK)
+        r = start_push(&d);
     if(r == GDS_OK)
         r = gds_server_run(d.server, &running);
     stop(&d);

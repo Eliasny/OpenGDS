@@ -82,10 +82,16 @@ gds.az.start_unknown_resource,not_supported
 gds.az.finish_unknown,not_supported
 gds.az.refresh_rejected,not_supported
 gds.az.sign_only,not_supported
+gds.az.token_flow,not_supported
+gds.az.token_refresh,not_supported
+gds.az.audit_requested,not_supported
+gds.az.audit_issued,not_supported
 gds.ev.registration_changed,not_tested
 gds.ev.certificate_requested_delivered,not_supported
 gds.ev.certificate_revoked,not_supported
 gds.ev.trustlist_updated,not_tested
+gds.ev.keycred_requested_delivered,not_supported
+gds.ev.keycred_revoked,not_supported
 gds.ev.auditing_flag,not_supported
 gds.ev.group_alarms,not_supported
 gds.acc.unregister_other,pass

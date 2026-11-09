@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Elias=20Nyk=C3=A4nen?=
+ <61413159+Eliasny@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 06:10:00 +0000
+Subject: [PATCH] fix(plugin): load DER CRLs shorter than 256 bytes
+
+UA_OpenSSL_LoadCrl and UA_mbedTLS_LoadCrl take a CRL for DER only when
+it starts 0x30 0x82, the two-byte length form. A DER CRL below 256 bytes
+starts 0x30 0x81; an ECC CA's CRL with no entries is about 200 bytes. It
+went to the PEM parser and failed, so the file store wrote it under an
+empty subject name (memcpy from NULL in getCertFileName) and the server
+never loaded it: certificates that CA revokes stayed trusted.
+
+Try DER first and fall back to PEM, as UA_OpenSSL_LoadCertificate does;
+for mbedTLS, any SEQUENCE (0x30) is DER.
+---
+ plugins/crypto/mbedtls/securitypolicy_common.c |  7 +++----
+ plugins/crypto/openssl/securitypolicy_common.c | 13 +++++--------
+ 2 files changed, 8 insertions(+), 12 deletions(-)
+
+diff --git a/plugins/crypto/mbedtls/securitypolicy_common.c b/plugins/crypto/mbedtls/securitypolicy_common.c
+index be834f8..4e28856 100644
+--- a/plugins/crypto/mbedtls/securitypolicy_common.c
++++ b/plugins/crypto/mbedtls/securitypolicy_common.c
+@@ -720,11 +720,10 @@ UA_mbedTLS_LoadPemCertificate(const UA_ByteString *certificate, mbedtls_x509_crt
+ 
+ UA_StatusCode
+ UA_mbedTLS_LoadCrl(const UA_ByteString *crl, mbedtls_x509_crl *target) {
+-    const unsigned char *pData = crl->data;
+-
+-    if(crl->length > 1 && pData[0] == 0x30 && pData[1] == 0x82) { // Magic number for DER encoded files
++    /* A DER SEQUENCE starts 0x30 whatever its length (0x30 0x81 below 256
++     * bytes); PEM starts with "-----BEGIN". */
++    if(crl->length > 1 && crl->data[0] == 0x30)
+         return UA_mbedTLS_LoadDerCrl(crl, target);
+-    }
+     return UA_mbedTLS_LoadPemCrl(crl,target);
+ 
+ }
+diff --git a/plugins/crypto/openssl/securitypolicy_common.c b/plugins/crypto/openssl/securitypolicy_common.c
+index 6f8d0aa..b8fae0a 100644
+--- a/plugins/crypto/openssl/securitypolicy_common.c
++++ b/plugins/crypto/openssl/securitypolicy_common.c
+@@ -1455,15 +1455,12 @@ UA_OpenSSL_LoadPemCertificate(const UA_ByteString *certificate) {
+ 
+ X509_CRL *
+ UA_OpenSSL_LoadCrl(const UA_ByteString *crl) {
+-    X509_CRL * result = NULL;
+-    const unsigned char *pData = crl->data;
+-
+-    if(crl->length > 1 && pData[0] == 0x30 && pData[1] == 0x82) { // Magic number for DER encoded files
+-        result = UA_OpenSSL_LoadDerCrl(crl);
+-    } else {
++    /* DER first, as for certificates: a DER CRL below 256 bytes (an ECC CA's
++     * CRL with no entries) starts 0x30 0x81, so the 0x30 0x82 "magic"
++     * mistook it for PEM. */
++    X509_CRL *result = UA_OpenSSL_LoadDerCrl(crl);
++    if(result == NULL)
+         result = UA_OpenSSL_LoadPemCrl(crl);
+-    }
+-
+     return result;
+ }
+ 
+-- 
+2.43.0
+

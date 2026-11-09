@@ -14,6 +14,8 @@
 #include <open62541/client.h>
 #include <open62541/types_gds_generated.h>
 
+#include <stdbool.h>
+
 #include "common/buf.h"
 #include "common/compiler.h"
 #include "common/limits.h"
@@ -57,6 +59,41 @@ GDS_MUST_CHECK UA_StatusCode gdsc_sign_csr(UA_Client *c, UA_UInt16 ns, const UA_
                                            const gds_buf *csr, unsigned pollSeconds,
                                            gds_buf *certOut, gds_buf *issuersOut,
                                            size_t *issuersN);
+
+/* GetCertificateGroups (12 v1.05.07 §7.9.7): the groups of an application.
+ * *groups: UA_Array_delete with UA_TYPES_NODEID; at most GDS_MAX_GROUPS. */
+#define GDSC_MAX_GROUPS 16
+GDS_MUST_CHECK UA_StatusCode gdsc_get_certificate_groups(UA_Client *c, UA_UInt16 ns,
+                                                         const UA_NodeId *appId,
+                                                         UA_NodeId **groups, size_t *n);
+
+/* GetCertificateStatus (12 v1.05.07 §7.9.10): does the certificate of this group and
+ * type need an update? */
+GDS_MUST_CHECK UA_StatusCode gdsc_get_certificate_status(UA_Client *c, UA_UInt16 ns,
+                                                         const UA_NodeId *appId,
+                                                         const UA_NodeId *group,
+                                                         const UA_NodeId *certType,
+                                                         bool *updateRequired);
+
+/* StartSigningRequest (12 v1.05.07 §7.9.3): *requestId is copied out. */
+GDS_MUST_CHECK UA_StatusCode gdsc_start_signing_request(UA_Client *c, UA_UInt16 ns,
+                                                        const UA_NodeId *appId,
+                                                        const UA_NodeId *group,
+                                                        const UA_NodeId *certType,
+                                                        const gds_buf *csr, UA_NodeId *requestId);
+
+/* One FinishRequest call (12 v1.05.07 §7.9.5): Bad_NothingToDo while the request is
+ * pending. On Good the certificate and its issuer chain are copied out as in
+ * gdsc_sign_csr; a private key in the answer is refused (a CSR was sent). */
+GDS_MUST_CHECK UA_StatusCode gdsc_finish_request(UA_Client *c, UA_UInt16 ns,
+                                                 const UA_NodeId *appId,
+                                                 const UA_NodeId *requestId, gds_buf *certOut,
+                                                 gds_buf *issuersOut, size_t *issuersN);
+
+/* GetTrustList (12 v1.05.07 §7.9.9): the NodeId of the application's TrustList. */
+GDS_MUST_CHECK UA_StatusCode gdsc_get_trust_list_id(UA_Client *c, UA_UInt16 ns,
+                                                    const UA_NodeId *appId,
+                                                    const UA_NodeId *group, UA_NodeId *tl);
 
 /* GetTrustList (12 §7.9.8) and read that TrustList (§7.8.2). */
 GDS_MUST_CHECK UA_StatusCode gdsc_get_trust_list(UA_Client *c, UA_UInt16 ns,

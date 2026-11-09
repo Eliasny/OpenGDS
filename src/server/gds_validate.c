@@ -142,13 +142,9 @@ static UA_StatusCode make_args(const gds_method_arg *a, size_t n, UA_Argument *o
     return UA_STATUSCODE_GOOD;
 }
 
-UA_StatusCode gds_add_directory_method(gds_server *s, UA_UInt32 id, const char *name,
-                                       const gds_method_arg *in, size_t nIn,
-                                       const gds_method_arg *out, size_t nOut) {
-    UA_NodeId node = UA_NODEID_NUMERIC(s->ns, id);
-    UA_NodeClass nc = UA_NODECLASS_UNSPECIFIED;
-    if(UA_Server_readNodeClass(s->ua, node, &nc) == UA_STATUSCODE_GOOD)
-        return nc == UA_NODECLASS_METHOD ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNODECLASSINVALID;
+UA_StatusCode gds_add_method(gds_server *s, UA_NodeId node, UA_NodeId parent, const char *name,
+                             const gds_method_arg *in, size_t nIn, UA_NodeId inId,
+                             const gds_method_arg *out, size_t nOut, UA_NodeId outId) {
     UA_Argument inArgs[4], outArgs[4];
     if(nIn > GDS_ARRAY_SIZE(inArgs) || nOut > GDS_ARRAY_SIZE(outArgs))
         return UA_STATUSCODE_BADINTERNALERROR;
@@ -158,8 +154,19 @@ UA_StatusCode gds_add_directory_method(gds_server *s, UA_UInt32 id, const char *
     ma.displayName = UA_LOCALIZEDTEXT("", (char *)(uintptr_t)name);
     ma.executable = true;
     ma.userExecutable = true;
-    return UA_Server_addMethodNode(s->ua, node, UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY),
-                                   UA_NS0ID(HASCOMPONENT),
-                                   UA_QUALIFIEDNAME(s->ns, (char *)(uintptr_t)name), ma, NULL, nIn,
-                                   inArgs, nOut, outArgs, NULL, NULL);
+    return UA_Server_addMethodNodeEx(s->ua, node, parent, UA_NS0ID(HASCOMPONENT),
+                                     UA_QUALIFIEDNAME(s->ns, (char *)(uintptr_t)name), ma, NULL,
+                                     nIn, inArgs, inId, NULL, nOut, outArgs, outId, NULL, NULL,
+                                     NULL);
+}
+
+UA_StatusCode gds_add_directory_method(gds_server *s, UA_UInt32 id, const char *name,
+                                       const gds_method_arg *in, size_t nIn,
+                                       const gds_method_arg *out, size_t nOut) {
+    UA_NodeId node = UA_NODEID_NUMERIC(s->ns, id);
+    UA_NodeClass nc = UA_NODECLASS_UNSPECIFIED;
+    if(UA_Server_readNodeClass(s->ua, node, &nc) == UA_STATUSCODE_GOOD)
+        return nc == UA_NODECLASS_METHOD ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNODECLASSINVALID;
+    return gds_add_method(s, node, UA_NODEID_NUMERIC(s->ns, UA_GDSID_DIRECTORY), name, in, nIn,
+                          UA_NODEID_NULL, out, nOut, UA_NODEID_NULL);
 }

@@ -27,7 +27,7 @@ Once its socket, store and CA are open (with `--listen`: at the first connection
 
 `opengdsd` sandboxes itself the same way once it has started (store, CA or signer connection, own certificate), with a wider profile for the OPC UA server:
 
-- Landlock: `data_dir` read-write, `ca_dir` read-write only with the in-process CA, the configuration and users files read-only, and `/etc/hosts`, `/etc/resolv.conf`, `/etc/nsswitch.conf`, `/etc/host.conf`, `/etc/gai.conf` and `/etc/localtime` read-only. TCP bind is allowed only on `port`, and TCP connect is not allowed at all (`opengdsd` makes no outgoing connections; push runs in `gdsadm`).
+- Landlock: `data_dir` read-write, `ca_dir` read-write only with the in-process CA, the configuration and users files read-only, and `/etc/hosts`, `/etc/resolv.conf`, `/etc/nsswitch.conf`, `/etc/host.conf`, `/etc/gai.conf` and `/etc/localtime` read-only. TCP bind is allowed only on `port`. TCP connect is not allowed unless `push = true`, which lets the push engine connect to devices (`docs/push.md`).
 - seccomp: the signer's allowlist plus sockets, epoll, timers and threads. `clone` is allowed only with `CLONE_THREAD`, so `fork` fails, and `clone3` answers ENOSYS so that libc falls back to `clone`. `ioctl` is limited to FIONBIO and FIONREAD. `execve`, `ptrace` and the others kill the process.
 
 The `opengds-signer: sandbox:` and `opengdsd: sandbox:` log lines (`Landlock ABI N, seccomp on`) show what applied. seccomp needs libseccomp (2.5 or later) at build time. `-DOPENGDS_SECCOMP=ON` makes it required, and without it the build applies Landlock only. Builds with AddressSanitizer or ThreadSanitizer skip the sandbox.
@@ -95,6 +95,42 @@ StartNewKeyPairRequest (OPC 10000-12 §7.9.4) is for applications that cannot ma
 
 These requests go through the same approval policy as signing requests. The password and the key are never written to disk. `opengdsd` keeps them in memory, the password until the key is generated and the key until FinishRequest returns it once. If `opengdsd` restarts, the node switches to standby, or nobody calls FinishRequest within a day, the request fails with Bad_RequestNotAllowed and the application starts again. At most 64 key pair requests are open at once; beyond that the method answers Bad_ServerTooBusy.
 
+## KeyCredentials
+
+A KeyCredential is a user name and secret that an application uses with a resource that is not an OPC UA server, for example an MQTT broker for PubSub (OPC 10000-12 §8). The administrator lists each resource in the configuration; `opengdsd` then offers a KeyCredentialService Object for it under `KeyCredentialManagement` (§8.5.3):
+
+```
+keycred_service = mqtt urn:example:broker http://opcfoundation.org/UA/Profile/Transport/pubsub-mqtt-uadp
+```
+
+The three words are the service name (1 to 64 of `A-Z a-z 0-9 . _ -`, the BrowseName of the Object), its ResourceUri and its ProfileUris, comma-separated (at most 8). The key may be repeated for up to 8 services. Each Object has ResourceUri, ProfileUris and SecurityPolicyUris (Basic256Sha256, Aes128_Sha256_RsaOaep and Aes256_Sha256_RsaPss), the methods StartRequest and FinishRequest, and the optional Revoke.
+
+An application asks with StartRequest (§8.5.5), for itself over its own channel, or a user with the KeyCredentialAdmin role asks for it. Every call needs a SignAndEncrypt session. When the caller gives a PublicKey (an RSA certificate) and a SecurityPolicyUri, the secret is returned encrypted for that certificate as an RsaEncryptedSecret (OPC 10000-4 §7.40.2.4); without them it is returned as plain text inside the encrypted session. ECC policies are refused with Bad_SecurityPolicyRejected.
+
+Requests follow `approval` exactly as certificate requests do: `auto` approves every request, `renewals` approves a repeat request from the application itself for a service where it already holds a credential, and `manual` approves none. A waiting request is a DialogCondition named KeyCredentialRequest under `Approvals`, answered the same way (Respond2, RegistrationAuthorityAdmin). Until then FinishRequest (§8.5.6) answers Bad_RequestNotComplete, and after a rejection Bad_RequestNotAllowed. FinishRequest must come over the same certificate as StartRequest. With CancelRequest TRUE it ends the request without a credential.
+
+On an approved request FinishRequest generates the credential: the CredentialId `opengds-` followed by 32 hex digits, and a secret of 32 random bytes in base64url (43 characters). The secret is returned once and never stored: the store keeps only a salted hash in the format of `mosquitto_passwd` (`$7$`, PBKDF2-SHA512), so a broker can check it. A new credential for the same application and service replaces the earlier one. An application that embeds OpenGDS (UASM) can supply the credentials itself instead, through `gds_server_set_keycred_source` in `gds_plugin.h`: its source makes the CredentialId and secret on a plugin worker and is asked first on Revoke, and the store then keeps only the CredentialId. Revoke (§8.5.7) deletes a credential; KeyCredentialAdmin or the application itself may call it. Unregistering an application deletes its credentials and requests.
+
+The requests and credentials are in the store (schema 5), so they survive a restart and replicate with it. A store backend without them (before store ABI minor 8) cannot start with a `keycred_service` line.
+
+## AccessTokens (AuthorizationService)
+
+opengdsd can issue AccessTokens (OPC 10000-12 §9.6) for the Server applications registered in its directory. It is off until the configuration turns it on:
+
+```
+authorization_service = true
+# authorization_service_uri = urn:example:opengds/AuthorizationService   (default: application_uri + "/AuthorizationService")
+# access_token_lifetime = 3600      (seconds, 60 to 86400)
+# refresh_token_lifetime = 86400    (seconds, 0 to 30 days; 0: no RefreshTokens)
+```
+
+- **Who may ask:** a client whose SecureChannel certificate this GDS CA issued (the AccessTokenRequestor privilege, §9.2), over an encrypted SecureChannel.
+- **For what:** the ResourceId is the ApplicationUri of a registered Server (any type except Client). Tokens are JWTs (OPC 10000-6 §6.5.2): `iss` is the ServiceUri, `aud` the ResourceId, `sub` the user or the client application, `roles` the user's roles from the users file, and `cnf` binds the token to the client certificate.
+- **UserTokenPolicies:** `opengds-session` (Anonymous: the Session's own user, or the client application when the Session has none), `opengds-username` (a user and password from the users file, sent inside the encrypted channel) and, when the users file has X.509 users, `opengds-x509`. Five failed identity checks lock the client certificate out for five minutes (OPC 10000-4 §7.40.2.1).
+- **Signing key:** an RSA 2048 key that lives in opengds-signer next to the CA keys (`ca_dir/token/`, encrypted under the CA passphrase). Its certificate is issued by the RSA CA for the ServiceUri and renewed automatically 30 days before it expires; ServiceCertificate is that certificate followed by the CA certificate. opengdsd only sends the signer the token to sign, and the signer signs nothing that is not an RS256 JWT.
+- **In memory only:** open requests (5 minutes, bound to their Session) and RefreshTokens. A restart or a switchover forgets them, and clients start again with StartRequestToken. Each RefreshToken works once and reads the user's roles again, so a removed user gets no new token. The standby refuses all token methods.
+- **Audit:** AccessTokenRequestedAuditEventType for each FinishRequestToken and AccessTokenIssuedAuditEventType for each token, visible to SecurityAdmin and AuthorizationServiceAdmin. Passwords, tokens and signatures never appear in the events.
+
 ## Revoking certificates
 
 A session with the CertificateAuthorityAdmin role calls RevokeCertificate (OPC 10000-12 §7.9.6) on the Directory object with the ApplicationId and the certificate. Bad_NotFound means the application is not registered; Bad_InvalidArgument means this GDS did not issue that certificate to that application. UnregisterApplication revokes every certificate of the application before it deletes the record (§6.5.8).
@@ -118,7 +154,24 @@ Every application that pulls its trust list from the GDS (GetTrustList, OPC 1000
 - `RemoveCertificate` takes the SHA-1 thumbprint. Removing a CA removes its CRLs, and is refused while another entry still needs it.
 - `Open` with Write+EraseExisting (0x06), `Write`, then `CloseAndUpdate` replaces the lists named in SpecifiedLists. `Close` without `CloseAndUpdate` discards what was written.
 
-Every change is validated first (structure, signatures, validity period, revocation) and refused as a whole if one entry fails. Copies of the GDS CA certificate and its CRL in a written list are ignored, and the CA certificate cannot be removed. The entries are kept in the store, so they survive a restart and replicate with it. Each change moves `LastUpdateTime` and raises a TrustListUpdatedAuditEventType. Only one client can have the list open for writing, and a file handle unused for 60 seconds (`ActivityTimeout`) is closed. A store backend without trust list support (before store ABI minor 5) answers Bad_NotSupported.
+Every change is validated first (structure, signatures, validity period, revocation) and refused as a whole if one entry fails. Copies of the GDS issuing CA certificates (RSA, P-256, P-384) and their CRLs in a written list are ignored, and those certificates cannot be removed. The entries are kept in the store, so they survive a restart and replicate with it. Each change moves `LastUpdateTime` and raises a TrustListUpdatedAuditEventType. Only one client can have the list open for writing, and a file handle unused for 60 seconds (`ActivityTimeout`) is closed. A store backend without trust list support (before store ABI minor 5) answers Bad_NotSupported.
+
+## Audit events
+
+`Server.Auditing` is TRUE: opengdsd raises the Part 12 audit events, each an AuditUpdateMethodEventType with MethodId, InputArguments, Status and the caller's user name as ClientUserId:
+
+| Event | Raised by |
+|---|---|
+| ApplicationRegistrationChangedAuditEventType (§6.5.12) | RegisterApplication, UpdateApplication, UnregisterApplication |
+| CertificateRequestedAuditEventType (§7.9.12) | StartSigningRequest, StartNewKeyPairRequest, accepted or refused; never with the PrivateKeyPassword |
+| CertificateDeliveredAuditEventType (§7.9.13) | FinishRequest that returns a certificate |
+| CertificateRevokedAuditEventType (§7.9.14) | RevokeCertificate |
+| TrustListUpdatedAuditEventType (§7.8.2.1) | CloseAndUpdate, AddCertificate, RemoveCertificate |
+| KeyCredentialRequestedAuditEventType (§8.5.9) | StartRequest of a KeyCredentialService, accepted or refused |
+| KeyCredentialDeliveredAuditEventType (§8.5.10) | FinishRequest that returns a credential (never the secret) |
+| KeyCredentialRevokedAuditEventType (§8.5.11) | Revoke |
+
+Each event is written to the store's hash-chained audit log before it is raised, so every event a client sees is in the log. Only calls the session was allowed to make are audited: a call refused for its roles or security mode, or on a standby, leaves no record, so an unauthorised client cannot fill the log. Events are visible to SecurityAdmin and to the GDS role of the method (DiscoveryAdmin for the directory, CertificateAuthorityAdmin for certificates, KeyCredentialAdmin for KeyCredentials). KeyCredential events carry the service's ResourceUri. A store backend without the audit log (before store ABI minor 1) raises none and `Server.Auditing` reads FALSE.
 
 ## Importing applications
 

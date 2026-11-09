@@ -245,7 +245,34 @@ static void audit_hook_approval(gds_server *s, const gds_request *q) {
  * worker. Shared by StartSigningRequest and StartNewKeyPairRequest. */
 static UA_StatusCode submit_request(gds_server *s, const method_call *mc, gds_request *q);
 
-static GDS_METHOD(start_signing_request) {
+/* CertificateRequestedAuditEventType (§7.9.12) for a StartSigningRequest
+ * or StartNewKeyPairRequest: accepted (Status TRUE) or refused. The
+ * InputArguments are the first nArgs inputs: never the key password. */
+static void audit_requested(gds_server *s, void *sessionContext, UA_UInt32 method,
+                            size_t inputSize, const UA_Variant *input, size_t nArgs,
+                            UA_StatusCode r) {
+    if(!gds_audit_result(r))
+        return;
+    UA_UInt32 type = 0; /* the type asked for as given; 0 (null) if none can be named */
+    if(inputSize > 2 && UA_Variant_hasScalarType(&input[2], &UA_TYPES[UA_TYPES_NODEID])) {
+        const UA_NodeId *t = input[2].data;
+        if(UA_NodeId_isNull(t))
+            (void)gds_group_type(s, t, &type); /* null: the group's default */
+        else if(t->namespaceIndex == 0 && t->identifierType == UA_NODEIDTYPE_NUMERIC)
+            type = t->identifier.numeric;
+    }
+    gds_status a = gds_cert_audit(s, gds_session_actor(sessionContext),
+                                  UA_GDSID_CERTIFICATEREQUESTEDAUDITEVENTTYPE, method, type, input,
+                                  inputSize < nArgs ? inputSize : nArgs, r == UA_STATUSCODE_GOOD,
+                                  r == UA_STATUSCODE_GOOD ? "request accepted"
+                                                          : UA_StatusCode_name(r));
+    if(a != GDS_OK && a != GDS_EUNSUPPORTED)
+        fprintf(stderr, "opengds: audit of a certificate request: %s\n", gds_status_name(a));
+}
+
+static GDS_METHOD(start_signing_request);
+
+static GDS_METHOD(start_signing_impl) {
     GDS_METHOD_UNUSED;
     gds_server *s = gds_ctx(methodContext);
     if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
@@ -272,6 +299,15 @@ static GDS_METHOD(start_signing_request) {
         return r;
     UA_NodeId rid = UA_NODEID_GUID(s->ns, q.id);
     return UA_Variant_setScalarCopy(&output[0], &rid, &UA_TYPES[UA_TYPES_NODEID]);
+}
+
+static GDS_METHOD(start_signing_request) {
+    UA_StatusCode r = start_signing_impl(server, sessionId, sessionContext, methodId,
+                                         methodContext, objectId, objectContext, inputSize,
+                                         input, outputSize, output);
+    audit_requested(gds_ctx(methodContext), sessionContext, UA_GDSID_DIRECTORY_STARTSIGNINGREQUEST,
+                    inputSize, input, 4, r);
+    return r;
 }
 
 static UA_StatusCode submit_request(gds_server *s, const method_call *mc, gds_request *q) {
@@ -370,7 +406,9 @@ static UA_StatusCode keypair_args(gds_server *s, void *sessionContext, size_t in
     return r;
 }
 
-static GDS_METHOD(start_new_key_pair_request) {
+static GDS_METHOD(start_new_key_pair_request);
+
+static GDS_METHOD(start_new_key_pair_impl) {
     GDS_METHOD_UNUSED;
     gds_server *s = gds_ctx(methodContext);
     if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
@@ -400,6 +438,18 @@ static GDS_METHOD(start_new_key_pair_request) {
     return UA_Variant_setScalarCopy(&output[0], &rid, &UA_TYPES[UA_TYPES_NODEID]);
 }
 
+#define KEYPAIR_AUDITED_ARGS 6 /* all but PrivateKeyPassword */
+
+static GDS_METHOD(start_new_key_pair_request) {
+    UA_StatusCode r = start_new_key_pair_impl(server, sessionId, sessionContext, methodId,
+                                              methodContext, objectId, objectContext, inputSize,
+                                              input, outputSize, output);
+    audit_requested(gds_ctx(methodContext), sessionContext,
+                    UA_GDSID_DIRECTORY_STARTNEWKEYPAIRREQUEST, inputSize, input,
+                    KEYPAIR_AUDITED_ARGS, r);
+    return r;
+}
+
 /* ---- FinishRequest ---- */
 
 /* Issued -> Delivered. A key pair request hands its key over exactly once;
@@ -427,6 +477,17 @@ static UA_StatusCode finish_outputs(gds_server *s, const gds_request *q, const g
     if(r == UA_STATUSCODE_GOOD)
         r = UA_Variant_setArrayCopy(&output[2], &issuer, 1, &UA_TYPES[UA_TYPES_BYTESTRING]);
     return r;
+}
+
+/* CertificateDeliveredAuditEventType (§7.9.13): the certificate went out. */
+static void audit_delivered(gds_server *s, void *sessionContext, UA_UInt32 certType,
+                            size_t inputSize, const UA_Variant *input) {
+    gds_status a = gds_cert_audit(s, gds_session_actor(sessionContext),
+                                  UA_GDSID_CERTIFICATEDELIVEREDAUDITEVENTTYPE,
+                                  UA_GDSID_DIRECTORY_FINISHREQUEST, certType, input,
+                                  inputSize < 2 ? inputSize : 2, true, "certificate delivered");
+    if(a != GDS_OK && a != GDS_EUNSUPPORTED)
+        fprintf(stderr, "opengds: audit of a delivery: %s\n", gds_status_name(a));
 }
 
 static GDS_METHOD(finish_request) {
@@ -465,6 +526,8 @@ static GDS_METHOD(finish_request) {
         r = q.error ? q.error : UA_STATUSCODE_BADREQUESTNOTALLOWED;
     else
         r = finish_outputs(s, &q, &key, output);
+    if(r == UA_STATUSCODE_GOOD)
+        audit_delivered(s, sessionContext, q.certType, inputSize, input);
     gds_buf_free_secret(&key);
     gds_request_clear(&q);
     return r;
@@ -769,12 +832,13 @@ static gds_status store_issued(gds_server *s, const gds_request *q, const gds_ca
                                gds_buf *key) {
     bool keyPair = q->csr.len == 0;
     gds_status w = keyPair ? gds_kp_set_key(s, &q->id, key) : GDS_OK;
+    /* One transaction (A24): a request that is Issued has its certificate,
+     * and one that is still Received has none, so the next primary of a
+     * replicated store never signs a request twice. */
     if(w == GDS_OK)
-        w = gds_store_cert_add(s->store, &q->appId, q->groupId, q->certType, &issued->serial,
-                               &issued->der, issued->notBefore, issued->notAfter);
-    if(w == GDS_OK)
-        w = gds_store_req_set_state(s->store, &q->id, GDS_REQ_ISSUED, &issued->der,
-                                    UA_STATUSCODE_GOOD);
+        w = gds_store_cert_issue(s->store, &q->id, &q->appId, q->groupId, q->certType,
+                                 &issued->serial, &issued->der, issued->notBefore,
+                                 issued->notAfter);
     if(w != GDS_OK) {
         fprintf(stderr, "opengds: storing an issued certificate failed: %s\n",
                 gds_status_name(w));

@@ -41,9 +41,9 @@ static bool app_guid(const gds_server *s, const UA_NodeId *id, UA_Guid *out) {
     return true;
 }
 
-static gds_status audit(gds_server *s, const char *actor, UA_UInt32 type, UA_UInt32 method,
-                        unsigned gdsRole, const gds_event_field *extra, size_t nExtra,
-                        const UA_Variant *args, size_t nArgs, bool ok, const char *msg) {
+gds_status gds_method_audit(gds_server *s, const char *actor, UA_UInt32 type, UA_UInt32 method,
+                            unsigned gdsRole, const gds_event_field *extra, size_t nExtra,
+                            const UA_Variant *args, size_t nArgs, bool ok, const char *msg) {
     gds_event_field f[4];
     size_t n = 0;
     UA_NodeId methodId = UA_NODEID_NUMERIC(s->ns, method);
@@ -113,7 +113,7 @@ gds_status gds_server_register_application(gds_server *s, const char *actor,
     UA_Variant arg;
     UA_Variant_setScalar(&arg, (void *)(uintptr_t)rec,
                          &UA_TYPES_GDS[UA_TYPES_GDS_APPLICATIONRECORDDATATYPE]);
-    gds_status a = audit(s, actor, UA_GDSID_APPLICATIONREGISTRATIONCHANGEDAUDITEVENTTYPE,
+    gds_status a = gds_method_audit(s, actor, UA_GDSID_APPLICATIONREGISTRATIONCHANGEDAUDITEVENTTYPE,
                          UA_GDSID_DIRECTORY_REGISTERAPPLICATION, UA_GDSID_WELLKNOWNROLE_DISCOVERYADMIN,
                          NULL, 0, &arg, 1, true, "application registered");
     if(a != GDS_OK)
@@ -247,8 +247,8 @@ gds_status gds_cert_audit(gds_server *s, const char *actor, UA_UInt32 type, UA_U
     f[1].nsIndex = s->ns;
     f[1].name = "CertificateType";
     UA_Variant_setScalar(&f[1].value, &ct, &UA_TYPES[UA_TYPES_NODEID]);
-    return audit(s, actor, type, method, UA_GDSID_WELLKNOWNROLE_CERTIFICATEAUTHORITYADMIN, f, 2,
-                 args, nArgs, ok, msg);
+    return gds_method_audit(s, actor, type, method, UA_GDSID_WELLKNOWNROLE_CERTIFICATEAUTHORITYADMIN,
+                            f, 2, args, nArgs, ok, msg);
 }
 
 typedef struct {

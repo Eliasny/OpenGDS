@@ -8,3 +8,8 @@ file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/users" PERMISSIONS OWNER_READ OWNER_WRIT
 add_test(NAME example_embed_method
          COMMAND embed_method "${CMAKE_CURRENT_BINARY_DIR}/embed-run"
                  "${CMAKE_CURRENT_BINARY_DIR}/users" --check)
+
+# The Annex G.1 pull agent embedded in an application (libgdsclient);
+# run against opengdsd by tests/spec/run_annex_g_vs_opengdsd.sh
+add_executable(pull_agent pull_agent.c)
+target_link_libraries(pull_agent PRIVATE gds_client)

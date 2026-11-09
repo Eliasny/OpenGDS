@@ -264,7 +264,7 @@ static void drain(UA_Server *server, void *data) {
         list = j->next;
         if(j->run) {
             /* done always runs, also when the call was cancelled */
-            UA_StatusCode r = j->done(s, j->ctx, j->status);
+            UA_StatusCode r = j->done(s, j->ctx, j->status, j->output);
             j->ctx = NULL;
             if(j->output)
                 (void)UA_Server_setAsyncCallMethodResult(server, j->output, r);

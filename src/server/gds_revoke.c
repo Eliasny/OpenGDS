@@ -148,10 +148,8 @@ UA_StatusCode gds_revoke_app_certs(gds_server *s, const UA_Guid *appId) {
 /* RevokeCertificate(ApplicationId, Certificate): CertificateAuthorityAdmin
  * only. Bad_NotFound for an unknown application, Bad_InvalidArgument for a
  * certificate this CertificateManager did not issue to it. */
-static GDS_METHOD(revoke_certificate) {
-    GDS_METHOD_UNUSED;
-    (void)output;
-    gds_server *s = gds_ctx(methodContext);
+static UA_StatusCode revoke_impl(gds_server *s, void *sessionContext, size_t inputSize,
+                                 const UA_Variant *input) {
     if(gds_refuse_on_standby(s) != UA_STATUSCODE_GOOD)
         return UA_STATUSCODE_BADINVALIDSTATE;
     if(!gds_session_has(sessionContext, GDS_ROLE_CERTIFICATE_AUTHORITY_ADMIN))
@@ -186,6 +184,59 @@ static GDS_METHOD(revoke_certificate) {
         return ca_status(st);
     }
     return UA_STATUSCODE_GOOD;
+}
+
+/* CertificateRevokedAuditEventType (§7.9.14), with its outcome in Status. */
+static GDS_METHOD(revoke_certificate) {
+    GDS_METHOD_UNUSED;
+    (void)output;
+    gds_server *s = gds_ctx(methodContext);
+    UA_StatusCode r = revoke_impl(s, sessionContext, inputSize, input);
+    if(gds_audit_result(r)) {
+        gds_status a = gds_method_audit(
+            s, gds_session_actor(sessionContext), UA_GDSID_CERTIFICATEREVOKEDAUDITEVENTTYPE,
+            UA_GDSID_DIRECTORY_REVOKECERTIFICATE, UA_GDSID_WELLKNOWNROLE_CERTIFICATEAUTHORITYADMIN,
+            NULL, 0, input, inputSize < 2 ? inputSize : 2, r == UA_STATUSCODE_GOOD,
+            r == UA_STATUSCODE_GOOD ? "certificate revoked" : UA_StatusCode_name(r));
+        if(a != GDS_OK && a != GDS_EUNSUPPORTED)
+            fprintf(stderr, "opengds: audit of a revocation: %s\n", gds_status_name(a));
+    }
+    return r;
+}
+
+gds_status gds_server_revoke_serial(gds_server *s, const UA_ByteString *serial,
+                                    const UA_ByteString *certificate,
+                                    const UA_NodeId *certificateType) {
+    if(!s || !serial || !serial->data || serial->length == 0 ||
+       serial->length > GDS_MAX_SERIAL_SIZE)
+        return GDS_EINVAL;
+    if(certificate && (!certificate->data || certificate->length == 0 ||
+                       certificate->length > GDS_MAX_CERT_SIZE))
+        return GDS_EINVAL;
+    if(gds_server_role(s) == GDS_NODE_STANDBY)
+        return GDS_ESTATE;
+    gds_buf sn = {serial->data, serial->length};
+    if(certificate) {
+        gds_buf der = {certificate->data, certificate->length};
+        return gds_ca_revoke_issuer(s->ca, issuer_of_cert(s, &der), &sn);
+    }
+    if(certificateType) {
+        gds_ca_issuer issuer;
+        if(certificateType->namespaceIndex != 0 ||
+           certificateType->identifierType != UA_NODEIDTYPE_NUMERIC ||
+           !gds_ca_issuer_of(certificateType->identifier.numeric, &issuer))
+            return GDS_EINVAL;
+        return gds_ca_revoke_issuer(s->ca, issuer, &sn);
+    }
+    gds_status st = GDS_OK;
+    bool any = false;
+    for(unsigned i = 0; st == GDS_OK && i < GDS_CA_ISSUERS; i++) {
+        if(s->issuerCert[i].len == 0)
+            continue;
+        any = true;
+        st = gds_ca_revoke_issuer(s->ca, (gds_ca_issuer)i, &sn); // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange): i < GDS_CA_ISSUERS
+    }
+    return any ? st : gds_ca_revoke(s->ca, &sn);
 }
 
 UA_StatusCode gds_revoke_install(gds_server *s) {

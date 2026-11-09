@@ -21,7 +21,9 @@
 #   R5 gds.az.start_unknown_resource, gds.az.finish_unknown, gds.az.refresh_rejected
 #      (warn): the sample AuthorizationService answers Bad_NotSupported where
 #      §9.6.6 to §9.6.8 name Bad_NotFound (or Bad_IdentityTokenRejected for a refresh
-#      token). The sample does not implement token requests.
+#      token). The sample does not implement token requests, so gds.az.token_flow,
+#      gds.az.token_refresh, gds.az.audit_requested and gds.az.audit_issued are
+#      Not supported (StartRequestToken -> Bad_NotSupported).
 #   R6 gds.az.description: the sample's ServiceCertificate Property, and the one
 #      GetServiceDescription returns, are empty ByteStrings. §9.6.4: it "contains the
 #      Certificate required to check any Signature that is included with the
@@ -106,10 +108,16 @@ gds.az.start_unknown_resource,warn
 gds.az.finish_unknown,warn
 gds.az.refresh_rejected,warn
 gds.az.sign_only,pass
+gds.az.token_flow,not_supported
+gds.az.token_refresh,not_supported
+gds.az.audit_requested,not_supported
+gds.az.audit_issued,not_supported
 gds.ev.registration_changed,not_supported
 gds.ev.certificate_requested_delivered,not_supported
 gds.ev.certificate_revoked,not_supported
 gds.ev.trustlist_updated,not_supported
+gds.ev.keycred_requested_delivered,not_supported
+gds.ev.keycred_revoked,not_supported
 gds.ev.auditing_flag,not_supported
 gds.ev.group_alarms,not_supported
 gds.acc.unregister_other,pass

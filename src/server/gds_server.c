@@ -312,7 +312,40 @@ static bool config_ok(const gds_server_config *cfg) {
            cfg->approval >= GDS_APPROVE_ALL && cfg->approval <= GDS_APPROVE_MANUAL;
 }
 
-static gds_status install(gds_server *s) {
+/* Server.Auditing (OPC 10000-5 §6.3.1, "currently generating audit
+ * events"): TRUE with a store that keeps the audit log, which every audit
+ * event goes through first. open62541's own source answers FALSE. */
+static UA_StatusCode read_auditing(UA_Server *server, const UA_NodeId *sessionId,
+                                   void *sessionContext, const UA_NodeId *nodeId,
+                                   void *nodeContext, UA_Boolean includeSourceTimeStamp,
+                                   const UA_NumericRange *range, UA_DataValue *value) {
+    (void)server, (void)sessionId, (void)sessionContext, (void)nodeId;
+    const gds_server *s = nodeContext;
+    if(range) {
+        value->hasStatus = true;
+        value->status = UA_STATUSCODE_BADINDEXRANGEINVALID;
+        return UA_STATUSCODE_GOOD;
+    }
+    UA_Boolean on = s && gds_store_has_audit(s->store);
+    UA_StatusCode r = UA_Variant_setScalarCopy(&value->value, &on, &UA_TYPES[UA_TYPES_BOOLEAN]);
+    value->hasValue = r == UA_STATUSCODE_GOOD;
+    if(includeSourceTimeStamp) {
+        value->hasSourceTimestamp = true;
+        value->sourceTimestamp = UA_DateTime_now();
+    }
+    return r;
+}
+
+static UA_StatusCode install_auditing(gds_server *s) {
+    UA_NodeId n = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_AUDITING);
+    UA_CallbackValueSource src = {read_auditing, NULL};
+    UA_StatusCode r = UA_Server_setNodeContext(s->ua, n, s);
+    return r == UA_STATUSCODE_GOOD ? UA_Server_setVariableNode_callbackValueSource(s->ua, n, src)
+                                   : r;
+}
+
+static gds_status install(gds_server *s, const gds_authz_config *authz,
+                          const gds_buf *ownCert) {
     size_t ns = 0;
     UA_String uri = UA_STRING(GDS_NS_URI);
     if(UA_Server_getNamespaceByName(s->ua, uri, &ns) != UA_STATUSCODE_GOOD || ns > UA_UINT16_MAX) {
@@ -328,11 +361,17 @@ static gds_status install(gds_server *s) {
     if(r == UA_STATUSCODE_GOOD)
         r = gds_trustlist_install(s);
     if(r == UA_STATUSCODE_GOOD)
+        r = gds_keycred_install(s);
+    if(r == UA_STATUSCODE_GOOD)
         r = install_role_nodes(s);
     if(r == UA_STATUSCODE_GOOD)
         r = gds_approvals_install(s);
     if(r == UA_STATUSCODE_GOOD)
         r = gds_alarms_install(s);
+    if(r == UA_STATUSCODE_GOOD)
+        r = install_auditing(s);
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_authz_install(s, authz, ownCert);
     if(r != UA_STATUSCODE_GOOD) {
         fprintf(stderr, "opengds: installing the GDS methods failed: %s\n", UA_StatusCode_name(r));
         return GDS_ENOTFOUND;
@@ -367,7 +406,13 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
     s->role = GDS_NODE_STANDALONE;
     s->serviceLevel = 255;
 
-    gds_status st = gds_ca_get_ca_cert(s->ca, &s->caCert);
+    gds_status st = gds_keycred_copy(s, cfg->keyCredServices, cfg->keyCredServicesSize);
+    if(st != GDS_OK) {
+        fprintf(stderr, "opengds: KeyCredentialServices: %s\n", gds_status_name(st));
+        gds_server_delete(s);
+        return st;
+    }
+    st = gds_ca_get_ca_cert(s->ca, &s->caCert);
     for(unsigned i = 0; st == GDS_OK && i < GDS_CA_ISSUERS; i++) {
         st = gds_ca_get_issuer_cert(s->ca, (gds_ca_issuer)i, &s->issuerCert[i]);
         if(st == GDS_ENOTFOUND && i != GDS_CA_ISSUER_RSA)
@@ -393,7 +438,7 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
         gds_server_delete(s);
         return GDS_EINVAL;
     }
-    st = install(s);
+    st = install(s, cfg->authz, &cfg->ownCert);
     if(st != GDS_OK) {
         gds_server_delete(s);
         return st;
@@ -469,11 +514,13 @@ void gds_server_delete(gds_server *s) {
         return;
     gds_worker_stop(s);
     gds_embed_stop(s);
+    __atomic_store_n(&s->stopping, true, __ATOMIC_RELEASE);
     if(s->ua)
         UA_Server_delete(s->ua); /* closes every session, cancels plugin calls */
     gds_embed_free(s);
     gds_alarms_free(s);
     gds_ptl_free(s);
+    gds_authz_free(s);
     gds_access_uninstall();
     gds_buf_free(&s->caCert);
     for(size_t i = 0; i < GDS_CA_ISSUERS; i++)
@@ -492,6 +539,7 @@ void gds_server_delete(gds_server *s) {
     pthread_mutex_destroy(&s->peerLock);
     gds_kp_free(s);
     pthread_mutex_destroy(&s->kpLock);
+    gds_keycred_free(s);
     pthread_cond_destroy(&s->workCond);
     pthread_mutex_destroy(&s->roleLock);
     pthread_mutex_destroy(&s->workLock);

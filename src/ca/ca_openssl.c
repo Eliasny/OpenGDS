@@ -356,6 +356,12 @@ static void issuer_free(ossl_ca *c) {
 
 typedef struct {
     ossl_ca *ca[GDS_CA_ISSUERS];
+    /* the AccessToken key (token/), loaded or made on first use */
+    char tokenDir[GDS_MAX_PATH];
+    char *caCN;
+    gds_buf pass; /* the CA passphrase, for the token key file */
+    EVP_PKEY *tokenKey;
+    X509 *tokenCert;
 } ossl_cas;
 
 static ossl_ca *pick(void *ctx, gds_ca_issuer issuer) {
@@ -401,12 +407,180 @@ static gds_status ossl_revoke(void *ctx, const gds_buf *serial) {
     return ossl_revoke_issuer(ctx, GDS_CA_ISSUER_RSA, serial);
 }
 
+/* ---- the AccessToken key (OPC 10000-12 §9.6, Elias 2026-11-09 Q6) ----
+ * token/token.key.pem (RSA 2048, encrypted like the CA keys) and
+ * token/token.der, issued by the RSA CA: CN "<CA CN> AuthorizationService",
+ * subjectAltName URI = the ServiceUri, keyUsage digitalSignature. Reissued
+ * (same key) when the ServiceUri changes, the RSA CA changes, or fewer
+ * than TOKEN_RENEW_DAYS remain. */
+#define TOKEN_KEY_BITS 2048
+#define TOKEN_RENEW_DAYS 30
+
+static bool token_cert_fits(ossl_cas *m, const char *uri) {
+    X509 *x = m->tokenCert;
+    ossl_ca *rsa = m->ca[GDS_CA_ISSUER_RSA];
+    if(!x || X509_check_private_key(x, m->tokenKey) != 1 ||
+       X509_check_issued(rsa->cert, x) != X509_V_OK ||
+       cert_not_after(x) < (int64_t)time(NULL) + (int64_t)TOKEN_RENEW_DAYS * DAY_SECONDS)
+        return false;
+    GENERAL_NAMES *gens = X509_get_ext_d2i(x, NID_subject_alt_name, NULL, NULL);
+    bool same = false;
+    for(int i = 0; gens && i < sk_GENERAL_NAME_num(gens); i++) {
+        const GENERAL_NAME *g = sk_GENERAL_NAME_value(gens, i);
+        if(g->type != GEN_URI)
+            continue;
+        const ASN1_IA5STRING *u = g->d.uniformResourceIdentifier;
+        same = (size_t)u->length == strlen(uri) && memcmp(u->data, uri, strlen(uri)) == 0;
+        break;
+    }
+    GENERAL_NAMES_free(gens);
+    return same;
+}
+
+static gds_status token_issue(ossl_cas *m, const char *uri, X509 **out) {
+    *out = NULL;
+    ossl_ca *c = m->ca[GDS_CA_ISSUER_RSA];
+    char cnText[GDS_MAX_PATH];
+    gds_status r = gds_path(cnText, sizeof(cnText), "%s AuthorizationService", m->caCN);
+    if(r != GDS_OK)
+        return r;
+    UA_ApplicationRecordDataType rec;
+    UA_ApplicationRecordDataType_init(&rec);
+    rec.applicationUri = UA_STRING((char *)(uintptr_t)uri); /* SAN; no DiscoveryUrls */
+    UA_String cn = UA_STRING(cnText);
+    X509 *x = X509_new();
+    X509_NAME *name = NULL;
+    int64_t now = (int64_t)time(NULL);
+    int64_t notAfter = now + (int64_t)c->leafDays * DAY_SECONDS;
+    if(cert_not_after(c->cert) < notAfter)
+        notAfter = cert_not_after(c->cert);
+    r = x ? GDS_OK : GDS_ENOMEM;
+    if(r == GDS_OK && X509_set_version(x, X509_VERSION_3) != 1)
+        r = GDS_ECRYPTO;
+    if(r == GDS_OK)
+        r = cax_set_random_serial(x, NULL);
+    if(r == GDS_OK)
+        r = cax_set_validity(x, now - CLOCK_SKEW_SECONDS, notAfter);
+    if(r == GDS_OK)
+        r = cax_make_name(&cn, c->org, &name);
+    if(r == GDS_OK && (X509_set_subject_name(x, name) != 1 ||
+                       X509_set_issuer_name(x, X509_get_subject_name(c->cert)) != 1 ||
+                       X509_set_pubkey(x, m->tokenKey) != 1))
+        r = GDS_ECRYPTO;
+    if(r == GDS_OK)
+        r = cax_add_basic_constraints(x, false);
+    if(r == GDS_OK)
+        r = cax_add_key_usage(x, CAX_KU_DIGITAL_SIGNATURE);
+    if(r == GDS_OK)
+        r = cax_add_key_ids(x, c->cert);
+    if(r == GDS_OK)
+        r = cax_add_san(x, &rec);
+    if(r == GDS_OK && X509_sign(x, c->key, c->md) <= 0)
+        r = GDS_ECRYPTO;
+    X509_NAME_free(name);
+    if(r != GDS_OK) {
+        X509_free(x);
+        return r;
+    }
+    *out = x;
+    return GDS_OK;
+}
+
+static gds_status token_key(ossl_cas *m) {
+    if(m->tokenKey)
+        return GDS_OK;
+    char keyPath[GDS_MAX_PATH], certPath[GDS_MAX_PATH];
+    gds_status r = gds_path(keyPath, sizeof(keyPath), "%s/token.key.pem", m->tokenDir);
+    if(r == GDS_OK)
+        r = gds_path(certPath, sizeof(certPath), "%s/token.der", m->tokenDir);
+    if(r == GDS_OK)
+        r = gds_mkdirs(m->tokenDir, 0700);
+    if(r != GDS_OK)
+        return r;
+    if(file_exists(keyPath)) {
+        r = load_key(keyPath, &m->pass, &m->tokenKey);
+        if(r == GDS_OK && !(EVP_PKEY_is_a(m->tokenKey, "RSA") &&
+                            EVP_PKEY_get_bits(m->tokenKey) >= TOKEN_KEY_BITS))
+            r = GDS_ESTATE;
+    } else {
+        m->tokenKey = EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)TOKEN_KEY_BITS);
+        r = m->tokenKey ? save_key(keyPath, m->tokenKey, &m->pass) : GDS_ECRYPTO;
+    }
+    if(r == GDS_OK && file_exists(certPath) && load_cert(certPath, &m->tokenCert) != GDS_OK)
+        m->tokenCert = NULL; /* unreadable: issued again */
+    if(r != GDS_OK) {
+        EVP_PKEY_free(m->tokenKey);
+        m->tokenKey = NULL;
+    }
+    return r;
+}
+
+static gds_status ossl_token_chain(void *ctx, const char *serviceUri, gds_buf *out) {
+    ossl_cas *m = ctx;
+    gds_status r = token_key(m);
+    if(r == GDS_OK && !token_cert_fits(m, serviceUri)) {
+        X509 *x = NULL;
+        char certPath[GDS_MAX_PATH];
+        r = gds_path(certPath, sizeof(certPath), "%s/token.der", m->tokenDir);
+        if(r == GDS_OK)
+            r = token_issue(m, serviceUri, &x);
+        if(r == GDS_OK)
+            r = save_cert(certPath, x);
+        if(r == GDS_OK) {
+            X509_free(m->tokenCert);
+            m->tokenCert = x;
+        } else {
+            X509_free(x);
+        }
+    }
+    gds_buf leaf = {0}, ca = {0};
+    if(r == GDS_OK)
+        r = cax_cert_der(m->tokenCert, &leaf);
+    if(r == GDS_OK)
+        r = cax_cert_der(m->ca[GDS_CA_ISSUER_RSA]->cert, &ca);
+    if(r == GDS_OK)
+        r = gds_buf_dup(leaf.data, leaf.len, out);
+    if(r == GDS_OK)
+        r = gds_buf_append(out, ca.data, ca.len, 2 * GDS_MAX_CERT_SIZE);
+    if(r != GDS_OK)
+        gds_buf_free(out);
+    gds_buf_free(&leaf);
+    gds_buf_free(&ca);
+    return r;
+}
+
+static gds_status ossl_token_sign(void *ctx, const gds_buf *input, gds_buf *sig) {
+    ossl_cas *m = ctx;
+    /* the key and certificate from token/ (a restarted signer); none yet:
+     * token_chain first, tokens name the certificate */
+    if(token_key(m) != GDS_OK || !m->tokenCert)
+        return GDS_ESTATE;
+    EVP_MD_CTX *mc = EVP_MD_CTX_new();
+    size_t n = 0;
+    gds_status r = GDS_ECRYPTO;
+    if(mc && EVP_DigestSignInit(mc, NULL, EVP_sha256(), NULL, m->tokenKey) == 1 &&
+       EVP_DigestSign(mc, NULL, &n, input->data, input->len) == 1 && n > 0 &&
+       (sig->data = malloc(n)) != NULL &&
+       EVP_DigestSign(mc, sig->data, &n, input->data, input->len) == 1) {
+        sig->len = n;
+        r = GDS_OK;
+    }
+    if(r != GDS_OK)
+        gds_buf_free(sig);
+    EVP_MD_CTX_free(mc);
+    return r;
+}
+
 static void ossl_destroy(void *ctx) {
     ossl_cas *m = ctx;
     if(!m)
         return;
     for(size_t i = 0; i < GDS_CA_ISSUERS; i++)
         issuer_free(m->ca[i]);
+    EVP_PKEY_free(m->tokenKey);
+    X509_free(m->tokenCert);
+    gds_buf_free_secret(&m->pass);
+    free(m->caCN);
     free(m);
 }
 
@@ -422,6 +596,8 @@ static const gds_ca_backend ossl_backend = {
     .get_issuer_cert = ossl_get_issuer_cert,
     .get_issuer_crl = ossl_get_issuer_crl,
     .revoke_issuer = ossl_revoke_issuer,
+    .token_chain = ossl_token_chain,
+    .token_sign = ossl_token_sign,
 };
 
 /* Each issuer: its directory, CN suffix and digest. The CA signs with the
@@ -473,7 +649,11 @@ gds_status gds_ca_openssl_open(const gds_ca_config *cfg, gds_ca **out) {
     ossl_cas *m = calloc(1, sizeof(*m));
     if(!m)
         return GDS_ENOMEM;
-    gds_status r = GDS_OK;
+    gds_status r = gds_path(m->tokenDir, sizeof(m->tokenDir), "%s/token", cfg->dir);
+    if(r == GDS_OK)
+        r = gds_buf_dup(cfg->keyPassphrase->data, cfg->keyPassphrase->len, &m->pass);
+    if(r == GDS_OK && !(m->caCN = strdup(cfg->caSubjectCN)))
+        r = GDS_ENOMEM;
     for(unsigned i = 0; r == GDS_OK && i < GDS_CA_ISSUERS; i++)
         r = open_issuer(cfg, (gds_ca_issuer)i, &m->ca[i]);
     if(r != GDS_OK) {

@@ -54,7 +54,8 @@ add_library(gds_common STATIC
     src/common/buf.c
     src/common/ids.c
     src/common/safeint.c
-    src/common/ua_args.c)
+    src/common/ua_args.c
+    src/common/enc_secret.c)
 if(NOT WIN32)
     target_sources(gds_common PRIVATE src/common/sandbox.c)
 endif()
@@ -123,6 +124,8 @@ if(OPENGDS_BUILD_AUDITOR)
     # The push tracer gate drives the Auditor's push_test_server; the pull
     # tracer drives gdsaudit and pull_test_client against opengdsd
     add_subdirectory(tests/integration)
+    # Spec tests that drive the Auditor's test targets (Annex G setup)
+    add_subdirectory(tests/spec)
 endif()
 
 # Install rules and packages (.deb, .rpm, .tar.gz; docs/packaging.md), only

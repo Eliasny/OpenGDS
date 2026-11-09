@@ -203,6 +203,31 @@ static bool dialog_active(gds_server *s, const UA_NodeId *reqId, bool *retain) {
     return exists && active;
 }
 
+/* The dialog's Message names the request and its application (not a
+ * text open62541 wrote on a state change). */
+static bool dialog_message_names(gds_server *s, const UA_NodeId *reqId, const char *uri) {
+    UA_QualifiedName mp = UA_QUALIFIEDNAME(0, "Message");
+    UA_BrowsePathResult b = UA_Server_browseSimplifiedBrowsePath(gds_server_ua(s), dialog_of(reqId), 1, &mp);
+    bool ok = false;
+    UA_Variant v;
+    UA_Variant_init(&v);
+    if(b.statusCode == UA_STATUSCODE_GOOD && b.targetsSize == 1 &&
+       UA_Server_readValue(gds_server_ua(s), b.targets[0].targetId.nodeId, &v) == UA_STATUSCODE_GOOD &&
+       UA_Variant_hasScalarType(&v, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT])) {
+        const UA_String *t = &((UA_LocalizedText *)v.data)->text;
+        char text[512];
+        size_t n = t->length < sizeof(text) - 1 ? t->length : sizeof(text) - 1;
+        memcpy(text, t->data, n);
+        text[n] = '\0';
+        ok = strstr(text, uri) != NULL && strstr(text, "awaits approval") != NULL;
+        if(!ok)
+            fprintf(stderr, "dialog Message: %s\n", text);
+    }
+    UA_Variant_clear(&v);
+    UA_BrowsePathResult_clear(&b);
+    return ok;
+}
+
 static bool dialog_exists(gds_server *s, const UA_NodeId *reqId) {
     UA_NodeClass nc;
     return UA_Server_readNodeClass(gds_server_ua(s), dialog_of(reqId), &nc) == UA_STATUSCODE_GOOD;
@@ -218,6 +243,7 @@ static void test_manual(gds_server *s, const UA_NodeId *appId, UA_NodeId *leftPe
     CHECK_EQ_INT(finish(s, appId, &a), UA_STATUSCODE_BADNOTHINGTODO);
     bool retain = false;
     CHECK(dialog_active(s, &a, &retain) && retain);
+    CHECK(dialog_message_names(s, &a, TEST_URI ":app"));
     usleep(300000); /* the worker must not sign a Pending request */
     CHECK_EQ_INT(finish(s, appId, &a), UA_STATUSCODE_BADNOTHINGTODO);
 

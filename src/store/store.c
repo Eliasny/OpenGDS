@@ -132,9 +132,37 @@ gds_status gds_store_cert_add(gds_store *s, const UA_Guid *appId, uint32_t group
     return s->be.cert_add(s->ctx, appId, groupId, certType, serial, der, notBefore, notAfter);
 }
 
+gds_status gds_store_cert_issue(gds_store *s, const UA_Guid *reqId, const UA_Guid *appId,
+                                uint32_t groupId, uint32_t certType, const gds_buf *serial,
+                                const gds_buf *der, int64_t notBefore, int64_t notAfter) {
+    if(!reqId || !appId || !serial || !der)
+        return GDS_EINVAL;
+    if(s->be.cert_issue)
+        return s->be.cert_issue(s->ctx, reqId, appId, groupId, certType, serial, der, notBefore,
+                                notAfter);
+    /* A backend before minor 7: two transactions, as before A24. */
+    gds_request q;
+    memset(&q, 0, sizeof(q));
+    gds_status r = s->be.req_get(s->ctx, reqId, &q);
+    if(r != GDS_OK)
+        return r;
+    bool received = q.state == GDS_REQ_RECEIVED;
+    gds_request_clear(&q);
+    if(!received)
+        return GDS_ESTATE;
+    r = s->be.cert_add(s->ctx, appId, groupId, certType, serial, der, notBefore, notAfter);
+    if(r == GDS_OK)
+        r = s->be.req_set_state(s->ctx, reqId, GDS_REQ_ISSUED, der, UA_STATUSCODE_GOOD);
+    return r;
+}
+
 gds_status gds_store_cert_latest(gds_store *s, const UA_Guid *appId, uint32_t groupId,
                                  uint32_t certType, gds_buf *der, int64_t *notAfter) {
     return s->be.cert_latest(s->ctx, appId, groupId, certType, der, notAfter);
+}
+
+bool gds_store_has_audit(const gds_store *s) {
+    return s && s->be.audit_append != NULL;
 }
 
 gds_status gds_store_audit_append(gds_store *s, int64_t time, const gds_buf *body, int64_t *seq) {
@@ -174,6 +202,43 @@ gds_status gds_store_tl_put(gds_store *s, uint32_t groupId, const gds_buf *data,
     if(data->len > GDS_MAX_TRUSTLIST_SIZE)
         return GDS_ETOOBIG;
     return s->be.tl_put(s->ctx, groupId, data, lastUpdate);
+}
+
+static bool endpoint_ok(const char *e) {
+    if(!e)
+        return false;
+    size_t n = strnlen(e, GDS_MAX_PUSH_ENDPOINT);
+    if(n <= 10 || n >= GDS_MAX_PUSH_ENDPOINT || strncmp(e, "opc.tcp://", 10) != 0)
+        return false;
+    for(size_t i = 0; i < n; i++)
+        if((unsigned char)e[i] <= 0x20 || (unsigned char)e[i] == 0x7f)
+            return false;
+    return true;
+}
+
+gds_status gds_store_push_target_put(gds_store *s, const UA_Guid *appId, const char *endpoint,
+                                     bool enabled) {
+    if(!s->be.push_target_put)
+        return GDS_EUNSUPPORTED; /* a backend before minor 6 */
+    if(!appId || !endpoint_ok(endpoint))
+        return GDS_EINVAL;
+    return s->be.push_target_put(s->ctx, appId, endpoint, enabled);
+}
+
+gds_status gds_store_push_target_delete(gds_store *s, const UA_Guid *appId) {
+    if(!s->be.push_target_delete)
+        return GDS_EUNSUPPORTED;
+    if(!appId)
+        return GDS_EINVAL;
+    return s->be.push_target_delete(s->ctx, appId);
+}
+
+gds_status gds_store_push_target_scan(gds_store *s, gds_push_target_cb cb, void *ctx) {
+    if(!s->be.push_target_scan)
+        return GDS_EUNSUPPORTED;
+    if(!cb)
+        return GDS_EINVAL;
+    return s->be.push_target_scan(s->ctx, cb, ctx);
 }
 
 gds_status gds_store_audit_scan(gds_store *s, int64_t fromSeq, gds_audit_scan_cb cb, void *ctx) {
@@ -244,4 +309,98 @@ gds_status gds_store_cert_is_revoked(gds_store *s, const gds_buf *serial, bool *
     if(!s->be.cert_is_revoked)
         return GDS_EUNSUPPORTED;
     return s->be.cert_is_revoked(s->ctx, serial, revoked);
+}
+
+/* ---- KeyCredentials (minor 8) ---- */
+
+static bool kc_supported(const gds_store *s) {
+    return s->be.kc_req_insert && s->be.kc_req_get && s->be.kc_req_set_state &&
+           s->be.kc_req_scan && s->be.kc_deliver && s->be.kc_cred_get && s->be.kc_cred_delete &&
+           s->be.kc_cred_scan;
+}
+
+bool gds_store_kc_supported(gds_store *s) {
+    return s && kc_supported(s);
+}
+
+static bool bounded(const char *v, size_t max, bool allowEmpty) {
+    size_t n = strnlen(v, max + 1);
+    return n <= max && (allowEmpty || n > 0);
+}
+
+void gds_kc_request_clear(gds_kc_request *r) {
+    if(!r)
+        return;
+    gds_buf_free(&r->publicKey);
+    memset(r, 0, sizeof(*r));
+}
+
+gds_status gds_store_kc_req_insert(gds_store *s, const gds_kc_request *r) {
+    if(!kc_supported(s))
+        return GDS_EUNSUPPORTED;
+    if(!r || !bounded(r->service, GDS_MAX_KC_SERVICE, false) ||
+       !bounded(r->policy, GDS_MAX_KC_POLICY, true) || r->publicKey.len > GDS_MAX_CERT_SIZE ||
+       (r->state != GDS_KC_PENDING && r->state != GDS_KC_APPROVED))
+        return GDS_EINVAL;
+    return s->be.kc_req_insert(s->ctx, r);
+}
+
+gds_status gds_store_kc_req_get(gds_store *s, const UA_Guid *id, gds_kc_request *out) {
+    memset(out, 0, sizeof(*out));
+    if(!kc_supported(s))
+        return GDS_EUNSUPPORTED;
+    return s->be.kc_req_get(s->ctx, id, out);
+}
+
+gds_status gds_store_kc_req_set_state(gds_store *s, const UA_Guid *id, gds_kc_state state) {
+    if(!kc_supported(s))
+        return GDS_EUNSUPPORTED;
+    if(state < GDS_KC_PENDING || state > GDS_KC_CANCELLED || state == GDS_KC_DELIVERED)
+        return GDS_EINVAL; /* delivery goes through kc_deliver */
+    return s->be.kc_req_set_state(s->ctx, id, state);
+}
+
+gds_status gds_store_kc_req_scan(gds_store *s, gds_kc_state state, gds_store_kc_req_cb cb,
+                                 void *ctx) {
+    if(!kc_supported(s))
+        return GDS_EUNSUPPORTED;
+    return s->be.kc_req_scan(s->ctx, state, cb, ctx);
+}
+
+gds_status gds_store_kc_deliver(gds_store *s, const UA_Guid *requestId, const gds_kc_cred *cred,
+                                char replaced[GDS_MAX_KC_ID + 1]) {
+    char dummy[GDS_MAX_KC_ID + 1];
+    if(!replaced)
+        replaced = dummy;
+    replaced[0] = '\0';
+    if(!kc_supported(s))
+        return GDS_EUNSUPPORTED;
+    if(!cred || !bounded(cred->id, GDS_MAX_KC_ID, false) ||
+       !bounded(cred->service, GDS_MAX_KC_SERVICE, false) ||
+       !bounded(cred->verifier, GDS_MAX_KC_VERIFIER, false))
+        return GDS_EINVAL;
+    return s->be.kc_deliver(s->ctx, requestId, cred, replaced);
+}
+
+gds_status gds_store_kc_cred_get(gds_store *s, const char *id, gds_kc_cred *out) {
+    memset(out, 0, sizeof(*out));
+    if(!kc_supported(s))
+        return GDS_EUNSUPPORTED;
+    if(!id || !bounded(id, GDS_MAX_KC_ID, false))
+        return GDS_ENOTFOUND;
+    return s->be.kc_cred_get(s->ctx, id, out);
+}
+
+gds_status gds_store_kc_cred_delete(gds_store *s, const char *id) {
+    if(!kc_supported(s))
+        return GDS_EUNSUPPORTED;
+    if(!id || !bounded(id, GDS_MAX_KC_ID, false))
+        return GDS_ENOTFOUND;
+    return s->be.kc_cred_delete(s->ctx, id);
+}
+
+gds_status gds_store_kc_cred_scan(gds_store *s, gds_store_kc_cred_cb cb, void *ctx) {
+    if(!kc_supported(s))
+        return GDS_EUNSUPPORTED;
+    return s->be.kc_cred_scan(s->ctx, cb, ctx);
 }

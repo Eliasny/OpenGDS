@@ -82,10 +82,16 @@ gds.az.start_unknown_resource,W5
 gds.az.finish_unknown,W5
 gds.az.refresh_rejected,W5
 gds.az.sign_only,W5
+gds.az.token_flow,W5
+gds.az.token_refresh,W5
+gds.az.audit_requested,W5
+gds.az.audit_issued,W5
 gds.ev.registration_changed,W4
 gds.ev.certificate_requested_delivered,W4
 gds.ev.certificate_revoked,W4
 gds.ev.trustlist_updated,W4
+gds.ev.keycred_requested_delivered,W5
+gds.ev.keycred_revoked,W5
 gds.ev.auditing_flag,W4
 gds.ev.group_alarms,W4
 gds.acc.unregister_other,T1

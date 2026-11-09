@@ -132,9 +132,12 @@ UA_StatusCode gdsc_revoke_certificate(UA_Client *c, UA_UInt16 ns, const UA_NodeI
     return r;
 }
 
-static UA_StatusCode start_signing(UA_Client *c, UA_UInt16 ns, const UA_NodeId *appId,
-                                   const UA_NodeId *group, const UA_NodeId *certType,
-                                   const gds_buf *csr, UA_NodeId *reqId) {
+UA_StatusCode gdsc_start_signing_request(UA_Client *c, UA_UInt16 ns, const UA_NodeId *appId,
+                                         const UA_NodeId *group, const UA_NodeId *certType,
+                                         const gds_buf *csr, UA_NodeId *reqId) {
+    UA_NodeId_init(reqId);
+    if(!csr || !csr->data || csr->len == 0 || csr->len > GDS_MAX_CSR_SIZE)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
     UA_ByteString csrBs = {csr->len, csr->data};
     UA_Variant in[4], *out = NULL;
     size_t outN = 0;
@@ -176,57 +179,112 @@ static UA_StatusCode take_issued(const UA_Variant *out, gds_buf *certOut, gds_bu
     return gds_status_to_ua(s);
 }
 
+static void issued_free(gds_buf *certOut, gds_buf *issuersOut, size_t *issuersN) {
+    gds_buf_free(certOut);
+    for(size_t i = 0; i < *issuersN; i++)
+        gds_buf_free(&issuersOut[i]);
+    *issuersN = 0;
+}
+
+UA_StatusCode gdsc_finish_request(UA_Client *c, UA_UInt16 ns, const UA_NodeId *appId,
+                                  const UA_NodeId *reqId, gds_buf *certOut, gds_buf *issuersOut,
+                                  size_t *issuersN) {
+    memset(certOut, 0, sizeof(*certOut));
+    *issuersN = 0;
+    UA_Variant in[2], *out = NULL;
+    size_t outN = 0;
+    UA_Variant_setScalar(&in[0], (void *)(uintptr_t)appId, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[1], (void *)(uintptr_t)reqId, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_StatusCode r = dir_call(c, ns, UA_GDSID_DIRECTORY_FINISHREQUEST, 2, in, 3, &out, &outN);
+    if(r == UA_STATUSCODE_GOOD)
+        r = take_issued(out, certOut, issuersOut, issuersN);
+    if(r != UA_STATUSCODE_GOOD)
+        issued_free(certOut, issuersOut, issuersN);
+    out_free(out, outN);
+    return r;
+}
+
 UA_StatusCode gdsc_sign_csr(UA_Client *c, UA_UInt16 ns, const UA_NodeId *appId,
                             const UA_NodeId *group, const UA_NodeId *certType,
                             const gds_buf *csr, unsigned pollSeconds, gds_buf *certOut,
                             gds_buf *issuersOut, size_t *issuersN) {
     memset(certOut, 0, sizeof(*certOut));
     *issuersN = 0;
-    if(!csr || !csr->data || csr->len == 0 || csr->len > GDS_MAX_CSR_SIZE)
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
     UA_NodeId reqId;
-    UA_NodeId_init(&reqId);
-    UA_StatusCode r = start_signing(c, ns, appId, group, certType, csr, &reqId);
+    UA_StatusCode r = gdsc_start_signing_request(c, ns, appId, group, certType, csr, &reqId);
     if(r != UA_STATUSCODE_GOOD)
         return r;
-    UA_Variant in[2], *out = NULL;
-    size_t outN = 0;
-    UA_Variant_setScalar(&in[0], (void *)(uintptr_t)appId, &UA_TYPES[UA_TYPES_NODEID]);
-    UA_Variant_setScalar(&in[1], &reqId, &UA_TYPES[UA_TYPES_NODEID]);
     const struct timespec step = {1, 0};
     for(unsigned waited = 0;; waited++) {
-        r = dir_call(c, ns, UA_GDSID_DIRECTORY_FINISHREQUEST, 2, in, 3, &out, &outN);
+        r = gdsc_finish_request(c, ns, appId, &reqId, certOut, issuersOut, issuersN);
         if(r != UA_STATUSCODE_BADNOTHINGTODO || waited >= pollSeconds)
             break;
         nanosleep(&step, NULL); /* §7.9.6: Bad_NothingToDo while not yet signed */
     }
-    if(r == UA_STATUSCODE_GOOD)
-        r = take_issued(out, certOut, issuersOut, issuersN);
-    if(r != UA_STATUSCODE_GOOD) {
-        gds_buf_free(certOut);
-        for(size_t i = 0; i < *issuersN; i++)
-            gds_buf_free(&issuersOut[i]);
-        *issuersN = 0;
-    }
-    out_free(out, outN);
     UA_NodeId_clear(&reqId);
+    return r;
+}
+
+UA_StatusCode gdsc_get_certificate_groups(UA_Client *c, UA_UInt16 ns, const UA_NodeId *appId,
+                                          UA_NodeId **groups, size_t *n) {
+    *groups = NULL;
+    *n = 0;
+    UA_Variant in, *out = NULL;
+    size_t outN = 0;
+    UA_Variant_setScalar(&in, (void *)(uintptr_t)appId, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_StatusCode r =
+        dir_call(c, ns, UA_GDSID_DIRECTORY_GETCERTIFICATEGROUPS, 1, &in, 1, &out, &outN);
+    if(r != UA_STATUSCODE_GOOD)
+        return r;
+    const void *arr = NULL;
+    size_t len = 0;
+    r = gds_arg_array(&out[0], &UA_TYPES[UA_TYPES_NODEID], GDSC_MAX_GROUPS, &arr, &len);
+    if(r == UA_STATUSCODE_GOOD && len > 0)
+        r = UA_Array_copy(arr, len, (void **)groups, &UA_TYPES[UA_TYPES_NODEID]);
+    if(r == UA_STATUSCODE_GOOD)
+        *n = len;
+    out_free(out, outN);
+    return r;
+}
+
+UA_StatusCode gdsc_get_certificate_status(UA_Client *c, UA_UInt16 ns, const UA_NodeId *appId,
+                                          const UA_NodeId *group, const UA_NodeId *certType,
+                                          bool *updateRequired) {
+    UA_Variant in[3], *out = NULL;
+    size_t outN = 0;
+    UA_Variant_setScalar(&in[0], (void *)(uintptr_t)appId, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[1], (void *)(uintptr_t)group, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[2], (void *)(uintptr_t)certType, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_StatusCode r =
+        dir_call(c, ns, UA_GDSID_DIRECTORY_GETCERTIFICATESTATUS, 3, in, 1, &out, &outN);
+    const void *p = NULL;
+    if(r == UA_STATUSCODE_GOOD)
+        r = gds_arg_scalar(&out[0], &UA_TYPES[UA_TYPES_BOOLEAN], &p);
+    if(r == UA_STATUSCODE_GOOD)
+        *updateRequired = *(const UA_Boolean *)p;
+    out_free(out, outN);
+    return r;
+}
+
+UA_StatusCode gdsc_get_trust_list_id(UA_Client *c, UA_UInt16 ns, const UA_NodeId *appId,
+                                     const UA_NodeId *group, UA_NodeId *tl) {
+    UA_NodeId_init(tl);
+    UA_Variant in[2], *res = NULL;
+    size_t resN = 0;
+    UA_Variant_setScalar(&in[0], (void *)(uintptr_t)appId, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Variant_setScalar(&in[1], (void *)(uintptr_t)group, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_StatusCode r = dir_call(c, ns, UA_GDSID_DIRECTORY_GETTRUSTLIST, 2, in, 1, &res, &resN);
+    if(r == UA_STATUSCODE_GOOD)
+        r = out_nodeid(res, 0, tl);
+    out_free(res, resN);
     return r;
 }
 
 UA_StatusCode gdsc_get_trust_list(UA_Client *c, UA_UInt16 ns, const UA_NodeId *appId,
                                   const UA_NodeId *group, UA_TrustListDataType *out) {
     UA_TrustListDataType_init(out);
-    UA_Variant in[2], *res = NULL;
-    size_t resN = 0;
-    UA_Variant_setScalar(&in[0], (void *)(uintptr_t)appId, &UA_TYPES[UA_TYPES_NODEID]);
-    UA_Variant_setScalar(&in[1], (void *)(uintptr_t)group, &UA_TYPES[UA_TYPES_NODEID]);
-    UA_StatusCode r = dir_call(c, ns, UA_GDSID_DIRECTORY_GETTRUSTLIST, 2, in, 1, &res, &resN);
-    if(r != UA_STATUSCODE_GOOD)
-        return r;
     UA_NodeId tl;
-    UA_NodeId_init(&tl);
-    r = out_nodeid(res, 0, &tl);
-    out_free(res, resN);
+    UA_StatusCode r = gdsc_get_trust_list_id(c, ns, appId, group, &tl);
     if(r == UA_STATUSCODE_GOOD)
         r = gdsc_trustlist_read(c, &tl, out);
     UA_NodeId_clear(&tl);
