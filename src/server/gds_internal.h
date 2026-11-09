@@ -40,6 +40,15 @@ typedef struct {
 
 typedef struct gds_ptl gds_ptl;
 
+/* A KeyCredentialService (gds_keycred.c); fixed before the server runs. */
+typedef struct {
+    char name[GDS_MAX_KC_SERVICE + 1];
+    char *resourceUri;
+    char *profileUris[GDS_MAX_KC_PROFILES];
+    size_t nProfiles;
+    UA_NodeId node; /* the Object under KeyCredentialManagement */
+} gds_kc_service;
+
 /* One StartNewKeyPairRequest's secrets (gds_keypair.c), never stored. */
 typedef struct {
     bool used, ready; /* ready: key holds the generated key, password is gone */
@@ -145,6 +154,9 @@ struct gds_server {
     /* StartNewKeyPairRequest secrets (gds_keypair.c); kpLock is a leaf lock */
     pthread_mutex_t kpLock;
     gds_kp_entry kp[GDS_MAX_KEYPAIR_REQUESTS];
+    /* KeyCredentialServices (gds_keycred.c); fixed before the server runs */
+    gds_kc_service kc[GDS_MAX_KC_SERVICES];
+    size_t nKc;
 };
 
 /* ---- caller views (gds_caller.c, issue #17) ---- */
@@ -348,12 +360,24 @@ GDS_MUST_CHECK UA_StatusCode gds_revoke_install(gds_server *s);
 /* Revoke every certificate of appId: store first, then the CA's CRL.
  * Server thread; takes storeLock for the store part only. */
 GDS_MUST_CHECK UA_StatusCode gds_revoke_app_certs(gds_server *s, const UA_Guid *appId);
+/* KeyCredentials (gds_keycred.c, OPC 10000-12 §8.5). copy: the services
+ * of the config (GDS_EINVAL for a bad one); install: their Objects and
+ * methods, before the server runs; free: after UA_Server_delete. */
+GDS_MUST_CHECK gds_status gds_keycred_copy(gds_server *s, const gds_keycred_service *svc,
+                                           size_t n);
+GDS_MUST_CHECK UA_StatusCode gds_keycred_install(gds_server *s);
+void gds_keycred_free(gds_server *s);
 /* Approvals (gds_approvals.c): the source object, Respond/Respond2 and a
  * dialog for every Pending request in the store. Before the server runs. */
 GDS_MUST_CHECK UA_StatusCode gds_approvals_install(gds_server *s);
 /* A dialog for a request just stored as Pending. Server thread. */
 GDS_MUST_CHECK UA_StatusCode gds_approvals_raise(gds_server *s, const gds_request *q,
                                                  const UA_String *appUri);
+/* A dialog for a KeyCredential request just stored as Pending, and the
+ * removal of one (a cancelled request). Server thread. */
+GDS_MUST_CHECK UA_StatusCode gds_approvals_raise_kc(gds_server *s, const gds_kc_request *q,
+                                                    const UA_String *appUri);
+void gds_approvals_drop(gds_server *s, const UA_Guid *reqId);
 /* The node role changed: re-synchronise the dialogs with the store on the
  * server thread (none on a STANDBY). Any thread. */
 void gds_approvals_role_changed(gds_server *s);

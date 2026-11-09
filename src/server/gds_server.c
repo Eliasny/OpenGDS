@@ -360,6 +360,8 @@ static gds_status install(gds_server *s) {
     if(r == UA_STATUSCODE_GOOD)
         r = gds_trustlist_install(s);
     if(r == UA_STATUSCODE_GOOD)
+        r = gds_keycred_install(s);
+    if(r == UA_STATUSCODE_GOOD)
         r = install_role_nodes(s);
     if(r == UA_STATUSCODE_GOOD)
         r = gds_approvals_install(s);
@@ -401,7 +403,13 @@ gds_status gds_server_new(const gds_server_config *cfg, gds_server **out) {
     s->role = GDS_NODE_STANDALONE;
     s->serviceLevel = 255;
 
-    gds_status st = gds_ca_get_ca_cert(s->ca, &s->caCert);
+    gds_status st = gds_keycred_copy(s, cfg->keyCredServices, cfg->keyCredServicesSize);
+    if(st != GDS_OK) {
+        fprintf(stderr, "opengds: KeyCredentialServices: %s\n", gds_status_name(st));
+        gds_server_delete(s);
+        return st;
+    }
+    st = gds_ca_get_ca_cert(s->ca, &s->caCert);
     for(unsigned i = 0; st == GDS_OK && i < GDS_CA_ISSUERS; i++) {
         st = gds_ca_get_issuer_cert(s->ca, (gds_ca_issuer)i, &s->issuerCert[i]);
         if(st == GDS_ENOTFOUND && i != GDS_CA_ISSUER_RSA)
@@ -526,6 +534,7 @@ void gds_server_delete(gds_server *s) {
     pthread_mutex_destroy(&s->peerLock);
     gds_kp_free(s);
     pthread_mutex_destroy(&s->kpLock);
+    gds_keycred_free(s);
     pthread_cond_destroy(&s->workCond);
     pthread_mutex_destroy(&s->roleLock);
     pthread_mutex_destroy(&s->workLock);

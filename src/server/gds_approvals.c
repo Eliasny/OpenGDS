@@ -19,6 +19,9 @@
  * received, and none for requests another node decided.
  * Who may answer is decided in access control (RegistrationAuthorityAdmin,
  * gds_access.c); the handler checks again.
+ * KeyCredential requests (OPC 10000-12 §8.5, gds_keycred.c) wait the same
+ * way: their dialogs are named KeyCredentialRequest, the same Respond
+ * approves (Approved) or rejects (Rejected) them in the store.
  * SPDX-License-Identifier: MPL-2.0 */
 #include <open62541/nodeids.h>
 
@@ -44,20 +47,29 @@ static UA_NodeId source_id(void) {
 
 /* ---- raise ---- */
 
-static UA_StatusCode dialog_fields(UA_Server *ua, UA_NodeId c, const gds_request *q,
-                                   const UA_String *appUri) {
-    char rid[40], msg[GDS_MAX_APPLICATION_URI + 128];
+/* A certificate request (service NULL) or a KeyCredential request for a
+ * KeyCredentialService. */
+static UA_StatusCode dialog_fields(UA_Server *ua, UA_NodeId c, const UA_Guid *reqId,
+                                   const UA_String *appUri, const char *service) {
+    char rid[40], msg[GDS_MAX_APPLICATION_URI + GDS_MAX_KC_SERVICE + 160];
     UA_String ridStr = UA_STRING_NULL;
-    if(UA_Guid_print(&q->id, &ridStr) != UA_STATUSCODE_GOOD)
+    if(UA_Guid_print(reqId, &ridStr) != UA_STATUSCODE_GOOD)
         return UA_STATUSCODE_BADOUTOFMEMORY;
     gds_status st = gds_path(rid, sizeof(rid), "%.*s", (int)ridStr.length,
                              (const char *)ridStr.data);
     UA_String_clear(&ridStr);
-    if(st != GDS_OK || gds_path(msg, sizeof(msg), "Certificate request %s from %.*s awaits approval", rid,
-                (int)appUri->length, (const char *)appUri->data) != GDS_OK)
+    if(st == GDS_OK && service)
+        st = gds_path(msg, sizeof(msg), "KeyCredential request %s from %.*s for %s awaits approval",
+                      rid, (int)appUri->length, (const char *)appUri->data, service);
+    else if(st == GDS_OK)
+        st = gds_path(msg, sizeof(msg), "Certificate request %s from %.*s awaits approval", rid,
+                      (int)appUri->length, (const char *)appUri->data);
+    if(st != GDS_OK)
         return UA_STATUSCODE_BADINTERNALERROR;
     UA_LocalizedText message = UA_LOCALIZEDTEXT("en", msg);
-    UA_LocalizedText prompt = UA_LOCALIZEDTEXT("en", "Issue a certificate for this application?");
+    UA_LocalizedText prompt =
+        UA_LOCALIZEDTEXT("en", service ? (char *)(uintptr_t)"Issue a KeyCredential for this application?"
+                                       : (char *)(uintptr_t)"Issue a certificate for this application?");
     UA_LocalizedText options[2] = {UA_LOCALIZEDTEXT("en", "Approve"),
                                    UA_LOCALIZEDTEXT("en", "Reject")};
     UA_Int32 def = -1, ok = RESP_APPROVE, cancel = RESP_REJECT, last = -1;
@@ -88,13 +100,16 @@ static UA_StatusCode dialog_fields(UA_Server *ua, UA_NodeId c, const gds_request
     return r;
 }
 
-UA_StatusCode gds_approvals_raise(gds_server *s, const gds_request *q, const UA_String *appUri) {
+static UA_StatusCode raise_dialog(gds_server *s, const UA_Guid *reqId, const UA_String *appUri,
+                                  const char *service) {
     UA_Server *ua = s->ua;
     UA_NodeId src = source_id(), c = UA_NODEID_NULL;
-    UA_NodeId want = UA_NODEID_GUID(APP_NS, q->id);
-    UA_StatusCode r = UA_Server_createCondition(ua, want, UA_NS0ID(DIALOGCONDITIONTYPE),
-                                                UA_QUALIFIEDNAME(APP_NS, "CertificateRequest"),
-                                                src, UA_NS0ID(HASCOMPONENT), &c);
+    UA_NodeId want = UA_NODEID_GUID(APP_NS, *reqId);
+    UA_StatusCode r = UA_Server_createCondition(
+        ua, want, UA_NS0ID(DIALOGCONDITIONTYPE),
+        UA_QUALIFIEDNAME(APP_NS, service ? (char *)(uintptr_t)"KeyCredentialRequest"
+                                         : (char *)(uintptr_t)"CertificateRequest"),
+        src, UA_NS0ID(HASCOMPONENT), &c);
     (void)gds_alarms_bind_ack(s); /* createCondition rebound open62541's */
     if(r != UA_STATUSCODE_GOOD)
         return r;
@@ -104,7 +119,7 @@ UA_StatusCode gds_approvals_raise(gds_server *s, const gds_request *q, const UA_
                                UA_EXPANDEDNODEID_NUMERIC(0, UA_NS0ID_DIALOGCONDITIONTYPE_RESPOND2),
                                true);
     if(r == UA_STATUSCODE_GOOD)
-        r = dialog_fields(ua, c, q, appUri);
+        r = dialog_fields(ua, c, reqId, appUri, service);
     if(r == UA_STATUSCODE_GOOD)
         r = UA_Server_triggerConditionEvent(ua, c, src, NULL);
     if(r == UA_STATUSCODE_GOOD)
@@ -113,6 +128,22 @@ UA_StatusCode gds_approvals_raise(gds_server *s, const gds_request *q, const UA_
         (void)UA_Server_deleteCondition(ua, c, src);
     UA_NodeId_clear(&c);
     return r;
+}
+
+UA_StatusCode gds_approvals_raise(gds_server *s, const gds_request *q, const UA_String *appUri) {
+    return raise_dialog(s, &q->id, appUri, NULL);
+}
+
+UA_StatusCode gds_approvals_raise_kc(gds_server *s, const gds_kc_request *q,
+                                     const UA_String *appUri) {
+    return raise_dialog(s, &q->id, appUri, q->service);
+}
+
+void gds_approvals_drop(gds_server *s, const UA_Guid *reqId) {
+    if(UA_Server_deleteCondition(s->ua, UA_NODEID_GUID(APP_NS, *reqId), source_id()) ==
+           UA_STATUSCODE_GOOD &&
+       s->pendingApprovals > 0)
+        s->pendingApprovals--;
 }
 
 /* ---- respond ---- */
@@ -154,9 +185,26 @@ static void emit_audit(UA_Server *ua, const respond_audit *a, bool respond2) {
 
 /* The decision, in the store first. Bad_DialogNotActive when the request
  * is no longer Pending (decided already, or not a dialog of ours). */
-static UA_StatusCode decide(gds_server *s, const UA_Guid *reqId, UA_Int32 resp) {
+/* A KeyCredential request (gds_keycred.c): Approved or Rejected. */
+static gds_status decide_kc(gds_server *s, const UA_Guid *reqId, UA_Int32 resp, bool *kc) {
+    gds_kc_request q;
+    gds_status st = gds_store_kc_req_get(s->store, reqId, &q);
+    if(st == GDS_EUNSUPPORTED)
+        st = GDS_ENOTFOUND;
+    *kc = st == GDS_OK;
+    if(st == GDS_OK && q.state != GDS_KC_PENDING)
+        st = GDS_ESTATE;
+    if(st == GDS_OK)
+        st = gds_store_kc_req_set_state(s->store, reqId,
+                                         resp == RESP_APPROVE ? GDS_KC_APPROVED : GDS_KC_REJECTED);
+    gds_kc_request_clear(&q);
+    return st;
+}
+
+static UA_StatusCode decide(gds_server *s, const UA_Guid *reqId, UA_Int32 resp, bool *kc) {
     gds_request q;
     memset(&q, 0, sizeof(q));
+    *kc = false;
     gds_lock(s);
     gds_status st = gds_store_req_get(s->store, reqId, &q);
     if(st == GDS_OK && q.state != GDS_REQ_PENDING)
@@ -167,6 +215,8 @@ static UA_StatusCode decide(gds_server *s, const UA_Guid *reqId, UA_Int32 resp) 
                                            UA_STATUSCODE_GOOD)
                  : gds_store_req_set_state(s->store, reqId, GDS_REQ_FAILED, NULL,
                                            UA_STATUSCODE_BADREQUESTNOTALLOWED);
+    if(st == GDS_ENOTFOUND)
+        st = decide_kc(s, reqId, resp, kc);
     gds_unlock(s);
     gds_request_clear(&q);
     if(st == GDS_ENOTFOUND || st == GDS_ESTATE)
@@ -214,8 +264,9 @@ static UA_StatusCode respond(gds_server *s, const UA_NodeId *objectId, const voi
         r = UA_STATUSCODE_BADDIALOGRESPONSEINVALID;
     else if(comment && comment->text.length > MAX_COMMENT)
         r = UA_STATUSCODE_BADINVALIDARGUMENT;
+    bool kc = false;
     if(r == UA_STATUSCODE_GOOD)
-        r = decide(s, &objectId->identifier.guid, resp);
+        r = decide(s, &objectId->identifier.guid, resp, &kc);
     if(r == UA_STATUSCODE_GOOD) {
         if(s->pendingApprovals > 0)
             s->pendingApprovals--;
@@ -225,7 +276,7 @@ static UA_StatusCode respond(gds_server *s, const UA_NodeId *objectId, const voi
         UA_StatusCode v = close_dialog(s->ua, *objectId, resp, comment, user);
         if(v != UA_STATUSCODE_GOOD)
             fprintf(stderr, "opengds: closing an approval dialog: %s\n", UA_StatusCode_name(v));
-        if(resp == RESP_APPROVE)
+        if(resp == RESP_APPROVE && !kc)
             gds_worker_kick(s);
     }
     emit_audit(s->ua, &a, respond2);
@@ -295,6 +346,14 @@ static size_t prune(gds_server *s, bool all) {
             gds_unlock(s);
             keep = st == GDS_OK && q.state == GDS_REQ_PENDING;
             gds_request_clear(&q);
+            if(st == GDS_ENOTFOUND) { /* a KeyCredential request's */
+                gds_kc_request k;
+                gds_lock(s);
+                st = gds_store_kc_req_get(s->store, &id->identifier.guid, &k);
+                gds_unlock(s);
+                keep = st == GDS_OK && k.state == GDS_KC_PENDING;
+                gds_kc_request_clear(&k);
+            }
         }
         if(keep)
             left++;
@@ -335,6 +394,62 @@ static bool collect(void *ctx, const gds_request *q) {
     return true;
 }
 
+/* Pending KeyCredential requests (gds_keycred.c): ids and services only. */
+typedef struct {
+    gds_kc_request *q;
+    size_t n, cap;
+    bool oom;
+} kc_pending_list;
+
+static bool collect_kc(void *ctx, const gds_kc_request *q) {
+    kc_pending_list *l = ctx;
+    if(l->n == l->cap) {
+        size_t cap = l->cap ? l->cap * 2 : 16;
+        gds_kc_request *nq = realloc(l->q, cap * sizeof(*nq));
+        if(!nq) {
+            l->oom = true;
+            return false;
+        }
+        l->q = nq;
+        l->cap = cap;
+    }
+    gds_kc_request *d = &l->q[l->n++];
+    memset(d, 0, sizeof(*d)); /* no public key copy */
+    d->id = q->id;
+    d->appId = q->appId;
+    memcpy(d->service, q->service, sizeof(d->service));
+    d->state = q->state;
+    return true;
+}
+
+static UA_StatusCode sync_kc_dialogs(gds_server *s) {
+    kc_pending_list l = {NULL, 0, 0, false};
+    gds_lock(s);
+    gds_status st = gds_store_kc_req_scan(s->store, GDS_KC_PENDING, collect_kc, &l);
+    gds_unlock(s);
+    if(st == GDS_EUNSUPPORTED)
+        st = GDS_OK; /* no KeyCredentials in this store */
+    UA_StatusCode r = st != GDS_OK ? gds_status_to_ua(st)
+                      : l.oom      ? UA_STATUSCODE_BADOUTOFMEMORY
+                                   : UA_STATUSCODE_GOOD;
+    size_t raised = 0;
+    for(size_t i = 0; r == UA_STATUSCODE_GOOD && i < l.n; i++) {
+        if(dialog_exists(s->ua, &l.q[i].id))
+            continue;
+        UA_ApplicationRecordDataType rec;
+        UA_ApplicationRecordDataType_init(&rec);
+        UA_String none = UA_STRING("an unknown application");
+        bool known = gds_load_app(s, &l.q[i].appId, &rec) == UA_STATUSCODE_GOOD;
+        r = gds_approvals_raise_kc(s, &l.q[i], known ? &rec.applicationUri : &none);
+        UA_ApplicationRecordDataType_clear(&rec);
+        raised++;
+    }
+    free(l.q);
+    if(raised)
+        fprintf(stderr, "opengds: %zu KeyCredential request(s) wait for approval\n", raised);
+    return r;
+}
+
 static UA_StatusCode sync_dialogs(gds_server *s) {
     bool standby = gds_server_role(s) == GDS_NODE_STANDBY;
     s->pendingApprovals = prune(s, standby);
@@ -364,6 +479,8 @@ static UA_StatusCode sync_dialogs(gds_server *s) {
     free(l.q);
     if(raised)
         fprintf(stderr, "opengds: %zu certificate request(s) wait for approval\n", raised);
+    if(r == UA_STATUSCODE_GOOD)
+        r = sync_kc_dialogs(s);
     return r;
 }
 

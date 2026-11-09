@@ -50,11 +50,11 @@ the service Object, which is itself Optional.
 | RemoveCertificate | Method | M | §7.8.2.7 | `gds.tl.add_remove` (pass), `gds.tl.remove_unknown` (pass) |
 | TrustListMasks | DataType | M | §7.8.2.9 | `gds.tl.open_with_masks` (pass) |
 | CertificateGroupType | TrustList, CertificateTypes, alarms | M | §7.8.3.1 | `gds.ev.group_alarms` (not_supported), `gds.model.certificate_group` (pass) |
-| KeyCredentialManagement / KeyCredentialServiceType | Object | O | §8.5.3 | `gds.kc.service` (not_supported) |
-| StartRequest (KeyCredential) | Method | M if service | §8.5.5 | `gds.kc.policy_without_key` (not_supported), `gds.kc.request_flow` (not_supported), `gds.kc.sign_only` (not_supported), `gds.kc.start_unknown_uri` (not_supported) |
-| FinishRequest (KeyCredential) | Method | M if service | §8.5.6 | `gds.kc.cancel` (not_supported), `gds.kc.finish_unknown` (not_supported), `gds.kc.request_flow` (not_supported) |
-| Revoke (KeyCredential) | Method | O | §8.5.7 | `gds.kc.revoke` (not_supported), `gds.kc.revoke_unknown` (not_supported) |
-| KeyCredential audit events | Events | M if service | §8.5.9 | **none** |
+| KeyCredentialManagement / KeyCredentialServiceType | Object | O | §8.5.3 | `gds.kc.service` (pass) |
+| StartRequest (KeyCredential) | Method | M if service | §8.5.5 | `gds.kc.policy_without_key` (pass), `gds.kc.request_flow` (pass), `gds.kc.sign_only` (pass), `gds.kc.start_unknown_uri` (pass) |
+| FinishRequest (KeyCredential) | Method | M if service | §8.5.6 | `gds.kc.cancel` (pass), `gds.kc.finish_unknown` (pass), `gds.kc.request_flow` (pass) |
+| Revoke (KeyCredential) | Method | O | §8.5.7 | `gds.ev.keycred_revoked` (pass), `gds.kc.revoke` (pass), `gds.kc.revoke_unknown` (pass) |
+| KeyCredential audit events | Events | M if service | §8.5.8 - §8.5.11 | `gds.ev.keycred_requested_delivered` (pass), `gds.ev.keycred_revoked` (pass) |
 | AuthorizationServices / AuthorizationServiceType | Object | O | §9.6.4 | `gds.az.service` (not_supported) |
 | RequestAccessToken | Method (deprecated) | O | §9.6.5 | **none** |
 | StartRequestToken | Method | O | §9.6.6 | `gds.az.sign_only` (not_supported), `gds.az.start_unknown_resource` (not_supported) |
@@ -92,9 +92,8 @@ says why none applies, or names the open decision it waits on.
 
 These items have no test yet, and each needs work before it can have one:
 
-- KeyCredential audit events (§8.5.9 to §8.5.11) and AccessToken audit
-  events (§9.6.10, §9.6.11). Both need a running KeyCredential or
-  Authorization service to trigger them; opengdsd has neither until W5.
+- AccessToken audit events (§9.6.10, §9.6.11). They need a running
+  Authorization service to trigger them; opengdsd has none until W5.
 - A full AccessToken flow through StartRequestToken and FinishRequestToken
   (§9.6.6, §9.6.7). The tests cover the refusals; a granted token needs the
   RequestorData of Table 149 from an identity provider.

@@ -3,6 +3,7 @@
 #ifndef GDSAUDIT_SPEC_TESTS_H
 #define GDSAUDIT_SPEC_TESTS_H
 
+#include "gds_target.h"
 #include "harness.h"
 
 extern const ga_test spec_access_tests[];
@@ -31,5 +32,16 @@ extern const ga_test spec_roles_tests[];
 extern const size_t spec_roles_count;
 extern const ga_test spec_model_tests[];
 extern const size_t spec_model_count;
+
+/* For the KeyCredential audit tests (test_spec_events.c): on the first
+ * KeyCredentialService (test_spec_keycred.c) one StartRequest refused
+ * (unknown ApplicationUri) and one full request flow for a new
+ * application, then, with revoke, Revoke of the credential. False when
+ * there is no service or the setup failed (the verdict is then given). */
+typedef struct {
+    char resourceUri[1024];
+    UA_StatusCode refused, flow, revoke;
+} spec_kc_run;
+bool spec_kc_exercise(ga_ctx *ctx, gds_target *t, bool revoke, spec_kc_run *out);
 
 #endif

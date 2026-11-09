@@ -95,6 +95,24 @@ StartNewKeyPairRequest (OPC 10000-12 §7.9.4) is for applications that cannot ma
 
 These requests go through the same approval policy as signing requests. The password and the key are never written to disk. `opengdsd` keeps them in memory, the password until the key is generated and the key until FinishRequest returns it once. If `opengdsd` restarts, the node switches to standby, or nobody calls FinishRequest within a day, the request fails with Bad_RequestNotAllowed and the application starts again. At most 64 key pair requests are open at once; beyond that the method answers Bad_ServerTooBusy.
 
+## KeyCredentials
+
+A KeyCredential is a user name and secret that an application uses with a resource that is not an OPC UA server, for example an MQTT broker for PubSub (OPC 10000-12 §8). The administrator lists each resource in the configuration; `opengdsd` then offers a KeyCredentialService Object for it under `KeyCredentialManagement` (§8.5.3):
+
+```
+keycred_service = mqtt urn:example:broker http://opcfoundation.org/UA/Profile/Transport/pubsub-mqtt-uadp
+```
+
+The three words are the service name (1 to 64 of `A-Z a-z 0-9 . _ -`, the BrowseName of the Object), its ResourceUri and its ProfileUris, comma-separated (at most 8). The key may be repeated for up to 8 services. Each Object has ResourceUri, ProfileUris and SecurityPolicyUris (Basic256Sha256, Aes128_Sha256_RsaOaep and Aes256_Sha256_RsaPss), the methods StartRequest and FinishRequest, and the optional Revoke.
+
+An application asks with StartRequest (§8.5.5), for itself over its own channel, or a user with the KeyCredentialAdmin role asks for it. Every call needs a SignAndEncrypt session. When the caller gives a PublicKey (an RSA certificate) and a SecurityPolicyUri, the secret is returned encrypted for that certificate as an RsaEncryptedSecret (OPC 10000-4 §7.40.2.4); without them it is returned as plain text inside the encrypted session. ECC policies are refused with Bad_SecurityPolicyRejected.
+
+Requests follow `approval` exactly as certificate requests do: `auto` approves every request, `renewals` approves a repeat request from the application itself for a service where it already holds a credential, and `manual` approves none. A waiting request is a DialogCondition named KeyCredentialRequest under `Approvals`, answered the same way (Respond2, RegistrationAuthorityAdmin). Until then FinishRequest (§8.5.6) answers Bad_RequestNotComplete, and after a rejection Bad_RequestNotAllowed. FinishRequest must come over the same certificate as StartRequest. With CancelRequest TRUE it ends the request without a credential.
+
+On an approved request FinishRequest generates the credential: the CredentialId `opengds-` followed by 32 hex digits, and a secret of 32 random bytes in base64url (43 characters). The secret is returned once and never stored: the store keeps only a salted hash in the format of `mosquitto_passwd` (`$7$`, PBKDF2-SHA512), so a broker can check it. A new credential for the same application and service replaces the earlier one. Revoke (§8.5.7) deletes a credential; KeyCredentialAdmin or the application itself may call it. Unregistering an application deletes its credentials and requests.
+
+The requests and credentials are in the store (schema 5), so they survive a restart and replicate with it. A store backend without them (before store ABI minor 6) cannot start with a `keycred_service` line.
+
 ## Revoking certificates
 
 A session with the CertificateAuthorityAdmin role calls RevokeCertificate (OPC 10000-12 §7.9.6) on the Directory object with the ApplicationId and the certificate. Bad_NotFound means the application is not registered; Bad_InvalidArgument means this GDS did not issue that certificate to that application. UnregisterApplication revokes every certificate of the application before it deletes the record (§6.5.8).
@@ -131,8 +149,11 @@ Every change is validated first (structure, signatures, validity period, revocat
 | CertificateDeliveredAuditEventType (§7.9.13) | FinishRequest that returns a certificate |
 | CertificateRevokedAuditEventType (§7.9.14) | RevokeCertificate |
 | TrustListUpdatedAuditEventType (§7.8.2.1) | CloseAndUpdate, AddCertificate, RemoveCertificate |
+| KeyCredentialRequestedAuditEventType (§8.5.9) | StartRequest of a KeyCredentialService, accepted or refused |
+| KeyCredentialDeliveredAuditEventType (§8.5.10) | FinishRequest that returns a credential (never the secret) |
+| KeyCredentialRevokedAuditEventType (§8.5.11) | Revoke |
 
-Each event is written to the store's hash-chained audit log before it is raised, so every event a client sees is in the log. Only calls the session was allowed to make are audited: a call refused for its roles or security mode, or on a standby, leaves no record, so an unauthorised client cannot fill the log. Events are visible to SecurityAdmin and to the GDS role of the method (DiscoveryAdmin for the directory, CertificateAuthorityAdmin for certificates). A store backend without the audit log (before store ABI minor 1) raises none and `Server.Auditing` reads FALSE.
+Each event is written to the store's hash-chained audit log before it is raised, so every event a client sees is in the log. Only calls the session was allowed to make are audited: a call refused for its roles or security mode, or on a standby, leaves no record, so an unauthorised client cannot fill the log. Events are visible to SecurityAdmin and to the GDS role of the method (DiscoveryAdmin for the directory, CertificateAuthorityAdmin for certificates, KeyCredentialAdmin for KeyCredentials). KeyCredential events carry the service's ResourceUri. A store backend without the audit log (before store ABI minor 1) raises none and `Server.Auditing` reads FALSE.
 
 ## Importing applications
 

@@ -145,3 +145,8 @@ set_tests_properties(unit_dialogs PROPERTIES TIMEOUT 120)
 add_executable(test_keypair_map test_keypair_map.c)
 target_link_libraries(test_keypair_map PRIVATE gds_server)
 add_test(NAME unit_keypair_map COMMAND test_keypair_map)
+
+add_executable(test_keycred test_keycred.c)
+target_link_libraries(test_keycred PRIVATE gds_server)
+add_test(NAME unit_keycred COMMAND test_keycred "${CMAKE_CURRENT_BINARY_DIR}/keycred-run")
+set_tests_properties(unit_keycred PROPERTIES TIMEOUT 120)

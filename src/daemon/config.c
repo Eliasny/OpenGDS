@@ -124,6 +124,59 @@ static void defaults(gdsd_config *c) {
     c->approval = GDSD_APPROVE_RENEWALS;
 }
 
+static bool is_name_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+           c == '.' || c == '_' || c == '-';
+}
+
+/* The next space-separated word of [*b, e) */
+static bool word(const char **b, const char *e, const char **wb, const char **we) {
+    trim(b, &e);
+    *wb = *b;
+    while(*b < e && !is_space(**b))
+        (*b)++;
+    *we = *b;
+    return *we > *wb;
+}
+
+/* keycred_service = <name> <ResourceUri> <ProfileUri>[,<ProfileUri>...] */
+static bool set_keycred(const char *b, const char *e, gdsd_config *c) {
+    if(c->nKeycred >= GDSD_MAX_KC)
+        return false;
+    gdsd_keycred k;
+    memset(&k, 0, sizeof(k));
+    const char *nb, *ne, *ub, *ue, *pb, *pe, *xb, *xe;
+    if(!word(&b, e, &nb, &ne) || !word(&b, e, &ub, &ue) || !word(&b, e, &pb, &pe) ||
+       word(&b, e, &xb, &xe))
+        return false; /* three words exactly */
+    size_t nl = (size_t)(ne - nb), ul = (size_t)(ue - ub), pl = (size_t)(pe - pb);
+    if(nl >= sizeof(k.name) || ul >= sizeof(k.resourceUri) || pl >= sizeof(k.profiles) ||
+       !memchr(ub, ':', ul))
+        return false;
+    for(const char *p = nb; p < ne; p++)
+        if(!is_name_char(*p))
+            return false;
+    memcpy(k.name, nb, nl);
+    memcpy(k.resourceUri, ub, ul);
+    memcpy(k.profiles, pb, pl);
+    size_t start = 0;
+    for(size_t i = 0; i <= pl; i++) {
+        if(i < pl && k.profiles[i] != ',')
+            continue;
+        if(i == start || k.nProfiles >= GDSD_MAX_KC_PROFILES ||
+           !memchr(k.profiles + start, ':', i - start))
+            return false; /* empty, too many, or not a URI */
+        k.profiles[i] = '\0';
+        k.profile[k.nProfiles++] = (uint16_t)start;
+        start = i + 1;
+    }
+    for(uint8_t i = 0; i < c->nKeycred; i++)
+        if(strcmp(c->keycred[i].name, k.name) == 0)
+            return false; /* names are unique */
+    c->keycred[c->nKeycred++] = k;
+    return true;
+}
+
 /* One line; false on error. */
 static bool parse_line(const char *b, const char *e, gdsd_config *c, bool *seen) {
     trim(&b, &e);
@@ -137,6 +190,9 @@ static bool parse_line(const char *b, const char *e, gdsd_config *c, bool *seen)
     const char *kb = b, *ke = eq, *vb = eq + 1, *ve = e;
     trim(&kb, &ke);
     trim(&vb, &ve);
+    static const char kc[] = "keycred_service";
+    if((size_t)(ke - kb) == sizeof(kc) - 1 && memcmp(kb, kc, sizeof(kc) - 1) == 0)
+        return set_keycred(vb, ve, c); /* the one repeatable key */
     for(size_t i = 0; i < NFIELDS; i++) {
         size_t kl = strlen(fields[i].key);
         if((size_t)(ke - kb) != kl || memcmp(kb, fields[i].key, kl) != 0)

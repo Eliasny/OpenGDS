@@ -54,7 +54,8 @@ add_library(gds_common STATIC
     src/common/buf.c
     src/common/ids.c
     src/common/safeint.c
-    src/common/ua_args.c)
+    src/common/ua_args.c
+    src/common/enc_secret.c)
 if(NOT WIN32)
     target_sources(gds_common PRIVATE src/common/sandbox.c)
 endif()
