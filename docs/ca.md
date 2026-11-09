@@ -24,7 +24,7 @@ The CSR's subject, its SAN (including any ApplicationUri it names) and its reque
 - DER only, at most `GDS_MAX_CSR_SIZE`, with no trailing bytes.
 - The CSR's signature must verify with its own key (proof of possession).
 - CertificateType ApplicationCertificateType or RsaSha256ApplicationCertificateType needs an RSA key of 2048 to 4096 bits.
-- RsaMinApplicationCertificateType and the ECC types return Bad_NotSupported. RsaMin belongs to the deprecated Basic128Rsa15 and Basic256 profiles. ECC issuance comes later.
+- RsaMinApplicationCertificateType and the ECC types return Bad_NotSupported. RsaMin belongs to the deprecated Basic128Rsa15 and Basic256 profiles. ECC issuance needs its own issuing CAs; see "ECC: one issuing CA per curve" below.
 
 ## The CA itself
 
@@ -44,6 +44,17 @@ The CSR's subject, its SAN (including any ApplicationUri it names) and its reque
   - A certificate without its key is refused (`GDS_ESTATE`), never replaced by a new CA.
 
 The defaults are Elias's decision G6: CA RSA 3072 with SHA-256 for 10 years, application certificates for 1 year, all configurable. They are not values the specification requires.
+
+## ECC: one issuing CA per curve
+
+The ECC SecurityPolicy profiles fix the curve of the issuing CA, not only the leaf's. For example, CertificateKeyAlgorithm_ECC-nistP256 in SecurityPolicy [ECC-B] ECC-nistP256 (OPC 10000-7, profile `http://opcfoundation.org/UA/SecurityPolicy#ECC_nistP256`) says: "An end entity Certificate shall use P-256. A CA that issues end entity Certificates shall use P-256." The signature algorithm is ECDSA with SHA-256, or SHA-384 above 256 bits. The ECC-brainpoolP256r1 profile has the same rule for its curve. So the RSA CA above cannot sign an ECC application certificate: each ECC CertificateType needs an issuing CA on its own curve.
+
+Design (no ECC type is on until the product decision on which types 1.0 issues):
+
+- **Signer:** one CA per key algorithm. RSA stays in `ca_dir` as today. Each enabled ECC type gets a subdirectory with the same layout (`ca_dir/nistP256/`, `ca_dir/nistP384/`): `ca.key.pem` (encrypted PKCS#8 under the same passphrase, G6), `ca.der` (self-signed, ECDSA, keyUsage keyCertSign, cRLSign, digitalSignature) and `ca.crl`. Each CA has its own serial space and CRL number, and the journal records which CA issued each certificate.
+- **Dispatch:** SIGN_CSR and NEW_KEY_PAIR choose the CA by the request's CertificateType, which the signer reads from the store. GET_CHAIN and ISSUE_CRL take a CA index, and REVOKE uses the CertificateType stored with the serial.
+- **Leaves:** the same fields as the RSA table, with these differences: keyUsage is digitalSignature only (Part 6 §6.2.2, Table 50: "For ECC keys, the keyUsage shall include digitalSignature"), and the signature is ecdsa-with-SHA256 (P-256) or ecdsa-with-SHA384 (P-384). The CSR key must be on the type's curve: §7.8.4.11 says "They shall have an ECC nistP256 Public Key".
+- **opengdsd:** DefaultApplicationGroup.CertificateTypes lists RsaSha256 plus the enabled ECC types. Its trust list carries every issuing CA's certificate and CRL. FinishRequest returns the issuer that matches the request's type, and CheckRevocationStatus checks against that issuer and its CRL.
 
 ## Plugin hooks (UASM asks)
 
