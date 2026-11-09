@@ -13,6 +13,7 @@
  *   gdsadm apps unregister URI ...          UnregisterApplication (revokes its certificates)
  *   gdsadm certs revoke URI ...             RevokeCertificate
  *   gdsadm push now URI ...                 push trust list + certificate to a device
+ *   gdsadm push setup ...                   Annex G.2 setup of a device in setup state
  *
  * Passwords are read from stdin or a file, never argv. The store is opened read-only
  * and may be read while opengdsd runs. approve and reject answer the request's
@@ -54,8 +55,11 @@ static int usage(void) {
                     "       gdsadm apps import FILE --dry-run | CONNECTION\n"
                     "       gdsadm apps unregister URI CONNECTION\n"
                     "       gdsadm certs revoke URI --revoke-cert DER CONNECTION\n"
-                    "       gdsadm push now URI [--server-url URL] [--server-cert DER]\n"
+                    "       gdsadm push now URI [--server-url URL | --reverse-port PORT] [--server-cert DER]\n"
                     "                       [--device-user NAME --device-password-file FILE] CONNECTION\n"
+                    "       gdsadm push setup --server-uri URI --server-cert DER\n"
+                    "                       (--server-url URL | --reverse-port PORT)\n"
+                    "                       [--setup-user NAME --setup-password-file FILE] CONNECTION\n"
                     "  CONNECTION: --gds URL --cert DER --key DER --trust DER... [--crl DER]...\n"
                     "              --user NAME --password-file FILE\n");
     return 2;
@@ -321,6 +325,8 @@ int main(int argc, char **argv) {
         return gdsadm_certs_revoke(argc, argv);
     if(argc >= 3 && strcmp(argv[1], "push") == 0 && strcmp(argv[2], "now") == 0)
         return gdsadm_push_now(argc, argv);
+    if(argc >= 3 && strcmp(argv[1], "push") == 0 && strcmp(argv[2], "setup") == 0)
+        return gdsadm_push_setup(argc, argv);
     if(argc >= 3 && strcmp(argv[1], "certs") == 0 && strcmp(argv[2], "status") == 0)
         return store_cmd(argc, argv, status_cb, true);
     if(argc >= 3 && strcmp(argv[1], "approvals") == 0) {

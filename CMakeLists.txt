@@ -123,6 +123,8 @@ if(OPENGDS_BUILD_AUDITOR)
     # The push tracer gate drives the Auditor's push_test_server; the pull
     # tracer drives gdsaudit and pull_test_client against opengdsd
     add_subdirectory(tests/integration)
+    # Spec tests that drive the Auditor's test targets (Annex G setup)
+    add_subdirectory(tests/spec)
 endif()
 
 # Install rules and packages (.deb, .rpm, .tar.gz; docs/packaging.md), only

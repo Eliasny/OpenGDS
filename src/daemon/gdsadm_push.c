@@ -20,6 +20,24 @@
  *          §7.9.6) -> UpdateCertificate, then ApplyChanges (§7.7.2)
  *       5. check the device now presents the issued certificate
  *
+ *   gdsadm push now ... --reverse-port PORT
+ *       the same over Reverse Connect (OPC 10000-6 §7.1.3): gdsadm listens on
+ *       PORT and the device, behind a firewall, connects to it
+ *
+ *   gdsadm push setup --server-uri URI --server-cert DER
+ *                     (--server-url URL | --reverse-port PORT)
+ *                     [--setup-user NAME --setup-password-file FILE]
+ *                     [--poll-seconds N] CONNECTION
+ *       Annex G.2 application setup of a new device (push_setup.h): connect
+ *       with the device's setup credentials, trusting only its
+ *       pre-authorized certificate; check it is in the application setup
+ *       state; RegisterApplication from what it says about itself (an
+ *       existing record with its ApplicationUri is reused); push the trust
+ *       list and a certificate as in push now; add gdsadm's ApplicationUri
+ *       to its SecurityAdmin Role (OPC 10000-18); check it left setup.
+ *       Without --setup-user the device must give SecurityAdmin to gdsadm's
+ *       certificate while in setup.
+ *
  *   gdsadm apps import FILE [--dry-run] [CONNECTION]
  *       one RegisterApplication per record of a CSV or JSON file
  *       (gdsadm_import.h), with a report line per record. A record whose
@@ -55,6 +73,7 @@
 #include "client/gdsc_session.h"
 #include "common/limits.h"
 #include "common/safeint.h"
+#include "push/push_setup.h"
 #include "push/push_workflows.h"
 #include "common/banned.h"
 
@@ -62,6 +81,7 @@
 #define MAX_URLS 8
 #define DEFAULT_POLL_SECONDS 60
 #define PRESENT_TIMEOUT_MS 30000u
+#define REVERSE_WAIT_MS 60000u
 
 typedef struct {
     const char *gdsUrl, *certFile, *keyFile, *user, *passwordFile;
@@ -71,9 +91,10 @@ typedef struct {
     const char *uri, *name, *type;
     const char *urls[MAX_URLS];
     size_t urlN;
-    /* push now */
+    /* push now, push setup */
     const char *serverUrl, *serverCertFile, *deviceUser, *devicePasswordFile;
-    long pollSeconds;
+    long pollSeconds, reversePort;
+    const char *serverUri, *setupUser, *setupPasswordFile;
     /* certs revoke */
     const char *revokeCertFile;
 } adm_args;
@@ -82,6 +103,7 @@ typedef struct {
     gds_buf cert, key, password, serverCert, devicePassword;
     gds_buf trust[MAX_FILES + 1], crls[MAX_FILES];
     size_t trustN, crlN;
+    const UA_Byte *serverCertPinned; /* trust[] entry that is the pinned device cert */
 } adm_files;
 
 static void files_clear(adm_files *f) {
@@ -122,6 +144,9 @@ static bool parse_opt(adm_args *a, const char *opt, const char *v) {
         {"--device-user", &a->deviceUser},
         {"--device-password-file", &a->devicePasswordFile},
         {"--revoke-cert", &a->revokeCertFile},
+        {"--server-uri", &a->serverUri},
+        {"--setup-user", &a->setupUser},
+        {"--setup-password-file", &a->setupPasswordFile},
     };
     for(size_t i = 0; i < GDS_ARRAY_SIZE(single); i++) {
         if(strcmp(opt, single[i].name) == 0) {
@@ -141,6 +166,8 @@ static bool parse_opt(adm_args *a, const char *opt, const char *v) {
     }
     if(strcmp(opt, "--poll-seconds") == 0)
         return gds_parse_long(v, 0, 3600, &a->pollSeconds);
+    if(strcmp(opt, "--reverse-port") == 0 && a->reversePort == 0)
+        return gds_parse_long(v, 1, 65535, &a->reversePort);
     return false;
 }
 
@@ -189,6 +216,8 @@ static gds_status load_files(const adm_args *a, adm_files *f) {
         return s;
     if(a->devicePasswordFile)
         s = read_password(a->devicePasswordFile, &f->devicePassword);
+    if(s == GDS_OK && a->setupPasswordFile)
+        s = read_password(a->setupPasswordFile, &f->devicePassword);
     return s;
 }
 
@@ -438,6 +467,10 @@ static int find_device(UA_Client *gds, UA_UInt16 ns, const adm_args *a,
     UA_Array_delete(recs, n, &UA_TYPES_GDS[UA_TYPES_GDS_APPLICATIONRECORDDATATYPE]);
     if(rc != 0)
         return rc;
+    if(a->reversePort) /* the device connects to us: no DiscoveryUrl needed */
+        return gds_path(url, urlLen, "Reverse Connect on port %ld", a->reversePort) == GDS_OK
+                   ? 0
+                   : 1;
     if(a->serverUrl)
         return gds_path(url, urlLen, "%s", a->serverUrl) == GDS_OK ? 0 : 1;
     for(size_t i = 0; i < rec->discoveryUrlsSize; i++) {
@@ -464,17 +497,41 @@ static void print_report(const push_report *rep, const char *url) {
         printf("pushed to %s\n", url);
 }
 
+/* Over Reverse Connect the device cannot be reached for GetEndpoints: wait
+ * for its next connection, trusting only the GDS CA, and compare the
+ * certificate it presents on the channel */
+static UA_StatusCode reverse_presents(const gdsc_session_cfg *dev, const adm_files *f,
+                                      const gds_buf *issued) {
+    gdsc_session_cfg c = *dev;
+    c.trust = f->trust;
+    c.trustN = f->trustN - (f->trust[f->trustN - 1].data == f->serverCertPinned ? 1 : 0);
+    gdsc_session *s = NULL;
+    UA_StatusCode r = gdsc_session_open(&c, &s);
+    if(r == UA_STATUSCODE_GOOD) {
+        gds_buf seen = {0};
+        if(gdsc_session_server_cert(s, &seen) != GDS_OK || seen.len < issued->len ||
+           memcmp(seen.data, issued->data, issued->len) != 0)
+            r = UA_STATUSCODE_BADCERTIFICATEINVALID;
+        gds_buf_free(&seen);
+    }
+    gdsc_session_close(s);
+    return r;
+}
+
 /* Steps 3-5 with the device's record and trust list in hand */
 static int push_to_device(const adm_args *a, adm_files *f, sign_ctx *sc, const char *url,
                           const UA_TrustListDataType *tl) {
     /* The device is trusted through the GDS CA, or its pinned certificate */
     if(f->serverCert.data) {
+        f->serverCertPinned = f->serverCert.data;
         f->trust[f->trustN++] = f->serverCert; /* files_clear frees it there */
         memset(&f->serverCert, 0, sizeof(f->serverCert));
     }
     gdsc_session_cfg c = gds_cfg(a, f);
-    c.endpointUrl = url;
+    c.endpointUrl = a->reversePort ? NULL : url;
     c.serverUri = a->uri;
+    c.reversePort = (UA_UInt16)a->reversePort;
+    c.reverseWaitMs = REVERSE_WAIT_MS;
     if(a->deviceUser) {
         /* 12 §7.4: SecurityAdmin mapped to an administrator's credentials */
         c.identity = GDSC_IDENTITY_USERNAME;
@@ -503,7 +560,13 @@ static int push_to_device(const adm_args *a, adm_files *f, sign_ctx *sc, const c
     gdsc_session_close(dev);
     print_report(&rep, url);
     int rc = s == GDS_OK ? 0 : 1;
-    if(rc == 0 && rep.certificateUpdated) {
+    if(rc == 0 && rep.certificateUpdated && a->reversePort) {
+        r = reverse_presents(&c, f, &rep.issued);
+        if(r == UA_STATUSCODE_GOOD)
+            printf("the device presents the issued certificate\n");
+        else
+            rc = report("the device does not present the issued certificate", r);
+    } else if(rc == 0 && rep.certificateUpdated) {
         r = gdsc_wait_presents(url, &job.certificateType, &rep.issued, PRESENT_TIMEOUT_MS);
         if(r == UA_STATUSCODE_GOOD)
             printf("the device presents the issued certificate\n");
@@ -517,10 +580,11 @@ static int push_to_device(const adm_args *a, adm_files *f, sign_ctx *sc, const c
 int gdsadm_push_now(int argc, char **argv) {
     adm_args a;
     if(argc < 4 || argv[3][0] == '-' || !parse_args(argc, argv, 4, &a) ||
-       !a.deviceUser != !a.devicePasswordFile) {
-        fprintf(stderr, "usage: gdsadm push now URI [--server-url URL] [--server-cert DER] "
-                        "[--device-user NAME --device-password-file FILE] [--poll-seconds N] "
-                        "CONNECTION\n");
+       !a.deviceUser != !a.devicePasswordFile || a.setupUser || a.setupPasswordFile ||
+       a.serverUri || (a.reversePort && a.serverUrl)) {
+        fprintf(stderr, "usage: gdsadm push now URI [--server-url URL | --reverse-port PORT] "
+                        "[--server-cert DER] [--device-user NAME --device-password-file FILE] "
+                        "[--poll-seconds N] CONNECTION\n");
         return 2;
     }
     a.uri = argv[3];
@@ -555,7 +619,7 @@ int gdsadm_push_now(int argc, char **argv) {
     return rc;
 }
 
-/* ---- apps unregister, certs revoke ---- */
+/* ---- push setup (Annex G.2) ---- */
 
 /* The one record with this ApplicationUri; *id is a copy. */
 static int find_app_id(UA_Client *gds, UA_UInt16 ns, const char *uri, UA_NodeId *id) {
@@ -574,6 +638,160 @@ static int find_app_id(UA_Client *gds, UA_UInt16 ns, const char *uri, UA_NodeId 
     UA_Array_delete(recs, n, &UA_TYPES_GDS[UA_TYPES_GDS_APPLICATIONRECORDDATATYPE]);
     return rc;
 }
+
+
+typedef struct {
+    sign_ctx *sc;
+} enroll_ctx;
+
+/* The record from what the device says about itself: names, type and
+ * ProductUri from its ApplicationDescription, its DiscoveryUrls (or the URL
+ * we reached it at) */
+static UA_StatusCode register_device(UA_Client *gds, UA_UInt16 ns,
+                                     const UA_ApplicationDescription *ad, const char *url,
+                                     UA_NodeId *id) {
+    UA_String u = UA_STRING((char *)(uintptr_t)(url ? url : ""));
+    UA_ApplicationRecordDataType rec;
+    UA_ApplicationRecordDataType_init(&rec);
+    rec.applicationUri = ad->applicationUri;
+    rec.applicationType = ad->applicationType;
+    rec.applicationNames = (UA_LocalizedText *)(uintptr_t)&ad->applicationName;
+    rec.applicationNamesSize = 1;
+    rec.productUri = ad->productUri.length ? ad->productUri : ad->applicationUri;
+    rec.discoveryUrls = ad->discoveryUrlsSize ? ad->discoveryUrls : (url ? &u : NULL);
+    rec.discoveryUrlsSize = ad->discoveryUrlsSize ? ad->discoveryUrlsSize : (url ? 1 : 0);
+    UA_StatusCode r = gdsc_register_application(gds, ns, &rec, id);
+    if(r == UA_STATUSCODE_GOOD)
+        printf("registered %.*s\n", (int)ad->applicationUri.length,
+               (const char *)ad->applicationUri.data);
+    return r;
+}
+
+static gds_status enroll_via_gds(void *ctx, const UA_ApplicationDescription *ad,
+                                 const char *url, const UA_ByteString *serverCert,
+                                 UA_TrustListDataType *tl) {
+    (void)serverCert; /* the session checked it against the pre-authorized one */
+    sign_ctx *sc = ((enroll_ctx *)ctx)->sc;
+    if(ad->applicationUri.length == 0 || ad->applicationUri.length >= GDS_MAX_APPLICATION_URI)
+        return GDS_EINVAL;
+    char uri[GDS_MAX_APPLICATION_URI];
+    memcpy(uri, ad->applicationUri.data, ad->applicationUri.length);
+    uri[ad->applicationUri.length] = '\0';
+    UA_NodeId_clear(&sc->appId);
+    UA_StatusCode r = register_device(sc->gds, sc->ns, ad, url, &sc->appId);
+    if(r == UA_STATUSCODE_BADALREADYEXISTS) {
+        /* set up again (e.g. after ResetToServerDefaults): the same record */
+        printf("%s is registered already; using that record\n", uri);
+        r = find_app_id(sc->gds, sc->ns, uri, &sc->appId) == 0 ? UA_STATUSCODE_GOOD
+                                                              : UA_STATUSCODE_BADNOTFOUND;
+    }
+    if(r != UA_STATUSCODE_GOOD) {
+        report("RegisterApplication", r);
+        return GDS_EREMOTE;
+    }
+    UA_NodeId group = gdsc_gds_default_group(sc->ns);
+    r = gdsc_get_trust_list(sc->gds, sc->ns, &sc->appId, &group, tl);
+    if(r != UA_STATUSCODE_GOOD) {
+        report("GetTrustList", r);
+        return GDS_EREMOTE;
+    }
+    return GDS_OK;
+}
+
+static const char *state_name(UA_ServerState s) {
+    switch(s) {
+    case UA_SERVERSTATE_RUNNING: return "Running";
+    case UA_SERVERSTATE_FAILED: return "Failed";
+    case UA_SERVERSTATE_NOCONFIGURATION: return "NoConfiguration";
+    case UA_SERVERSTATE_SUSPENDED: return "Suspended";
+    case UA_SERVERSTATE_SHUTDOWN: return "Shutdown";
+    case UA_SERVERSTATE_TEST: return "Test";
+    case UA_SERVERSTATE_COMMUNICATIONFAULT: return "CommunicationFault";
+    case UA_SERVERSTATE_UNKNOWN: return "Unknown";
+    default: return "?";
+    }
+}
+
+static int setup_usage(void) {
+    fprintf(stderr, "usage: gdsadm push setup --server-uri URI --server-cert DER\n"
+                    "         (--server-url URL | --reverse-port PORT)\n"
+                    "         [--setup-user NAME --setup-password-file FILE] [--poll-seconds N]\n"
+                    "         CONNECTION\n");
+    return 2;
+}
+
+int gdsadm_push_setup(int argc, char **argv) {
+    adm_args a;
+    if(!parse_args(argc, argv, 3, &a) || !a.serverUri || !a.serverCertFile ||
+       !a.serverUrl == !a.reversePort || !a.setupUser != !a.setupPasswordFile ||
+       a.deviceUser || a.devicePasswordFile || strlen(a.serverUri) >= GDS_MAX_APPLICATION_URI)
+        return setup_usage();
+    adm_files f;
+    memset(&f, 0, sizeof(f));
+    gdsc_session *gds = NULL;
+    sign_ctx sc;
+    memset(&sc, 0, sizeof(sc));
+    sc.pollSeconds = (unsigned)a.pollSeconds;
+    int rc = open_gds(&a, &f, &gds, &sc.ns);
+    if(rc != 0) {
+        gdsc_session_close(gds);
+        files_clear(&f);
+        return rc;
+    }
+    sc.gds = gdsc_session_client(gds);
+    enroll_ctx ec = {&sc};
+    push_setup_job j;
+    memset(&j, 0, sizeof(j));
+    j.conn.endpointUrl = a.serverUrl;
+    j.conn.reversePort = (UA_UInt16)a.reversePort;
+    j.conn.reverseWaitMs = REVERSE_WAIT_MS;
+    j.conn.cert = &f.cert;
+    j.conn.key = &f.key;
+    j.serverUri = a.serverUri;
+    j.deviceCert = &f.serverCert;
+    j.trust = f.trust;
+    j.trustN = f.trustN;
+    j.crls = f.crls;
+    j.crlN = f.crlN;
+    j.setupIdentity = a.setupUser ? GDSC_IDENTITY_USERNAME : GDSC_IDENTITY_APP_CERT;
+    j.setupUser = a.setupUser;
+    j.setupPassword = a.setupUser ? &f.devicePassword : NULL;
+    j.enroll = enroll_via_gds;
+    j.enrollCtx = &ec;
+    j.sign = sign_via_gds;
+    j.signCtx = &sc;
+    j.certificateGroup = GDSC_DEFAULT_APP_GROUP;
+    j.trustListNode = GDSC_DEFAULT_APP_TRUSTLIST;
+    j.certificateType = GDSC_RSA_SHA256_APP_CERT;
+    push_setup_report rep;
+    gds_status s = push_setup_run(&j, &rep);
+    printf("before: State %s, InApplicationSetup %s\n", state_name(rep.before.state),
+           !rep.before.hasInSetup ? "absent" : rep.before.inSetup ? "TRUE" : "FALSE");
+    if(rep.failedStep != PUSH_SETUP_STEP_NONE || s != GDS_OK) {
+        if(rep.failedStep == PUSH_SETUP_STEP_PUSH)
+            print_report(&rep.push, a.serverUri);
+        fprintf(stderr, "gdsadm: push setup failed at '%s': %s%s\n",
+                push_setup_step_name(rep.failedStep), UA_StatusCode_name(rep.failedCode),
+                rep.failedStep == PUSH_SETUP_STEP_STATE &&
+                        rep.failedCode == UA_STATUSCODE_BADINVALIDSTATE
+                    ? " (the device is not in the application setup state; use push now)"
+                    : "");
+        rc = 1;
+    } else {
+        print_report(&rep.push, a.serverUri);
+        printf("SecurityAdmin Role: our ApplicationUri added%s\n",
+               rep.anonymousRemoved ? ", Anonymous removed" : "");
+        printf("after: State %s; the device left the application setup state\n",
+               state_name(rep.after.state));
+    }
+    push_setup_report_clear(&rep);
+    UA_NodeId_clear(&sc.appId);
+    gdsc_session_close(gds);
+    files_clear(&f);
+    return rc;
+}
+
+/* ---- apps unregister, certs revoke ---- */
 
 /* argv[3] is the ApplicationUri, options from argv[4] */
 static bool uri_args(int argc, char **argv, adm_args *a) {

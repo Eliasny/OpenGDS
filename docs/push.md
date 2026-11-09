@@ -84,6 +84,90 @@ With `push = true` the sandbox allows `opengdsd` outgoing TCP connections.
 
 A plugin can replace the choice of which due jobs run (`gds_server_set_push_scheduler` in `src/server/gds_plugin.h`, plugin ABI 1.2), for example to push in waves or only in maintenance windows. The engine still decides what is due, does the work, and reports each result back through `job_done`.
 
+## Setting up a new device (Annex G.2)
+
+A new device that supports PushManagement starts in the application setup
+state: its ServerStatus.State is NoConfiguration and
+ServerConfiguration.InApplicationSetup is TRUE (OPC 10000-12 Annex G.2).
+`gdsadm push setup` takes it out of that state:
+
+```sh
+gdsadm push setup --server-url opc.tcp://press7.example:4840 \
+    --server-uri urn:example:press7 --server-cert press7-selfsigned.der \
+    --setup-user setup --setup-password-file press7-setup.pw $CONN
+```
+
+1. Connects with the device's setup credentials (§7.5). The device is
+   trusted only through `--server-cert`, the certificate the installer
+   registered for it (Annex G.2: the CertificateManager checks that a device
+   is one of the pre-authorized ones). A device that already has a
+   certificate from the GDS CA is also accepted, and then refused in step 2.
+2. Reads ServerStatus.State and InApplicationSetup, and stops unless the
+   device is in the setup state.
+3. Registers the device in the GDS from the ApplicationDescription it gives
+   (RegisterApplication). If the ApplicationUri is registered already, that
+   record is used. Registration comes first because StartSigningRequest
+   names the ApplicationId (§7.9.3).
+4. Pushes the trust list and a certificate as `push now` does, then
+   ApplyChanges. If a step fails, CancelChanges discards everything and the
+   device stays in setup.
+5. Connects again, now trusting the device through the GDS CA, and adds
+   `gdsadm`'s ApplicationUri to the device's SecurityAdmin Role (OPC
+   10000-18 AddIdentity with an Application rule). An Anonymous rule in that
+   Role is removed (Annex G.2: "Add Client ApplicationUri to SecurityAdmin
+   Role, remove Anonymous from SecurityAdmin Role").
+6. Connects a third time with `gdsadm`'s certificate alone (Annex G.3) and
+   checks that the device left the setup state.
+
+After that, `gdsadm push now` needs no device credentials. Without
+`--setup-user`, the device must give SecurityAdmin to `gdsadm`'s
+certificate while it is in setup. The library behind it is
+`src/push/push_setup.h`; the scheduled pushes above do not set up devices.
+
+## Devices behind a firewall (Reverse Connect)
+
+A device that may not accept incoming connections can open them itself
+(OPC 10000-6 §7.1.3, Reverse Connect). Configure the device to connect to
+the host and port where `gdsadm` listens, and use `--reverse-port` instead
+of `--server-url`:
+
+```sh
+gdsadm push setup --reverse-port 4843 --server-uri urn:example:press7 \
+    --server-cert press7-selfsigned.der --setup-user setup \
+    --setup-password-file press7-setup.pw $CONN
+gdsadm push now urn:example:press7 --reverse-port 4843 $CONN
+```
+
+The session waits up to 60 s for the device's ReverseHello. It uses two
+connections from the device: the first for GetEndpoints, the second for the
+SignAndEncrypt session (the device opens a new one after the first closes).
+The endpoint is the one with the highest SecurityLevel among the policies
+`gdsadm` accepts, and None, Basic128Rsa15 and Basic256 are refused as for a
+direct connection. The device's certificate and ApplicationUri are checked
+the same way. A listening port takes any caller, so `--server-uri` (or the
+record's ApplicationUri for `push now`) is required.
+
+## Applications that pull (Annex G.1)
+
+An application that manages its own certificate pulls it from the GDS
+(§7.6). `src/client/gdsc_pull_agent.h` is a pull agent a vendor can embed:
+one call registers the application if needed, checks GetCertificateStatus,
+makes a new key pair and CSR when an update is due, finishes the request
+(or keeps a pending RequestId for the next run), and downloads the trust
+list when its LastUpdateTime moved. The new certificate, key and trust list
+reach the application's persist callback together. The GDS must be trusted
+beforehand; user credentials are used only until the first certificate is
+issued and are never stored. `examples/pull_agent.c` is a small command-line
+application built on it:
+
+```sh
+pull_agent --gds opc.tcp://gds.example:4840 --trust ca.der --crl ca.crl \
+    --app-uri urn:example:hmi3 --name "HMI 3" --dir /var/lib/hmi3/pki \
+    --user installer --password-file /run/installer.pw   # first run
+pull_agent --gds opc.tcp://gds.example:4840 --trust ca.der --crl ca.crl \
+    --app-uri urn:example:hmi3 --name "HMI 3" --dir /var/lib/hmi3/pki   # renewals
+```
+
 ## Code
 
 | File | What |
@@ -97,7 +181,12 @@ A plugin can replace the choice of which due jobs run (`gds_server_set_push_sche
 | `src/push/push_rejected.c` | GetRejectedList results as DialogConditions |
 | `src/server/gds_push_slot.c` | The replaceable scheduling slot and the push target list |
 | `src/gdsctl/push_targets.c` | `gdsctl push-targets` |
-| `src/daemon/gdsadm_push.c` | `gdsadm apps register`, `gdsadm push now` |
+| `src/push/push_setup.c` | Annex G.2 setup: state check, register, push, SecurityAdmin Role |
+| `src/client/gdsc_pull_agent.c` | Annex G.1 pull agent for applications |
+| `src/daemon/gdsadm_push.c` | `gdsadm apps register`, `gdsadm push now`, `gdsadm push setup` |
+| `examples/pull_agent.c` | An application that embeds the pull agent |
+| `tests/spec/test_spec_annex_g.c` | Annex G and Reverse Connect spec tests |
+| `tests/spec/run_annex_g_vs_opengdsd.sh` | The same end to end with opengdsd |
 | `tests/integration/test_push_flow.c` | Push engine against `push_test_server`: refusals, cancel, a full push |
 | `tests/integration/test_push_engine.c` | The scheduler against `push_test_server`: renewal, trust list, rejected dialog, back-off, standby |
 | `tests/integration/push/` | End to end: opengdsd, then `gdsadm push now`, then `push_test_server` |
