@@ -116,7 +116,7 @@ audit() { # audit <name> [args]: run the profile, TAP into $W/<name>.tap
 }
 
 RC=0
-SLOW_TESTS="SRV-TL-18"
+SLOW_TESTS="SRV-TL-18 SRV-KC-10"
 # the setup tests: push_test_server --setup, selected with --only SRV-SET
 SETUP_ARGS="--only SRV-SET --allow-reset"
 PIN=tofu

@@ -97,3 +97,13 @@ SRV-SET-04,not_tested   # only with --only SRV-SET; push_test_server_setup.csv c
 SRV-SET-05,not_tested   # only with --only SRV-SET; push_test_server_setup.csv covers it
 SRV-SET-06,not_tested   # only with --only SRV-SET; push_test_server_setup.csv covers it
 SRV-RESTORE,pass
+SRV-KC-01,pass
+SRV-KC-02,pass
+SRV-KC-03,pass
+SRV-KC-04,pass
+SRV-KC-05,pass
+SRV-KC-06,pass
+SRV-KC-07,pass
+SRV-KC-08,pass
+SRV-KC-09,pass
+SRV-KC-10,pass
