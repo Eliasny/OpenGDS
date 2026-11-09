@@ -16,6 +16,7 @@
  *   gdsadm push setup ...                   Annex G.2 setup of a device in setup state
  *   gdsadm push keycred URI --service NAME  push a KeyCredential to a device (§8.6)
  *   gdsadm push keycred-delete URI ...      delete it there and Revoke it on the GDS
+ *   gdsadm watch --url URL ... [--json]     live audit events and alarms (gdsadm_watch.h)
  *
  * Passwords are read from stdin or a file, never argv. The store is opened read-only
  * and may be read while opengdsd runs. approve and reject answer the request's
@@ -39,6 +40,7 @@
 #include "client/gdsc_connect.h"
 #include "gds_access.h"
 #include "gdsadm_push.h"
+#include "gdsadm_watch.h"
 #include "store.h"
 #include "common/banned.h"
 
@@ -64,6 +66,8 @@ static int usage(void) {
                     "                       [--setup-user NAME --setup-password-file FILE] CONNECTION\n"
                     "       gdsadm push keycred URI --service NAME [--endpoint-url URL]... [device options] CONNECTION\n"
                     "       gdsadm push keycred-delete URI --service NAME [device options] CONNECTION\n"
+                    "       gdsadm watch --url URL --user NAME --password-file F --trust CA.der\n"
+                    "                    [--crl CA.crl] [--json] [--count N] [--seconds N]\n"
                     "  CONNECTION: --gds URL --cert DER --key DER --trust DER... [--crl DER]...\n"
                     "              --user NAME --password-file FILE\n");
     return 2;
@@ -314,36 +318,50 @@ static int approvals_respond(int argc, char **argv, UA_Int32 resp) {
     return 0;
 }
 
+static int apps_list(int argc, char **argv) {
+    return store_cmd(argc, argv, list_cb, false);
+}
+
+static int certs_status(int argc, char **argv) {
+    return store_cmd(argc, argv, status_cb, true);
+}
+
+static int approvals_approve(int argc, char **argv) {
+    return approvals_respond(argc, argv, 0);
+}
+
+static int approvals_reject(int argc, char **argv) {
+    return approvals_respond(argc, argv, 1);
+}
+
+/* gdsadm VERB [SUB] ...; sub NULL: a one-word command */
+static const struct {
+    const char *verb, *sub;
+    int (*run)(int argc, char **argv);
+} commands[] = {
+    {"hash-password", NULL, hash_password},
+    {"watch", NULL, gdsadm_watch},
+    {"apps", "list", apps_list},
+    {"apps", "register", gdsadm_apps_register},
+    {"apps", "import", gdsadm_apps_import},
+    {"apps", "unregister", gdsadm_apps_unregister},
+    {"certs", "status", certs_status},
+    {"certs", "revoke", gdsadm_certs_revoke},
+    {"push", "now", gdsadm_push_now},
+    {"push", "setup", gdsadm_push_setup},
+    {"push", "keycred", gdsadm_push_keycred},
+    {"push", "keycred-delete", gdsadm_push_keycred_delete},
+    {"approvals", "list", approvals_list},
+    {"approvals", "approve", approvals_approve},
+    {"approvals", "reject", approvals_reject},
+};
+
 int main(int argc, char **argv) {
-    if(argc >= 2 && strcmp(argv[1], "hash-password") == 0)
-        return hash_password(argc, argv);
-    if(argc >= 3 && strcmp(argv[1], "apps") == 0 && strcmp(argv[2], "list") == 0)
-        return store_cmd(argc, argv, list_cb, false);
-    if(argc >= 3 && strcmp(argv[1], "apps") == 0 && strcmp(argv[2], "register") == 0)
-        return gdsadm_apps_register(argc, argv);
-    if(argc >= 3 && strcmp(argv[1], "apps") == 0 && strcmp(argv[2], "import") == 0)
-        return gdsadm_apps_import(argc, argv);
-    if(argc >= 3 && strcmp(argv[1], "apps") == 0 && strcmp(argv[2], "unregister") == 0)
-        return gdsadm_apps_unregister(argc, argv);
-    if(argc >= 3 && strcmp(argv[1], "certs") == 0 && strcmp(argv[2], "revoke") == 0)
-        return gdsadm_certs_revoke(argc, argv);
-    if(argc >= 3 && strcmp(argv[1], "push") == 0 && strcmp(argv[2], "now") == 0)
-        return gdsadm_push_now(argc, argv);
-    if(argc >= 3 && strcmp(argv[1], "push") == 0 && strcmp(argv[2], "setup") == 0)
-        return gdsadm_push_setup(argc, argv);
-    if(argc >= 3 && strcmp(argv[1], "push") == 0 && strcmp(argv[2], "keycred") == 0)
-        return gdsadm_push_keycred(argc, argv);
-    if(argc >= 3 && strcmp(argv[1], "push") == 0 && strcmp(argv[2], "keycred-delete") == 0)
-        return gdsadm_push_keycred_delete(argc, argv);
-    if(argc >= 3 && strcmp(argv[1], "certs") == 0 && strcmp(argv[2], "status") == 0)
-        return store_cmd(argc, argv, status_cb, true);
-    if(argc >= 3 && strcmp(argv[1], "approvals") == 0) {
-        if(strcmp(argv[2], "list") == 0)
-            return approvals_list(argc, argv);
-        if(strcmp(argv[2], "approve") == 0)
-            return approvals_respond(argc, argv, 0);
-        if(strcmp(argv[2], "reject") == 0)
-            return approvals_respond(argc, argv, 1);
+    for(size_t i = 0; argc >= 2 && i < GDS_ARRAY_SIZE(commands); i++) {
+        if(strcmp(argv[1], commands[i].verb) != 0)
+            continue;
+        if(!commands[i].sub || (argc >= 3 && strcmp(argv[2], commands[i].sub) == 0))
+            return commands[i].run(argc, argv);
     }
     return usage();
 }

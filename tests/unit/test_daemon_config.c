@@ -127,9 +127,40 @@ static void test_keycred(void) {
     CHECK(parse(many, &c, &line) == GDS_EINVAL && line == 5 + GDSD_MAX_KC); /* 9th line */
 }
 
+/* mDNS announce keys (src/disc/disc_mdns.h) */
+static void test_mdns(void) {
+    gdsd_config c;
+    unsigned line = 0;
+    CHECK(parse(BASE, &c, &line) == GDS_OK && !c.mdns && !c.mdnsServerName[0] &&
+          !c.mdnsInterface[0]); /* off by default (Part 12 §5.2) */
+    CHECK(parse(BASE "mdns = true\nmdns_server_name = Plant GDS\nmdns_interface = 192.0.2.10\n",
+                &c, &line) == GDS_OK);
+    CHECK(c.mdns && strcmp(c.mdnsServerName, "Plant GDS") == 0 &&
+          strcmp(c.mdnsInterface, "192.0.2.10") == 0);
+    CHECK(parse(BASE "mdns_server_name = Kontrollhalle \xc3\xa4\n", &c, &line) == GDS_OK);
+    /* nothing on the subnet could reach a loopback-only GDS */
+    CHECK(parse(BASE "mdns = true\nloopback_only = true\n", &c, &line) == GDS_EINVAL &&
+          line == 0);
+    CHECK(parse(BASE "mdns = yes\n", &c, &line) == GDS_EINVAL && line == 5);
+    CHECK(parse(BASE "mdns_server_name = gds.example.com\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "mdns_interface = eth0\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "mdns_interface = 2001:db8::1\n", &c, &line) == GDS_EINVAL);
+    CHECK(parse(BASE "mdns_server_name = bad \xc3\n", &c, &line) == GDS_EINVAL); /* UTF-8 */
+    char name[80];
+    memset(name, 'n', 64);
+    name[64] = '\0'; /* one byte above a DNS label */
+    char text[1024];
+    CHECK(gds_path(text, sizeof(text), "%smdns_server_name = %s\n", BASE, name) == GDS_OK);
+    CHECK(parse(text, &c, &line) == GDS_EINVAL);
+    name[63] = '\0';
+    CHECK(gds_path(text, sizeof(text), "%smdns_server_name = %s\n", BASE, name) == GDS_OK);
+    CHECK(parse(text, &c, &line) == GDS_OK);
+}
+
 int main(void) {
     test_ok();
     test_keycred();
+    test_mdns();
     test_bad_values();
     test_refused();
     return CHECK_DONE();
