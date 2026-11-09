@@ -67,7 +67,7 @@ admin clients ┼──► opengdsd  (user opengds, no key)  ───┘    (pu
 
 **opengds-signer** is a new, small executable (target: under 3,000 lines of our own code). It is started by systemd as its own unit with its own user, connected to `opengdsd` through a socket that only those two users can open. It:
 
-- accepts exactly five requests: `SIGN_CSR`, `NEW_KEY_PAIR`, `REVOKE`, `ISSUE_CRL`, `GET_CHAIN`;
+- accepts exactly seven requests: `SIGN_CSR`, `NEW_KEY_PAIR`, `REVOKE`, `ISSUE_CRL`, `GET_CHAIN`, and for the AuthorizationService `TOKEN_CHAIN` and `TOKEN_SIGN` (which signs only RS256 JWTs; docs/ca.md, "AccessToken signing key");
 - reads the application record and the request's approval state from the store itself (read-only connection), instead of trusting what `opengdsd` sends, and refuses if the record does not exist, is not approved, or the CSR's public key is already in use by another application;
 - builds every certificate field from the record (subject, SAN URI, DNS/IP, key usage, validity); nothing comes from the CSR except the public key;
 - enforces rate limits per application and globally, so a compromised daemon cannot mass-produce certificates unnoticed;

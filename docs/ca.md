@@ -61,6 +61,14 @@ OpenGDS 1.0 issues RSA, P-256 and P-384 (Elias, 2026-11-09). Both the signer and
 - **Leaves:** the same fields as the RSA table, with these differences: keyUsage is digitalSignature only (Part 6 §6.2.2, Table 50: "For ECC keys, the keyUsage shall include digitalSignature"), and the signature is ecdsa-with-SHA256 (P-256) or ecdsa-with-SHA384 (P-384). The CSR key must be on the type's curve: §7.8.4.11 says "They shall have an ECC nistP256 Public Key".
 - **opengdsd:** DefaultApplicationGroup.CertificateTypes lists RsaSha256, then EccNistP256 and EccNistP384 when the CA slot has their issuers (a third-party CA backend before ABI 4 offers RSA only). StartSigningRequest and StartNewKeyPairRequest accept exactly those types, others get Bad_InvalidArgument. The trust list starts with every issuing CA's certificate and CRL, in the order RSA, P-256, P-384; Write and AddCertificate drop copies of them and RemoveCertificate refuses them. FinishRequest (and `gds_server_sign_request`) returns the issuer that matches the request's type. CheckRevocationStatus finds the issuer by name and checks the signature and CRL of that issuer. RevokeCertificate puts the serial on the CRL of the certificate's issuer, and UnregisterApplication on the CRL of each certificate's type.
 
+## AccessToken signing key
+
+The AuthorizationService (docs/opengdsd.md, "AccessTokens") signs its JWTs with a key that the CA backend holds, so it can sit in an HSM like the CA keys (Elias, 2026-11-09). CA backends of ABI 5 offer `token_chain` and `token_sign`; earlier backends have no token key, and opengdsd then refuses to start with `authorization_service = true`.
+
+- **Files:** `ca_dir/token/token.key.pem` (RSA 2048, encrypted PKCS#8 under the CA passphrase) and `ca_dir/token/token.der`, both made on first use.
+- **Certificate:** issued by the RSA CA. CN is the CA's CN followed by " AuthorizationService", O as configured, subjectAltName URI = the ServiceUri, keyUsage digitalSignature only, basicConstraints cA false, the leaf lifetime of the CA. It is not stored in the directory. It is issued again with the same key when the ServiceUri changes, the RSA CA changes, or fewer than 30 days remain.
+- **Signer operations:** TOKEN_CHAIN (6) carries the ServiceUri and returns the token certificate followed by the RSA CA certificate. TOKEN_SIGN (7) carries a JWS signing input and returns the RS256 signature. The signer refuses any input that is not base64url header, '.', base64url payload with a header that starts `{"alg":"RS256"`, so the key cannot be used to sign certificates, CRLs or anything else.
+
 ## Plugin hooks (UASM asks)
 
 - `pre_sign` (issue #13): optional. It is called right before every signature with the operation, the store's request id and a borrowed view of the record. A refusal leaves no certificate and no store change, and `GDS_ESTATE` maps to Bad_InvalidState.
