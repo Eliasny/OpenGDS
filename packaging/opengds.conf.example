@@ -19,3 +19,5 @@ approval = renewals
 # scheduled pushes to the targets set with "gdsctl push-targets" (docs/push.md)
 # push = true
 # push_jitter = 300
+# concurrent Sessions (1..1000; SecureChannels get a tenth more)
+# max_sessions = 500

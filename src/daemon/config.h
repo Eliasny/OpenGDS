@@ -98,6 +98,7 @@ typedef struct {
     char authorizationServiceUri[GDSD_MAX_VALUE];
     uint32_t accessTokenLifetime;  /* seconds */
     uint32_t refreshTokenLifetime; /* seconds; 0: none */
+    uint32_t maxSessions;          /* concurrent Sessions (plan: 500) */
 } gdsd_config;
 
 /* The values of gds_approval_policy (gds_server.h). */

@@ -189,6 +189,9 @@ static UA_StatusCode configure(UA_ServerConfig *c, const gds_server_config *cfg,
     UA_StatusCode r = UA_ServerConfig_setBasics_withPort(c, cfg->port);
     if(r != UA_STATUSCODE_GOOD)
         return r;
+    /* open62541's default is 100 of each (docs/perf.md finding 1) */
+    c->maxSessions = (UA_UInt16)(cfg->maxSessions ? cfg->maxSessions : GDS_DEFAULT_SESSIONS);
+    c->maxSecureChannels = (UA_UInt16)(c->maxSessions + c->maxSessions / 10);
     gds_embed_configure(c, s);
     /* Accept-all at channel level (see the file comment); user
      * certificates only with a DefaultUserTokenGroup trust list. */
@@ -307,7 +310,7 @@ gds_status gds_server_set_peer_servers(gds_server *s, const UA_ApplicationDescri
 /* ---- lifecycle ---- */
 
 static bool config_ok(const gds_server_config *cfg) {
-    return cfg && cfg->applicationUri && cfg->productUri && cfg->applicationName &&
+    return cfg && cfg->maxSessions <= GDS_MAX_SESSIONS && cfg->applicationUri && cfg->productUri && cfg->applicationName &&
            cfg->ownCert.len && cfg->ownKey.len && cfg->store && cfg->ca && cfg->users &&
            cfg->approval >= GDS_APPROVE_ALL && cfg->approval <= GDS_APPROVE_MANUAL;
 }
