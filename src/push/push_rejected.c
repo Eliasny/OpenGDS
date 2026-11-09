@@ -375,7 +375,8 @@ void push_rejected_tick(push_rejected *r) {
         pthread_mutex_unlock(&r->lock);
         if(UA_NodeId_isNull(&id))
             return;
-        (void)gds_server_remove_dialog(r->cfg.server, &id);
+        if(gds_server_remove_dialog(r->cfg.server, &id) != GDS_OK)
+            fprintf(stderr, "opengds: push: could not remove a rejected-push dialog\n");
         UA_NodeId_clear(&id);
     }
 }
@@ -438,8 +439,9 @@ void push_rejected_free(push_rejected *r) {
         return;
     for(size_t i = 0; i < r->n; i++) {
         entry *e = &r->entries[i];
-        if(e->state != ENTRY_CLOSED && !UA_NodeId_isNull(&e->dialogId))
-            (void)gds_server_remove_dialog(r->cfg.server, &e->dialogId);
+        if(e->state != ENTRY_CLOSED && !UA_NodeId_isNull(&e->dialogId) &&
+           gds_server_remove_dialog(r->cfg.server, &e->dialogId) != GDS_OK)
+            fprintf(stderr, "opengds: push: could not remove a rejected-push dialog\n");
         entry_clear(e);
     }
     free(r->entries);

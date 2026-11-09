@@ -543,6 +543,58 @@ static gds_status sq_cert_add(void *ctx_, const UA_Guid *appId, uint32_t groupId
     return r;
 }
 
+/* A24: the certificate and the request's Received -> Issued in one
+ * transaction. */
+static gds_status sq_cert_issue(void *ctx_, const UA_Guid *reqId, const UA_Guid *appId,
+                                uint32_t groupId, uint32_t certType, const gds_buf *serial,
+                                const gds_buf *der, int64_t notBefore, int64_t notAfter) {
+    sq_store *s = ctx_;
+    sqlite3_stmt *up = NULL, *ex = NULL;
+    gds_status r = GDS_OK;
+    int rc = sqlite3_exec(s->db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+    if(rc != SQLITE_OK)
+        return db_err(s, "begin", rc);
+    rc = sqlite3_prepare_v2(s->db,
+                            "UPDATE requests SET state = ?2, cert = ?3, error = 0, updated = ?4 "
+                            "WHERE id = ?1 AND state = ?5",
+                            -1, &up, NULL);
+    if(rc == SQLITE_OK)
+        rc = bind_guid(up, 1, reqId);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int(up, 2, (int)GDS_REQ_ISSUED);
+    if(rc == SQLITE_OK)
+        rc = bind_buf(up, 3, der);
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(up, 4, now_s());
+    if(rc == SQLITE_OK)
+        rc = sqlite3_bind_int(up, 5, (int)GDS_REQ_RECEIVED);
+    if(rc == SQLITE_OK && (rc = sqlite3_step(up)) == SQLITE_DONE)
+        rc = SQLITE_OK;
+    if(rc == SQLITE_OK && sqlite3_changes(s->db) != 1) {
+        /* Not Received: issued already, failed, or no such request. */
+        rc = sqlite3_prepare_v2(s->db, "SELECT 1 FROM requests WHERE id = ?1", -1, &ex, NULL);
+        if(rc == SQLITE_OK)
+            rc = bind_guid(ex, 1, reqId);
+        if(rc == SQLITE_OK) {
+            rc = sqlite3_step(ex);
+            r = rc == SQLITE_ROW ? GDS_ESTATE : rc == SQLITE_DONE ? GDS_ENOTFOUND : GDS_OK;
+            rc = r != GDS_OK ? SQLITE_OK : rc;
+        }
+    }
+    if(rc == SQLITE_OK && r == GDS_OK) {
+        r = sq_cert_add(s, appId, groupId, certType, serial, der, notBefore, notAfter);
+        if(r == GDS_OK)
+            rc = sqlite3_exec(s->db, "COMMIT", NULL, NULL, NULL);
+    }
+    if(rc != SQLITE_OK && r == GDS_OK)
+        r = db_err(s, "issue certificate", rc);
+    if(r != GDS_OK)
+        (void)sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL);
+    sqlite3_finalize(up);
+    sqlite3_finalize(ex);
+    return r;
+}
+
 static gds_status sq_cert_latest(void *ctx_, const UA_Guid *appId, uint32_t groupId,
                                  uint32_t certType, gds_buf *der, int64_t *notAfter) {
     sq_store *s = ctx_;
@@ -1057,6 +1109,7 @@ const gds_store_backend gds_store_sqlite_backend = {
     .push_target_put = sq_push_target_put,
     .push_target_delete = sq_push_target_delete,
     .push_target_scan = sq_push_target_scan,
+    .cert_issue = sq_cert_issue,
 };
 
 gds_status gds_store_sqlite_open(const char *path, bool readonly, void **ctx) {

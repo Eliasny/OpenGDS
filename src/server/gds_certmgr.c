@@ -769,12 +769,13 @@ static gds_status store_issued(gds_server *s, const gds_request *q, const gds_ca
                                gds_buf *key) {
     bool keyPair = q->csr.len == 0;
     gds_status w = keyPair ? gds_kp_set_key(s, &q->id, key) : GDS_OK;
+    /* One transaction (A24): a request that is Issued has its certificate,
+     * and one that is still Received has none, so the next primary of a
+     * replicated store never signs a request twice. */
     if(w == GDS_OK)
-        w = gds_store_cert_add(s->store, &q->appId, q->groupId, q->certType, &issued->serial,
-                               &issued->der, issued->notBefore, issued->notAfter);
-    if(w == GDS_OK)
-        w = gds_store_req_set_state(s->store, &q->id, GDS_REQ_ISSUED, &issued->der,
-                                    UA_STATUSCODE_GOOD);
+        w = gds_store_cert_issue(s->store, &q->id, &q->appId, q->groupId, q->certType,
+                                 &issued->serial, &issued->der, issued->notBefore,
+                                 issued->notAfter);
     if(w != GDS_OK) {
         fprintf(stderr, "opengds: storing an issued certificate failed: %s\n",
                 gds_status_name(w));

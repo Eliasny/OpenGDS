@@ -599,7 +599,8 @@ static bool target(const char *uri, const char *url) {
 
 static void *server_main(void *p) {
     (void)p;
-    (void)gds_server_run(F.server, &F.running);
+    if(gds_server_run(F.server, &F.running) != GDS_OK)
+        fprintf(stderr, "test_push_engine: the server stopped with an error\n");
     return NULL;
 }
 

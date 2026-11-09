@@ -124,6 +124,20 @@ typedef struct {
 } gds_cert_row;
 typedef bool (*gds_cert_scan_cb)(void *ctx, const gds_cert_row *row);
 GDS_MUST_CHECK gds_status gds_store_cert_scan(gds_store *s, gds_cert_scan_cb cb, void *ctx);
+/* An issued certificate and its request's move from Received to Issued,
+ * in one transaction (UASM ask A24). Without it a replicated store can
+ * lose its leader between the two writes, or after a certificate's commit
+ * whose outcome was never reported: the request is still Received, the
+ * next primary signs it again, and one request has two certificates.
+ * GDS_ESTATE (nothing written) if the request is not Received, so a
+ * request is issued once; GDS_ENOTFOUND if there is no such request;
+ * GDS_EEXISTS if the serial is taken. A backend before minor 7 gets
+ * cert_add then req_set_state, as before. */
+GDS_MUST_CHECK gds_status gds_store_cert_issue(gds_store *s, const UA_Guid *reqId,
+                                               const UA_Guid *appId, uint32_t groupId,
+                                               uint32_t certType, const gds_buf *serial,
+                                               const gds_buf *der, int64_t notBefore,
+                                               int64_t notAfter);
 /* Newest unrevoked certificate; GDS_ENOTFOUND if none. */
 GDS_MUST_CHECK gds_status gds_store_cert_latest(gds_store *s, const UA_Guid *appId,
                                                 uint32_t groupId, uint32_t certType, gds_buf *der,
@@ -219,10 +233,10 @@ GDS_MUST_CHECK gds_status gds_store_audit_verify(gds_store *s, int64_t *rows, in
  * transaction: it commits fully or changes nothing. The core calls a
  * backend from one thread at a time (see "Single-writer" above). */
 #define GDS_STORE_ABI_MAJOR 1u
-#define GDS_STORE_ABI_MINOR 6u /* 1: the audit log; 2: req_scan; 3: cert_revoke, cert_revoke_app,
+#define GDS_STORE_ABI_MINOR 7u /* 1: the audit log; 2: req_scan; 3: cert_revoke, cert_revoke_app,
                                   cert_is_revoked; 4: cert_scan; 5: tl_get, tl_put;
                                   6: push_target_put, push_target_delete,
-                                  push_target_scan */
+                                  push_target_scan; 7: cert_issue */
 
 typedef struct {
     uint32_t abi_major;
@@ -268,6 +282,10 @@ typedef struct {
                                   bool enabled);
     gds_status (*push_target_delete)(void *ctx, const UA_Guid *appId);
     gds_status (*push_target_scan)(void *ctx, gds_push_target_cb cb, void *cbCtx);
+    /* minor 7 */
+    gds_status (*cert_issue)(void *ctx, const UA_Guid *reqId, const UA_Guid *appId,
+                             uint32_t groupId, uint32_t certType, const gds_buf *serial,
+                             const gds_buf *der, int64_t notBefore, int64_t notAfter);
 } gds_store_backend;
 
 /* A store on a plugin backend. The vtable is copied; ctx is taken, and
@@ -282,7 +300,8 @@ typedef struct {
  * cert_scan NULL) gds_store_cert_scan returns GDS_EUNSUPPORTED. Before minor 5
  * the trust list calls return GDS_EUNSUPPORTED, so the group trust lists
  * can be read but not written (Bad_NotSupported). Before minor 6 the push
- * target calls return GDS_EUNSUPPORTED and the push engine has no targets. */
+ * target calls return GDS_EUNSUPPORTED and the push engine has no targets.
+ * Before minor 7 gds_store_cert_issue makes two transactions. */
 GDS_MUST_CHECK gds_status gds_store_open_backend(const gds_store_backend *be, void *ctx,
                                                  gds_store **out);
 
