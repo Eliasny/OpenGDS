@@ -19,12 +19,16 @@
  *   TOKEN_CHAIN   uriLen u16 | ServiceUri (gds_ca_token_chain)
  *   TOKEN_SIGN    inputLen u32 | JWS signing input (gds_ca_token_sign;
  *              the signer checks it is one)
+ *   EXPORT_KEYS   (empty) The CA keys sealed to the recipients of the
+ *              signer's own --export-recipients file (src/ca/ca_seal.h);
+ *              GDS_EDENIED when it has none.
  * Reply body: status u32, then on GDS_OK:
  *   SIGN_CSR   notBefore i64 | notAfter i64 | serialLen u16 | serial |
  *              derLen u32 | der
  *   NEW_KEY_PAIR  as SIGN_CSR, then keyLen u32 | key (PFX or PEM)
  *   GET_CHAIN, ISSUE_CRL, REVOKE   derLen u32 | der (REVOKE: the new CRL)
  *   TOKEN_CHAIN, TOKEN_SIGN   derLen u32 | der (the chain; the signature)
+ *   EXPORT_KEYS   len u32 | the sealed export ("OGKX")
  * SPDX-License-Identifier: MPL-2.0 */
 #ifndef OPENGDS_SIGNER_PROTO_H
 #define OPENGDS_SIGNER_PROTO_H
@@ -54,7 +58,8 @@ typedef enum {
     GDS_SIGP_ISSUE_CRL = GDS_CA_OP_ISSUE_CRL,
     GDS_SIGP_GET_CHAIN = 5,
     GDS_SIGP_TOKEN_CHAIN = 6,
-    GDS_SIGP_TOKEN_SIGN = 7
+    GDS_SIGP_TOKEN_SIGN = 7,
+    GDS_SIGP_EXPORT_KEYS = 8
 } gds_sigp_op;
 
 GDS_MUST_CHECK gds_status gds_sigp_encode_request(gds_sigp_op op, const UA_Guid *requestId,

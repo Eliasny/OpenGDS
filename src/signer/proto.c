@@ -144,7 +144,7 @@ static gds_status read_header(rd *r, gds_sigp_op *op) {
         return GDS_EINVAL;
     if(o != GDS_SIGP_SIGN_CSR && o != GDS_SIGP_GET_CHAIN && o != GDS_SIGP_ISSUE_CRL &&
        o != GDS_SIGP_REVOKE && o != GDS_SIGP_NEW_KEY_PAIR && o != GDS_SIGP_TOKEN_CHAIN &&
-       o != GDS_SIGP_TOKEN_SIGN)
+       o != GDS_SIGP_TOKEN_SIGN && o != GDS_SIGP_EXPORT_KEYS)
         return GDS_EUNSUPPORTED;
     *op = (gds_sigp_op)o;
     return GDS_OK;
@@ -319,6 +319,8 @@ gds_status gds_sigp_decode(const uint8_t *msg, size_t len, gds_sigp_request *out
     case GDS_SIGP_TOKEN_CHAIN:
     case GDS_SIGP_TOKEN_SIGN:
         s = decode_token(&r, out);
+        break;
+    case GDS_SIGP_EXPORT_KEYS: /* no body: the signer picks the recipients */
         break;
     }
     if(s == GDS_OK && r.pos != r.len)

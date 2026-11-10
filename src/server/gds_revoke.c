@@ -250,3 +250,24 @@ UA_StatusCode gds_revoke_install(gds_server *s) {
                                                "RevokeCertificate", in, 2, NULL, 0);
     return r == UA_STATUSCODE_GOOD ? gds_install_methods(s, m, GDS_ARRAY_SIZE(m)) : r;
 }
+
+/* Only through a signer: the in-process CA would need recipients from the
+ * embedder, which is what the signer's own file rules out. */
+gds_status gds_server_export_ca_keys(gds_server *s, UA_ByteString *out) {
+    if(out)
+        UA_ByteString_init(out);
+    if(!s || !out)
+        return GDS_EINVAL;
+    gds_buf b = {0};
+    gds_status r = gds_ca_export_keys(s->ca, NULL, 0, &b);
+    if(r == GDS_EINVAL)
+        r = GDS_EUNSUPPORTED; /* the in-process CA: it wants recipients */
+    if(r != GDS_OK)
+        return r;
+    if(UA_ByteString_allocBuffer(out, b.len) != UA_STATUSCODE_GOOD)
+        r = GDS_ENOMEM;
+    else
+        memcpy(out->data, b.data, b.len);
+    gds_buf_free(&b);
+    return r;
+}

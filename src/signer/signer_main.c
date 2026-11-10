@@ -6,6 +6,7 @@
  *
  *   opengds-signer (--fd N | --listen PATH) --store PATH --ca-dir DIR
  *                  [--organization O] [--passphrase-file F] [--plugin-fd N]
+ *                  [--export-recipients FILE]
  *
  * --fd is a connected SOCK_SEQPACKET socket to opengdsd: inherited from
  * opengdsd (`signer` in its configuration), or `--fd systemd` for socket
@@ -22,6 +23,9 @@
  * directory, the store's directory (read-only) and the passphrase
  * source; seccomp leaves it no
  * exec, no new sockets and no connect.
+ * --export-recipients FILE allows EXPORT_KEYS: the CA keys sealed to the
+ * X25519 keys in FILE (src/ca/ca_seal.h; root-owned, read once at start).
+ * Without it the signer refuses every export.
  * SPDX-License-Identifier: MPL-2.0 */
 #include <openssl/crypto.h>
 
@@ -35,6 +39,7 @@
 #include <unistd.h>
 
 #include "ca.h"
+#include "ca_seal.h"
 #include "common/buf.h"
 #include "common/limits.h"
 #include "common/safeint.h"
@@ -49,13 +54,14 @@
 
 typedef struct {
     long fd, pluginFd;
-    const char *store, *caDir, *organization, *passFile, *listen;
+    const char *store, *caDir, *organization, *passFile, *listen, *exportRecipients;
     const gds_signer_hooks *hooks; /* NULL: opengds-signer's own store */
 } options;
 
 static int usage(const options *o) {
     fprintf(stderr, "usage: opengds-signer (--fd N | --listen PATH) %s--ca-dir DIR "
-                    "[--organization O] [--passphrase-file F] [--plugin-fd N]\n",
+                    "[--organization O] [--passphrase-file F] [--plugin-fd N] "
+                    "[--export-recipients FILE]\n",
             o->hooks ? "" : "--store PATH ");
     return 2;
 }
@@ -106,6 +112,10 @@ static bool parse_args(int argc, char **argv, options *o) {
             o->organization = v;
         else if(strcmp(a, "--passphrase-file") == 0)
             o->passFile = v;
+        else if(strcmp(a, "--export-recipients") == 0) {
+            ok = !o->exportRecipients;
+            o->exportRecipients = v;
+        }
         else
             ok = false;
         if(!ok)
@@ -323,8 +333,19 @@ int gds_signer_main(int argc, char **argv, const gds_signer_hooks *hooks) {
     /* private key material lives in OpenSSL's secure heap (mlock'd, guarded) */
     if(CRYPTO_secure_malloc_init(SECURE_HEAP_BYTES, 32) == 0)
         fprintf(stderr, "opengds-signer: secure heap unavailable, continuing without it\n");
-    gds_signer s = {NULL, NULL, NULL, false};
+    gds_signer s = {NULL, NULL, NULL, false, NULL, 0};
+    static uint8_t recipients[GDS_SEAL_MAX_RECIPIENTS][32];
     gds_status r;
+    if(o.exportRecipients) { /* before the sandbox, which leaves no path to it */
+        r = gds_seal_recipients_read(o.exportRecipients, recipients, GDS_SEAL_MAX_RECIPIENTS,
+                                     &s.nExportRecipients);
+        if(r != GDS_OK) {
+            fprintf(stderr, "opengds-signer: --export-recipients %s: %s\n", o.exportRecipients,
+                    gds_status_name(r));
+            return 2;
+        }
+        s.exportRecipients = (const uint8_t (*)[32])recipients;
+    }
     int lfd = -1;
     if(o.listen) {
         lfd = listen_at(o.listen);

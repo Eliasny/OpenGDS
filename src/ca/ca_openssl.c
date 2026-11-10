@@ -10,6 +10,7 @@
  * verifies.
  * SPDX-License-Identifier: MPL-2.0 */
 #include <open62541/nodeids.h>
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/pkcs12.h>
@@ -22,6 +23,7 @@
 
 #include "ca.h"
 #include "ca_internal.h"
+#include "ca_seal.h"
 #include "ca_x509.h"
 #include "common/limits.h"
 #include "common/banned.h"
@@ -579,6 +581,69 @@ static gds_status ossl_token_sign(void *ctx, const gds_buf *input, gds_buf *sig)
     return r;
 }
 
+/* DER of x into a gds_buf (i2d_*). */
+static gds_status der_of(int (*i2d)(const void *, unsigned char **), const void *x, bool secret,
+                         gds_buf *out) {
+    out->data = NULL;
+    out->len = 0;
+    int n = i2d(x, NULL);
+    if(n <= 0)
+        return GDS_ECRYPTO;
+    unsigned char *p = malloc((size_t)n), *q = p;
+    if(!p)
+        return GDS_ENOMEM;
+    if(i2d(x, &q) != n) {
+        if(secret)
+            OPENSSL_cleanse(p, (size_t)n);
+        free(p);
+        return GDS_ECRYPTO;
+    }
+    out->data = p;
+    out->len = (size_t)n;
+    return GDS_OK;
+}
+
+static int i2d_cert(const void *x, unsigned char **p) {
+    return i2d_X509((const X509 *)x, p);
+}
+static int i2d_p8(const void *x, unsigned char **p) {
+    return i2d_PKCS8_PRIV_KEY_INFO((const PKCS8_PRIV_KEY_INFO *)x, p);
+}
+
+/* ABI 6: every issuer's certificate, key and CRL, sealed (ca_seal.h). */
+static gds_status ossl_export_keys(void *ctx, const uint8_t (*recipients)[32], size_t nRecipients,
+                                   gds_buf *out) {
+    ossl_cas *m = ctx;
+    out->data = NULL;
+    out->len = 0;
+    if(!recipients || nRecipients == 0)
+        return GDS_EINVAL;
+    gds_seal_contents sc;
+    memset(&sc, 0, sizeof(sc));
+    sc.created = (int64_t)time(NULL);
+    gds_status r = GDS_OK;
+    for(unsigned i = 0; r == GDS_OK && i < GDS_CA_ISSUERS; i++) {
+        ossl_ca *c = m->ca[i];
+        if(!c)
+            continue;
+        gds_seal_item *it = &sc.items[sc.n++];
+        it->issuer = c->issuer;
+        r = der_of(i2d_cert, c->cert, false, &it->cert);
+        PKCS8_PRIV_KEY_INFO *p8 = r == GDS_OK ? EVP_PKEY2PKCS8(c->key) : NULL;
+        if(r == GDS_OK && !p8)
+            r = GDS_ECRYPTO;
+        if(r == GDS_OK)
+            r = der_of(i2d_p8, p8, true, &it->key);
+        PKCS8_PRIV_KEY_INFO_free(p8);
+        if(r == GDS_OK)
+            r = ca_ossl_get_crl(c, &it->crl);
+    }
+    if(r == GDS_OK)
+        r = gds_seal_ca_keys(&sc, recipients, nRecipients, out);
+    gds_seal_contents_clear(&sc);
+    return r;
+}
+
 static void ossl_destroy(void *ctx) {
     ossl_cas *m = ctx;
     if(!m)
@@ -606,6 +671,7 @@ static const gds_ca_backend ossl_backend = {
     .revoke_issuer = ossl_revoke_issuer,
     .token_chain = ossl_token_chain,
     .token_sign = ossl_token_sign,
+    .export_keys = ossl_export_keys,
 };
 
 /* Each issuer: its directory, CN suffix and digest. The CA signs with the

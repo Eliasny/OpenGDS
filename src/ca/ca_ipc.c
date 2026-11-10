@@ -156,6 +156,16 @@ static gds_status ipc_token_sign(void *ctx, const gds_buf *input, gds_buf *sig) 
     return ipc_token(ctx, GDS_SIGP_TOKEN_SIGN, input, sig);
 }
 
+/* The signer seals to its own recipients: opengdsd names none. */
+static gds_status ipc_export_keys(void *ctx, const uint8_t (*recipients)[32], size_t nRecipients,
+                                  gds_buf *out) {
+    out->data = NULL;
+    out->len = 0;
+    if(recipients || nRecipients)
+        return GDS_EINVAL;
+    return call(ctx, GDS_SIGP_EXPORT_KEYS, NULL, NULL, out);
+}
+
 static void ipc_destroy(void *ctx) {
     ipc_ca *c = ctx;
     if(!c)
@@ -181,6 +191,7 @@ static const gds_ca_backend ipc_backend = {
     .revoke_issuer = ipc_revoke_issuer,
     .token_chain = ipc_token_chain,
     .token_sign = ipc_token_sign,
+    .export_keys = ipc_export_keys,
 };
 
 gds_status gds_ca_ipc_open(int fd, int timeoutMs, gds_ca **out) {

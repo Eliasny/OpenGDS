@@ -144,6 +144,7 @@ static gds_status put_reply(const char *name, gds_sigp_op op, gds_status st,
                    : op == GDS_SIGP_REVOKE      ? 7u
                    : op == GDS_SIGP_TOKEN_CHAIN ? 9u
                    : op == GDS_SIGP_TOKEN_SIGN  ? 11u
+                   : op == GDS_SIGP_EXPORT_KEYS ? 15u
                                                 : 5u;
     gds_buf m = {0};
     gds_status r = gds_sigp_encode_reply(op, st, issued, der, &m);
@@ -204,6 +205,16 @@ static gds_status seeds_signer_msg(void) {
         r = put_reply("reply-token-chain-ok.bin", GDS_SIGP_TOKEN_CHAIN, GDS_OK, NULL, &der);
     if(r == GDS_OK)
         r = put_reply("reply-token-sign-ok.bin", GDS_SIGP_TOKEN_SIGN, GDS_OK, NULL, &der);
+    if(r == GDS_OK)
+        r = gds_sigp_encode_request(GDS_SIGP_EXPORT_KEYS, NULL, &m);
+    if(r == GDS_OK)
+        r = put("fuzz_signer_msg", "req-export-keys.bin", SIDE_REQUEST, 1, m.data, m.len);
+    gds_buf_free(&m);
+    if(r == GDS_OK)
+        r = put_reply("reply-export-keys-ok.bin", GDS_SIGP_EXPORT_KEYS, GDS_OK, NULL, &der);
+    if(r == GDS_OK)
+        r = put_reply("reply-export-keys-denied.bin", GDS_SIGP_EXPORT_KEYS, GDS_EDENIED, NULL,
+                      NULL);
     return r;
 }
 

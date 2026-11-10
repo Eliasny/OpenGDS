@@ -129,6 +129,13 @@ gds_status gds_signer_handle(gds_signer *s, const uint8_t *msg, size_t len, gds_
     case GDS_SIGP_TOKEN_SIGN: /* gds_ca_token_sign refuses anything but a JWS input */
         r = gds_ca_token_sign(s->ca, &m.data, &der);
         break;
+    case GDS_SIGP_EXPORT_KEYS: /* only to the signer's own recipients */
+        r = s->nExportRecipients
+                ? gds_ca_export_keys(s->ca, s->exportRecipients, s->nExportRecipients, &der)
+                : GDS_EDENIED;
+        fprintf(stderr, "opengds-signer: CA key export to %zu recipient(s): %s\n",
+                s->nExportRecipients, gds_status_name(r));
+        break;
     default:
         r = GDS_EUNSUPPORTED;
         break;
