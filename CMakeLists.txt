@@ -42,8 +42,23 @@ if(OPENGDS_FUZZ)
 endif()
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
+option(OPENGDS_AUDITOR_GUI_ONLY "Build only gdsaudit-gui, without the engine (packaging/windows/msi/)" OFF)
 include(sanitizers)
 include(hardening)
+
+# The desktop UI alone (gdsaudit-gui), without the engine and so without
+# open62541 or OpenSSL: the Windows installer builds it natively with
+# MSYS2's GTK 4 and puts the cross-built gdsaudit.exe next to it
+# (packaging/windows/msi/).
+if(OPENGDS_AUDITOR_GUI_ONLY)
+    set(GDSAUDIT_SELFTESTS OFF)
+    if(WIN32)
+        add_compile_definitions(__USE_MINGW_ANSI_STDIO=1 _WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN)
+    endif()
+    enable_testing()
+    add_subdirectory(tools/auditor)
+    return()
+endif()
 include(open62541)
 
 enable_testing()

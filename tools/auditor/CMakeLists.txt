@@ -35,6 +35,7 @@ add_test(NAME auditor_run_plan
 set_tests_properties(auditor_run_plan PROPERTIES TIMEOUT 600 ENVIRONMENT "PUSH_PORT=4995")
 endif()
 
+if(NOT OPENGDS_AUDITOR_GUI_ONLY) # the engine; the GUI-only build has none
 # Engine core shared by every profile and self-test target
 add_library(gdsaudit_core STATIC
     core/x509util.c
@@ -101,23 +102,32 @@ add_test(NAME auditor_report_formats
                  "$<TARGET_FILE_DIR:push_test_server>" "${CMAKE_CURRENT_BINARY_DIR}/reports-run")
 set_tests_properties(auditor_report_formats PROPERTIES TIMEOUT 600 ENVIRONMENT "PUSH_PORT=4993")
 endif()
+endif() # NOT OPENGDS_AUDITOR_GUI_ONLY
 
 # Desktop UI (GTK4): view-model in avm/, window in ui/. Built when GTK 4.12+
 # is found (AUTO), always (ON) or never (OFF); the headless gdsaudit never
 # depends on it.
 set(OPENGDS_BUILD_AUDITOR_GUI AUTO CACHE STRING "Build gdsaudit-gui (AUTO, ON, OFF)")
 set_property(CACHE OPENGDS_BUILD_AUDITOR_GUI PROPERTY STRINGS AUTO ON OFF)
+if(OPENGDS_AUDITOR_GUI_ONLY)
+    set(OPENGDS_BUILD_AUDITOR_GUI ON)
+endif()
+if(WIN32)
+    set(_gdsaudit_gio gio-windows-2.0) # GWin32InputStream (avm_run.c)
+else()
+    set(_gdsaudit_gio gio-unix-2.0)
+endif()
 if(NOT OPENGDS_BUILD_AUDITOR_GUI STREQUAL "OFF")
     find_package(PkgConfig)
     if(PKG_CONFIG_FOUND)
         pkg_check_modules(GDSAUDIT_GTK4 IMPORTED_TARGET gtk4>=4.12)
-        pkg_check_modules(GDSAUDIT_GIO IMPORTED_TARGET gio-unix-2.0>=2.76)
+        pkg_check_modules(GDSAUDIT_GIO IMPORTED_TARGET ${_gdsaudit_gio}>=2.76)
     endif()
     if(GDSAUDIT_GTK4_FOUND AND GDSAUDIT_GIO_FOUND)
         add_subdirectory(avm)
         add_subdirectory(ui)
     elseif(OPENGDS_BUILD_AUDITOR_GUI STREQUAL "ON")
-        message(FATAL_ERROR "gdsaudit-gui needs gtk4 >= 4.12 and gio-unix-2.0 (libgtk-4-dev)")
+        message(FATAL_ERROR "gdsaudit-gui needs gtk4 >= 4.12 and ${_gdsaudit_gio} (libgtk-4-dev)")
     else()
         message(STATUS "gdsaudit-gui: gtk4 not found, desktop UI not built")
     endif()

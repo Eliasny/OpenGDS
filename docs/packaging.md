@@ -9,6 +9,7 @@ OpenGDS ships as:
 | `gdsaudit_…deb`, `gdsaudit-…rpm` | the same distributions | the OpenGDS Auditor command-line tool |
 | `gdsaudit-gui_…deb`, `gdsaudit-gui-…rpm` | distributions with GTK 4.12 or newer | the Auditor's desktop UI (`gdsaudit-gui`, desktop entry `org.opengds.Auditor`); needs `gdsaudit` of the same version |
 | `org.opengds.Auditor` Flatpak (`packaging/flatpak/org.opengds.Auditor.yml`) | any distribution with Flatpak | `gdsaudit-gui` and `gdsaudit` on the GNOME runtime; a client profile trigger runs inside the sandbox, so use the headless `gdsaudit` to start host programs |
+| `OpenGDS Auditor` MSI (`packaging/windows/msi/`; built and install-tested by the CI job `windows-msi`, not yet in the release workflow) | 64-bit Windows 10 or later | `gdsaudit-gui.exe` built with MSYS2's GTK 4 (UCRT64), the static `gdsaudit.exe` of `packaging/windows/build.sh`, GTK's DLLs, schemas and icons, and a Start menu entry; installs per machine under `Program Files\OpenGDS Auditor` |
 | `opengds-<ver>-deb13-<arch>.tar.gz` | other glibc distributions | every component under `usr/` |
 | `opengds-<ver>.tar.gz` | building from source | `git archive` of the release tag |
 | `ghcr.io/eliasny/opengds:<ver>` | Docker, Podman, Kubernetes | server on a distroless base, amd64 and arm64 |

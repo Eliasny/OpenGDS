@@ -102,6 +102,8 @@ jobs:
     name: windows gdsaudit.exe under wine
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.scope.outputs.run }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -111,7 +113,7 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          if git diff --name-only "$BASE" HEAD | grep -qE '^(tools/auditor/|packaging/windows/|\.github/workflows/ci\.yml$)'; then
+          if git diff --name-only "$BASE" HEAD | grep -qE '^(tools/auditor/|packaging/windows/|src/common/platform\.h$|\.github/workflows/ci\.yml$)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "No change under tools/auditor or packaging/windows: skipped"
@@ -165,6 +167,84 @@ jobs:
         run: |
           exe=$(find "${{ runner.temp }}/winpkg/build" -name gdsaudit.exe | head -1)
           sh packaging/windows/check_under_wine.sh build/tools/auditor "$exe" "${{ runner.temp }}/wine-check"
+      - name: Keep the engine for the installer job
+        if: steps.scope.outputs.run == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gdsaudit-windows-engine
+          path: ${{ runner.temp }}/winpkg/gdsaudit-*-windows-x86_64/
+          retention-days: 7
+
+  windows-msi:
+    # The desktop UI on Windows (Auditor plan AT5): gdsaudit-gui built with
+    # MSYS2's GTK 4 (UCRT64), packed with the engine of windows-wine into an
+    # MSI (packaging/windows/msi/), installed silently, smoke-tested and
+    # uninstalled. Same pull requests as windows-wine.
+    name: windows desktop installer (msi)
+    needs: windows-wine
+    if: github.event_name == 'pull_request' && needs.windows-wine.outputs.run == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-adwaita-icon-theme mingw-w64-ucrt-x86_64-ntldd
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gdsaudit-windows-engine
+          path: ${{ runner.temp }}/engine
+      - name: Build gdsaudit-gui and stage it with the engine
+        run: sh packaging/windows/msi/build_gui.sh "$(cygpath -u '${{ runner.temp }}')/msi" "$(cygpath -u '${{ runner.temp }}')/engine"
+      - name: View-model tests (plan, history) on Windows
+        run: ctest --test-dir "$(cygpath -u '${{ runner.temp }}')/msi/build" --output-on-failure
+      - name: Pack the MSI (WiX 5)
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          $v = (Select-String -Path CMakeLists.txt -Pattern '^project\(OpenGDS VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          wix build packaging/windows/msi/gdsaudit.wxs -arch x64 -d Version=$v -d "Stage=${{ runner.temp }}\msi\stage" -o "${{ runner.temp }}\gdsaudit.msi"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Install silently, smoke-test, uninstall
+        shell: pwsh
+        run: |
+          $msi = "${{ runner.temp }}\gdsaudit.msi"
+          $dir = "$env:ProgramFiles\OpenGDS Auditor\bin"
+          $p = Start-Process msiexec -ArgumentList "/i `"$msi`" /qn /l*v `"${{ runner.temp }}\install.log`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content "${{ runner.temp }}\install.log" -Tail 50; exit 1 }
+          if (-not (Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\OpenGDS Auditor.lnk")) { "no Start menu shortcut"; exit 1 }
+          # the installed engine, then the installed UI (no MSYS2 on PATH)
+          $env:PATH = "$env:SystemRoot\system32;$env:SystemRoot"
+          & "$dir\gdsaudit.exe" server --work "${{ runner.temp }}\work" --init-only
+          if ($LASTEXITCODE -ne 0) { "engine --init-only failed"; exit 1 }
+          $gui = Start-Process "$dir\gdsaudit-gui.exe" -ArgumentList "--smoke" -Wait -PassThru
+          if ($gui.ExitCode -ne 0) { "gdsaudit-gui --smoke exit $($gui.ExitCode)"; exit 1 }
+          # the UI's engine link (named pipes, pause, resume, abort) with the
+          # installed engine and the installed DLLs
+          Copy-Item "${{ runner.temp }}\msi\build\tools\auditor\avm\test_avm_engine.exe" $dir
+          & "$dir\test_avm_engine.exe" "$dir\gdsaudit.exe" "${{ runner.temp }}\engine-run"
+          if ($LASTEXITCODE -ne 0) { "test_avm_engine failed"; exit 1 }
+          Remove-Item "$dir\test_avm_engine.exe"
+          $p = Start-Process msiexec -ArgumentList "/x `"$msi`" /qn" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { "uninstall exit $($p.ExitCode)"; exit 1 }
+          if (Test-Path "$env:ProgramFiles\OpenGDS Auditor") { "files left after uninstall"; exit 1 }
+          "ok: installed, engine and UI ran, uninstalled"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: gdsaudit-windows-msi
+          path: |
+            ${{ runner.temp }}/gdsaudit.msi
+            ${{ runner.temp }}/install.log
+          retention-days: 7
 
   analysis:
     name: static analysis

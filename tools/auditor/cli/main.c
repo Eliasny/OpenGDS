@@ -24,7 +24,10 @@
  *   --prompts FILE operator answers, one line per prompt (prompts.h)
  * SIGINT and SIGTERM abort the run: later tests are Not tested and the
  * server profile still restores the target; a second signal kills.
- * SIGUSR1 pauses before the next test, SIGUSR2 resumes.
+ * SIGUSR1 pauses before the next test, SIGUSR2 resumes. Windows has no
+ * such signals: there the desktop UI passes --control NAME, three named
+ * events NAME-paused, NAME-changed and NAME-abort, and gives --events and
+ * --prompts as named pipes (\\.\pipe\...).
  *
  * gds runs the GDS profile (the T0 spec tests) against a GDS; server runs
  * the server profile (docs/auditor/server-profile.md) against a push-managed
@@ -447,10 +450,25 @@ cleanup:
 /* Front-end options every subcommand takes (engine.h): taken out of argv
  * before the subcommand parses the rest. */
 typedef struct {
-    const char *events, *report, *target, *prompts;
+    const char *events, *report, *target, *prompts, *control;
     FILE *eventsFile;
     ga_results results;
 } front_end;
+
+/* Where the value of front-end option a goes, or NULL if a is not one */
+static const char **front_end_slot(front_end *fe, const char *a) {
+    if(!strcmp(a, "--events"))
+        return &fe->events;
+    if(!strcmp(a, "--report"))
+        return &fe->report;
+    if(!strcmp(a, "--prompts"))
+        return &fe->prompts;
+#ifdef _WIN32
+    if(!strcmp(a, "--control"))
+        return &fe->control;
+#endif
+    return NULL;
+}
 
 static bool take_front_end_options(int *argc, char **argv, front_end *fe) {
     int out = 1;
@@ -462,15 +480,14 @@ static bool take_front_end_options(int *argc, char **argv, front_end *fe) {
             argv[out++] = argv[i];
             continue;
         }
-        bool ev = !strcmp(a, "--events"), rep = !strcmp(a, "--report");
-        bool pr = !strcmp(a, "--prompts");
-        if(ev || rep || pr) {
+        const char **slot = front_end_slot(fe, a);
+        if(slot) {
             if(i + 1 >= *argc) {
                 fprintf(stderr, "%s needs a value\n", a);
                 ok = false;
                 break;
             }
-            *(ev ? &fe->events : rep ? &fe->report : &fe->prompts) = argv[++i];
+            *slot = argv[++i];
             continue;
         }
         if((!strcmp(a, "--url") || !strcmp(a, "--listen")) && i + 1 < *argc)
@@ -506,6 +523,46 @@ static void install_abort_handler(void) {
     signal(SIGTERM, on_signal);
     signal(SIGBREAK, on_signal);
 }
+
+/* --control NAME: events the desktop UI created, used where Linux would
+ * send SIGUSR1, SIGUSR2 or SIGINT. NAME-paused (manual reset) holds the
+ * pause state; the UI sets or resets it, then sets NAME-changed, and the
+ * state is read after each wake, so the last click wins however fast they
+ * come. NAME-abort aborts. The UI also closes the answer pipe on abort, so
+ * a prompt waiting in read() ends. */
+static HANDLE controlEvents[3]; /* changed, abort, paused */
+
+static DWORD WINAPI control_thread(LPVOID arg) {
+    (void)arg;
+    for(;;) {
+        DWORD w = WaitForMultipleObjects(2, controlEvents, FALSE, INFINITE);
+        if(w == WAIT_OBJECT_0)
+            ga_request_pause(WaitForSingleObject(controlEvents[2], 0) == WAIT_OBJECT_0);
+        else if(w == WAIT_OBJECT_0 + 1)
+            ga_request_abort();
+        else
+            return 0;
+    }
+}
+
+static bool start_control(const char *name) {
+    static const char *const suffix[3] = {"-changed", "-abort", "-paused"};
+    for(int i = 0; i < 3; i++) {
+        char n[256];
+        if(snprintf(n, sizeof(n), "%s%s", name, suffix[i]) >= (int)sizeof(n) ||
+           !(controlEvents[i] = OpenEventA(SYNCHRONIZE, FALSE, n))) {
+            fprintf(stderr, "--control: cannot open the event %s\n", n);
+            return false;
+        }
+    }
+    HANDLE t = CreateThread(NULL, 0, control_thread, NULL, 0, NULL);
+    if(!t) {
+        fprintf(stderr, "--control: cannot start its thread\n");
+        return false;
+    }
+    CloseHandle(t); /* it runs until the process exits */
+    return true;
+}
 #else
 static void install_abort_handler(void) {
     struct sigaction sa;
@@ -540,7 +597,13 @@ static bool start_front_end(front_end *fe, const char *profile) {
             if(gds_mkdirs(dir, 0755) != GDS_OK)
                 fprintf(stderr, "cannot create %s\n", dir); /* fopen reports it */
         }
-        fe->eventsFile = fopen(fe->events, GDS_FOPEN_WRITE_CLOEXEC); /* not inherited by triggers */
+#ifdef _WIN32
+        int pipeFd = gds_open_pipe(fe->events, true);
+        if(pipeFd != -2)
+            fe->eventsFile = pipeFd >= 0 ? _fdopen(pipeFd, "wb") : NULL;
+        else
+#endif
+            fe->eventsFile = fopen(fe->events, GDS_FOPEN_WRITE_CLOEXEC); /* not inherited by triggers */
         if(!fe->eventsFile) {
             perror(fe->events);
             return false;
@@ -551,6 +614,10 @@ static bool start_front_end(front_end *fe, const char *profile) {
         (void)ga_add_event_sink(ga_results_sink, &fe->results);
     if(fe->prompts && !prompts_open(fe->prompts))
         return false;
+#ifdef _WIN32
+    if(fe->control && !start_control(fe->control))
+        return false;
+#endif
     install_abort_handler();
     return true;
 }
